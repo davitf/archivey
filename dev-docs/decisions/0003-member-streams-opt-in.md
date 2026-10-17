@@ -32,11 +32,6 @@ already chose in the analogous case: prefer a bool when the mode count is small,
 these are two specific traps rather than an open-ended set. `MemberStreams` remains
 exported and is still the declared-capability value on `CostReceipt` and in diagnostics.
 
-**Amended before `0.2.0` (renamed):** the second flag was first spelled
-`concurrent_members`. It became `concurrent_operations` once it covered more than member
-opens: under it every operation on the reader (open, read, passes, `extract_all()`)
-works as if it ran on a reader of its own. Same default, same semantics otherwise.
-
 **Amended (PR #299):** `seekable_members=True` is a guarantee on random `open()`, not
 "where the backend can provide it". A backend that can list a file member must seek it
 when the flag is set; loud-slow-rewind is allowed. `stream_members()` stays a
@@ -47,6 +42,12 @@ decision (off by default, demand-driven indexes) is unchanged.
 format, with or without `seekable_members=True`: `seekable()` is `False`, `seek()`
 raises `io.UnsupportedOperation`, `tell()` works. Before, whether a pass handle could
 seek depended on the backend. `seekable_members=True` is for random `open()` only.
+
+**Amended (2026-10-17):** after the `member_streams=` flag enum gave way to the two
+booleans, the second was spelled `concurrent_members`. It became `concurrent_operations`
+once it covered more than member opens: under it every operation on the reader (open,
+read, passes, `extract_all()`) works as if it ran on a reader of its own. Same default,
+same semantics otherwise.
 
 ## Consequences
 

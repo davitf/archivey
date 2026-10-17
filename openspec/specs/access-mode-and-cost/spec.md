@@ -346,9 +346,6 @@ while the pass is suspended at a yield: the reader closes and resuming the pass 
 `ArchiveyUsageError` (maintainer's ruling, 2026-10-10; see `archive-reading`). Ops
 after `reader.close()` → `ArchiveyUsageError` (idempotent `close`).
 
-Defaults and behaviour are unchanged by the spelling: this requirement previously
-described the same composition in terms of a `member_streams` flag enum.
-
 #### Scenario: mode × capability matrix
 
 | Case | Expected |

@@ -224,7 +224,7 @@ CRC cover.
 
 Declare seek only when you need it (e.g. parquet-in-zip random reads).
 
-## Concurrent member streams
+## Concurrent operations
 
 Default: at most one live member stream. A second overlapping `open()` raises
 `ArchiveyUsageError` (a usage error — not an `ArchiveyError`).

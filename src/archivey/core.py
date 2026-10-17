@@ -294,17 +294,23 @@ def open_archive(
     random-access call on a streaming reader. Every reader is an ``ArchiveReader`` at
     run time; the difference is in the annotations only.
 
-    Member streams are forward-only and single-live by default. Two keyword flags opt
-    into more, each unlocking one specific trap:
+    By default member streams are forward-only, one may be open at a time, and reader
+    operations do not overlap. Two keyword flags opt into more, each unlocking one
+    specific trap:
 
     - ``seekable_members=True`` — ``seek()`` on a member stream from random
       ``open()`` works. Without it, ``seek()`` raises
       ``io.UnsupportedOperation``. A backward seek may re-decompress from the
       start when there is no index or accelerator. A ``stream_members()``
       stream never seeks, with or without this flag.
-    - ``concurrent_operations=True`` — multiple member streams may be open at once
-      (coordinated first-touch materialization, then worker fan-out; draining close).
-      Without it, a second overlapping ``open()`` raises ``ArchiveyUsageError``.
+    - ``concurrent_operations=True`` — operations on the reader may overlap, from one
+      thread or several, on every format: random ``open()`` / ``read()`` / ``get()``
+      / ``members()``, iteration, ``stream_members()`` passes and ``extract_all()``.
+      Each works as if it ran on a reader of its own. A single member stream object
+      still has one owner, first-touch materialization is coordinated rather than
+      parallel, and ``close()`` waits for calls in flight. Overlap is correct, not
+      always cheaper. Without it, a second overlapping ``open()`` or a call beside a
+      pass raises ``ArchiveyUsageError``.
 
     ``open_stream`` uses the same vocabulary for the single-stream case
     (``open_stream(..., seekable=True)``); concurrency is meaningless there, so it has

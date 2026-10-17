@@ -10,6 +10,9 @@ The snippets below that read it are as run on 2026-09-17; the script now reads t
 reader's private `_member_streams` field, and the "UNTYPED" finding about the attribute
 being off the ABC is moot (there is no attribute).
 
+**Note (2026-10-17):** `concurrent_members=True` was renamed `concurrent_operations=True`.
+The predicates below and the script use the new name; the 2026-09-17 run used the old one.
+
 **Note (2026-09-26, `stream_members()` never seeks):** a `stream_members()` handle is
 now forward-only on every format, with or without `seekable_members=True`
 (`archive-reading` spec). The `stream_members_seekable` check enforces that: a pass
@@ -93,7 +96,7 @@ Still true: zip-aes `open()` streams under `seekable_members=True` report
 - `seekable_members=True` → every FILE from `open()` has `seekable() is True`
   and backward / mid-stream seek rereads the same bytes. Per-member
   disagreement inside one archive is a fail even if some members pass.
-- `concurrent_members=True` → two overlapping `open()` calls both read.
+- `concurrent_operations=True` → two overlapping `open()` calls both read.
 - Default → `seekable()` is False and `seek()` raises; a second live
   `open()` raises `ConcurrentAccessError`.
 - `stream_members()` under `seekable_members=True` → every FILE handle has

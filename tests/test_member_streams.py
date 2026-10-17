@@ -163,6 +163,16 @@ def test_member_streams_kwarg_is_gone(tmp_path: Path) -> None:
         open_archive(root, member_streams="anything")  # type: ignore[call-arg]
 
 
+def test_concurrent_members_kwarg_is_gone(tmp_path: Path) -> None:
+    """``concurrent_members`` became ``concurrent_operations`` with no alias.
+
+    Same lock as above: accepting the old spelling again has to delete this test.
+    """
+    root = _two_file_dir(tmp_path)
+    with pytest.raises(TypeError, match="concurrent_members"):
+        open_archive(root, concurrent_members=True)  # type: ignore[call-arg]
+
+
 def test_streaming_plus_concurrent_rejected(tmp_path: Path) -> None:
     root = _two_file_dir(tmp_path)
     with pytest.raises(ArchiveyUsageError, match="streaming=True"):

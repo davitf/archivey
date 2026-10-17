@@ -117,8 +117,9 @@ Handoff mechanics (one shared collector/budget, no copy/re-seed): see
 
 `open_archive()` SHALL accept two keyword-only booleans, both defaulting to `False`:
 
-- `concurrent_operations=True` — any number of member streams may be open simultaneously
-  (full contract: `reader-concurrency`)
+- `concurrent_operations=True` — reader operations may overlap: any number of member
+  streams may be open simultaneously, and passes and `extract_all()` run beside random
+  access and one another (full contract: `reader-concurrency`)
 - `seekable_members=True` — every member stream from random `open()` is seekable;
   `stream_members()` yields stay forward-only (below)
 
