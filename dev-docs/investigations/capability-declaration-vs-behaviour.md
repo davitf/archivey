@@ -10,9 +10,6 @@ The snippets below that read it are as run on 2026-09-17; the script now reads t
 reader's private `_member_streams` field, and the "UNTYPED" finding about the attribute
 being off the ABC is moot (there is no attribute).
 
-**Note (2026-10-17):** `concurrent_members=True` was renamed `concurrent_operations=True`.
-The predicates below and the script use the new name; the 2026-09-17 run used the old one.
-
 **Note (2026-09-26, `stream_members()` never seeks):** a `stream_members()` handle is
 now forward-only on every format, with or without `seekable_members=True`
 (`archive-reading` spec). The `stream_members_seekable` check enforces that: a pass
@@ -23,6 +20,9 @@ regenerated on 2026-09-26 and also takes in verdicts that had already moved on
 since #480), and the single-file `listing_cost` rows other than gz are `OK`
 (listing now records `seeks=1 decomp=1`). The tables and the "Violations"
 section below are still the 2026-09-17 run; read the JSON for current verdicts.
+
+**Note (2026-10-17):** `concurrent_members=True` was renamed `concurrent_operations=True`.
+The predicates below and the script use the new name; the 2026-09-17 run used the old one.
 
 ## Re-run
 

@@ -309,8 +309,10 @@ def open_archive(
       Each works as if it ran on a reader of its own. A single member stream object
       still has one owner, first-touch materialization is coordinated rather than
       parallel, and ``close()`` waits for calls in flight. Overlap is correct, not
-      always cheaper. Without it, a second overlapping ``open()`` or a call beside a
-      pass raises ``ArchiveyUsageError``.
+      always cheaper. Without it, a second overlapping ``open()``, or a random-access
+      call or another pass beside a running pass, raises ``ArchiveyUsageError``;
+      ``close()`` beside a pass suspended at a yield closes the reader, and resuming
+      the pass raises.
 
     ``open_stream`` uses the same vocabulary for the single-stream case
     (``open_stream(..., seekable=True)``); concurrency is meaningless there, so it has
