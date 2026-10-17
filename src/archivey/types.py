@@ -260,7 +260,9 @@ class MissingComponent:
     """
 
     name: str  # e.g. "pycdlib", "brotli", "unrar"
-    install_hint: str  # e.g. "pip install archivey[recommended]"
+    # A package's install line, e.g. "pip install archivey[recommended]"; for an
+    # external program (``unrar``), the whole refusal a read would raise.
+    install_hint: str
     unlocks: tuple[
         str, ...
     ] = ()  # member-codecs/capabilities it enables, e.g. ("ppmd",)
@@ -276,6 +278,9 @@ class MissingComponent:
 
         ``note`` appends a sentence for cases where the bare hint would mislead (e.g.
         a backport that is pointless on a Python version shipping the module).
+
+        For package entries only: a program entry's ``install_hint`` is already a
+        complete message.
         """
         text = f"The {self.name!r} package is required for {purpose} ({self.install_hint})."
         return f"{text} {note}" if note else text
@@ -285,9 +290,7 @@ class FormatSupport(Enum):
     """Tri-state readability of a known format (see ``backend-registry``)."""
 
     FULL = "full"  # backend usable AND every optional codec/tool it can use is present
-    PARTIAL = (
-        "partial"  # opens & lists; common members decode; some optional codec missing
-    )
+    PARTIAL = "partial"  # opens & lists; common members decode; some optional codec or tool missing
     NONE = "none"  # backend (or a single-codec format's sole codec) is unavailable
 
 

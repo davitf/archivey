@@ -78,7 +78,9 @@ If your program needs to know at run time which formats work with what's install
 [`format_availability()`](api.md#archivey.format_availability) says whether a format is fully
 supported, partly supported (it opens, but some members need a missing package) or not available,
 and which packages would add the rest. RAR counts as partly supported without RARLAB's `unrar`, even
-when `unar` is installed. `cryptography` isn't counted, because only encrypted members need it.
+when `unar` is installed. To find out, it runs each `unrar` or `rar` on your `PATH` once to read its
+version, whatever `rar_decompressor` says; pass `check_programs=False` to run nothing. `cryptography`
+isn't counted, because only encrypted members need it.
 
 ## Python versions and platforms
 

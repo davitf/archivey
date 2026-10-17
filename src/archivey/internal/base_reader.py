@@ -152,6 +152,7 @@ from archivey.types import (
     MemberSelectorArg,
     MemberStreams,
     MemberType,
+    MissingComponent,
     OnError,
     OnErrorStr,
     OverwritePolicy,
@@ -381,6 +382,17 @@ class ReadBackend(ABC):
     # Human-readable install hint surfaced when the dependency is absent
     # (e.g. "pip install archivey[recommended]").
     INSTALL_HINT: str | None = None
+
+    @classmethod
+    def missing_programs(cls) -> tuple[MissingComponent, ...]:
+        """External programs this backend can use that are not usable here.
+
+        A backend that still opens and lists without them makes its format ``PARTIAL``
+        in the public ``format_availability()`` query. Only that query calls this: a
+        backend may run a program once to identify it, and ``open_archive`` must not
+        pay for that. Empty for backends that run no external program.
+        """
+        return ()
 
     @abstractmethod
     def open_read(
