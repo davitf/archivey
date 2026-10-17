@@ -1093,6 +1093,14 @@ def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
         _ENCRYPTION_STORED_SIZES,
         extra=("-ma4", "-m0", "-ppassword"),
     )
+    # RAR 2.9-4 keeps a symlink's target as the member's stored data, so ``-p``
+    # encrypts it; listing with the password decrypts it.
+    build(
+        rar4_bin,
+        "symlinks_encrypted__rar4.rar",
+        _SYMLINKS,
+        extra=("-ma4", "-m3", "-ppassword"),
+    )
 
     kept = ", ".join(sorted(_LEGACY_KEEP))
     print(f"left legacy fixtures untouched: {kept}")

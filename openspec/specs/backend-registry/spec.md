@@ -31,8 +31,9 @@ Each backend SHALL declare dependency metadata as data. Availability SHALL be
 derived centrally from the module-or-`None` sentinel idiom (`_optional("pycdlib")`
 returns module or `None`), not per-backend booleans. 7z and RAR reading are
 native and known; RAR data reads additionally require the external `unrar` binary
-at read time. That binary SHALL NOT be counted in support: RAR reports FULL whether or
-not `unrar` is on `PATH`, and a member read that needs it raises
+at read time. That binary SHALL be counted as an optional tool (see *Format support is
+tri-state and compositional*): RAR reports PARTIAL, with `unrar` in `missing`, when no
+usable RARLAB `unrar` or `rar` is on `PATH`, and a member read that needs it raises
 `PackageNotInstalledError`.
 
 ```python
@@ -203,7 +204,9 @@ class FormatAvailability:
     missing: tuple[MissingComponent, ...]
     required_source: StreamCapability = StreamCapability.SEEKABLE
 
-def format_availability(format: ArchiveFormat) -> FormatAvailability: ...
+def format_availability(
+    format: ArchiveFormat, *, check_programs: bool = True
+) -> FormatAvailability: ...
 def list_supported_formats() -> list[ArchiveFormat]: ...
 def list_known_formats() -> list[ArchiveFormat]: ...
 ```
@@ -217,9 +220,21 @@ Support SHALL be computed across the format backend and codecs/tools:
 - PARTIAL for available multi-codec containers with missing optional codecs/tools.
 - ZIP follows the same rule: FULL with every optional member-codec package (Deflate64,
   Zstd, PPMd) installed, PARTIAL when any is missing.
-- Requirements a format needs only for some members or at read time — `cryptography`
-  for encrypted members, the `unrar` binary for RAR member data — SHALL NOT lower
-  support.
+- The optional member codecs of 7z are PPMd, Deflate64, Zstd, Brotli and LZ4: every
+  codec in its method table that needs a package. A test pins the list against that
+  table, and ZIP's against its own.
+- RAR counts one optional tool: a RARLAB `unrar` or `rar` 6.0 or later on `PATH`, the
+  program the default `rar_decompressor` (`AUTO`) uses. Without one RAR is PARTIAL and
+  `missing` names `unrar`; it still opens and lists, and stored members read. A usable
+  `unar` does not make RAR FULL, because it reads fewer archives than `unrar`. The
+  public `format_availability()` finds out by running each candidate once to read its
+  banner (cached per binary, as for a member read), and the `unrar` entry's
+  `install_hint` is the refusal that probe gives a member read. `open_archive` and
+  `list_supported_formats()` do not run it: a missing tool never makes a format NONE,
+  so they need no answer about tools. The answer does not depend on `ArchiveyConfig`:
+  `format_availability()` takes no config. `check_programs=False` runs no program and
+  counts no tool, for a caller who wants no external program run.
+- `cryptography`, which only encrypted members need, SHALL NOT lower support.
 - By-design unsupported features such as unknown 7z method IDs SHALL
   not lower support; members using them raise `UnsupportedFeatureError`.
 
@@ -264,6 +279,10 @@ conservative answer.
 | ZSTD availability before Python 3.14 without zstd backend | NONE with `backports.zstd` / `pip install archivey[recommended]` hint |
 | GZIP availability | FULL; no missing components |
 | 7z with the optional 7z packages installed | FULL even though an unknown method ID still raises `UnsupportedFeatureError` |
+| 7z without `lz4` | PARTIAL; `missing` names `lz4` |
+| RAR with no usable RARLAB `unrar` or `rar` on `PATH` | PARTIAL; `missing` names `unrar` with the probe's refusal as its hint (a too-old binary is named with its version); RAR is in `list_supported_formats()` |
+| `format_availability(RAR, check_programs=False)` | No program runs; FULL when no codec is missing |
+| RAR with a usable RARLAB `unrar` on `PATH` | FULL; no missing components |
 | ZIP with every optional member codec installed | FULL; no missing components |
 | ZIP missing deflate64 and/or zstd packages | PARTIAL; missing names absent codec packages; stored/deflate members still list/read |
 | `format_availability(StreamFormat.ZSTD)` | `ArchiveyUsageError`; no `FormatAvailability` returned |

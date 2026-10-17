@@ -247,11 +247,11 @@ no special-case exclusions for the retired tree.
 
 The test suite SHALL cover the declared-capability gate uniformly for every
 implemented format, including directory. A reader opened without
-`concurrent_members=True` MUST raise `ArchiveyUsageError` on a second
+`concurrent_operations=True` MUST raise `ArchiveyUsageError` on a second
 overlapping `open()` while the first stream stays readable; sequential
 `open -> read -> close -> open next` MUST succeed without any declaration. The
 error message MUST include the recorded `open_archive()` call site and MUST name
-`concurrent_members=True` as the parameter that would have allowed the operation.
+`concurrent_operations=True` as the parameter that would have allowed the operation.
 
 Without `seekable_members=True`, member streams from random `open()` and
 `stream_members()` MUST report `seekable() is False` and raise
@@ -417,7 +417,7 @@ installed only via the CI `fuzz` dependency group (`packaging-and-extras`).
 
 The test suite SHALL exercise the supported post-materialization concurrency
 contract from `reader-concurrency` for readers opened with
-`concurrent_members=True`. Coverage MUST include representative backend shapes:
+`concurrent_operations=True`. Coverage MUST include representative backend shapes:
 directory independent handles, ZIP library-coordinated handles, Archivey
 `SharedSource` views for single-file and native 7z/RAR as available, and
 Archivey-locked library handles for random-access TAR and ISO.
