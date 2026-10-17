@@ -2823,7 +2823,15 @@ class ExtractionCoordinator:
                 return ExtractionResult(
                     original, None, ExtractionStatus.NOT_OVERWRITTEN, None
                 )
-            self._makedirs(dest_path, transformed)
+            try:
+                self._makedirs(dest_path, transformed)
+            except FileExistsError as exc:
+                # A non-directory took the name after the existence check, as for the
+                # other landings (``_taken_after_check``). Only this call: a parent
+                # that turned into a file is not this member's name being taken.
+                if not self._taken_after_check(dest_path, atomic=False):
+                    raise
+                raise self._already_exists(dest_path, transformed) from exc
             kept_mode: int | None = None
             if callers:
                 # A directory the caller already had, the destination root included
@@ -3541,7 +3549,7 @@ class ExtractionCoordinator:
         except FileExistsError as exc:
             # The name was taken after the existence check, as for a FILE or HARDLINK
             # landing (``_swap_into_place``).
-            if not self._taken_after_check(dest_path):
+            if not self._taken_after_check(dest_path, atomic=False):
                 raise
             raise self._already_exists(dest_path, transformed) from exc
         self._resolutions_changed()
@@ -4698,19 +4706,22 @@ class ExtractionCoordinator:
             member_name=member.name,
         )
 
-    def _taken_after_check(self, dest: Path) -> bool:
+    def _taken_after_check(self, dest: Path, *, atomic: bool) -> bool:
         """Whether, under ``OverwritePolicy.ERROR``, ``dest`` is now taken by something
         that was not there at the existence check: another writer into the same folder,
-        such as a second extraction. Under ERROR the check lets a member through only to
-        a free name or to a copy this run parked (``_park_earlier_copies``), which the
-        member replaces on purpose, so an entry there now that is not parked appeared
+        such as a second extraction. Asked by every landing whose creation refuses a
+        taken name: the ``os.replace`` of a FILE or HARDLINK (``atomic``), and the
+        ``os.symlink`` of a SYMLINK and the ``os.makedirs`` of a DIRECTORY.
+
+        Under ERROR the check lets a member through only to a free name or to a copy
+        this run parked (``_park_earlier_copies``). An atomic landing replaces a parked
+        copy where it stands, so that copy does not count (``_occupied``); the other
+        landings removed it in ``_prepare_destination``, so anything there now appeared
         after the check. Under the other policies a landing that fails this way is not
         handled: its error goes out as it is."""
-        return (
-            self._overwrite is OverwritePolicy.ERROR
-            and dest not in self._current.parked
-            and os.path.lexists(long_path(dest))
-        )
+        if self._overwrite is not OverwritePolicy.ERROR:
+            return False
+        return self._occupied(dest) if atomic else os.path.lexists(long_path(dest))
 
     def _swap_into_place(self, tmp: Path, dest: Path, member: ArchiveMember) -> None:
         """Move the staged temp ``tmp`` onto ``dest`` with ``os.replace``, the last step
@@ -4744,7 +4755,7 @@ class ExtractionCoordinator:
             try:
                 os.replace(long_path(tmp), long_path(dest))
             except PermissionError as exc:
-                if not self._taken_after_check(dest):
+                if not self._taken_after_check(dest, atomic=True):
                     raise
                 raise self._already_exists(dest, member) from exc
             with contextlib.suppress(OSError):
