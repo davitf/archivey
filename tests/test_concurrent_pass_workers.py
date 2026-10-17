@@ -371,7 +371,10 @@ def test_extractions_into_one_folder_clash_as_two_readers_would(
     """The reader does not arbitrate between two extractions into one folder.
 
     A file already there (or one the other extraction wrote first) is an existing
-    destination to each of them, under the overwrite policy each was given.
+    destination to each of them, under the overwrite policy each was given. Both
+    extract only the file already there: two extractions racing to create the same
+    new file is a race between them, and on Windows the loser's rename can fail with
+    ``PermissionError`` rather than reach the overwrite check.
     """
     path = _zip(tmp_path)
     dest = tmp_path / "same"
@@ -381,7 +384,7 @@ def test_extractions_into_one_folder_clash_as_two_readers_would(
 
     def extract() -> None:
         try:
-            reader.extract_all(dest)
+            reader.extract_all(dest, members=["c.txt"])
         except ExtractionError as exc:
             errors.append(exc)
 
