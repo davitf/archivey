@@ -87,6 +87,7 @@ class DiagnosticCode(StrEnum):
     MEMBER_LOCAL_CRC_USED = "member_local_crc_used"
     ARCHIVE_OFFSET_WRAPPED = "archive_offset_wrapped"
     MEMBER_SIZE_WRAPPED = "member_size_wrapped"
+    MEMBER_TYPE_UNKNOWN = "member_type_unknown"
     # No per-member extraction outcome has a code here. Extraction returns a structured
     # per-item report, so ``ExtractionResult`` is the sole carrier of those facts — see
     # the placement clause in ``openspec/specs/diagnostics``.
@@ -157,6 +158,8 @@ DiagnosticCodeStr = Literal[
     "archive-offset-wrapped",
     "member_size_wrapped",
     "member-size-wrapped",
+    "member_type_unknown",
+    "member-type-unknown",
 ]
 
 
@@ -695,6 +698,28 @@ class SizeWrapContext(_JsonSafeContext):
     size: int | None = None
 
 
+@dataclass(frozen=True)
+class UnknownMemberTypeContext(_JsonSafeContext):
+    """A TAR member header has a typeflag archivey does not know.
+
+    POSIX reserves ``A`` to ``Z`` for vendors and leaves the rest undefined; GNU tar
+    extracts any typeflag it does not know as a regular file and warns ("Unknown file
+    type"). A header that declares data is listed as a ``FILE`` of that ``size``,
+    readable and extracted (design rule DR-25); one that declares none stays ``OTHER``.
+    ``stored_type`` is the typeflag byte as a one-character string (the byte as
+    Latin-1), the same byte as ``extra["tar.type"]``; ``size`` is the member's
+    ``size``, ``None`` for an ``OTHER`` member. Advisory: the bytes are delivered and
+    nothing is hidden, so it is not in :data:`ARCHIVE_INTEGRITY_CODES`.
+    """
+
+    kind: Literal["unknown_member_type"] = "unknown_member_type"
+    archive_name: str | None = None
+    member_name: str = ""
+    member_id: int | None = None
+    stored_type: str = ""
+    size: int | None = None
+
+
 DiagnosticContext = (
     NameNormalizationContext
     | NameEncodingContext
@@ -719,6 +744,7 @@ DiagnosticContext = (
     | LocalHeaderContext
     | OffsetWrapContext
     | SizeWrapContext
+    | UnknownMemberTypeContext
 )
 
 _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
@@ -754,6 +780,7 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.MEMBER_LOCAL_CRC_USED: "local_header",
         DiagnosticCode.ARCHIVE_OFFSET_WRAPPED: "offset_wrap",
         DiagnosticCode.MEMBER_SIZE_WRAPPED: "size_wrap",
+        DiagnosticCode.MEMBER_TYPE_UNKNOWN: "unknown_member_type",
     }
 )
 
@@ -781,7 +808,7 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
 )
 """Codes reporting the archive's own bytes or metadata as anomalous.
 
-The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Fourteen codes are deliberately **out**,
+The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Fifteen codes are deliberately **out**,
 and the reasons are part of the contract rather than an oversight:
 
 - ``EMPTY_ARCHIVE`` — an empty archive is legitimate, and ``diagnostics`` forbids
@@ -832,6 +859,9 @@ and the reasons are part of the contract rather than an oversight:
   can tell. A size is corrected only where the layout or deflate's ratio forces it,
   and an unknown one is ``None``, with the length and CRC-32 checked on a read.
   ``STRICT`` would refuse ordinary Mac archives.
+- ``MEMBER_TYPE_UNKNOWN`` — a TAR typeflag archivey does not know. GNU tar extracts
+  such a member as a regular file with a warning, and archivey lists its data as a
+  ``FILE``, so nothing is hidden. ``STRICT`` would refuse an archive GNU tar extracts.
 """
 
 
@@ -1211,6 +1241,7 @@ __all__ = [
     "StreamRewindContext",
     "SymlinkTargetContext",
     "UnconfirmedFormatContext",
+    "UnknownMemberTypeContext",
     "UnlistedDataContext",
     "UnusedArgumentContext",
     "format_path_name",

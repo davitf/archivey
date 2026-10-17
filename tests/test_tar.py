@@ -3775,3 +3775,119 @@ def test_other_entries_that_are_not_special_files_get_no_special_file_type() -> 
         assert member.type is MemberType.OTHER
         assert member.extra["tar.type"] == b"V"
         assert "special_file_type" not in member.extra
+
+
+_UNKNOWN_TYPEFLAGS = [
+    pytest.param(b"9", id="digit"),
+    pytest.param(b"z", id="lowercase"),
+    pytest.param(b"N", id="old_gnu_names"),
+]
+"""Typeflags no TAR writer archivey knows assigns to a member. GNU tar 1.35 extracts
+each as a regular file and warns "Unknown file type '9', extracted as normal file"."""
+
+
+def _unknown_type_diagnostics(diagnostics: Any) -> list[Any]:
+    return [
+        d.context for d in diagnostics if d.code is DiagnosticCode.MEMBER_TYPE_UNKNOWN
+    ]
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("typeflag", _UNKNOWN_TYPEFLAGS)
+def test_unknown_typeflag_with_data_is_a_file(
+    tmp_path: Path, typeflag: bytes, streaming: bool
+) -> None:
+    """An unknown typeflag that declares data lists as a FILE of that size, reads, and
+    extracts, as GNU tar 1.35 extracts it (DR-25; maintainer ruling 2026-10-17).
+    ``MEMBER_TYPE_UNKNOWN`` names the type byte, which ``extra["tar.type"]`` keeps."""
+    data = _tar_slash_entry_with_data(typeflag, own_name="f", data=b"hello")
+    assert _stream_all(data, streaming) == [
+        ("f", MemberType.FILE, b"hello"),
+        ("after.txt", MemberType.FILE, b"after\n"),
+    ]
+    with open_archive(
+        NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
+        format=ArchiveFormat.TAR,
+        streaming=streaming,
+    ) as ar:
+        for member, stream in ar.stream_members():
+            if member.name == "f":
+                assert stream is not None
+                assert stream.read() == b"hello"
+                assert member.size == 5
+                assert member.extra["tar.type"] == typeflag
+                [context] = _unknown_type_diagnostics(member.diagnostics)
+                assert context.stored_type == typeflag.decode("latin-1")
+                assert context.size == 5
+                assert context.member_name == "f"
+                assert context.to_dict()["kind"] == "unknown_member_type"
+    if not streaming:
+        with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+            member = ar.get("f")
+            assert ar.read(member) == b"hello"
+    out = tmp_path / "out"
+    with open_archive(
+        NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
+        format=ArchiveFormat.TAR,
+        streaming=streaming,
+    ) as ar:
+        ar.extract_all(out)
+    assert (out / "f").read_bytes() == b"hello"
+    assert (out / "after.txt").read_bytes() == b"after\n"
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("typeflag", _UNKNOWN_TYPEFLAGS)
+def test_unknown_typeflag_with_no_data_is_other(
+    tmp_path: Path, typeflag: bytes, streaming: bool
+) -> None:
+    """An unknown typeflag that declares no data stays OTHER with no ``size``, and
+    extraction skips it. It is reported all the same: the type is as unknown."""
+    data = _tar_slash_entry_with_data(typeflag, own_name="f", data=b"")
+    assert _stream_all(data, streaming) == [
+        ("f", MemberType.OTHER, None),
+        ("after.txt", MemberType.FILE, b"after\n"),
+    ]
+    with open_archive(
+        NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
+        format=ArchiveFormat.TAR,
+        streaming=streaming,
+    ) as ar:
+        member = next(m for m, _ in ar.stream_members() if m.name == "f")
+        assert member.size is None
+        assert member.extra["tar.type"] == typeflag
+        assert "special_file_type" not in member.extra
+        [context] = _unknown_type_diagnostics(member.diagnostics)
+        assert context.stored_type == typeflag.decode("latin-1")
+        assert context.size is None
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+        ar.extract_all(tmp_path / "out")
+    assert not (tmp_path / "out" / "f").exists()
+    assert (tmp_path / "out" / "after.txt").read_bytes() == b"after\n"
+
+
+def test_unknown_typeflag_does_not_fail_strict() -> None:
+    """``MEMBER_TYPE_UNKNOWN`` is advisory: GNU tar extracts such an archive, so
+    ``STRICT`` lists and reads it."""
+    data = _tar_slash_entry_with_data(b"9", own_name="f", data=b"hello")
+    with open_archive(
+        io.BytesIO(data),
+        format=ArchiveFormat.TAR,
+        config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT),
+    ) as ar:
+        assert ar.read("f") == b"hello"
+        assert DiagnosticCode.MEMBER_TYPE_UNKNOWN in ar.diagnostics.counts
+
+
+@pytest.mark.parametrize("typeflag", [b"V", b"M"])
+def test_volume_typeflags_are_known(typeflag: bytes) -> None:
+    """GNU's volume header ``V`` and multi-volume continuation ``M`` are known types:
+    they stay OTHER with data, as GNU tar skips or refuses them, and nothing reports an
+    unknown type."""
+    data = _tar_slash_entry_with_data(typeflag, own_name="f", data=b"hello")
+    with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
+        member = ar.get("f")
+        assert member.type is MemberType.OTHER
+        assert member.size is None
+        assert not _unknown_type_diagnostics(ar.diagnostics.retained)
+        assert ar.read("after.txt") == b"after\n"

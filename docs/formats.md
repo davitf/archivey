@@ -312,6 +312,11 @@ yielded.
   creates the directory and skips the blocks as GNU tar does, and `reader.read()` on
   the directory returns them.
   `DiagnosticPolicy.STRICT` refuses the archive.
+- **A member of an unknown type is a file when it has data.** A header whose type byte
+  archivey does not know (such as `9`) and that declares data is a `FILE` of that size,
+  which reads and extracts like any file, as GNU tar extracts it. One that declares no
+  data is `OTHER`, and extraction skips it. Both are reported with `MEMBER_TYPE_UNKNOWN`,
+  which `STRICT` does not refuse, and `extra["tar.type"]` keeps the byte.
 - **Sparse members are extracted dense.** A GNU or PAX sparse member (`tar -S`) is
   written with its holes filled by zeros, so it takes its full size on disk. The zeros
   count as output for the [ratio limit](extracting.md#limits), which a TAR checks across
