@@ -721,13 +721,23 @@ cumulative snapshot without being retained twice. A standalone `ArchiveStream`
 ### Requirement: Non-file stream_members yield None
 
 `stream_members` SHALL pair every non-file member (`DIRECTORY`, `SYMLINK`,
-`HARDLINK`, `OTHER`, `ANTI`) with `stream is None` (no empty `ArchiveStream`).
+`HARDLINK`, `OTHER`, `ANTI`) with `stream is None` (no empty `ArchiveStream`), with one
+exception: a `DIRECTORY` whose header declares data (a non-zero `size`, reported with
+`MEMBER_DIRECTORY_DATA_IGNORED`) SHALL be paired with a stream, in every format and
+both access modes. That stream SHALL deliver the bytes `open()` delivers for the
+directory, under the same checks (the stored digest, `DIGEST_UNVERIFIABLE` where there
+is none), and SHALL raise on its first read what `open()` raises for it (RAR:
+`UnsupportedFeatureError` for compressed or encrypted directory data). For every
+directory, the pass and `open()` SHALL agree: a stream where `open()` reads, `None`
+where it refuses.
 
 #### Scenario: non-file stream matrix
 
 | Case | Expected |
 | --- | --- |
-| Directory member | Stream `None` |
+| Directory member declaring no data | Stream `None` |
+| Directory member declaring 12 bytes (ZIP, RAR, an old-style TAR `d/`), from a file or a forward-only source | A stream; `read()` returns the 12 bytes `open()` returns, and raises the `CorruptionError` `open()` raises when they fail the CRC-32 |
+| TAR `DIRTYPE` header with a size the walk cannot tell from the trailer | Stream `None` (no `size`; `open()` refuses it) |
 | `MemberType.ANTI` | Stream `None` |
 
 ### Requirement: Bounded-memory sequential streaming via stream_members
@@ -743,7 +753,8 @@ def stream_members(
 
 Yields `(member, stream)` in archive order with bounded memory. Solid blocks
 decompress progressively (never buffered whole); peak = decoder working set + one
-in-flight chunk. Non-file members yield `None`.
+in-flight chunk. Non-file members yield `None`, except a directory that declares data
+(see "Non-file stream_members yield None").
 
 `file_copy_streams=False` SHALL also yield `None` for a `FILE` member that the archive
 stores as a copy of an earlier member (`extra["is_file_copy"]`; only `format-rar` has

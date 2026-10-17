@@ -219,7 +219,8 @@ yielded.
 - A directory entry that declares data (APPNOTE gives a directory none) is listed as a
   directory with that size and reported with ``MEMBER_DIRECTORY_DATA_IGNORED``;
   extraction creates the directory, as unzip and 7-Zip do, and ``read()`` returns the
-  bytes, checked against the stored CRC-32. A CRC field of 0, a directory's conventional
+  bytes, checked against the stored CRC-32, as does the stream ``stream_members()``
+  yields for it, from a file or a pipe. A CRC field of 0, a directory's conventional
   value, is no digest; when that CRC was the entry's only check (unencrypted or
   ZipCrypto), ``DIGEST_UNVERIFIABLE`` says the bytes come back unchecked, while a WinZip
   AES entry (AE-1 or AE-2) has its HMAC check the bytes, so nothing is reported for it.
@@ -309,7 +310,8 @@ yielded.
   (typeflag NUL or `0`) whose name ends in `/` is a directory, as GNU tar and 7-Zip
   read it. When its size field is not zero, the directory keeps that `size`,
   `MEMBER_DIRECTORY_DATA_IGNORED` reports it, extraction creates the directory and
-  skips the blocks as GNU tar does, and `reader.read()` on the directory returns them.
+  skips the blocks as GNU tar does, and `reader.read()` on the directory returns them,
+  as does the stream `stream_members()` yields for it, in both access modes.
   `DiagnosticPolicy.STRICT` refuses the archive.
 - **Sparse members are extracted dense.** A GNU or PAX sparse member (`tar -S`) is
   written with its holes filled by zeros, so it takes its full size on disk. The zeros
@@ -357,8 +359,8 @@ yielded.
       members behind them are not listed, as GNU tar lists them, and nothing in the
       file tells that from a trailer after blocks that were never written, so the
       report says what the header declares and the trailer checks above report the
-      rest. `open()` refuses the directory, since its bytes cannot be told from the
-      trailer. A block that is neither a header nor zero where the data would begin
+      rest. `open()` refuses the directory, and `stream_members()` yields no stream
+      for it, since its bytes cannot be told from the trailer. A block that is neither a header nor zero where the data would begin
       raises `CorruptionError` naming the directory header. A walk that gets past the
       declared span (extended headers filled it) has read all it could hide, and
       nothing is reported. An old-style directory, a regular-file header named `d/`,
@@ -454,9 +456,10 @@ yielded.
   archiving.
 - A directory entry that declares data (`rar` never writes one) is reported with
   `MEMBER_DIRECTORY_DATA_IGNORED`; extraction creates the directory, as `unrar` does.
-  `read()` returns the bytes when they are stored and not encrypted; compressed or
-  encrypted directory data raises `UnsupportedFeatureError`, because `unrar` emits
-  nothing for a directory entry.
+  `read()`, and the stream `stream_members()` yields for the directory, return the
+  bytes when they are stored and not encrypted; compressed or encrypted directory data
+  raises `UnsupportedFeatureError` (from the stream, on its first read), because
+  `unrar` emits nothing for a directory entry.
 - Member **data**: a stored (uncompressed) member is read by archivey itself, and so is
   a stored, encrypted one in one part when `cryptography` is installed (`[recommended]`;
   RAR 2.9 and later). Everything else needs RARLAB `unrar` or `rar` **6.0 or later** on

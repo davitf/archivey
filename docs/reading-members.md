@@ -79,8 +79,11 @@ Three things about the yielded streams are worth knowing:
 - **The stream is only valid until you advance.** The iterator closes it before
   producing the next pair, so read what you need in the loop body. Keeping a
   reference and reading it later gets you a closed stream, not stale data.
-- **Non-file members yield `None`.** Directories, symbolic links and hard links all
-  come through as `(member, None)` — hence the `if stream is None` above.
+- **Members with no data of their own yield `None`.** Directories, symbolic links and
+  hard links come through as `(member, None)` — hence the `if stream is None` above.
+  A directory whose header declares data is the exception (see
+  [below](#which-members-you-can-open)): it comes with a stream of those bytes, so
+  test `member.is_file` when you want files only.
 - **Nothing is decompressed until you read.** A member you skip is never opened, and
   no password is requested for it. So "I iterated the whole archive without an error,
   therefore the password is right" does not follow: pass a selector, or read each
@@ -187,9 +190,10 @@ resolves to one is refused the same way. The error's `refused_member_type` holds
 type of the member that was refused (`MemberType.DIRECTORY` for a symlink to a
 directory), and is `None` on every other usage error. The one exception is a directory
 entry whose header declares data (`MEMBER_DIRECTORY_DATA_IGNORED` reports it):
-extraction creates the directory without the bytes, and `open()` is how you read them
-if you need them (RAR delivers them only when they are stored and not encrypted).
-`stream_members()` still yields `None` for it.
+extraction creates the directory without the bytes, and `open()` reads them if you
+need them. `stream_members()` yields a stream of the same bytes for it, under the same
+checks, so a streaming reader reaches them too. RAR delivers them only when they are
+stored and not encrypted; otherwise both raise `UnsupportedFeatureError`.
 
 **A member belongs to the reader that produced it.** Passing an `ArchiveMember` from
 a different archive raises `ArchiveyUsageError` rather than resolving it against the

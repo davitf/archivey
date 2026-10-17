@@ -2698,7 +2698,7 @@ class ZipReader(BaseArchiveReader):
             self._emit_size_wrapped(member, entry, index)
         if member.type is MemberType.DIRECTORY and _zip_directory_stores_data(entry):
             # APPNOTE 4.3.8 gives a directory no data; unzip, 7-Zip and bsdtar create
-            # the directory and drop the bytes silently. Say so; read() delivers them.
+            # the directory and drop the bytes silently. Say so; a read delivers them.
             self._emit_directory_data_ignored(member, index)
             if directory_without_anchor:
                 self._diagnostics_collector.emit(
@@ -2706,7 +2706,7 @@ class ZipReader(BaseArchiveReader):
                     message=(
                         f"Directory {quoted(member.name)} declares {entry.file_size} "
                         "bytes of data but its CRC-32 field is 0, a directory's "
-                        "conventional value; the bytes open() delivers are not "
+                        "conventional value; the bytes a read delivers are not "
                         "checked against any digest."
                     ),
                     context=DigestContext(
@@ -4100,9 +4100,10 @@ def _crc_is_digest(
 
     The pipe pass (``zip_forward_reader``) keeps its own rule for a bit-3 member:
     it verifies as it lists, so it lists a descriptor's CRC only once the CRC it
-    computed matched, and a directory, which it gives no stream, gets none until
-    the central directory arrives (``format-zip`` spec, "Two shapes read
-    differently from a pipe")."""
+    computed matched, and a directory gets none until the central directory
+    arrives (``format-zip`` spec, "Two shapes read differently from a pipe"). A
+    pass that reads a directory's data checks it by this rule all the same
+    (``_PassData._crc_is_digest``)."""
     if aes is not None and aes.is_ae2:
         return False
     if member_type is MemberType.DIRECTORY:

@@ -122,6 +122,7 @@ from archivey.internal.base_reader import (
     MAX_LINK_TARGET_BYTES,
     BaseArchiveReader,
     ReadBackend,
+    pass_has_data,
 )
 from archivey.internal.config import KeyDerivationBudget, check_decoder_memory
 from archivey.internal.diagnostics_collector import DiagnosticCollector
@@ -2936,7 +2937,7 @@ class RarReader(BaseArchiveReader):
         self._emit_header_record_diagnostics(info, member.name, member, index)
         if info.is_directory and (member.size or member.compressed_size):
             # rar writes directories with no data and unrar skips any it finds (its
-            # directory branch returns before the data). Say so; read() delivers it.
+            # directory branch returns before the data). Say so; a read delivers it.
             self._emit_directory_data_ignored(member, index)
         if EXTRA_SPECIAL_FILE_TYPE in member.extra and member.type is MemberType.FILE:
             self._emit_special_file_has_data(member, index)
@@ -3274,6 +3275,14 @@ class RarReader(BaseArchiveReader):
                     sources,
                     lambda end: _pipe().open_member(end, 0),
                     pass_costs,
+                )
+            if member.type is MemberType.DIRECTORY:
+                # ``unrar p`` writes nothing for a directory, so declared directory
+                # data is not in the pipe and takes no offset in it. It is served
+                # as ``open()`` serves it: sliced from the archive when stored and
+                # unencrypted, refused on the first read otherwise.
+                return (
+                    self._lazy_member_stream(member) if pass_has_data(member) else None
                 )
             if not raw.is_payload_file() or not member.is_file:
                 return None

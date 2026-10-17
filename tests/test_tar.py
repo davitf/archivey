@@ -1564,15 +1564,16 @@ def _stream_all(data: bytes, streaming: bool) -> list[tuple[str, MemberType, Any
 
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("typeflag", _OLD_STYLE_TYPEFLAGS)
-def test_old_style_directory_with_data_is_skipped(
+def test_old_style_directory_with_data_is_a_directory(
     typeflag: bytes, streaming: bool
 ) -> None:
     # stdlib tarfile turns an AREGTYPE header whose name ends in "/" into a directory
     # and then reads its data blocks as the next header, and lists a REGTYPE one as
     # the file "d/". GNU tar and 7-Zip list a directory for both and skip the data.
+    # The pass yields the directory's declared bytes, as open() delivers them.
     data = _tar_slash_entry_with_data(typeflag)
     assert _stream_all(data, streaming) == [
-        ("d/", MemberType.DIRECTORY, None),
+        ("d/", MemberType.DIRECTORY, b"hello directory"),
         ("after.txt", MemberType.FILE, b"after\n"),
     ]
 
@@ -1589,7 +1590,7 @@ def test_old_style_directory_data_is_reported(typeflag: bytes, streaming: bool) 
         streaming=streaming,
     ) as ar:
         directory, stream = next(iter(ar.stream_members()))
-        assert stream is None
+        assert stream is not None
         assert directory.type is MemberType.DIRECTORY
         assert directory.size == 15
         assert directory.extra["tar.type"] == typeflag
@@ -1614,8 +1615,8 @@ def test_old_style_directory_data_is_reported(typeflag: bytes, streaming: bool) 
 @pytest.mark.parametrize("typeflag", _OLD_STYLE_TYPEFLAGS)
 def test_old_style_directory_data_is_readable(typeflag: bytes) -> None:
     # read() delivers the bytes, so the data an archive hides behind a directory name
-    # is never out of reach. Random access only: a streaming walk hands a directory
-    # no stream, whatever its size.
+    # is never out of reach. A streaming walk has no read(); its pass yields the same
+    # bytes (test_old_style_directory_with_data_is_a_directory).
     data = _tar_slash_entry_with_data(typeflag)
     with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
         directory, after = ar.members()
@@ -1682,7 +1683,7 @@ def test_old_style_directory_name_from_extended_header(
         typeflag, own_name=own_name, wrapper=wrapper, final_name="d/"
     )
     assert _stream_all(data, streaming) == [
-        ("d/", MemberType.DIRECTORY, None),
+        ("d/", MemberType.DIRECTORY, b"hello directory"),
         ("after.txt", MemberType.FILE, b"after\n"),
     ]
 
@@ -2045,7 +2046,9 @@ def test_old_style_directory_with_data_before_lone_zero_block_lists(
         + b"\0" * 1024
     )
     data = _tar_slash_entry_with_data(typeflag, tail=tail)
-    assert _stream_all(data, streaming) == [("d/", MemberType.DIRECTORY, None)]
+    assert _stream_all(data, streaming) == [
+        ("d/", MemberType.DIRECTORY, b"hello directory")
+    ]
     with open_archive(io.BytesIO(data), format=ArchiveFormat.TAR) as ar:
         assert ar.members()[0].size == 15
         assert ar.diagnostics.counts[DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED] == 1

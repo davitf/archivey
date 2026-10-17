@@ -74,7 +74,8 @@ with archivey.open_archive("backup.tar.gz") as archive:
 `stream_members` goes through the archive in the order it is stored and gives you each member
 with a stream of its contents. It reads each member once, so it is never slower than reading
 them by name, and on some archives it is much faster. Directories and links come with `None` in
-place of a stream, and each stream works only until the loop moves on.
+place of a stream, and each stream works only until the loop moves on. A directory entry that
+hides data in the archive is the exception: it comes with a stream of those bytes.
 
 ## Extract
 

@@ -267,8 +267,15 @@ class ForwardArchiveReader(ABC):
         """Yield ``(member, stream)`` pairs in archive order with bounded memory.
         ``members`` is an optional selector: a predicate, any iterable of names or
         members (read once, so a generator works), or ``None`` for all. The yielded
-        stream is valid only until the iterator advances; it is ``None`` for non-file
-        members.
+        stream is valid only until the iterator advances.
+
+        The stream is ``None`` for every member that has no data of its own: links,
+        special entries, tombstones and most directories. A directory that declares
+        data (``MEMBER_DIRECTORY_DATA_IGNORED``, in ZIP, TAR and RAR) gets a stream
+        with the bytes :meth:`~ArchiveReader.open` delivers for it, under the same
+        checks, so a forward-only reader reaches them too. Data archivey cannot decode
+        is refused on the first read, as ``open()`` refuses it. Test ``is_file``, not
+        ``stream is not None``, to tell a file from such a directory.
 
         The returned :class:`MemberPass` can be closed, or used in a ``with`` block, to
         end the pass early; see there for when that matters.

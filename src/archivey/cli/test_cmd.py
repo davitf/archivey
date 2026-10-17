@@ -123,9 +123,10 @@ def run_test(
                         # stream_members() is running.
                         pending_links.append(member)
                         continue
-                    if stream is None:
+                    if stream is None or member.is_dir:
                         # Directories / links / non-file: no body to verify — omit from counts
-                        # so "N OK" matches unzip -t style (files only).
+                        # so "N OK" matches unzip -t style (files only). A directory
+                        # that declares data gets a stream; the pass closes it unread.
                         if verbose:
                             print(f"skip {escape_member_name(member.name)}", file=err)
                         continue

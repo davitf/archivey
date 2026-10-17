@@ -318,7 +318,8 @@ the right weight.
   readable through `open()` (2026-10-10, DR-25): nothing is misread, so this is the
   "outside a member" weight, and the ZIP spec forbids the shape (APPNOTE 4.3.8).
   Applied by PR 731 for ZIP and RAR and by PR 763 for TAR (an old-style `d/` file
-  entry with data).
+  entry with data). `stream_members()` yields a stream of the same bytes for such a
+  directory in every format, so a forward-only reader reaches them too (2026-10-17).
 
 **Reopen if** a real producer writes the extra bytes routinely (then check DR-6).
 
@@ -491,12 +492,16 @@ visible: `extra["special_file_type"]` is set on every member whose stored type i
 `MEMBER_SPECIAL_FILE_HAS_DATA` (advisory). Bytes that extraction does not deliver, a
 directory entry that declares data, are reported with `MEMBER_DIRECTORY_DATA_IGNORED` (a
 warning; strict refuses) and stay readable: `open()` refuses a member that has no data (an
-anti item, a stream-less `OTHER`, a directory with none), not a member by its type.
+anti item, a stream-less `OTHER`, a directory with none), not a member by its type, and
+`stream_members()` yields a stream for exactly the directories `open()` reads.
 
 Ruled 2026-10-10. Applied by PR 730 (special-mode entries, every format), PR 731
 (directory data in ZIP and RAR, and `open()` by data) and PR 763 (directory data in TAR;
 a `DIRTYPE` header with a size that the walk ends right after is reported the same
-way, since its blocks cannot be told from the trailer).
+way, since its blocks cannot be told from the trailer). Extended 2026-10-17 (maintainer
+decision): `stream_members()` yields a data stream for a directory that declares data, in
+every format, with the bytes and checks `open()` gives, where it had yielded `None` for
+every directory and left the bytes out of a forward-only reader's reach.
 
 **Why.** Info-ZIP's `zip -FI` stores a named pipe's content under the pipe's own FIFO
 mode, and libarchive carries a workaround for exactly that shape; unzip, 7-Zip, bsdtar

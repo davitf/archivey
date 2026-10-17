@@ -80,7 +80,11 @@ from archivey.internal.backends.sevenzip_pipeline import (
     encoded_header_needs_password,
     open_folder_pipeline,
 )
-from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
+from archivey.internal.base_reader import (
+    BaseArchiveReader,
+    ReadBackend,
+    pass_has_data,
+)
 from archivey.internal.config import (
     KeyDerivationBudget,
     StreamConfig,
@@ -747,7 +751,7 @@ class SevenZipReader(BaseArchiveReader):
             self._pass_link = None
             raw = member._raw
             assert isinstance(raw, _MemberRaw)
-            if not member.is_file:
+            if not pass_has_data(member):
                 if member.type is MemberType.SYMLINK and raw.folder_index is not None:
                     _enter_folder(raw.folder_index)
                     content = self._reach_pass_link(

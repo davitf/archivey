@@ -91,6 +91,7 @@ from archivey.internal.backends.zipcrypto import (
 from archivey.internal.base_reader import (
     MAX_LINK_TARGET_BYTES,
     _apply_last_entry_wins_is_current,
+    pass_has_data,
 )
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
 from archivey.internal.listing_limits import member_metadata_bytes
@@ -1152,7 +1153,7 @@ class _PassData:
                     "Decompressed content exceeds its declared size of "
                     f"{file_size} bytes."
                 )
-        elif error is None and crc != self._crc and not self._ae2():
+        elif error is None and crc != self._crc and self._crc_is_digest(crc):
             error = CorruptionError(
                 f"CRC-32 mismatch in ZIP member {quoted(member.name)}: stored "
                 f"{crc:08x}, computed {self._crc:08x}"
@@ -1162,6 +1163,18 @@ class _PassData:
         elif raise_mismatch:
             raise error
         return error
+
+    def _crc_is_digest(self, crc: int) -> bool:
+        """Whether the stored ``crc`` checks the data, as the file read decides it.
+
+        Not for WinZip AE-2, which stores no CRC. Not for a directory whose field is
+        0, a directory's conventional value: the file read lists no digest for it and
+        reports ``DIGEST_UNVERIFIABLE``, so a pass that reads the directory's data
+        delivers it unchecked too (DR-5).
+        """
+        if self._ae2():
+            return False
+        return crc != 0 or self.member.type is not MemberType.DIRECTORY
 
     def _ae2(self) -> bool:
         """A WinZip AE-2 member stores no CRC: its HMAC is the check."""
@@ -2095,7 +2108,7 @@ class ZipForwardReader(ZipReader):
         # member's data, and its stream reads nothing after that.
 
         def _open(member: ArchiveMember) -> ArchiveStream | None:
-            if not member.is_file:
+            if not pass_has_data(member):
                 return None
             return self._open_member(member)
 
