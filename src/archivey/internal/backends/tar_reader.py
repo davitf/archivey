@@ -37,7 +37,7 @@ After a full walk, :meth:`TarReader._verify_tar_eof` checks the end, from the
 
 A directory listed from an old-style regular-file header named ``d/`` keeps its declared
 ``size`` and is reported with ``MEMBER_DIRECTORY_DATA_IGNORED`` at listing; ``open()``
-delivers the bytes, extraction creates the directory (DR-3).
+and ``stream_members()`` deliver the bytes, extraction creates the directory (DR-3).
 
 A symlink or hard link header with a size is listed as a link with no ``size``. When
 the block after it is not a member header, the walker skips the declared blocks (see
@@ -100,6 +100,7 @@ from archivey.internal.base_reader import (
     BaseArchiveReader,
     ReadBackend,
     _ProgressivePassIterator,
+    pass_has_data,
     reject_start_offset,
 )
 from archivey.internal.config import stream_config_from_archivey
@@ -839,7 +840,7 @@ class TarReader(BaseArchiveReader):
                 return self._member_body(member, in_walk=True)
 
         def _open(member: ArchiveMember) -> ArchiveStream | None:
-            if not member.is_file:
+            if not pass_has_data(member):
                 return None
             return self._lazy_member_stream(member, _open_in_walk, track_output=True)
 
@@ -873,7 +874,7 @@ class TarReader(BaseArchiveReader):
         with self._translated_errors():
 
             def _open(member: ArchiveMember) -> ArchiveStream | None:
-                if not member.is_file:
+                if not pass_has_data(member):
                     return None
                 return self._open_member_stream(member, defer_sparse_error=True)
 
@@ -1004,8 +1005,8 @@ class TarReader(BaseArchiveReader):
                 "would occupy: a TAR directory entry has no data area, so if the "
                 "blocks are there they were read as the end-of-archive marker and the "
                 "members behind them are not listed. Extraction creates the directory; "
-                "the bytes cannot be told from the trailer, so open() has nothing to "
-                "deliver."
+                "the bytes cannot be told from the trailer, so there is nothing to "
+                "read."
             ),
             context=DirectoryDataContext(
                 archive_name=self._archive_name,
@@ -1443,7 +1444,7 @@ class TarReader(BaseArchiveReader):
             name=name,
             raw_name=entry.name,
             # An old-style directory keeps its declared size: its regular-file
-            # typeflag gives it a data area, which open() delivers (DR-3). A DIRTYPE
+            # typeflag gives it a data area, which open() and a pass deliver (DR-3). A DIRTYPE
             # size names no data area, so it is dropped here and judged at the end
             # of the walk (_verify_tar_eof).
             size=entry.size

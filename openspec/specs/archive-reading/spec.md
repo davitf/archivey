@@ -719,16 +719,31 @@ cumulative snapshot without being retained twice. A standalone `ArchiveStream`
 | Symlink resolves to a file | Follow succeeds; returns file stream/bytes |
 | Symlink target missing in archive | `LinkTargetNotFoundError` |
 
-### Requirement: Non-file stream_members yield None
+### Requirement: stream_members yields a stream for exactly the members open() reads
 
-`stream_members` SHALL pair every non-file member (`DIRECTORY`, `SYMLINK`,
-`HARDLINK`, `OTHER`, `ANTI`) with `stream is None` (no empty `ArchiveStream`).
+`stream_members` SHALL pair every non-file member (`DIRECTORY`, `SYMLINK`, `HARDLINK`,
+`OTHER`, `ANTI`) with `stream is None` (no empty `ArchiveStream`), with one exception: a
+`DIRECTORY` whose header declares data (a non-zero `size`, reported with
+`MEMBER_DIRECTORY_DATA_IGNORED`) SHALL be paired with a stream when its size is known as
+the pass reaches it, which holds in every format and both access modes but one: a ZIP
+directory whose local header defers its sizes to a data descriptor (bit 3, which every
+writer to a pipe sets), read from a source that cannot seek, is paired with `None`,
+since its data has gone past before the descriptor says it is data (`format-zip`, "Two
+shapes read differently from a pipe"). That stream SHALL deliver the bytes `open()`
+delivers for the directory, under the same checks (the stored digest,
+`DIGEST_UNVERIFIABLE` where there is none), and SHALL raise on its first read what
+`open()` raises for it (RAR: `UnsupportedFeatureError` for compressed or encrypted
+directory data). For every directory but that ZIP one, the pass and `open()` SHALL
+agree: a stream where `open()` reads, `None` where it refuses.
 
 #### Scenario: non-file stream matrix
 
 | Case | Expected |
 | --- | --- |
-| Directory member | Stream `None` |
+| Directory member declaring no data | Stream `None` |
+| ZIP directory written with a data descriptor (bit 3) declaring 12 bytes, from a source that cannot seek | Stream `None`; `MEMBER_DIRECTORY_DATA_IGNORED` when the central directory arrives, its message saying the pass yields no stream for it; from a seekable source, with or without `streaming=True`, the row below |
+| Directory member declaring 12 bytes (ZIP, RAR, an old-style TAR `d/`), from a file or a forward-only source | A stream; `read()` returns the 12 bytes `open()` returns, and raises the `CorruptionError` `open()` raises when they fail the CRC-32 |
+| TAR `DIRTYPE` header with a size the walk cannot tell from the trailer | Stream `None` (no `size`; `open()` refuses it) |
 | `MemberType.ANTI` | Stream `None` |
 
 ### Requirement: Bounded-memory sequential streaming via stream_members
@@ -744,7 +759,8 @@ def stream_members(
 
 Yields `(member, stream)` in archive order with bounded memory. Solid blocks
 decompress progressively (never buffered whole); peak = decoder working set + one
-in-flight chunk. Non-file members yield `None`.
+in-flight chunk. Non-file members yield `None`, except a directory that declares data
+(see "stream_members yields a stream for exactly the members open() reads").
 
 `file_copy_streams=False` SHALL also yield `None` for a `FILE` member that the archive
 stores as a copy of an earlier member (`extra["is_file_copy"]`; only `format-rar` has

@@ -84,6 +84,7 @@ from archivey.internal.base_reader import (
     UNREADABLE_LINK_TARGET_ERRORS,
     BaseArchiveReader,
     ReadBackend,
+    pass_has_data,
 )
 from archivey.internal.config import (
     KeyDerivationBudget,
@@ -751,7 +752,12 @@ class SevenZipReader(BaseArchiveReader):
             self._pass_link = None
             raw = member._raw
             assert isinstance(raw, _MemberRaw)
-            if not member.is_file:
+            # A 7z DIRECTORY has no stream by construction (``_is_unix_directory`` and
+            # the parser's ``is_directory`` both require ``emptystream``), so its size
+            # is 0 and this test is ``member.is_file`` here. The assert below holds it
+            # where it is relied on: a directory reaching that path with no folder
+            # would be served an empty stream instead of its bytes.
+            if not pass_has_data(member):
                 if member.type is MemberType.SYMLINK and raw.folder_index is not None:
                     _enter_folder(raw.folder_index)
                     content = self._reach_pass_link(
@@ -760,6 +766,7 @@ class SevenZipReader(BaseArchiveReader):
                     if content is not None:
                         return self._register_public_stream(content)
                 return None
+            assert member.is_file, "a 7z directory carries no stream"
             # Registered like the base class's lazy pass streams, so the pass takes
             # the one live-stream slot and is refused beside a live ``open()``.
             if raw.folder_index is None:

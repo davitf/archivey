@@ -219,10 +219,14 @@ yielded.
 - A directory entry that declares data (APPNOTE gives a directory none) is listed as a
   directory with that size and reported with ``MEMBER_DIRECTORY_DATA_IGNORED``;
   extraction creates the directory, as unzip and 7-Zip do, and ``read()`` returns the
-  bytes, checked against the stored CRC-32. A CRC field of 0, a directory's conventional
-  value, is no digest; when that CRC was the entry's only check (unencrypted or
-  ZipCrypto), ``DIGEST_UNVERIFIABLE`` says the bytes come back unchecked, while a WinZip
-  AES entry (AE-1 or AE-2) has its HMAC check the bytes, so nothing is reported for it.
+  bytes, checked against the stored CRC-32, as does the stream ``stream_members()``
+  yields for it. From a pipe, a directory written with a data descriptor (as every
+  writer to a pipe writes it) gets no stream: its size comes after its data, so the pass
+  cannot know the bytes are there, and the message says so. A CRC field of 0, a
+  directory's conventional value, is no digest; when that CRC was the entry's only check
+  (unencrypted or ZipCrypto), ``DIGEST_UNVERIFIABLE`` says the bytes come back
+  unchecked, while a WinZip AES entry (AE-1 or AE-2) has its HMAC check the bytes, so
+  nothing is reported for it.
   Strict refuses the archive. A directory declaring size 0 over a body larger than
   an empty one of its method is reported too (``read()`` has nothing to return for it);
   the Java ``jar`` tool's deflated empty directory body (compressed size 2, size 0) is
@@ -309,7 +313,8 @@ yielded.
   tar reads it; 7-Zip agrees for NUL and `0`. When its size field is not zero, the
   directory keeps that `size`, `MEMBER_DIRECTORY_DATA_IGNORED` reports it, extraction
   creates the directory and skips the blocks as GNU tar does, and `reader.read()` on
-  the directory returns them.
+  the directory returns them, as does the stream `stream_members()` yields for it, in
+  both access modes.
   `DiagnosticPolicy.STRICT` refuses the archive.
 - **A member of an unknown type is a file when it has data.** A header whose type byte
   archivey does not know (such as `9`) and that declares data is a `FILE` of that size,
@@ -362,9 +367,10 @@ yielded.
       members behind them are not listed, as GNU tar lists them, and nothing in the
       file tells that from a trailer after blocks that were never written, so the
       report says what the header declares and the trailer checks above report the
-      rest. `open()` refuses the directory, since its bytes cannot be told from the
-      trailer. A block that is neither a header nor zero where the data would begin
-      raises `CorruptionError` naming the directory header. A walk that gets past the
+      rest. `open()` refuses the directory, and `stream_members()` yields no stream
+      for it, since its bytes cannot be told from the trailer. A block that is
+      neither a header nor zero where the data would begin raises `CorruptionError`
+      naming the directory header. A walk that gets past the
       declared span (extended headers filled it) has read all it could hide, and
       nothing is reported. An old-style directory, a regular-file header named `d/`,
       is the other case: see above.
@@ -480,9 +486,10 @@ yielded.
   archiving.
 - A directory entry that declares data (`rar` never writes one) is reported with
   `MEMBER_DIRECTORY_DATA_IGNORED`; extraction creates the directory, as `unrar` does.
-  `read()` returns the bytes when they are stored and not encrypted; compressed or
-  encrypted directory data raises `UnsupportedFeatureError`, because `unrar` emits
-  nothing for a directory entry.
+  `read()`, and the stream `stream_members()` yields for the directory, return the
+  bytes when they are stored and not encrypted; compressed or encrypted directory data
+  raises `UnsupportedFeatureError` (from the stream, on its first read), because
+  `unrar` emits nothing for a directory entry.
 - Member **data**: a stored (uncompressed) member is read by archivey itself, and so is
   a stored, encrypted one in one part when `cryptography` is installed (`[recommended]`;
   RAR 2.9 and later). Everything else needs RARLAB `unrar` or `rar` **6.0 or later** on

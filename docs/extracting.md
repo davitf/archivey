@@ -140,9 +140,9 @@ chosen, not a bug waiting for a fix, so please don't report them as vulnerabilit
   so if it is a symlink to a directory, archivey follows it and extracts into the
   target (as `tar -C` and `unzip -d` do).
 - **A directory entry that declares data** is created as a directory and the bytes are
-  not written, as every official tool does; `MEMBER_DIRECTORY_DATA_IGNORED` reports it
-  and `reader.read()` on the directory returns them where the format's reader can
-  decode them.
+  not written, as every official tool does; `MEMBER_DIRECTORY_DATA_IGNORED` reports it.
+  `reader.read()` on the directory returns them where the format's reader can decode
+  them, and so does the stream `stream_members()` yields for it.
 - **A TAR link entry that declares data** is created as a link and the bytes are not
   written; `MEMBER_LINK_DATA_IGNORED` reports it, and the members after the bytes are
   extracted too.

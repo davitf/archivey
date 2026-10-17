@@ -99,6 +99,21 @@ def test_cat_writes_file_members_in_archive_order(tar_xz: Path) -> None:
     assert run.stdout == b"hello\nworld\ndeep\n"
 
 
+def test_cat_and_test_skip_a_directory_that_declares_data(tmp_path: Path) -> None:
+    # stream_members() yields a stream for such a directory, but its bytes are not
+    # file content: cat writes the files only, and test counts the files only.
+    path = tmp_path / "dirdata.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr(zipfile.ZipInfo("d/"), b"hidden data!")
+        zf.writestr("d/f.txt", b"visible")
+    run = _Run(["cat", str(path)])
+    assert run.code == EXIT_OK, run.stderr
+    assert run.stdout == b"visible"
+    run = _Run(["test", str(path)])
+    assert run.code == EXIT_OK, run.stderr
+    assert "1 OK" in run.stdout.decode() + run.stderr
+
+
 @pytest.mark.parametrize(
     ("patterns", "expected"),
     [

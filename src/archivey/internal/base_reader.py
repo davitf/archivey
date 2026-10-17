@@ -295,6 +295,23 @@ class _Materialized:
     report: MemberListReport
 
 
+def pass_has_data(member: ArchiveMember) -> bool:
+    """Whether a data pass yields a stream for ``member``: the members ``open()`` reads.
+
+    A ``FILE``, and a ``DIRECTORY`` whose header declares data (a non-zero ``size``):
+    the bytes ``MEMBER_DIRECTORY_DATA_IGNORED`` reports and extraction does not write
+    (DR-25). Every other member has no data of its own, so the pass yields ``None``.
+    ``open()`` applies the same test to the member a link resolves to, so a pass and
+    a random-access read deliver the same bytes and refuse the same members, except
+    a bit-3 ZIP directory read from a source that cannot seek: its size arrives after
+    its data, so ``size`` is ``None`` when the pass reaches it and the pass yields
+    ``None`` where ``open()`` from a seekable source reads.
+    """
+    if member.is_file:
+        return True
+    return member.type is MemberType.DIRECTORY and bool(member.size)
+
+
 def reject_start_offset(
     start_offset: int, fmt: ArchiveFormat, archive_name: str | None
 ) -> None:
@@ -861,7 +878,8 @@ class BaseArchiveReader(ArchiveReader):
         produce ``(member, stream)`` pairs progressively from a single forward pass and
         must **not** call ``_materialize_members()``. The yielded stream is only valid
         until the iterator advances (see the ``stream_members`` contract in
-        ``archive-reading``); for non-file members it is ``None``.
+        ``archive-reading``); it is ``None`` for every member :func:`pass_has_data`
+        rejects.
 
         When ``streaming=True`` and the backend does not override, this default pulls
         from the shared instance-held progressive pass and opens each file member on
@@ -887,7 +905,7 @@ class BaseArchiveReader(ArchiveReader):
 
         def _open(member: ArchiveMember) -> ArchiveStream | None:
             self._read_pass_link_target(member)
-            if member.is_file:
+            if pass_has_data(member):
                 return self._lazy_member_stream(member)
             return None
 
@@ -2164,7 +2182,7 @@ class BaseArchiveReader(ArchiveReader):
         )
 
     def _emit_directory_data_ignored(
-        self, member: ArchiveMember, member_id: int
+        self, member: ArchiveMember, member_id: int, *, reach: str | None = None
     ) -> None:
         """Report one ``MEMBER_DIRECTORY_DATA_IGNORED`` finding, attached to ``member``.
 
@@ -2174,18 +2192,23 @@ class BaseArchiveReader(ArchiveReader):
         one for every directory it writes). No format gives a directory entry content,
         and every official tool creates the directory and drops the bytes silently;
         archivey does the same on extraction but says so (DR-3). A declared size opens
-        through ``open()`` where the backend can decode the body (RAR delivers stored
-        data only); a declared size of 0 has nothing ``open()`` could return.
+        through ``open()``, and gets a stream from ``stream_members()``, where the
+        backend can decode the body (RAR delivers stored data only); a declared size
+        of 0 has nothing to read in either. ``reach`` replaces the clause on where a
+        declared size can be read, for a backend whose pass could not offer the bytes.
         """
         assert member.size or member.compressed_size, (
             "only a directory with a body is reported"
         )
         if member.size:
             what = f"declares {member.size} bytes of data"
-            reach = "open() delivers them where they can be decoded"
+            if reach is None:
+                reach = (
+                    "open() and stream_members() deliver them where they can be decoded"
+                )
         else:
             what = f"declares no data but stores a {member.compressed_size}-byte body"
-            reach = "a declared size of 0 leaves nothing for open() to return"
+            reach = "a declared size of 0 leaves nothing to read"
         self._diagnostics_collector.emit(
             code=DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED,
             message=(
@@ -3308,11 +3331,10 @@ class BaseArchiveReader(ArchiveReader):
         # deliver for them even where a header declares a size. A directory is
         # refused by data: it has none unless its header declares some, and one that
         # does (``MEMBER_DIRECTORY_DATA_IGNORED`` reported it at listing, in ZIP, TAR
-        # and RAR; a 7z directory can carry a size too until the sweep that types a
-        # member with a stream as a file lands) opens here, and only here: the bytes
-        # the backend can decode are reachable through ``open()``, while
-        # ``stream_members()`` and extraction still route by type and skip them.
-        # Both messages end in "(not a file)", which ``archivey test`` classifies by.
+        # and RAR) opens here. ``stream_members()`` decides by ``pass_has_data``,
+        # which says where the two differ; extraction creates the directory and does
+        # not write the bytes. Both messages end in "(not a file)", which ``archivey
+        # test`` classifies by.
         if current.type in (MemberType.ANTI, MemberType.OTHER):
             raise _UsageValueError(
                 f"Cannot open member {quoted(current.name)}: type is "
@@ -3340,7 +3362,9 @@ class BaseArchiveReader(ArchiveReader):
     ) -> MemberPass[tuple[ArchiveMember, ArchiveStream | None]]:
         """Yield (member, stream) pairs. members is a selector filter (no transform).
 
-        The yielded stream is owned by the iterator: advancing closes/invalidates the
+        The stream is ``None`` for every member :func:`pass_has_data` rejects (see
+        there for the one shape where that differs from ``open()``). The yielded
+        stream is owned by the iterator: advancing closes/invalidates the
         previous stream before the next pair is produced. It never seeks, on any
         format and whatever ``seekable_members`` says (``_iter_stream_members`` makes
         each handle forward-only); ``tell()`` works.
