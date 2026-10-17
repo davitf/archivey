@@ -147,7 +147,9 @@ def resolve_smart_dest(
     """Choose the default dest without forcing a streaming metadata pass (D1).
 
     - Single-file / raw-stream → cwd.
-    - Indexed archive → tops on the **filtered** member set (wrap / cwd).
+    - Indexed archive → tops on the **filtered** member set (wrap / cwd). A single
+      top that already exists in the cwd goes through the wrapper and the hoist,
+      like an archive with no index.
     - No cheap index (tar, an archive read from a pipe, …) → always a new
       ``./<stem>/``, then :func:`maybe_hoist_single_root` may lift a single
       extracted top entry to cwd.
@@ -162,10 +164,17 @@ def resolve_smart_dest(
         return _SmartDestPlan(_enclosing_dir(archive, format=fmt), may_hoist=True)
 
     members = [m for m in indexed if pred is None or pred(m)]
-    return _SmartDestPlan(
-        smart_dest(archive, format=fmt, members=members),
-        may_hoist=False,
-    )
+    target = smart_dest(archive, format=fmt, members=members)
+    if target == Path(".") and any(
+        os.path.lexists(top) for top in _top_level_names(members)
+    ):
+        # The single root meets an entry already in the cwd. Extracting straight
+        # there would let the overwrite policy settle the clash, and ``replace`` puts
+        # a folder over a file. Extract into a new wrapper instead, so the move up
+        # runs the same checks as for an archive with no index and never deletes the
+        # operator's data (:func:`maybe_hoist_single_root`).
+        return _SmartDestPlan(_enclosing_dir(archive, format=fmt), may_hoist=True)
+    return _SmartDestPlan(target, may_hoist=False)
 
 
 @dataclass

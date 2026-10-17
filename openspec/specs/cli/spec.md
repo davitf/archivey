@@ -282,6 +282,7 @@ other processed statuses are omitted from that line).
 | `archivey extract <archive>` where archive has many top-level entries | Extracts into `./<archive-stem>/` (no cwd splatter) |
 | `archivey extract <indexed-archive>` where archive has a single top-level dir | Extracts into `.`; reuses the archive's root dir (no redundant `foo/foo/`) |
 | `archivey extract <indexed-archive> 'b/*'` where filtered set has single root `b/` | Extracts into `.` (tops on filtered set); lands as `./b/…` |
+| `archivey extract one.zip --overwrite replace\|skip\|error` holding only `top/f`, with the operator's FILE `top` in the cwd | An indexed single root that meets an entry already in the cwd goes through `./one/` and the hoist, like an archive with no index: prints `kept in one/: top already exists`; the file `top` is untouched; exit `0`. Under `rename` the root lands at `top (1)/` |
 | `archivey extract <no-index-archive>` (e.g. plain TAR) with a single top-level dir | Extracts into `./<stem>/` then hoists the single root to cwd |
 | `archivey extract foo.tar` holding only `foo`, with the operator's `foo` in the cwd | Wraps in `foo (1)/`, then hoists the root to `foo (1)`, as `-d .` does; prints `renamed: foo -> foo (1)` |
 | `archivey extract foo.tar --overwrite skip\|replace\|error` holding `foo/x.txt` (with or without a `foo/` entry), with the operator's FILE `foo` in the cwd | Prints `kept in foo (1)/: foo already exists`; the content is at `foo (1)/foo/x.txt`; the file `foo` is untouched; exit `0`. Under `rename` the root moves to `foo (1)/x.txt` |
