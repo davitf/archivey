@@ -597,9 +597,10 @@ class ArchiveStream(ReadOnlyIOStream):
 
         A fused verifier with a declared size caps each read at the bytes left while it
         is still checking, until it concludes or abandons. Otherwise ``n`` goes to the
-        backend as given, so what a very large ``n`` costs is the backend's: a TAR member's reader allocates a buffer of ``n`` bytes, and
-        ``read(2**62)`` raises ``MemoryError`` there, as ``open(path, "rb").read(2**62)``
-        does on a plain file. The stream is still usable afterwards.
+        backend as given, so what a very large ``n`` costs is the backend's: a TAR
+        member's reader allocates a buffer of ``n`` bytes, and ``read(2**62)`` raises
+        ``MemoryError`` there, as ``open(path, "rb").read(2**62)`` does on a plain file.
+        The stream is still usable afterwards.
         """
         scope = self._diagnostics_scope
         if scope is None:
