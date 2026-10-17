@@ -187,27 +187,6 @@ header's data or right after an extended header, and `CorruptionError` for a PAX
 2**63 - 1, or a PAX sparse map that does not parse. The digit count is checked before
 the number is converted, so a value of thousands of digits is that same refusal.
 
-**Header numbers.** An octal field is read as GNU tar 1.35's `from_header` reads it:
-one leading NUL skipped (an old writer put it there when the previous field
-overflowed), leading blanks, then digits up to the first NUL or blank. The bytes after
-that terminator are not read, so `644\0XYZ\0` is 0644 and `12 34\0` is 012, as in GNU
-tar; a byte other than a NUL or a blank right after the digits refuses the header. The
-checksum field is read the same way; the checksum match is what guards the block. A
-field with no digits is 0, as `tarfile` reads it; GNU tar reports a field of only
-blanks and reads it as -1. A character or block device whose `devmajor` or
-`devminor` is not a number still lists, as in GNU tar, but with no device numbers and
-`MEMBER_HEADER_RECORD_SKIPPED` (`record="device_numbers"`); GNU tar lists it with a
-garbage number.
-
-An old GNU sparse real size that is negative or past 2**63 - 1 refuses the header and
-stops the walk, as an old GNU sparse map slot that cannot be read already does. This is
-archivey's own rule, not GNU tar's: GNU tar 1.35 reports the value ("out of off_t
-range"), lists the member with size 0 and reads on, so it lists the members after it
-and archivey does not. There is no honest size to list, the shape is crafted (no writer
-stores such a value), and DR-5a allows the stricter rule for it. Keeping the member
-listable with no size and a diagnostic would be the same change for every number field
-whose damage ends the walk, which is a larger change than this one.
-
   1. The walk stopped on a header that does not parse (a bad checksum or number field, a
      negative size, PAX records that do not parse, a bad number in an old GNU sparse
      extension block, or an extended header followed by a block that is not a header).
@@ -252,6 +231,19 @@ whose damage ends the walk, which is a larger change than this one.
      codec has already read to the stream's end; that read raises `CorruptionError`.
      Which one happens depends on the codec's input chunking, so on member size.
 
+**Header numbers.** An octal field is read as GNU tar 1.35's `from_header` reads it:
+one leading NUL skipped (an old writer put it there when the previous field
+overflowed), leading blanks, then digits up to the first NUL or blank. The bytes after
+that terminator are not read, so `644\0XYZ\0` is 0644 and `12 34\0` is 012, as in GNU
+tar; a byte other than a NUL or a blank right after the digits refuses the header. The
+checksum field is read the same way; the checksum match is what guards the block. A
+field with no digits is 0, as `tarfile` reads it; GNU tar reports a field of only
+blanks and reads it as -1. A character or block device whose `devmajor` or
+`devminor` is not a number still lists, as in GNU tar, but with no device numbers and
+`MEMBER_HEADER_RECORD_SKIPPED` (`record="device_numbers"`); GNU tar lists it with a
+garbage number. An old GNU sparse real size that is negative or past 2**63 - 1
+refuses the header and stops the walk, where GNU tar reads on (§5, §6).
+
 **The walk stops at the listing caps.** Listing pulls one header per call and registers
 the member, counting it against `ListingLimits`, before the next header is parsed, so a
 header bomb stops at the member that crosses `max_members` or `max_metadata_bytes`. The
@@ -287,7 +279,7 @@ pass.
 | `accessed` | PAX `atime` only. A record that is not a number, or out of range, is `None` plus `MEMBER_TIMESTAMP_INVALID`, as for `modified`; the same holds for `created` and `ctime`. A number is what GNU tar 1.35 reads, `-?digits(.digits*)?`; Python float syntax beyond that (`+1000`, `1e3`, `1_000`, blanks, `.5`, `inf`) is not one, and the report quotes the first 40 characters of the value |
 | `created` | The PAX `LIBARCHIVE.creationtime` keyword, which libarchive writes when the source OS has a birth time. No other TAR writer is known to store one, so it is `None` for most archives |
 | `ctime` | PAX `ctime` only. It is the inode-change time (`st_ctime`), so it never fills `created`. A libarchive tar can carry both |
-| `mode`, `uid`, `gid`, `uname`, `gname` | From the header; a PAX record of the same name overrides `uid`, `gid`, `uname` or `gname`. A PAX `uid` or `gid` that is not a number, or is past 4294967295 (2**32 - 1, the range of `uid_t` and `gid_t` on every platform GNU tar ships on), is ignored and the header's value kept, as GNU tar 1.35 keeps it. A v7 header has no `uname` or `gname`: its bytes 257.. are not fields, and GNU tar reads none there. `mode` keeps the permission and setuid/setgid/sticky bits only, masked before `stat.S_IMODE`, so a negative or wider-than-32-bit base-256 mode cannot fail the listing |
+| `mode`, `uid`, `gid`, `uname`, `gname` | From the header; a PAX record of the same name overrides `uid`, `gid`, `uname` or `gname`. A PAX `uid` or `gid` that is not a number, or is past 4294967295 (2**32 - 1, the range of `uid_t` and `gid_t` on every platform GNU tar ships on), is ignored and the header's value kept, as GNU tar 1.35 keeps it. GNU tar also reports such an id ("out of range", exit 2); archivey keeps the header's value silently. A v7 header has no `uname` or `gname`: its bytes 257.. are not fields, and GNU tar reads none there. `mode` keeps the permission and setuid/setgid/sticky bits only, masked before `stat.S_IMODE`, so a negative or wider-than-32-bit base-256 mode cannot fail the listing |
 | `is_sparse` | True for the old GNU `S` typeflag and for all three PAX sparse encodings. Sparse records on a link, device, FIFO or directory make no sparse member |
 | `extra` | `tar.type` always; `special_file_type` on device and FIFO members; `tar.pax_headers` when there are any (read-only, a `dict` subclass whose changes raise `TypeError`; members with no records of their own share one per set of global records); `tar.devmajor` / `tar.devminor` for a character or block device (`3`, `4`) in a ustar or GNU header, the only headers GNU tar reads them from; a FIFO or a v7 header has none, and bytes in those fields there are not read. A device whose field is not a number has none either, and carries `MEMBER_HEADER_RECORD_SKIPPED` |
 
@@ -568,6 +560,7 @@ ours.
 | A member's data changed and nothing noticed | **format** | No data checksum in a plain tar (§4) |
 | A streaming pass over millions of members uses memory in proportion | **archivey** | The pass keeps one list of members for `members_report()`; the walker keeps nothing behind it (§2.2) |
 | `encoding=` has no effect on some names | **archivey** | PAX names are UTF-8 by definition, and a ustar or GNU name whose bytes are valid UTF-8 is read as UTF-8 too; `encoding=` decodes only bytes that are not valid UTF-8 (§2.2) |
+| A tar that GNU tar lists to the end stops listing at an old GNU sparse header, with `CorruptionError` | **archivey** | The header's real size is negative or past 2**63 - 1. GNU tar 1.35 reports it ("out of off_t range"), lists the member with size 0 and reads on; archivey refuses the header, as for an old GNU sparse map slot it cannot read (§6) |
 
 ## 6. Decisions
 
@@ -589,6 +582,7 @@ ours.
 | A device, FIFO or socket header with a non-zero size is `CorruptionError` at the header | The typeflag is the structure, so the entry has no data. The reader refuses the header. Ignoring the size and reading the next header right after this one, as GNU tar and libarchive do, would parse non-zero declared bytes as a header, and an all-zero payload would look like the end-of-archive marker and drop every later member without a word. Refusing makes both shapes the same damage | Reporting the size and resyncing at the next header, as GNU tar does ("Skipping to next header", exit 2) and as DR-1 would prefer. Not done for a crafted-only shape |
 | AppleDouble sidecars (`._name`, `__MACOSX/`) stay ordinary members with no marking key (davi, 2026-10-16, project thread) | Marked by name alone, a key adds nothing over the name filter in `docs/formats.md` and also marks a real file named `._x` | `extra["macos.resource_of"]` set from the name (#839, closed). Reopen with a mark that checks the AppleDouble magic in the data (`IDEAS.md`) |
 | Walk one header per pull | Each member is registered, and counted against the caps, before the next header is parsed, so the caps bound what the walker parses, not only what archivey keeps | Batches of headers per lock hold, which come back only if the listing benchmark needs them |
+| An old GNU sparse real size that is negative or past 2**63 - 1 refuses the header and stops the walk | The real size is the member's listed size, and there is no honest one to list. The walk already stops on an old GNU sparse map slot it cannot read, so every old GNU sparse number is treated alike. The shape is crafted (no writer stores such a value), and DR-5a allows the stricter rule for it. Read as it stands, a negative size with an empty map lists as an empty file with no error | Listing the member with size 0 and reading on, as GNU tar 1.35 does, which serves a size the archive does not hold. Listing it with no size and a diagnostic, which would be the same change for every number field whose damage ends the walk |
 
 ## 7. Open questions
 

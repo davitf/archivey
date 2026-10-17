@@ -524,13 +524,16 @@ _SHOWN_CHARACTERS = 40
 
 def shown_value(value: bytes | str) -> str:
     """``value`` quoted for a message, cut to 40 characters with ``...`` inside the
-    quotes when longer, so a cut value never reads as a complete one. Bytes that are
-    not ASCII show as backslash escapes."""
-    if isinstance(value, bytes):
-        value = value.decode("ascii", "backslashreplace")
-    if len(value) > _SHOWN_CHARACTERS:
-        value = value[:_SHOWN_CHARACTERS] + "..."
-    return repr(value)
+    quotes when longer, so a cut value never reads as a complete one. A byte that is
+    not printable ASCII shows as one backslash escape, as ``bytes`` repr writes it."""
+    cut = len(value) > _SHOWN_CHARACTERS
+    # repr of the cut bytes escapes each byte once; the b prefix is dropped.
+    shown = (
+        repr(value[:_SHOWN_CHARACTERS])[1:]
+        if isinstance(value, bytes)
+        else repr(value[:_SHOWN_CHARACTERS])
+    )
+    return shown[:-1] + "..." + shown[-1] if cut else shown
 
 
 def _pax_decimal(text: bytes) -> int | None:
@@ -721,17 +724,19 @@ def validate_sparse_map(
 
     ``size`` is the logical size, ``stored`` the bytes the data area holds for the
     chunks (the 1.0 map's own blocks excluded). ``name`` goes into the message as it
-    is, so the caller passes it through ``quoted()``. Damage is :class:`CorruptionError`: a
-    logical size that is negative or past :data:`MAX_OFFSET` (no caller passes a
-    negative one today, since the header and PAX parsers refuse it; the check keeps a
-    future caller from slipping one through), a negative entry, a chunk past the logical size, or chunks that do not add up to
-    exactly the stored bytes (more would read the next header as data; fewer leaves
-    bytes inside the member that nothing names, DR-3). A map whose chunks are out of
-    order or overlap is valid data archivey will not serve: ``tarfile`` stitched such
-    chunks into the wrong bytes, and serving them in logical order in a forward pass
-    would buffer up to the logical size. It is :class:`UnsupportedFeatureError`, and
-    only when the map has no damage. An empty entry is exempt from the order check:
-    GNU tar ends a map with ``(realsize, 0)`` when the file ends in a hole.
+    is, so the caller passes it through ``quoted()``. Damage is
+    :class:`CorruptionError`: a logical size that is negative or past
+    :data:`MAX_OFFSET` (no caller passes a negative one today, since the header and
+    PAX parsers refuse it; the check keeps a future caller from slipping one
+    through), a negative entry, a chunk past the logical size, or chunks that do not
+    add up to exactly the stored bytes (more would read the next header as data;
+    fewer leaves bytes inside the member that nothing names, DR-3). A map whose
+    chunks are out of order or overlap is valid data archivey will not serve:
+    ``tarfile`` stitched such chunks into the wrong bytes, and serving them in
+    logical order in a forward pass would buffer up to the logical size. It is
+    :class:`UnsupportedFeatureError`, and only when the map has no damage. An empty
+    entry is exempt from the order check: GNU tar ends a map with ``(realsize, 0)``
+    when the file ends in a hole.
     """
     if not 0 <= size <= MAX_OFFSET:
         return CorruptionError(
@@ -1250,7 +1255,9 @@ class TarWalker:
             number = None if value is None else _pax_decimal(value.value)
             if number is None or number > MAX_PAX_ID:
                 # A PAX id that is not a number, or is past uid_t's range, is
-                # ignored and the header's kept, as GNU tar 1.35 keeps it.
+                # ignored and the header's kept, as GNU tar 1.35 keeps it. GNU tar
+                # also reports such an id ("out of range", exit 2); archivey keeps
+                # the header's value silently.
                 pass
             elif key == b"uid":
                 uid = number
@@ -1314,11 +1321,7 @@ class TarWalker:
             # minor alone is read as a plain file, as GNU tar reads it.) Read as a
             # plain file, the member would serve its map blocks as content.
             major = merged.get(b"GNU.sparse.major")
-            version = (
-                "(none)"
-                if major is None
-                else major.value[:20].decode("ascii", "replace")
-            )
+            version = "(none)" if major is None else shown_value(major.value)
             raise CorruptionError(
                 f"TAR member {charge.name} has GNU sparse major version "
                 f"{version} and no sparse map"

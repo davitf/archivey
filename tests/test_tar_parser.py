@@ -38,6 +38,7 @@ from archivey.internal.backends.tar_parser import (
     parse_number,
     parse_pax_records,
     read_sparse_map_1_0,
+    shown_value,
     sparse_map_0_0,
     sparse_map_0_1,
     validate_sparse_map,
@@ -1156,6 +1157,31 @@ def test_pax_number_past_any_file_is_damage(key: str) -> None:
         records["GNU.sparse.map"] = "0,0"
     data = _pax(records) + _block(b"a") + _END
     with pytest.raises(CorruptionError):
+        _walk(data)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (b"\xff\xfe12abcd", r"'\xff\xfe12abcd'"),
+        (b"junk\x00\x00", r"'junk\x00\x00'"),
+        (b"\x81junkju\x00", r"'\x81junkju\x00'"),
+        (b"1" * 41, "'" + "1" * 40 + "...'"),
+        (b"\xff" * 41, "'" + r"\xff" * 40 + "...'"),
+        ("abc", "'abc'"),
+        ("9" * 41, "'" + "9" * 40 + "...'"),
+    ],
+)
+def test_shown_value_escapes_each_byte_once(value: bytes | str, expected: str) -> None:
+    """One escape per byte, whatever the byte is, and the cut marked inside the
+    quotes: a reader can tell the archive's bytes from the escape and a cut value
+    from a whole one."""
+    assert shown_value(value) == expected
+
+
+def test_long_sparse_major_is_cut_in_the_message() -> None:
+    data = _pax({"GNU.sparse.major": "0" * 5000}) + _block(b"a") + _END
+    with pytest.raises(CorruptionError, match=r"major version '0{40}\.\.\.' and no"):
         _walk(data)
 
 

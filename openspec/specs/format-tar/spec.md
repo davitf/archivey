@@ -56,7 +56,7 @@ long names in force applied) to `ArchiveMember` with these field rules:
 | `mode` | The header's `mode`, lower 12 bits |
 | `modified` | The header's `mtime` as timezone-aware UTC |
 | PAX `mtime` | Overrides the header's `mtime`, preserving sub-second precision / timezone information |
-| `uname`, `gname`, `uid`, `gid` | From the header; a PAX record of the same name overrides it (a PAX `uid` or `gid` that is not a number, or is past 2**32 - 1, the range of `uid_t` and `gid_t`, is ignored and the header's value kept, as GNU tar 1.35 keeps it) |
+| `uname`, `gname`, `uid`, `gid` | From the header; a PAX record of the same name overrides it (a PAX `uid` or `gid` that is not a number, or is past 2**32 - 1, the range of `uid_t` and `gid_t`, is ignored and the header's value kept, as GNU tar 1.35 keeps it; GNU tar also reports such an id, and archivey keeps the header's value silently) |
 | `type` | TAR type byte (`REGTYPE`, `DIRTYPE`, `SYMTYPE`, `LNKTYPE`, etc.) to `MemberType`. GNU's dumpdir `D` is a `DIRECTORY` whose contents list, structure GNU tar defines and reads, is skipped with no `size` and no report |
 | device, FIFO or socket (`CHRTYPE`, `BLKTYPE`, `FIFOTYPE`) | `MemberType.OTHER` with `extra["special_file_type"]` naming the kind (`"char_device"`, `"block_device"`, `"fifo"`), the cross-format key of design rule DR-25; other `OTHER` typeflags (a volume header, an unknown type) carry no such key. A header of these typeflags with a non-zero `size` SHALL raise `CorruptionError` at that header, in both access modes: the typeflag is the structure, so the entry has no data, and GNU tar and libarchive skip such a header as damaged |
 | hardlink target | `LNKTYPE` maps to `MemberType.HARDLINK`; `link_target` from the PAX `linkpath`, else the GNU long link name, else the header's `linkname` |
@@ -438,7 +438,7 @@ archives` to classify. These are headers that do not parse:
 
 | Case | Example |
 | --- | --- |
-| Header block | A bad checksum; a number field that is neither octal nor base-256 (a byte other than a NUL or a blank right after the digits); a negative size |
+| Header block | A bad checksum; a `mode`, `uid`, `gid`, `size`, `mtime` or checksum field that is neither octal nor base-256 (a byte other than a NUL or a blank right after the digits); a negative size. A device's `devmajor` or `devminor` that is not a number is reported on the member instead (see Numbers) |
 | PAX records | A record length that does not land on its newline |
 | Old GNU sparse | A map number, in the header or an extension block, that is neither octal nor base-256 or is past 2**63 - 1; a real size that is negative or past 2**63 - 1 |
 | Header chain | An extended header followed by a block that is not a header |
