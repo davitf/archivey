@@ -305,11 +305,17 @@ yielded.
   pass.
 - `concurrent_operations=True` uses a per-reader shared-handle lock (same shape as ISO).
 - **An old-style directory that declares data is reported.** A regular-file header
-  (typeflag NUL or `0`) whose name ends in `/` is a directory, as GNU tar and 7-Zip
-  read it. When its size field is not zero, the directory keeps that `size`,
-  `MEMBER_DIRECTORY_DATA_IGNORED` reports it, extraction creates the directory and
-  skips the blocks as GNU tar does, and `reader.read()` on the directory returns them.
+  (typeflag NUL, `0` or contiguous `7`) whose name ends in `/` is a directory, as GNU
+  tar reads it; 7-Zip agrees for NUL and `0`. When its size field is not zero, the
+  directory keeps that `size`, `MEMBER_DIRECTORY_DATA_IGNORED` reports it, extraction
+  creates the directory and skips the blocks as GNU tar does, and `reader.read()` on
+  the directory returns them.
   `DiagnosticPolicy.STRICT` refuses the archive.
+- **A member of an unknown type is a file when it has data.** A header whose type byte
+  archivey does not know (such as `9`) and that declares data is a `FILE` of that size,
+  which reads and extracts like any file, as GNU tar extracts it. One that declares no
+  data is `OTHER`, and extraction skips it. Both are reported with `MEMBER_TYPE_UNKNOWN`,
+  which `STRICT` does not refuse, and `extra["tar.type"]` keeps the byte.
 - **Sparse members are extracted dense.** A GNU or PAX sparse member (`tar -S`) is
   written with its holes filled by zeros, so it takes its full size on disk. The zeros
   count as output for the [ratio limit](extracting.md#limits), which a TAR checks across

@@ -524,8 +524,13 @@ empty entry; `jar` 21.0.12, measured for this rule, stores directories with both
   698).
 - A TAR device or directory typeflag followed by data is damage, not a file: GNU tar and
   libarchive ignore the size field for those typeflags and resync, so archivey's
-  `CorruptionError` stands. A TAR regular-file typeflag named `d/` with data is a
-  directory, as GNU tar and 7-Zip read it (2026-10-10).
+  `CorruptionError` stands. A TAR regular-file typeflag (NUL, `0` or contiguous `7`)
+  named `d/` with data is a directory, as GNU tar reads it; 7-Zip agrees for NUL and `0`
+  and lists a contiguous `d/` as a file (2026-10-10; `7` added 2026-10-16).
+- A TAR typeflag archivey does not know (`9`, say) that declares data is a `FILE` of that
+  size, readable, as GNU tar 1.35 extracts it and 7-Zip 23.01 lists and extracts it; with
+  no data it stays `OTHER`. Both report `MEMBER_TYPE_UNKNOWN` (advisory), and
+  `extra["tar.type"]` keeps the byte (2026-10-17).
 
 **Reopen if** a real producer writes a directory entry whose data users need on disk, or a
 special-mode entry whose bytes are not the content; then that format needs a named

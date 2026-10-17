@@ -101,9 +101,17 @@ EXTENDED_TYPES = PAX_MEMBER_TYPES | {PAX_GLOBAL_TYPE, LONG_NAME_TYPE, LONG_LINK_
 # Types whose size field does not announce a data area. ``tarfile`` skips no data
 # after these; GNU tar skips none after a directory and fails on the others with
 # "Skipping to next header". Data declared on one of them is read as the next header,
-# as both tools read it. Every other typeflag, including the regular types and ones
-# neither tool knows (``V``, ``M``, ``N``, ``D`` ...), has its data skipped by size.
+# as both tools read it. The size field of every other typeflag announces a data area,
+# whatever either tool makes of the type: the regular types, ``D``, ``M``, ``V``, and
+# typeflags the reader does not know (``tar_reader._KNOWN_TYPES``) all have their data
+# skipped by size.
 NO_DATA_TYPES = frozenset((b"1", b"2", b"3", b"4", b"5", b"6"))
+
+# The regular-file typeflags whose entry is a directory when its final name ends in
+# "/": AREGTYPE (NUL), REGTYPE (``0``) and CONTTYPE (``7``), the three GNU tar's
+# extract.c sends to ``extract_dir`` on a trailing slash. Old GNU sparse ``S`` is not
+# among them: GNU tar extracts it as a file whatever its name.
+_OLD_STYLE_DIRECTORY_TYPES = frozenset((b"\x00", b"0", b"7"))
 
 
 class HeaderFormat(Enum):
@@ -809,9 +817,10 @@ class TarEntry:
     # Shared, read-only, between members that have none of their own.
     pax: Mapping[bytes, PaxValue]
     has_own_pax: bool
-    # An AREGTYPE (NUL) or REGTYPE (0) entry whose final name ends in "/": a
-    # directory, as GNU tar and 7-Zip read it. Its declared size is a real data area
-    # (the typeflag carries data), which the reader lists and reports.
+    # An AREGTYPE (NUL), REGTYPE (0) or CONTTYPE (7) entry whose final name ends in
+    # "/": a directory, as GNU tar reads it (7-Zip agrees for NUL and 0). Its
+    # declared size is a real data area (the typeflag carries data), which the
+    # reader lists and reports.
     old_style_directory: bool
     # Set only for a member type that carries data: sparse records on a link,
     # device, FIFO or directory leave both None.
@@ -1328,8 +1337,11 @@ class TarWalker:
             )
 
         # The final name decides, after any PAX path or GNU long name: a regular-file
-        # typeflag with a name ending in "/" is a pre-POSIX directory entry.
-        old_style_directory = typeflag in (b"\x00", b"0") and name.endswith(b"/")
+        # typeflag with a name ending in "/" is a pre-POSIX directory entry
+        # (``_OLD_STYLE_DIRECTORY_TYPES`` says which typeflags count).
+        old_style_directory = typeflag in _OLD_STYLE_DIRECTORY_TYPES and name.endswith(
+            b"/"
+        )
         if not carries_data(typeflag):
             # The size field of a link, device, FIFO or directory announces no data
             # area: the next header follows this one.

@@ -6,6 +6,6 @@
 
 **What it does:** archivey reads the 512-byte TAR headers itself, one at a time, in a plain loop. Members are slices of the stream it already reads, and sparse files are expanded by a small stream that fills holes with zeros. Every hook into `tarfile` goes away. Along the way five small things get fixed: seeking past the end of a member works as in every other format, sparse padding is never served, `raw_name` is always the stored bytes, a GNU incremental backup lists its real names instead of names under a directory of digits, and a streaming pass stops keeping two lists of every member.
 
-**Decided:** No public API changes. Out-of-order sparse maps stay refused, as already ruled. Unknown typeflags stay listed as "other", and a damaged header in the middle still ends the listing with an error after the members before it; resyncing past it is salvage, planned separately.
+**Decided:** No public API changes. Out-of-order sparse maps stay refused, as already ruled. Unknown typeflags stay listed as "other" (superseded 2026-10-17: one with data is now a file, per DR-25), and a damaged header in the middle still ends the listing with an error after the members before it; resyncing past it is salvage, planned separately.
 
 **Bottom line:** A backend of about the same size that bounds memory by how it is built, gives the same answer on every Python version, and stops breaking when upstream patches `tarfile`.

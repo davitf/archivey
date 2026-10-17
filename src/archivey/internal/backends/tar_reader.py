@@ -66,6 +66,7 @@ from archivey.diagnostics import (
     DigestContext,
     DirectoryDataContext,
     MemberHeaderRecordContext,
+    UnknownMemberTypeContext,
 )
 from archivey.exceptions import (
     ArchiveyError,
@@ -195,8 +196,9 @@ _EofFinding = Literal[
 ]
 
 # Typeflags whose member is a file: regular (``0`` and the old NUL), contiguous (``7``)
-# and old GNU sparse (``S``) all carry the file's data. Every other typeflag that is not
-# a directory or a link lists as OTHER, its data skipped by size.
+# and old GNU sparse (``S``) all carry the file's data. Devices, FIFOs and GNU's
+# multi-volume continuation (``M``) and volume header (``V``) list as OTHER, their data
+# skipped by size. A typeflag none of these sets names is unknown (``_KNOWN_TYPES``).
 _FILE_TYPES = frozenset((b"0", b"\x00", b"7", b"S"))
 # The walk's read-ahead over a codec stream or a view. Fixed rather than io's default,
 # which Python 3.14 raised from 8 KiB to 128 KiB: a larger read-ahead reads and decodes
@@ -211,6 +213,20 @@ _DIRECTORY_TYPES = frozenset((b"5", b"D"))
 
 _SYMLINK_TYPE = b"2"
 _HARDLINK_TYPE = b"1"
+# Character and block devices and FIFOs, which carry device numbers.
+_DEVICE_TYPES = frozenset((b"3", b"4", b"6"))
+# GNU's multi-volume continuation and volume header. GNU tar knows both and extracts
+# neither: it skips a ``V`` and refuses an ``M`` ("continued from another volume").
+_VOLUME_TYPES = frozenset((b"M", b"V"))
+# Every typeflag a member header can have that archivey knows. The extended headers
+# (``x``, ``X``, ``g``, ``L``, ``K``) never reach a member: the walker applies them.
+_KNOWN_TYPES = (
+    _FILE_TYPES
+    | _DIRECTORY_TYPES
+    | _DEVICE_TYPES
+    | _VOLUME_TYPES
+    | {_SYMLINK_TYPE, _HARDLINK_TYPE}
+)
 
 # PAX records whose value is a name: without ``hdrcharset=BINARY`` it is UTF-8, as
 # POSIX says; with it, or for a ustar or GNU field, it has no declared encoding.
@@ -227,7 +243,13 @@ def _member_type(entry: TarEntry) -> MemberType:
         return MemberType.HARDLINK
     if typeflag in _FILE_TYPES:
         return MemberType.FILE
-    # Character/block devices, FIFOs, multi-volume and volume headers, unknown types.
+    if typeflag not in _KNOWN_TYPES and entry.size:
+        # An unknown typeflag that declares data: GNU tar extracts it as a regular
+        # file with a warning, and 7-Zip 23.01 extracts it as one. The data area is the
+        # structure (DR-25; maintainer ruling, 2026-10-17). _to_member reports it.
+        return MemberType.FILE
+    # Character/block devices, FIFOs, multi-volume and volume headers, and an unknown
+    # typeflag with no data.
     return MemberType.OTHER
 
 
@@ -1505,10 +1527,43 @@ class TarReader(BaseArchiveReader):
                 logger=backends_logger,
             )
         if entry.old_style_directory and entry.size:
-            # GNU tar and 7-Zip create the directory and skip the bytes without a word.
-            # Say so; read() delivers them.
+            # GNU tar creates the directory and skips the bytes without a word (7-Zip
+            # too, for NUL and 0). Say so; read() delivers them.
             self._emit_directory_data_ignored(member, index)
+        if entry.typeflag not in _KNOWN_TYPES:
+            self._emit_member_type_unknown(member, index, entry.typeflag)
         return member
+
+    def _emit_member_type_unknown(
+        self, member: ArchiveMember, member_id: int, typeflag: bytes
+    ) -> None:
+        """Report ``MEMBER_TYPE_UNKNOWN`` for a header whose typeflag archivey does
+        not know. GNU tar warns too ("Unknown file type"); the code is advisory."""
+        stored_type = typeflag.decode("latin-1")
+        if member.type == MemberType.FILE:
+            outcome = (
+                f"it declares {member.size} bytes of data, so it is listed as a file, "
+                "as GNU tar extracts it"
+            )
+        else:
+            outcome = "it declares no data, so it is listed as OTHER and not extracted"
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.MEMBER_TYPE_UNKNOWN,
+            message=(
+                f"TAR member {quoted(member.name)} has the unknown type "
+                f"{stored_type!r}: {outcome}."
+            ),
+            context=UnknownMemberTypeContext(
+                archive_name=self._archive_name,
+                member_name=member.name,
+                member_id=member_id,
+                stored_type=stored_type,
+                size=member.size,
+            ),
+            member=member,
+            attach_to_member=True,
+            logger=backends_logger,
+        )
 
     def _owner_name(self, header: bytes, pax: PaxValue | None) -> str:
         """``uname`` or ``gname``: a PAX record of that name overrides the header's."""
