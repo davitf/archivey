@@ -48,8 +48,8 @@ class MemberStreams(Flag):
         materialization is coordinated (one build; waiters share the snapshot);
         ``close()`` drains in-flight worker calls. Callers still synchronize any
         *shared* stream objects they hand around. ``__iter__`` and
-        ``stream_members`` run beside random access and beside one another;
-        ``extract_all`` remains single-owner.
+        ``stream_members`` and ``extract_all`` run beside random access and beside
+        one another.
         Does **not** remove solid open-order cost — see :class:`~archivey.AccessCost`.
 
     ``SEEKABLE``

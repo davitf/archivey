@@ -33,7 +33,6 @@ import hashlib
 import io
 import os
 import shutil
-import stat
 import subprocess
 import tempfile
 import threading
@@ -145,6 +144,7 @@ from archivey.internal.open_site import OpenSite
 from archivey.internal.password import (
     _PasswordCandidates,
     _PasswordCandidatesExhausted,
+    mark_unverified_data,
     wrong_password_error,
 )
 from archivey.internal.password_confirm import (
@@ -2112,18 +2112,22 @@ class RarReader(BaseArchiveReader):
                     self._passwords, reference, probe, full_check
                 )
             except _PasswordCandidatesExhausted as exc:
-                message = raw_message_of(exc)
-                if (
+                undecodable = (
                     exc.last_error is not None
                     and raw_message_of(exc.last_error) == _UNDECODABLE_WITH_CANDIDATE
-                ):
-                    message = _UNDECODABLE_WITH_ANY_CANDIDATE
-                raise EncryptionError(
-                    message,
+                )
+                error = EncryptionError(
+                    _UNDECODABLE_WITH_ANY_CANDIDATE
+                    if undecodable
+                    else raw_message_of(exc),
                     archive_name=self._archive_name,
                     member_name=reference.name,
                     source_format=ArchiveFormat.RAR,
-                ) from exc
+                )
+                if undecodable:
+                    # Wrong password or damage: nothing here can tell which.
+                    mark_unverified_data(error)
+                raise error from exc
             self._unchecked_passwords[id(reference)] = found
             if verdict is PasswordConfirmVerdict.CONFIRMED:
                 self._unchecked_confirmed.add(id(reference))
@@ -2302,6 +2306,17 @@ class RarReader(BaseArchiveReader):
         A RAR5 CRC the writer tweaked (``ConvertHashToMAC``) is compared after the same
         transform under this password's HashKey. Memory is one chunk.
         """
+        if not self._stored_crc_matches(raw, password):
+            raise _undecodable_with_candidate()
+        verdict = (
+            PasswordConfirmVerdict.CONFIRMED
+            if raw.file_size >= PASSWORD_CONFIRM_MIN_VERIFIED_BYTES
+            else PasswordConfirmVerdict.INCONCLUSIVE
+        )
+        return password, verdict
+
+    def _stored_crc_matches(self, raw: RarMemberInfo, password: str | bytes) -> bool:
+        """Whether ``password`` decrypts a stored member to bytes its CRC32 matches."""
         assert raw.crc32 is not None
         stage = open_aes_decrypt_stage(self._stored_data_cipher(raw, password))
         view = self._direct_view(raw, raw.compress_size)
@@ -2328,14 +2343,7 @@ class RarReader(BaseArchiveReader):
                     password, enc.salt, enc.kdf_count, kdf_cache=self._kdf_cache
                 ),
             )
-        if crc != raw.crc32 & 0xFFFFFFFF:
-            raise _undecodable_with_candidate()
-        verdict = (
-            PasswordConfirmVerdict.CONFIRMED
-            if raw.file_size >= PASSWORD_CONFIRM_MIN_VERIFIED_BYTES
-            else PasswordConfirmVerdict.INCONCLUSIVE
-        )
-        return password, verdict
+        return crc == raw.crc32 & 0xFFFFFFFF
 
     def _checked_data_password(
         self, enc: RarEncryptionInfo, member: ArchiveMember
@@ -2873,11 +2881,12 @@ class RarReader(BaseArchiveReader):
         windows_attrs: int | None = None
         if info.mode is not None:
             # RAR5 stores attr as a vint (hostile values can exceed C unsigned long).
-            # Unix: ArchiveMember.mode is the low 12 permission bits (S_IMODE);
-            # mask before the C helper so OverflowError cannot abort listing.
+            # Unix: ArchiveMember.mode is the low 12 permission bits, what
+            # stat.S_IMODE keeps; masked directly, as TAR does, since S_IMODE refuses
+            # a value wider than its C type with OverflowError.
             # Win32: FILE_ATTRIBUTE_* is a 32-bit field.
             if host_os == _RAR_HOST_OS_UNIX:
-                mode = stat.S_IMODE(info.mode & 0o7777)
+                mode = info.mode & 0o7777
             elif host_os == _RAR_HOST_OS_WIN32:
                 windows_attrs = info.mode & 0xFFFFFFFF
 
@@ -3806,6 +3815,20 @@ class RarReader(BaseArchiveReader):
                 )
             member.link_target = data.decode("utf-8", errors="surrogateescape")
             return
+        if raw.is_encrypted and self._natively_decryptable(raw) and _crypto_available():
+            # Stored and encrypted: decrypted here as ``open()`` would, so with the
+            # password the target lists as it does from a plain archive, and without
+            # it the link is reported as locked (``password_required``), as in ZIP and
+            # 7z. The read is capped like any data-stored target. A target with both
+            # sizes zero passes ``_natively_decryptable``, decrypts to no bytes and is
+            # reported by the shared empty-target check (``target_empty``), not by
+            # the ``no_target_data`` arm below.
+            self._link_target_from_data(
+                member,
+                lambda: self._open_encrypted_link_target(member, raw),
+                reparse_fallback=None,
+            )
+            return
         # Encrypted / compressed target without usable direct bytes: leave unset. The
         # reason still has to reach the caller — `SYMLINK_TARGET_UNAVAILABLE` is in
         # `ARCHIVE_INTEGRITY_CODES`, so a strict policy refuses the archive, and a
@@ -3814,13 +3837,15 @@ class RarReader(BaseArchiveReader):
         # Only the last of these is the archive recording no target; the other three
         # are targets this direct read cannot reach, and the member keeps the
         # per-member failure it had before `LINK_TARGET_UNAVAILABLE` existed. The
-        # encrypted one is a limit of this listing read rather than a missing
-        # password: it never decrypts, even a stored target ``open()`` would decrypt
-        # (``_natively_decryptable``), so a correct password does not change its
-        # answer, and claiming one was needed would name a fix that does not work.
+        # encrypted one is a target archivey cannot decrypt itself (compressed, split,
+        # RAR 2.0's cipher, or no ``cryptography``) rather than a missing password, so
+        # it does not claim that a password would help.
         if raw.is_encrypted:
             reason = "target_data_encrypted"
-            detail = "its data is encrypted, and listing does not decrypt link targets"
+            if self._natively_decryptable(raw):
+                detail = "its data is encrypted and cryptography is not installed"
+            else:
+                detail = "its data is encrypted in a form archivey does not decrypt"
             in_archive = True
         elif not _data_is_reachable(raw):
             reason = "target_data_split_across_volumes"
@@ -4180,6 +4205,23 @@ class RarReader(BaseArchiveReader):
                 member_name=member.name,
                 source_format=ArchiveFormat.RAR,
             )
+        params = self._stored_data_cipher(raw, self._stored_data_password(member, raw))
+        view = self._direct_view(raw, raw.compress_size)
+        with _close_on_error(view):
+            plain = open_aes_decrypt_stream(view, params, owns_inner=True)
+        with _close_on_error(plain):
+            # The ciphertext is padded to whole blocks; the member ends at its
+            # unpacked size, and the padding after it is not content.
+            trimmed: BinaryIO = SlicingStream(
+                plain, length=raw.file_size, owns_inner=True, probe_source_size=False
+            )
+        with _close_on_error(trimmed):
+            watched = self._watch_unverified(trimmed, member)
+        with _close_on_error(watched):
+            return self._wrap_payload_stream(watched, member)
+
+    def _stored_data_password(self, member: ArchiveMember, raw: RarMemberInfo) -> str:
+        """The password :meth:`_open_decrypted_stored` decrypts ``member`` with."""
         enc = raw.file_encryption
         password: str | None
         if enc is not None and _psw_check_usable(enc):
@@ -4195,20 +4237,32 @@ class RarReader(BaseArchiveReader):
                 member_name=member.name,
                 source_format=ArchiveFormat.RAR,
             )
-        params = self._stored_data_cipher(raw, password)
-        view = self._direct_view(raw, raw.compress_size)
-        with _close_on_error(view):
-            plain = open_aes_decrypt_stream(view, params, owns_inner=True)
-        with _close_on_error(plain):
-            # The ciphertext is padded to whole blocks; the member ends at its
-            # unpacked size, and the padding after it is not content.
-            trimmed: BinaryIO = SlicingStream(
-                plain, length=raw.file_size, owns_inner=True, probe_source_size=False
+        return password
+
+    def _open_encrypted_link_target(
+        self, member: ArchiveMember, raw: RarMemberInfo
+    ) -> ArchiveStream:
+        """Open a RAR 2.9-4 symlink's encrypted, stored target for listing.
+
+        RAR 2.9-4 records no password check, so one password goes to the read
+        unjudged, and a wrong one decrypts to bytes of the right length. The target
+        is small, so its CRC is checked first: a mismatch, or a candidate list whose
+        every entry fails it, is a wrong password or damage, which nothing here can
+        tell apart, and is reported as such
+        (:meth:`_locked_link_target_report`) rather than as a damaged target.
+        """
+        # A candidate list whose every entry fails the same CRC arrives marked.
+        password = self._stored_data_password(member, raw)
+        if raw.crc32 is not None and not self._stored_crc_matches(raw, password):
+            error = EncryptionError(
+                "The decrypted symlink target does not match its CRC32 checksum",
+                archive_name=self._archive_name,
+                member_name=member.name,
+                source_format=ArchiveFormat.RAR,
             )
-        with _close_on_error(trimmed):
-            watched = self._watch_unverified(trimmed, member)
-        with _close_on_error(watched):
-            return self._wrap_payload_stream(watched, member)
+            mark_unverified_data(error)
+            raise error
+        return self._open_decrypted_stored(member, raw)
 
     def _open_member_with_program(
         self, member: ArchiveMember, raw: RarMemberInfo
