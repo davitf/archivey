@@ -33,6 +33,9 @@ def traced_peak(action: Callable[[], object]) -> int:
     Callers that must not count first-use costs (lazy imports, caches) run ``action``
     once before calling this.
     """
+    # Before the collector is touched: where tracemalloc is missing (PyPy), the
+    # conftest stand-in skips the test here, with the collector still enabled.
+    tracemalloc.is_tracing()
     gc.collect()
     was_enabled = gc.isenabled()
     gc.disable()

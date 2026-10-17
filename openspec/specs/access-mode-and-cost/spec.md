@@ -327,18 +327,18 @@ an occurrence log or counter.
 ### Requirement: Declared capabilities compose with the two access modes
 
 `streaming` SHALL remain the only access-mode choice. `seekable_members` /
-`concurrent_members` SHALL declare stream capabilities **within** a mode (not a third
+`concurrent_operations` SHALL declare stream capabilities **within** a mode (not a third
 mode; no `ArchiveyConfig` equivalent). Ownership, leases, materialization, and
 free-threaded rules for declared concurrency live in `reader-concurrency`; this
 requirement only states how the capabilities compose with `streaming`.
 
 | Mode | Capability composition |
 | --- | --- |
-| `streaming=False` | `concurrent_members` and/or `seekable_members` MAY be declared; concurrent-open semantics are `reader-concurrency`. Without `concurrent_members`, one live member stream (`archive-reading`). |
-| `streaming=True` | Random `open`/`read` still unavailable. Single progressive pass is exclusive. **`concurrent_members=True` incompatible** → `ArchiveyUsageError` at open. `seekable_members=True` alone MAY be declared. |
+| `streaming=False` | `concurrent_operations` and/or `seekable_members` MAY be declared; concurrent-open semantics are `reader-concurrency`. Without `concurrent_operations`, one live member stream (`archive-reading`). |
+| `streaming=True` | Random `open`/`read` still unavailable. Single progressive pass is exclusive. **`concurrent_operations=True` incompatible** → `ArchiveyUsageError` at open. `seekable_members=True` alone MAY be declared. |
 
 Random-access `stream_members()` is exclusive on a default reader. Under
-`concurrent_members=True`, random `open()`, the other random-access calls, further
+`concurrent_operations=True`, random `open()`, the other random-access calls, further
 `stream_members()` passes and `extract_all()` run beside it on every format (see
 `reader-concurrency`, "Random-access calls beside a pass").
 Detected pass/open/close overlap → later op `ArchiveyUsageError`; active pass stays usable. The exception is `close()`
@@ -346,25 +346,22 @@ while the pass is suspended at a yield: the reader closes and resuming the pass 
 `ArchiveyUsageError` (maintainer's ruling, 2026-10-10; see `archive-reading`). Ops
 after `reader.close()` → `ArchiveyUsageError` (idempotent `close`).
 
-Defaults and behaviour are unchanged by the spelling: this requirement previously
-described the same composition in terms of a `member_streams` flag enum.
-
 #### Scenario: mode × capability matrix
 
 | Case | Expected |
 | --- | --- |
-| `streaming=True` + `concurrent_members=True` | `ArchiveyUsageError` at open; no reader |
-| RA + `concurrent_members=True` (or without) | Concurrent-open / single-live-stream rules per `reader-concurrency` / `archive-reading` |
+| `streaming=True` + `concurrent_operations=True` | `ArchiveyUsageError` at open; no reader |
+| RA + `concurrent_operations=True` (or without) | Concurrent-open / single-live-stream rules per `reader-concurrency` / `archive-reading` |
 | Active pass + conflicting pass/open, or close while the pass executes | Later → `ArchiveyUsageError`; original pass usable |
 | Pass suspended at a yield + `close()` | Reader closed; resuming the pass → `ArchiveyUsageError` |
-| RA `stream_members` active + `open()` or another `stream_members` | `ArchiveyUsageError`, unless `concurrent_members=True` |
+| RA `stream_members` active + `open()` or another `stream_members` | `ArchiveyUsageError`, unless `concurrent_operations=True` |
 | `extract_all` drives child `stream_members` | Permitted composition; unrelated public pass rejected |
 
 ### Requirement: Concurrent-stream cost is informational
 
 `access_cost` / `solid_block_count` describe work (including under a declared
 simultaneous schedule). They SHALL NOT permit or deny capabilities —
-`concurrent_members` is the only gate (`reader-concurrency`). Solid open-*order* cost
+`concurrent_operations` is the only gate (`reader-concurrency`). Solid open-*order* cost
 is reported here and steered toward `stream_members()`, not gated.
 
 **An out-of-order `open()` on a solid archive SHALL emit no diagnostic and no warning,
@@ -392,7 +389,7 @@ docstring's pointer to `stream_members()`. A caller who wants to be *stopped* ha
 
 | Case | Expected |
 | --- | --- |
-| `concurrent_members=True` on `DIRECT` and `SOLID` readers, multiple streams | Both supported and byte-correct; only reported/repeated work differs |
+| `concurrent_operations=True` on `DIRECT` and `SOLID` readers, multiple streams | Both supported and byte-correct; only reported/repeated work differs |
 | Out-of-order `open()` on a solid 7z / RAR / compressed TAR | Members read correctly; **no** diagnostic and **no** `warnings.warn`; `cost.access_cost == SOLID` was the signal, at open |
 
 ### Requirement: Detection cost is a sibling of CostReceipt, not part of it

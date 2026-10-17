@@ -139,7 +139,7 @@ class ReaderState:
     after that walk.
 
     **The default path is the strict one.** Without ``MemberStreams.CONCURRENT``
-    (``concurrent_members=True``) this class mostly refuses: one live member stream, one
+    (``concurrent_operations=True``) this class mostly refuses: one live member stream, one
     reader-wide operation, no overlapping worker calls, and no shared-handle locks
     needed. ``CONCURRENT`` turns those refusals into waits: several live streams,
     a second materializer waits for the first one's snapshot, and ``close()`` drains
@@ -529,8 +529,8 @@ class ReaderState:
                     raise ArchiveyUsageError(
                         "A member stream is already open on this reader. Close it "
                         "before opening another, or reopen the archive with "
-                        "concurrent_members=True "
-                        f"(this archive was opened without concurrent_members at {loc})."
+                        "concurrent_operations=True "
+                        f"(this archive was opened without concurrent_operations at {loc})."
                     )
             token = LiveStreamReservation()
             self._reservations.add(token)

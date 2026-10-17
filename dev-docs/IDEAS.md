@@ -156,7 +156,7 @@ Each idea carries a status:
   `open()` on a solid 7z rebuilds the folder decoder from the start, so opening every
   member costs about 4.5× one pass. Keeping one decoder and reusing it when the next target
   is ahead would remove that. The open question is what to keep under
-  `concurrent_members=True`, where several decoders can be live at once.
+  `concurrent_operations=True`, where several decoders can be live at once.
 - **Batch small members into one `unrar` call.** *Open idea.* A non-solid
   `stream_members()` pass spawns one `unrar` per member, about 5 ms each. Small adjacent
   members could share a process and be split by size, as the solid path already does.
