@@ -1469,7 +1469,7 @@ class TarReader(BaseArchiveReader):
         else:
             what = (
                 f"{declares}; a TAR link entry has no data area, so the blocks are "
-                "skipped and the listing goes on after them."
+                "skipped."
             )
         self._diagnostics_collector.emit(
             code=DiagnosticCode.MEMBER_LINK_DATA_IGNORED,

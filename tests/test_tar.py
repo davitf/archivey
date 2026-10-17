@@ -2144,6 +2144,51 @@ def test_link_with_size_before_the_trailer_is_reported_not_truncated(
 
 
 @pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    ("declared", "trailer"),
+    [(10, 1024), (600, 1024), (1024, 1024), (1500, 1536)],
+    ids=["10_before_1024", "600_before_1024", "1024_before_1024", "1500_before_1536"],
+)
+@pytest.mark.parametrize("typeflag", _LINK_TYPEFLAGS)
+def test_link_with_size_inside_the_trailer_keeps_the_trailer_whole(
+    typeflag: bytes, declared: int, trailer: int, streaming: bool
+) -> None:
+    # The last member is a link whose declared span fits inside the trailer's zeros,
+    # with no member header after it. The span is skipped as the link's data, but the
+    # walk then ends right at its end, so the trailer checks read the span as the
+    # trailer, as GNU tar and tarfile read these bytes (both list a.txt and l, exit
+    # 0). Only the link's declared size is reported, not a missing marker.
+    data = _tar_link_with_data(typeflag, b"", size=declared, tail=b"\0" * trailer)
+    with open_archive(
+        NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
+        format=ArchiveFormat.TAR,
+        streaming=streaming,
+    ) as ar:
+        assert [m.name for m in ar] == ["a.txt", "l"]
+        assert ar.diagnostics.counts == {DiagnosticCode.MEMBER_LINK_DATA_IGNORED: 1}
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_link_with_size_inside_the_trailer_before_junk_is_trailing_data(
+    streaming: bool,
+) -> None:
+    # As above with junk after the trailer: the junk is reported as after a file.
+    data = _tar_link_with_data(
+        tarfile.SYMTYPE, b"", size=600, tail=b"\0" * 1024 + b"junk".ljust(512, b"\0")
+    )
+    with open_archive(
+        NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
+        format=ArchiveFormat.TAR,
+        streaming=streaming,
+    ) as ar:
+        assert [m.name for m in ar] == ["a.txt", "l"]
+        assert ar.diagnostics.counts == {
+            DiagnosticCode.MEMBER_LINK_DATA_IGNORED: 1,
+            DiagnosticCode.ARCHIVE_TRAILING_DATA: 1,
+        }
+
+
+@pytest.mark.parametrize("streaming", [False, True])
 def test_link_with_size_before_a_one_block_trailer_misses_the_marker(
     streaming: bool,
 ) -> None:
