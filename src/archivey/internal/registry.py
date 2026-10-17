@@ -93,6 +93,7 @@ _CONTAINER_OPTIONAL_CODECS: dict[ContainerFormat, tuple[Codec, ...]] = {
         Codec.DEFLATE64,
         Codec.ZSTD,
         Codec.BROTLI,
+        Codec.LZ4,
     ),
     ContainerFormat.ZIP: (Codec.DEFLATE64, Codec.ZSTD, Codec.PPMD),
 }
@@ -272,8 +273,16 @@ class BackendRegistry:
         dep = backend_cls.OPTIONAL_DEPENDENCY
         return dep is None or _optional(dep) is not None
 
-    def format_availability(self, fmt: ArchiveFormat) -> FormatAvailability:
-        """Compute the tri-state support of ``fmt`` compositionally (see ``backend-registry``)."""
+    def format_availability(
+        self, fmt: ArchiveFormat, *, check_programs: bool = False
+    ) -> FormatAvailability:
+        """Compute the tri-state support of ``fmt`` compositionally (see ``backend-registry``).
+
+        ``check_programs`` also asks the backend for missing external programs
+        (``ReadBackend.missing_programs``), which can run them to identify them. Only
+        the public query sets it: a missing program never makes a format ``NONE``, so
+        the open path and ``list_supported_formats`` get the same answer without it.
+        """
         backend_cls = self._readers.get(fmt)
         if backend_cls is None:
             # No backend, so no source shape to report: the SEEKABLE default stands as
@@ -331,6 +340,8 @@ class BackendRegistry:
                 requirement = codec_requirement(codec)
                 assert requirement is not None  # an optional codec always declares one
                 missing.append(requirement)
+        if check_programs:
+            missing.extend(backend_cls.missing_programs())
 
         if not missing:
             return FormatAvailability(fmt, FormatSupport.FULL, (), required_source)
@@ -429,7 +440,9 @@ def get_registry() -> BackendRegistry:
     return _registry
 
 
-def format_availability(fmt: ArchiveFormat | str) -> FormatAvailability:
+def format_availability(
+    fmt: ArchiveFormat | str, *, check_programs: bool = True
+) -> FormatAvailability:
     """Public query: the tri-state support level of ``fmt`` and its missing components.
 
     ``fmt`` is an :class:`~archivey.ArchiveFormat` — the ``(container, stream)`` pair —
@@ -437,6 +450,14 @@ def format_availability(fmt: ArchiveFormat | str) -> FormatAvailability:
     else, a :class:`~archivey.StreamFormat` or a :class:`~archivey.ContainerFormat`
     included, raises :class:`~archivey.ArchiveyUsageError` rather than answering: each
     is half of the pair, not a format.
+
+    RAR is ``PARTIAL``, with ``unrar`` in ``missing``, when no RARLAB ``unrar`` or
+    ``rar`` 6.0 or later is on ``PATH``: it still opens and lists, and stored members
+    read. To find out, the first call runs each candidate once to read its banner, for
+    at most 10 seconds each; the answer is cached per binary.
+    It describes the default ``rar_decompressor`` (``AUTO``) and does not change with
+    ``ArchiveyConfig``. ``check_programs=False`` runs no program: missing programs are
+    then not counted, and RAR reports as it would with ``unrar`` installed.
     """
     # A non-ArchiveFormat used to fall through to a fabricated record — NONE with an
     # empty ``missing``, indistinguishable from a legitimate unsupported answer, and a
@@ -446,7 +467,7 @@ def format_availability(fmt: ArchiveFormat | str) -> FormatAvailability:
     resolved = coerce_archive_format(
         fmt, call="format_availability()", allow_none=False
     )
-    return _registry.format_availability(resolved)
+    return _registry.format_availability(resolved, check_programs=check_programs)
 
 
 def list_supported_formats() -> list[ArchiveFormat]:

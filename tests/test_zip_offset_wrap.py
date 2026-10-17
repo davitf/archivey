@@ -79,14 +79,16 @@ class _Sparse(io.RawIOBase):
         return self._pos
 
     def readinto(self, b) -> int:  # type: ignore[override]  # test double; broad buffer type
-        view = memoryview(b).cast("B")
-        start = self._pos
-        n = max(min(len(view), self._size - start), 0)
-        view[:n] = bytes(n)
-        for at, data in self._segments:
-            lo, hi = max(at, start), min(at + len(data), start + n)
-            if lo < hi:
-                view[lo - start : hi - start] = data[lo - at : hi - at]
+        # Released on return: PyPy frees an unreleased view only at a later
+        # collection, and until then the caller cannot resize ``b``.
+        with memoryview(b) as outer, outer.cast("B") as view:
+            start = self._pos
+            n = max(min(len(view), self._size - start), 0)
+            view[:n] = bytes(n)
+            for at, data in self._segments:
+                lo, hi = max(at, start), min(at + len(data), start + n)
+                if lo < hi:
+                    view[lo - start : hi - start] = data[lo - at : hi - at]
         self._pos += n
         return n
 

@@ -308,7 +308,7 @@ yielded.
   prefer a single forward pass.
 - Hardlinks are first-class at extraction; unfiltered `extract_all` resolves them in one
   pass.
-- `concurrent_members=True` uses a per-reader shared-handle lock (same shape as ISO).
+- `concurrent_operations=True` uses a per-reader shared-handle lock (same shape as ISO).
 - **An old-style directory that declares data is reported.** A regular-file header
   (typeflag NUL or `0`) whose name ends in `/` is a directory, as GNU tar and 7-Zip
   read it. When its size field is not zero, the directory keeps that `size`,

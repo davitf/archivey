@@ -581,7 +581,7 @@ def first_volume_for_stub(path: Path) -> Path | None:
 
 
 # LRU of open Path volume handles. Two or three absorb SharedView pairs that
-# straddle a part boundary (concurrent_members=True). Not a refusal: a 100-part
+# straddle a part boundary (concurrent_operations=True). Not a refusal: a 100-part
 # set still reads. Past this many distinct Path volumes in the working set, each
 # cache miss is an open()+close() on that read. Growing the cache to the volume
 # count would hold one descriptor per part again.

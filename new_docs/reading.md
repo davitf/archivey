@@ -2,7 +2,7 @@
 
 With no options, `open_archive` lets you read members in any order, with one member open at a time.
 That suits most programs. Three options change it for the cases where the default is slow or not
-enough: `streaming`, `seekable_members` and `concurrent_members`. Opening an archive also applies a
+enough: `streaming`, `seekable_members` and `concurrent_operations`. Opening an archive also applies a
 few limits, such as how many members it may list, which [Archives you
 trust](extracting.md#archives-you-trust) explains how to raise.
 
@@ -46,8 +46,8 @@ you leave with `break` ends at once on CPython. One kept in a variable, or one a
 holds the archive until you close it, so use it in a `with` block when the loop can stop early:
 `with archive.stream_members() as members:` ends the pass at the end of the block, and `with
 iter(archive) as members:` does the same for a loop over members. With
-[`concurrent_members=True`](#several-members-at-once) they work, from any thread, on every format.
-`extract_all` still can't run while a pass is going.
+[`concurrent_operations=True`](#several-members-at-once) they work, from any thread, on every format,
+and so does `extract_all`.
 Streams from the pass never seek.
 
 A pipe, a socket or an HTTP response can only be read this way. TAR and ZIP archives and single
@@ -91,7 +91,7 @@ faster.
 
 By default only one member stream can be open at a time, and opening a second while the first is
 still open raises. A thread pool that reads different members at once needs
-`concurrent_members=True`, which can't be combined with `streaming=True`. Each stream is opened the
+`concurrent_operations=True`, which can't be combined with `streaming=True`. Each stream is opened the
 same way `open` always opens one, so on a solid archive it may first decompress the members stored
 before it. The streams share the source and take turns reading compressed data from it, but they
 decompress in parallel. That can be cheaper than opening the archive once per worker, which reads
@@ -118,4 +118,4 @@ format, and the mistake shows up during development.
 | Read everything once | `streaming=True` | [One pass only](#reading-once); no reads by name |
 | Read from a pipe | `streaming=True` | [TAR, ZIP and single compressed files only](#reading-once) |
 | Seek inside a member | `seekable_members=True` | [A backward seek may decompress again](#seeking-inside-a-member), and a seek that [jumps over data](errors-and-diagnostics.md#damaged-archives) stops the checksum check |
-| Read members from several threads | `concurrent_members=True` | [Slow on sources where each jump is costly](#several-members-at-once) |
+| Read members from several threads | `concurrent_operations=True` | [Slow on sources where each jump is costly](#several-members-at-once) |

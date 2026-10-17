@@ -29,7 +29,9 @@ def test_second_overlapping_open_raises_usage_error(tmp_path: Path) -> None:
     root = _two_file_dir(tmp_path)
     with open_archive(root) as reader:
         s1 = reader.open("a.txt")
-        with pytest.raises(ArchiveyUsageError, match="concurrent_members=True") as ei:
+        with pytest.raises(
+            ArchiveyUsageError, match="concurrent_operations=True"
+        ) as ei:
             reader.open("b.txt")
         # Breadcrumb points at this test file.
         assert "test_member_streams.py" in str(ei.value)
@@ -120,7 +122,7 @@ def test_usage_error_is_not_archivey_error(tmp_path: Path) -> None:
 
 def test_concurrent_flag_allows_overlapping_opens(tmp_path: Path) -> None:
     root = _two_file_dir(tmp_path)
-    with open_archive(root, concurrent_members=True) as reader:
+    with open_archive(root, concurrent_operations=True) as reader:
         s1 = reader.open("a.txt")
         s2 = reader.open("b.txt")
         assert s1.read() == b"aaa"
@@ -161,10 +163,20 @@ def test_member_streams_kwarg_is_gone(tmp_path: Path) -> None:
         open_archive(root, member_streams="anything")  # type: ignore[call-arg]
 
 
+def test_concurrent_members_kwarg_is_gone(tmp_path: Path) -> None:
+    """``concurrent_members`` became ``concurrent_operations`` with no alias.
+
+    Same lock as above: accepting the old spelling again has to delete this test.
+    """
+    root = _two_file_dir(tmp_path)
+    with pytest.raises(TypeError, match="concurrent_members"):
+        open_archive(root, concurrent_members=True)  # type: ignore[call-arg]
+
+
 def test_streaming_plus_concurrent_rejected(tmp_path: Path) -> None:
     root = _two_file_dir(tmp_path)
     with pytest.raises(ArchiveyUsageError, match="streaming=True"):
-        open_archive(root, streaming=True, concurrent_members=True)
+        open_archive(root, streaming=True, concurrent_operations=True)
 
 
 def test_extract_needs_no_capability(tmp_path: Path) -> None:
@@ -261,7 +273,7 @@ def test_reader_close_closes_streams_in_open_order(tmp_path: Path) -> None:
         closed_order.append(id(self))
         real_close(self)
 
-    reader = open_archive(root, concurrent_members=True)
+    reader = open_archive(root, concurrent_operations=True)
     try:
         streams = [reader.open(name) for name in names]
         opened_order = [id(s) for s in streams]

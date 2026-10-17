@@ -8,7 +8,15 @@ import threading
 import uuid
 import weakref
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Collection, Generator, Iterator, Mapping
+from collections.abc import (
+    Callable,
+    Collection,
+    Generator,
+    Iterator,
+    Mapping,
+    Sequence,
+    Set,
+)
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
@@ -90,6 +98,7 @@ from archivey.internal.naming import (
     resolve_link_target_name,
 )
 from archivey.internal.open_site import OpenSite
+from archivey.internal.password import is_unverified_data_error
 from archivey.internal.password_confirm import UnverifiedPasswordReadWatch
 from archivey.internal.reader_state import (
     LiveStreamReservation,
@@ -143,6 +152,7 @@ from archivey.types import (
     MemberSelectorArg,
     MemberStreams,
     MemberType,
+    MissingComponent,
     OnError,
     OnErrorStr,
     OverwritePolicy,
@@ -390,6 +400,17 @@ class ReadBackend(ABC):
     # (e.g. "pip install archivey[recommended]").
     INSTALL_HINT: str | None = None
 
+    @classmethod
+    def missing_programs(cls) -> tuple[MissingComponent, ...]:
+        """External programs this backend can use that are not usable here.
+
+        A backend that still opens and lists without them makes its format ``PARTIAL``
+        in the public ``format_availability()`` query. Only that query calls this: a
+        backend may run a program once to identify it, and ``open_archive`` must not
+        pay for that. Empty for backends that run no external program.
+        """
+        return ()
+
     @abstractmethod
     def open_read(
         self,
@@ -531,6 +552,10 @@ class BaseArchiveReader(ArchiveReader):
             weakref.WeakValueDictionary()
         )
         self._public_stream_seq = 0
+        # Guards the counter and the registry: on a CONCURRENT reader two open() calls
+        # register at once, and an unlocked ``+= 1`` could hand both the same key, so
+        # one stream would drop out and close() would leave it open.
+        self._public_streams_lock = threading.Lock()
         # The archive's source, recorded by every backend's constructor. The reader owns
         # it: teardown closes it after ``_close_archive``. Also backs
         # ``compressed_source_size`` below.
@@ -576,7 +601,11 @@ class BaseArchiveReader(ArchiveReader):
         # the index's order, with why: the walk's error is the first of them, and
         # extraction gives each its result.
         self._failed_at_end: list[tuple[ArchiveMember, CorruptionError]] = []
-        self._listed_by_name: dict[str, list[ArchiveMember]] = {}
+        # Name to the member listed under it, or to a list of them in listing order
+        # once a second member has that name: a list here always holds two or more. A
+        # list per name would be one more object per member for the collector to walk.
+        # Read it through ``_listed_named`` or ``_last_by_exact_name``.
+        self._listed_by_name: dict[str, ArchiveMember | list[ArchiveMember]] = {}
         self._walk_position: int = 0
         self._walk: Iterator[ArchiveMember] | None = None
         self._walk_done: bool = False
@@ -608,6 +637,8 @@ class BaseArchiveReader(ArchiveReader):
         # per reader, not per raised exception — retries must not multiply the
         # diagnostic (or burn retention slots).
         self._unconfirmed_failure_emitted: bool = False
+        # Makes the test-and-set of ``_unconfirmed_failure_emitted`` one step.
+        self._unconfirmed_failure_lock = threading.Lock()
         self._listing_tracker = ListingLimitTracker(self._config.listing_limits)
         self._forward_pass_started: bool = False
         self._progressive_gen: Iterator[ArchiveMember] | None = None
@@ -697,8 +728,9 @@ class BaseArchiveReader(ArchiveReader):
             self._state.acquire_live_stream(stream)
         else:
             self._state.bind_live_stream(token, stream)
-        self._public_stream_seq += 1
-        self._public_streams[self._public_stream_seq] = stream
+        with self._public_streams_lock:
+            self._public_stream_seq += 1
+            self._public_streams[self._public_stream_seq] = stream
 
         # Capture the identity token, not the stream. ``weakref.finalize`` keeps its
         # callback alive until it fires, so a callback that strongly referenced the
@@ -953,7 +985,7 @@ class BaseArchiveReader(ArchiveReader):
         still MUST NOT hold unsynchronized per-open scratch.
 
         Concurrent ``open`` is supported when the reader declared concurrency
-        (``MemberStreams.CONCURRENT``, from ``open_archive(concurrent_members=True)``):
+        (``MemberStreams.CONCURRENT``, from ``open_archive(concurrent_operations=True)``):
         first-touch materialization is coordinated
         (wait/share), and after the snapshot is published workers may fan out. Forward-only
         / streaming passes remain single-owner. See ``dev-docs/investigations/parallel-reader.md``.
@@ -1275,8 +1307,13 @@ class BaseArchiveReader(ArchiveReader):
             exc.args = (escaped,)
             exc.format_unconfirmed = True
 
-        if self._unconfirmed_failure_emitted:
-            return
+        # Test and set in one step: two threads failing at once on a CONCURRENT
+        # reader would otherwise both pass the test and emit twice. Set before
+        # emitting, for the reason below.
+        with self._unconfirmed_failure_lock:
+            if self._unconfirmed_failure_emitted:
+                return
+            self._unconfirmed_failure_emitted = True
 
         # Under PEDANTIC (RAISE on every code), a bare emit would raise DiagnosticRaisedError
         # mid-raise and destroy the typed TruncatedError/CorruptionError/
@@ -1285,15 +1322,14 @@ class BaseArchiveReader(ArchiveReader):
         # caller.
         raising = code in self._diagnostics_collector.policy.raise_on
 
-        # Set before emitting: under RAISE the emit does not return, and a flag set
-        # afterwards would never be reached — every retried read would record the
-        # diagnostic again. `diagnostics` splits those concerns ("deduplication is a
+        # The flag is set above, before emitting: under RAISE the emit does not return,
+        # and a flag set afterwards would never be reached — every retried read would
+        # record the diagnostic again. `diagnostics` splits those concerns ("deduplication is a
         # presentation concern; escalation is not"), and normally a deduplicated code
         # still escalates on later occurrences via `escalate_only`. This code needs no
         # such re-escalation: the caller re-raises the stamped `exc` — same type, same
         # `format_unconfirmed=True` — on every occurrence, so a caller who asked to be
         # stopped is stopped whether or not the diagnostic fires a second time.
-        self._unconfirmed_failure_emitted = True
         reader_format = self._format.display_name
         escalate_as: type[BaseException] | None = None
         escalate_message: str | None = None
@@ -1435,14 +1471,9 @@ class BaseArchiveReader(ArchiveReader):
             if child_scope:
                 # Also wraps ``_internal_member_opens()`` (live-stream gate exemption) —
                 # the two always travel together for eager link-data reads.
-                # Link-data reads are a private child scope under an active root when one
+                # Link-data reads are a private child scope under an active pass when one
                 # exists; otherwise they only need the live-stream gate exemption.
-                root = self._state.current_root()
-                child = (
-                    self._state.enter_child(root, "link_reads")
-                    if root is not None
-                    else None
-                )
+                child = self._state.enter_child_scope("link_reads")
                 try:
                     with self._internal_member_opens():
                         _resolve()
@@ -1649,12 +1680,10 @@ class BaseArchiveReader(ArchiveReader):
             assert member._member_id is not None
             self._dropped_listed.add(member._member_id)
         self._listed = [member for member in self._listed if id(member) not in gone]
-        for member in dropped:
-            listed = self._listed_by_name.get(member.name)
-            if listed is not None:
-                listed[:] = [m for m in listed if id(m) not in gone]
-                if not listed:
-                    del self._listed_by_name[member.name]
+        # One pass per name: dropping one member at a time would rebuild a shared
+        # name's entry once per member.
+        for name in {member.name for member in dropped}:
+            self._unindex_members(name, gone)
         _settle_listing(dropped, links_too=True)
 
     def _abandon_walk(self, exc: BaseException) -> None:
@@ -1948,7 +1977,17 @@ class BaseArchiveReader(ArchiveReader):
         diagnostic again — which would count one targetless link twice in
         ``DiagnosticSummary.counts``, and under a ``RAISE`` disposition would raise at
         whatever later access happened to touch the member rather than during listing.
+
+        Under the walk lock, so two threads following the same link on a
+        ``CONCURRENT`` reader read and report it once: the second finds the memo. The
+        walk lock and not a lock of its own: link finalization already holds it while
+        it calls this, so a second lock would have to be taken in that same order
+        everywhere.
         """
+        with self._walk_lock:
+            self._resolve_link_target_locked(member)
+
+    def _resolve_link_target_locked(self, member: ArchiveMember) -> None:
         if member.link_target is not None or member._link_target_resolved:
             return
         try:
@@ -1991,11 +2030,16 @@ class BaseArchiveReader(ArchiveReader):
         reads, without enforcing: this is not a listing call, and the published report
         will carry it.
         """
-        if member.link_target is not None or member._link_target_resolved:
-            return
-        self._resolve_link_target(member)
-        if member.link_target is not None:
-            self._listing_tracker.account_link_target(member.link_target, enforce=False)
+        # Under the walk lock, as _resolve_link_target is: the check, the read and the
+        # weighing happen once for two threads following the same link.
+        with self._walk_lock:
+            if member.link_target is not None or member._link_target_resolved:
+                return
+            self._resolve_link_target_locked(member)
+            if member.link_target is not None:
+                self._listing_tracker.account_link_target(
+                    member.link_target, enforce=False
+                )
 
     def _emit_link_target_unavailable(
         self,
@@ -2396,6 +2440,14 @@ class BaseArchiveReader(ArchiveReader):
         self, member: ArchiveMember, exc: EncryptionError
     ) -> tuple[str, str]:
         """The ``(reason, message)`` for a link target its encryption kept unread."""
+        if is_unverified_data_error(exc):
+            # Nothing confirmed the password before the data failed its check: a wrong
+            # password or a damaged member, and nothing here can say which.
+            return "password_or_damage", (
+                f"The symlink target of {quoted(member.name)} failed its integrity "
+                f"check; the password may be wrong or the member may be corrupt. "
+                f"Leaving link_target unset."
+            )
         return "password_required", (
             f"Cannot read the symlink target of {quoted(member.name)} without the "
             f"correct password; leaving link_target unset."
@@ -2543,13 +2595,57 @@ class BaseArchiveReader(ArchiveReader):
         )
 
     def _index_member_name(self, member: ArchiveMember) -> None:
-        self._listed_by_name.setdefault(member.name, []).append(member)
+        index = self._listed_by_name
+        held = index.get(member.name)
+        if held is None:
+            index[member.name] = member
+        elif isinstance(held, list):
+            held.append(member)
+        else:
+            index[member.name] = [held, member]
+
+    def _unindex_members(self, name: str, gone: Set[int]) -> None:
+        """Take the members whose ``id()`` is in ``gone`` out of ``name``'s entry.
+
+        By identity: a duplicate can compare equal to the member being removed. ``gone``
+        is a set so that one pass over a long entry stays linear.
+        """
+        index = self._listed_by_name
+        held = index.get(name)
+        if held is None:
+            return
+        if not isinstance(held, list):
+            if id(held) in gone:
+                del index[name]
+            return
+        kept = [m for m in held if id(m) not in gone]
+        if len(kept) == len(held):
+            return
+        if not kept:
+            del index[name]
+        elif len(kept) == 1:
+            index[name] = kept[0]
+        else:
+            index[name] = kept
+
+    def _listed_named(self, name: str) -> Sequence[ArchiveMember]:
+        """The members listed so far under exactly ``name``, in listing order.
+
+        Read-only, and only until the index next changes: for a duplicated name it is
+        the index's own list.
+        """
+        held = self._listed_by_name.get(name)
+        if held is None:
+            return ()
+        if isinstance(held, list):
+            return held
+        return (held,)
 
     def _last_by_exact_name(self, name: str) -> ArchiveMember | None:
-        candidates = self._listed_by_name.get(name)
-        if not candidates:
-            return None
-        return candidates[-1]
+        held = self._listed_by_name.get(name)
+        if isinstance(held, list):
+            return held[-1]
+        return held
 
     def _find_link_target(
         self, member: ArchiveMember, *, before_id: int | None = None
@@ -2558,7 +2654,7 @@ class BaseArchiveReader(ArchiveReader):
 
         Resolves the stored target string to an archive-namespace name first (a symlink
         target is relative to the link's own directory — see
-        :func:`resolve_link_target_name`), then looks it up in ``_listed_by_name``;
+        :func:`resolve_link_target_name`), then looks it up in the name index;
         directory members carry a trailing ``/`` in their names, so both forms are
         tried. With ``before_id``, only members listed before that id count.
 
@@ -2588,14 +2684,14 @@ class BaseArchiveReader(ArchiveReader):
                 return None
         if before_id is None:
             for name in link_target_name_keys(target_name):
-                candidates = self._listed_by_name.get(name)
-                if candidates:
-                    return candidates[-1]
+                last = self._last_by_exact_name(name)
+                if last is not None:
+                    return last
             return None
         best: ArchiveMember | None = None
         best_id = -1
         for name in link_target_name_keys(target_name):
-            for candidate in reversed(self._listed_by_name.get(name, [])):
+            for candidate in reversed(self._listed_named(name)):
                 candidate_id = candidate._member_id
                 if candidate_id is None or candidate_id >= before_id:
                     continue
@@ -2994,7 +3090,18 @@ class BaseArchiveReader(ArchiveReader):
         incomplete report (prefix plus ``error``), not raised. After a streaming pass
         stopped by a listing limit, ``None``, as on a reader with no index.
         """
-        self._state.require_open("members_report_if_available()")
+        if not self._state.concurrent:
+            self._state.require_open("members_report_if_available()")
+            return self._members_report_if_available()
+        # A worker token, as members() takes: close() then waits for the walk below
+        # instead of closing the archive under it.
+        token = self._state.acquire_worker("members_report_if_available()")
+        try:
+            return self._members_report_if_available()
+        finally:
+            self._state.release_worker(token)
+
+    def _members_report_if_available(self) -> MemberListReport | None:
         published = self._published_within_limits()
         if published is not None:
             return published.report
@@ -3062,7 +3169,7 @@ class BaseArchiveReader(ArchiveReader):
     def open(self, member: str | ArchiveMember) -> ArchiveStream:
         """Open member for reading. Follows symlinks.
 
-        Without ``open_archive(concurrent_members=True)``, at most one member stream may
+        Without ``open_archive(concurrent_operations=True)``, at most one member stream may
         be live. With it, concurrent first-touch materialization is coordinated and
         concurrent ``open`` is supported. Positioning requires
         ``open_archive(seekable_members=True)``.
@@ -3397,9 +3504,6 @@ class BaseArchiveReader(ArchiveReader):
             limits if limits is not None else self._config.extraction_limits
         )
         collector = self._diagnostics_collector
-        # This call's report covers only its own extraction-phase events; open-phase
-        # diagnostics stay on reader.diagnostics.
-        wm = collector.watermark()
         coordinator = ExtractionCoordinator(
             policy=policy,
             overwrite=overwrite,
@@ -3414,13 +3518,16 @@ class BaseArchiveReader(ArchiveReader):
         token = self._state.acquire_pass("extract_all")
         try:
             # Library-internal member opens (including hardlink recovery) are ungated.
-            with self._internal_member_opens():
+            # The report covers only the emits this call makes, on its own thread:
+            # open-phase diagnostics stay on reader.diagnostics, and on a CONCURRENT
+            # reader other threads emit into the same collector meanwhile.
+            with self._internal_member_opens(), collector.scoped() as scope:
                 results = coordinator.run(self, dest_path)
         finally:
             self._state.release_pass(token)
         return ExtractionReport(
             results=tuple(results),
-            diagnostics=collector.snapshot(since=wm),
+            diagnostics=scope.summary(),
             _dry_run_top_level=coordinator.dry_run_top_level,
             _dry_run_links=coordinator.dry_run_links,
             _dry_run_entries=coordinator.dry_run_entries,
@@ -3536,14 +3643,17 @@ class BaseArchiveReader(ArchiveReader):
         """
         failures: list[BaseException] = []
         # Snapshot: closing mutates the registry through the lease callbacks.
-        for stream in list(self._public_streams.values()):
+        with self._public_streams_lock:
+            streams = list(self._public_streams.values())
+        for stream in streams:
             if stream.closed:
                 continue
             try:
                 stream.close()
             except BaseException as exc:  # noqa: BLE001 - report every failure, not the first
                 failures.append(exc)
-        self._public_streams.clear()
+        with self._public_streams_lock:
+            self._public_streams.clear()
         if len(failures) == 1:
             raise failures[0]
         if failures:
