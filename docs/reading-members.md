@@ -57,8 +57,8 @@ with its stream:
 ```python
 with archivey.open_archive("backup.tar.zst") as reader:
     for member, stream in reader.stream_members():
-        if stream is None:
-            continue                     # a directory or other non-file entry
+        if not member.is_file or stream is None:
+            continue                     # a directory, a link or another non-file
         print(member.name, len(stream.read()))
 ```
 
@@ -80,10 +80,10 @@ Three things about the yielded streams are worth knowing:
   producing the next pair, so read what you need in the loop body. Keeping a
   reference and reading it later gets you a closed stream, not stale data.
 - **Members with no data of their own yield `None`.** Directories, symbolic links and
-  hard links come through as `(member, None)` — hence the `if stream is None` above.
-  A directory whose header declares data is the exception (see
-  [below](#which-members-you-can-open)): it comes with a stream of those bytes, so
-  test `member.is_file` when you want files only.
+  hard links come through as `(member, None)`. A directory whose header declares data
+  is the exception (see [below](#which-members-you-can-open)): it comes with a stream
+  of those bytes. Hence the test above: `member.is_file` keeps the files, and
+  `stream is None` tells your type checker the stream is there.
 - **Nothing is decompressed until you read.** A member you skip is never opened, and
   no password is requested for it. So "I iterated the whole archive without an error,
   therefore the password is right" does not follow: pass a selector, or read each
@@ -192,7 +192,9 @@ directory), and is `None` on every other usage error. The one exception is a dir
 entry whose header declares data (`MEMBER_DIRECTORY_DATA_IGNORED` reports it):
 extraction creates the directory without the bytes, and `open()` reads them if you
 need them. `stream_members()` yields a stream of the same bytes for it, under the same
-checks, so a streaming reader reaches them too. RAR delivers them only when they are
+checks, so a streaming reader reaches them too. The exception is a ZIP read from a
+pipe whose directory was written with a data descriptor: its size comes after its
+data, so the pass yields `None` and the warning says so. RAR delivers them only when they are
 stored and not encrypted; otherwise both raise `UnsupportedFeatureError`.
 
 **A member belongs to the reader that produced it.** Passing an `ArchiveMember` from

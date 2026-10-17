@@ -220,7 +220,9 @@ yielded.
   directory with that size and reported with ``MEMBER_DIRECTORY_DATA_IGNORED``;
   extraction creates the directory, as unzip and 7-Zip do, and ``read()`` returns the
   bytes, checked against the stored CRC-32, as does the stream ``stream_members()``
-  yields for it, from a file or a pipe. A CRC field of 0, a directory's conventional
+  yields for it. From a pipe, a directory written with a data descriptor (as every
+  writer to a pipe writes it) gets no stream: its size comes after its data, so the
+  pass cannot know the bytes are there, and the message says so. A CRC field of 0, a directory's conventional
   value, is no digest; when that CRC was the entry's only check (unencrypted or
   ZipCrypto), ``DIGEST_UNVERIFIABLE`` says the bytes come back unchecked, while a WinZip
   AES entry (AE-1 or AE-2) has its HMAC check the bytes, so nothing is reported for it.
@@ -360,8 +362,9 @@ yielded.
       file tells that from a trailer after blocks that were never written, so the
       report says what the header declares and the trailer checks above report the
       rest. `open()` refuses the directory, and `stream_members()` yields no stream
-      for it, since its bytes cannot be told from the trailer. A block that is neither a header nor zero where the data would begin
-      raises `CorruptionError` naming the directory header. A walk that gets past the
+      for it, since its bytes cannot be told from the trailer. A block that is
+      neither a header nor zero where the data would begin raises `CorruptionError`
+      naming the directory header. A walk that gets past the
       declared span (extended headers filled it) has read all it could hide, and
       nothing is reported. An old-style directory, a regular-file header named `d/`,
       is the other case: see above.

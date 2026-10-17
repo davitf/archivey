@@ -2387,6 +2387,15 @@ class ZipReader(BaseArchiveReader):
             unicode_path_used=unicode_name is not None,
         )
 
+    def _directory_data_reach(self, entry: CentralEntry) -> str | None:
+        """Where the data of the directory ``entry`` describes can be read, for the
+        ``MEMBER_DIRECTORY_DATA_IGNORED`` message, or ``None`` for the shared wording.
+
+        ``None`` here: this reader lists from the central directory before any pass,
+        so a pass knows the size and yields the bytes. The pipe reader overrides it.
+        """
+        return None
+
     def _to_member(self, entry: CentralEntry, index: int) -> ArchiveMember:
         external_attr = entry.external_attr
         full_mode = external_attr >> 16
@@ -2699,7 +2708,9 @@ class ZipReader(BaseArchiveReader):
         if member.type is MemberType.DIRECTORY and _zip_directory_stores_data(entry):
             # APPNOTE 4.3.8 gives a directory no data; unzip, 7-Zip and bsdtar create
             # the directory and drop the bytes silently. Say so; a read delivers them.
-            self._emit_directory_data_ignored(member, index)
+            self._emit_directory_data_ignored(
+                member, index, reach=self._directory_data_reach(entry)
+            )
             if directory_without_anchor:
                 self._diagnostics_collector.emit(
                     code=DiagnosticCode.DIGEST_UNVERIFIABLE,

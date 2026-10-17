@@ -66,7 +66,7 @@ happens. The next section shows how to avoid it by reading them all in one pass.
 ```python
 with archivey.open_archive("backup.tar.gz") as archive:
     for member, stream in archive.stream_members():
-        if stream is None:
+        if not member.is_file or stream is None:
             continue  # a directory or a link
         process(member.name, stream.read())
 ```
@@ -75,7 +75,8 @@ with archivey.open_archive("backup.tar.gz") as archive:
 with a stream of its contents. It reads each member once, so it is never slower than reading
 them by name, and on some archives it is much faster. Directories and links come with `None` in
 place of a stream, and each stream works only until the loop moves on. A directory entry that
-hides data in the archive is the exception: it comes with a stream of those bytes.
+hides data in the archive is the exception: it can come with a stream of those bytes, which is
+why the loop tests `member.is_file`.
 
 ## Extract
 

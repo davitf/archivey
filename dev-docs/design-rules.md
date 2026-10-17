@@ -319,7 +319,8 @@ the right weight.
   "outside a member" weight, and the ZIP spec forbids the shape (APPNOTE 4.3.8).
   Applied by PR 731 for ZIP and RAR and by PR 763 for TAR (an old-style `d/` file
   entry with data). `stream_members()` yields a stream of the same bytes for such a
-  directory in every format, so a forward-only reader reaches them too (2026-10-17).
+  directory in every format, so a forward-only reader reaches them too (2026-10-17),
+  except a bit-3 ZIP directory read from a pipe, whose size comes after its data.
 
 **Reopen if** a real producer writes the extra bytes routinely (then check DR-6).
 
@@ -501,7 +502,9 @@ a `DIRTYPE` header with a size that the walk ends right after is reported the sa
 way, since its blocks cannot be told from the trailer). Extended 2026-10-17 (maintainer
 decision): `stream_members()` yields a data stream for a directory that declares data, in
 every format, with the bytes and checks `open()` gives, where it had yielded `None` for
-every directory and left the bytes out of a forward-only reader's reach.
+every directory and left the bytes out of a forward-only reader's reach. The one shape
+left out is a ZIP directory written with a data descriptor (bit 3) and read from a pipe:
+the pass meets it before its size, and its message says so.
 
 **Why.** Info-ZIP's `zip -FI` stores a named pipe's content under the pipe's own FIFO
 mode, and libarchive carries a workaround for exactly that shape; unzip, 7-Zip, bsdtar

@@ -17,7 +17,12 @@ from zipfile import ZipFile
 import pytest
 
 from archivey import ArchiveReader, DiagnosticCode, open_archive
-from archivey.exceptions import ArchiveyError, ArchiveyUsageError, CorruptionError
+from archivey.exceptions import (
+    ArchiveyError,
+    ArchiveyUsageError,
+    CorruptionError,
+    UnsupportedFeatureError,
+)
 from archivey.types import MemberType
 from tests.conftest import requires, requires_binary
 from tests.streams_util import NonSeekableBytesIO
@@ -105,18 +110,61 @@ def _zip_directory_data(tmp_path: Path, shape: str) -> Path:
 
 
 def _tar_directory_data(tmp_path: Path, shape: str) -> Path:
-    from tests.test_tar import _tar_slash_entry_with_data
+    from tests.test_tar import _DAMAGED_TRAILER, _tar_slash_entry_with_data
 
-    if shape == "tar-dirtype-size":
-        # A DIRTYPE header with a size and no blocks behind it: listed with no size,
-        # so open() refuses it and the pass yields no stream.
+    if shape == "tar-dirtype-no-blocks":
+        # A DIRTYPE header with a size and a member header right after it: listed
+        # with no size and no report, so open() refuses it and the pass yields none.
         data = _tar_slash_entry_with_data(
             tarfile.DIRTYPE, data=b"", size_field=b"%011o\0" % 4096
+        )
+    elif shape == "tar-dirtype-before-trailer":
+        # The same header as the last member, the walk ending on a zero block inside
+        # the declared span: the blocks cannot be told from the trailer, so it lists
+        # with no size, MEMBER_DIRECTORY_DATA_IGNORED reports it, and nothing reads.
+        data = _tar_slash_entry_with_data(
+            tarfile.DIRTYPE,
+            data=b"",
+            size_field=b"%011o\0" % 4096,
+            tail=_DAMAGED_TRAILER,
         )
     else:
         typeflag = tarfile.AREGTYPE if shape == "tar-old-style-nul" else tarfile.REGTYPE
         data = _tar_slash_entry_with_data(typeflag)
     path = tmp_path / f"{shape}.tar"
+    path.write_bytes(data)
+    return path
+
+
+class _UnseekableSink(io.RawIOBase):
+    """A write target that cannot seek, so ``zipfile`` sets bit 3 on every entry and
+    writes each member's sizes and CRC-32 in a data descriptor after its data."""
+
+    def __init__(self) -> None:
+        self.data = bytearray()
+
+    def writable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return False
+
+    def write(self, b: Any) -> int:
+        self.data += b
+        return len(b)
+
+
+def _zip_bit3_directory_data(tmp_path: Path, shape: str) -> Path:
+    """``d/`` carrying 12 bytes and ``e/`` with none, both written with a data
+    descriptor (bit 3), as every ZIP written to a pipe or a socket is."""
+    sink = _UnseekableSink()
+    with zipfile.ZipFile(sink, "w") as zf:
+        zf.writestr(zipfile.ZipInfo("d/"), b"hidden data!")
+        zf.writestr("d/f.txt", b"visible")
+        zf.writestr(zipfile.ZipInfo("e/"), b"")
+    data = bytes(sink.data)
+    assert struct.unpack_from("<H", data, 6)[0] & 0x8  # bit 3 on the first entry
+    path = tmp_path / f"{shape}.zip"
     path.write_bytes(data)
     return path
 
@@ -187,23 +235,20 @@ def _pass_outcomes(reader: ArchiveReader) -> dict[str, _Outcome]:
     return outcomes
 
 
+_ZIP_OUTCOMES: dict[str, _Outcome] = {
+    "d/": b"hidden data!",
+    "d/f.txt": b"visible",
+    "e/": None,
+}
+
+# Per shape: its builder, then what random access gives for the members named. A
+# shape whose files are long lists only its directories, which are the point.
 _SHAPES: dict[str, tuple[Callable[[Path, str], Path], dict[str, _Outcome]]] = {
-    "zip-stored": (
-        _zip_directory_data,
-        {"d/": b"hidden data!", "d/f.txt": b"visible", "e/": None},
-    ),
-    "zip-deflate": (
-        _zip_directory_data,
-        {"d/": b"hidden data!", "d/f.txt": b"visible", "e/": None},
-    ),
-    "zip-zero-crc": (
-        _zip_directory_data,
-        {"d/": b"hidden data!", "d/f.txt": b"visible", "e/": None},
-    ),
-    "zip-bad-crc": (
-        _zip_directory_data,
-        {"d/": CorruptionError, "d/f.txt": b"visible", "e/": None},
-    ),
+    "zip-stored": (_zip_directory_data, _ZIP_OUTCOMES),
+    "zip-deflate": (_zip_directory_data, _ZIP_OUTCOMES),
+    "zip-zero-crc": (_zip_directory_data, _ZIP_OUTCOMES),
+    "zip-bad-crc": (_zip_directory_data, {**_ZIP_OUTCOMES, "d/": CorruptionError}),
+    "zip-bit3": (_zip_bit3_directory_data, _ZIP_OUTCOMES),
     "tar-old-style-nul": (
         _tar_directory_data,
         {"d/": b"hello directory", "after.txt": b"after\n"},
@@ -212,27 +257,43 @@ _SHAPES: dict[str, tuple[Callable[[Path, str], Path], dict[str, _Outcome]]] = {
         _tar_directory_data,
         {"d/": b"hello directory", "after.txt": b"after\n"},
     ),
-    "tar-dirtype-size": (_tar_directory_data, {"d/": None, "after.txt": b"after\n"}),
+    "tar-dirtype-no-blocks": (
+        _tar_directory_data,
+        {"d/": None, "after.txt": b"after\n"},
+    ),
+    "tar-dirtype-before-trailer": (_tar_directory_data, {"d/": None}),
     "7z": (_sevenzip_directory, {"sub/": None, "sub/f.txt": b"hi"}),
+    "rar-stored": (_rar_directory_data, {"-inul/": b"stored dir data"}),
+    "rar-compressed": (_rar_directory_data, {"-inul/": UnsupportedFeatureError}),
+    "rar-solid-stored": (
+        _rar_directory_data,
+        {
+            "file1.txt": b"Hello, world!",
+            "empty_subdir/": None,
+            "subdir/": b"stored dir data",
+        },
+    ),
 }
-_RAR_SHAPES = ("rar-stored", "rar-compressed", "rar-solid-stored")
+
+# The one shape where a pass from a source that cannot seek differs: a bit-3 entry
+# declares its size in the data descriptor after its data, so the pass meets the
+# directory before it can know the directory declares data, and yields no stream.
+# The listing still reports MEMBER_DIRECTORY_DATA_IGNORED once the central directory
+# arrives (``format-zip``, "Two shapes read differently from a pipe").
+_PIPE_DIFFERS: dict[str, dict[str, _Outcome]] = {"zip-bit3": {"d/": None}}
 
 
 def _shape_params() -> list[Any]:
-    params: list[Any] = [
-        pytest.param(shape, marks=requires("py7zr")) if shape == "7z" else shape
-        for shape in _SHAPES
-    ]
-    params += [
-        pytest.param(shape, marks=requires_binary("unrar")) for shape in _RAR_SHAPES
-    ]
+    marks = {"7z": requires("py7zr")}
+    params: list[Any] = []
+    for shape in _SHAPES:
+        if shape.startswith("rar"):
+            params.append(pytest.param(shape, marks=requires_binary("unrar")))
+        elif shape in marks:
+            params.append(pytest.param(shape, marks=marks[shape]))
+        else:
+            params.append(shape)
     return params
-
-
-def _build(tmp_path: Path, shape: str) -> Path:
-    if shape in _RAR_SHAPES:
-        return _rar_directory_data(tmp_path, shape)
-    return _SHAPES[shape][0](tmp_path, shape)
 
 
 @pytest.mark.parametrize("shape", _shape_params())
@@ -243,18 +304,24 @@ def test_directory_data_is_the_same_in_a_pass_and_in_random_access(
     reads, with the same bytes and the same checks: a CRC that fails raises in both,
     data archivey cannot decode is refused in both, a directory with no data (or a
     TAR ``DIRTYPE`` size that cannot be told from the trailer) gets nothing in both.
-    The pass is checked on a random-access reader and, where the format has one, on
-    a forward-only reader of a source that cannot seek."""
-    path = _build(tmp_path, shape)
+    The pass is checked on a random-access reader and on a forward-only one: of a
+    source that cannot seek for ZIP and TAR, ``streaming=True`` over the file for the
+    others. ``_PIPE_DIFFERS`` names the one exception and pins it."""
+    builder, wanted = _SHAPES[shape]
+    path = builder(tmp_path, shape)
     expected = _random_access_outcomes(path)
-    if shape in _SHAPES:
-        assert expected == _SHAPES[shape][1]
+    assert {name: expected[name] for name in wanted} == wanted
     with open_archive(path) as reader:
         assert _pass_outcomes(reader) == expected
     if shape.startswith(("zip", "tar")):
         with open_archive(
             NonSeekableBytesIO(path.read_bytes()), streaming=True
         ) as reader:
+            assert _pass_outcomes(reader) == {
+                **expected,
+                **_PIPE_DIFFERS.get(shape, {}),
+            }
+        with open_archive(io.BytesIO(path.read_bytes()), streaming=True) as reader:
             assert _pass_outcomes(reader) == expected
     else:
         with open_archive(path, streaming=True) as reader:
@@ -283,3 +350,28 @@ def test_zip_directory_data_digest_unverifiable_in_a_pass(
     codes = {d.code for d in directory.diagnostics}
     assert DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED in codes
     assert DiagnosticCode.DIGEST_UNVERIFIABLE in codes
+
+
+def test_zip_bit3_directory_from_a_pipe_says_it_has_no_stream(tmp_path: Path) -> None:
+    """The pipe exception in ``_PIPE_DIFFERS`` is reported, not silent: the warning
+    for a bit-3 directory read from a source that cannot seek says the pass yielded
+    no stream, where every other read's warning says the pass delivers the bytes."""
+    data = _zip_bit3_directory_data(tmp_path, "zip-bit3").read_bytes()
+    messages = {}
+    for label, source in (
+        ("pipe", NonSeekableBytesIO(data)),
+        ("seekable", io.BytesIO(data)),
+    ):
+        with open_archive(source, streaming=True) as reader:
+            list(reader.stream_members())
+            [diag] = [
+                d
+                for d in reader.diagnostics.retained
+                if d.code is DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
+            ]
+            messages[label] = diag.message
+    assert (
+        "stream_members() over a source that cannot seek yielded no stream"
+        in (messages["pipe"])
+    )
+    assert "open() and stream_members() deliver them" in messages["seekable"]

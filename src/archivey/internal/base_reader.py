@@ -2105,7 +2105,7 @@ class BaseArchiveReader(ArchiveReader):
         )
 
     def _emit_directory_data_ignored(
-        self, member: ArchiveMember, member_id: int
+        self, member: ArchiveMember, member_id: int, *, reach: str | None = None
     ) -> None:
         """Report one ``MEMBER_DIRECTORY_DATA_IGNORED`` finding, attached to ``member``.
 
@@ -2117,14 +2117,18 @@ class BaseArchiveReader(ArchiveReader):
         archivey does the same on extraction but says so (DR-3). A declared size opens
         through ``open()``, and gets a stream from ``stream_members()``, where the
         backend can decode the body (RAR delivers stored data only); a declared size
-        of 0 has nothing to read in either.
+        of 0 has nothing to read in either. ``reach`` replaces the clause on where a
+        declared size can be read, for a backend whose pass could not offer the bytes.
         """
         assert member.size or member.compressed_size, (
             "only a directory with a body is reported"
         )
         if member.size:
             what = f"declares {member.size} bytes of data"
-            reach = "open() and stream_members() deliver them where they can be decoded"
+            if reach is None:
+                reach = (
+                    "open() and stream_members() deliver them where they can be decoded"
+                )
         else:
             what = f"declares no data but stores a {member.compressed_size}-byte body"
             reach = "a declared size of 0 leaves nothing to read"
