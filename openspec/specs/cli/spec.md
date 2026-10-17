@@ -186,14 +186,13 @@ into the cwd under `--overwrite`: its one output name comes from the archive nam
 operator typed, and there is no wrapper to hoist out of. When no cheap index is
 available (plain TAR, an archive read from a pipe, …), the destination SHALL initially
 be `./<archive-stem>/` (always wrap — no pre-extract metadata pass); after a
-successful extract, if
-that wrapper contains exactly one top-level entry, the system SHALL hoist it to
-the cwd and remove the wrapper. Whether the hoist runs SHALL depend only on what
-the run extracted, never on what was at the wrapper's name before; what the hoist
-does (flatten in place, or merge under the overwrite policy) can still depend on it,
-as described below. The hoist SHALL NOT run when the only entry is a symlink (the move
-changes the directory its target is read from), or when a symlink in the entry leaves
-the entry on the way to its target
+successful extract, if that wrapper contains exactly one top-level entry, the system
+SHALL hoist it to the cwd and remove the wrapper. Whether the hoist runs SHALL depend
+only on what the run extracted, never on what was at the wrapper's name before; what
+the hoist does (flatten in place, or merge under the overwrite policy) can still
+depend on it, as described below. The hoist SHALL NOT run when the only entry is a
+symlink (the move changes the directory its target is read from), or when a symlink in
+the entry leaves the entry on the way to its target
 or part of the entry could not be listed (it may hold such a link).
 Extraction checked those links against the wrapper, and a path that climbs above the
 hoisted entry and back down through the wrapper's name (`top/k ->
@@ -205,15 +204,14 @@ does not block it. In each of these cases a line says the content was kept in th
 wrapper and why. When it runs, directories merge into existing directories, and under
 `rename` the hoist SHALL produce the same final layout as extracting directly into the
 cwd. To move a root whose name differs from the wrapper's, the hoist first renames the
-wrapper to an aside name
-`<wrapper> (N)/`, and that aside directory SHALL NOT be the entry at the root's
-destination: with nothing at `./foo`, `foo.tar` holding `foo (1)/` (or `FOO (1)/` on a
-case-insensitive filesystem) lands at `./foo (1)/` (`./FOO (1)/` for that spelling),
-as a direct extraction puts it, and not in the wrapper. The hoist is a convenience,
-not a guarantee: with no `-d`, the operator accepts wherever the content lands, and the
-hoist SHALL NOT replace or delete anything in the cwd under any `--overwrite` value.
-Before it moves anything, the hoist SHALL check the whole merge for a collision the
-policy does not resolve. The wrapper itself is not the
+wrapper to an aside name `<wrapper> (N)/`, and that aside directory SHALL NOT be the
+entry at the root's destination: with nothing at `./foo`, `foo.tar` holding `foo (1)/`
+(or `FOO (1)/` on a case-insensitive filesystem) lands at `./foo (1)/` (`./FOO (1)/`
+for that spelling), as a direct extraction puts it, and not in the wrapper. The hoist
+is a convenience, not a guarantee: with no `-d`, the operator accepts wherever the
+content lands, and the hoist SHALL NOT replace or delete anything in the cwd under any
+`--overwrite` value. Before it moves anything, the hoist SHALL check the whole merge
+for a collision the policy does not resolve. The wrapper itself is not the
 operator's data: where the root's destination is the wrapper (`FILE` in `file/` on a
 case-insensitive filesystem), the check SHALL NOT count it, since the wrapper moves
 aside before the merge. Only `rename` resolves a collision, writing the archive's entry
@@ -226,20 +224,19 @@ the closing summary names the wrapper. So `replace` and `skip` are not reproduce
 direct extraction applies them: the hoist neither replaces the operator's file nor
 throws away the archive's copy. atool's `aunpack` keeps the content in its
 `Unpack-NNNN/` directory the same way. A collision that appears after that check (the
-cwd changed during the move)
-SHALL stop the hoist, leave the unmoved remainder under the wrapper (or under the
-wrapper's aside name `<wrapper> (N)/` when the wrapper's name could not be taken
-back), and exit nonzero; a filesystem error during the move does the same.
-When the container got the plain stem name, a sole root sharing the wrapper's own
-name, spelled the same (`src.tar.gz` containing `src/`), SHALL be flattened in place,
-not treated as a collision, and the wrapper SHALL then take that root's mode and
-times. A root whose name differs from the wrapper's only in case (`plain.tar`
-containing `PLAIN/`) SHALL be moved like any other root, so it keeps its own spelling
-(`./PLAIN/`) on every platform.
-When `./<archive-stem>` already existed, the container is `./<archive-stem> (N)/`,
-the sole root no longer shares its name, and the hoist merges the root into the existing
-`./<archive-stem>/` under the overwrite policy like any other root. A directory stored
-without owner write permission (`0o555`) SHALL still be moved: the hoist gives it owner
+cwd changed during the move) SHALL stop the hoist, leave the unmoved remainder under
+the wrapper (or under the wrapper's aside name `<wrapper> (N)/` when the wrapper's
+name could not be taken back), and exit nonzero; a filesystem error during the move
+does the same. When the container got the plain stem name, a sole root sharing the
+wrapper's own name, spelled the same (`src.tar.gz` containing `src/`), SHALL be
+flattened in place, not treated as a collision, and the wrapper SHALL then take that
+root's mode and times. A root whose name differs from the wrapper's only in case
+(`plain.tar` containing `PLAIN/`) SHALL be moved like any other root, so it keeps its
+own spelling (`./PLAIN/`) on every platform. When `./<archive-stem>` already existed,
+the container is `./<archive-stem> (N)/`, the sole root no longer shares its name, and
+the hoist merges the root into the existing `./<archive-stem>/` under the overwrite
+policy like any other root. A directory stored without owner write permission
+(`0o555`) SHALL still be moved: the hoist gives it owner
 read, write and search permission for the move and then puts its mode back, as a direct
 extraction into the cwd would have succeeded. After a hoist, the per-member lines
 (`renamed:`, `name rewritten:`, `not overwritten:`, `kept existing directory's mode` and
@@ -249,13 +246,12 @@ renamed is named under its new name. The lines the merge itself prints (`renamed
 its own collisions, and `kept existing directory's mode`) come before the per-member
 lines, where a direct extraction prints every line in member order: the hoist prints
 the same lines, not in the same order. `kept existing directory's mode` is printed
-when the
-archive's directory mode, as the platform stores it, differs from the operator's
-directory's mode, on both paths. Windows stores only a read-only attribute, so there the
-line is printed only when that attribute differs. When the hoist stops, a member left
-behind is named inside the directory that holds it: the wrapper, or the wrapper's aside
-name `<wrapper> (N)/` when the wrapper's name could not be taken back, because the
-merge gave that name to a member or the rename back failed.
+when the archive's directory mode, as the platform stores it, differs from the
+operator's directory's mode, on both paths. Windows stores only a read-only attribute,
+so there the line is printed only when that attribute differs. When the hoist stops, a
+member left behind is named inside the directory that holds it: the wrapper, or the
+wrapper's aside name `<wrapper> (N)/` when the wrapper's name could not be taken back,
+because the merge gave that name to a member or the rename back failed.
 The container (`./<archive-stem>/`) SHALL always be a new directory that the run
 creates. When anything exists at the container name (a directory, a regular file, or a
 symlink, dangling or live), the name SHALL be treated as taken under every overwrite

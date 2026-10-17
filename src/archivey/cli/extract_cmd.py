@@ -202,10 +202,12 @@ def _may_land_on_existing(name: str) -> bool:
 
     For a name not written as stored (:func:`_written_as_stored`), each cwd entry is
     matched against every spelling the policy can give it: each character that may be
-    rewritten stands for itself, nothing, or ``%XX`` escapes; a ``\\`` ends the top
-    level, as it is written as ``/``; trailing dots and spaces may be stripped. The
-    match is loose on purpose: a false match only sends the archive through the
-    wrapper, while a missed one lets ``--overwrite`` touch the operator's entry."""
+    rewritten stands for itself, nothing, or ``%XX`` escapes; a ``%`` stands for itself
+    or ``%25``, as it is escaped in a name that has other escapes; a ``\\`` ends the
+    top level, as it is written as ``/``; trailing dots and spaces may be stripped.
+    Case is ignored, as a case-insensitive filesystem would. The match is loose on
+    purpose: a false match only sends the archive through the wrapper, while a missed
+    one lets ``--overwrite`` touch the operator's entry."""
     if os.path.lexists(name):
         return True
     if _written_as_stored(name):
@@ -213,12 +215,14 @@ def _may_land_on_existing(name: str) -> bool:
     head = name.split("\\", 1)[0]
     stem = head.rstrip(". ")
     pattern = "".join(
-        re.escape(ch)
+        "%(?:25)?"
+        if ch == "%"
+        else re.escape(ch)
         if _written_as_stored(ch)
         else f"(?:{re.escape(ch)}|(?:%[0-9A-Fa-f]{{2}})+)?"
         for ch in stem
     )
-    written = re.compile(f"{pattern}[. ]*", re.DOTALL)
+    written = re.compile(f"{pattern}[. ]*", re.IGNORECASE)
     try:
         return any(written.fullmatch(entry) for entry in os.listdir("."))
     except OSError:

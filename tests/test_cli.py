@@ -2642,24 +2642,36 @@ def test_indexed_symlink_root_with_a_rewritten_name_lands_in_an_empty_cwd(
 
 
 @pytest.mark.parametrize(
-    "stored", ["top ", "top.", "c\x02", "a<b", "q?", "x\\y", "e\x7f"]
+    "stored",
+    ["top ", "top.", "c\x02", "a<b", "q?", "x\\y", "e\x7f", "a%b<c", "100%?", "%<"],
 )
 def test_may_land_on_existing_matches_the_spelling_extraction_writes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stored: str
 ) -> None:
     """Pins ``_may_land_on_existing`` against the library's name policy: whatever top
     level name extraction writes for ``stored``, the check finds it in the cwd."""
-    from archivey.cli.exit_codes import EXIT_POLICY
     from archivey.cli.extract_cmd import _may_land_on_existing
 
     out = tmp_path / "out"
     archive = tmp_path / "n.zip"
     with zipfile.ZipFile(archive, "w") as zf:
         zf.writestr(zipfile.ZipInfo(stored), b"x")
-    assert main(["x", str(archive), "-d", str(out)]) in (EXIT_OK, EXIT_POLICY)
+    assert main(["x", str(archive), "-d", str(out)]) == EXIT_OK
     assert len(os.listdir(out)) == 1  # the one spelling extraction wrote
     monkeypatch.chdir(out)
     assert _may_land_on_existing(stored)
+
+
+def test_may_land_on_existing_ignores_case(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``top `` is written as ``top``, which a case-insensitive filesystem holds as the
+    operator's ``TOP``; the check counts it on every filesystem."""
+    from archivey.cli.extract_cmd import _may_land_on_existing
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "TOP").mkdir()
+    assert _may_land_on_existing("top ")
 
 
 def test_indexed_single_root_renames_past_the_operators_entry(
