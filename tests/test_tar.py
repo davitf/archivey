@@ -2174,19 +2174,28 @@ def test_link_with_size_inside_the_trailer_keeps_the_trailer_whole(
         assert "end-of-archive marker" in diag.message
 
 
-def test_link_with_size_inside_the_trailer_of_a_large_tar_gz_does_not_rewind() -> None:
-    # A random-access walk over a .tar.gz larger than the rewind warning threshold:
-    # the trailer checks run from the span's first block, which the walk has read
-    # past, so the bytes are replayed from memory, not seeked back to (a gzip
-    # stream with no resume point would decode again from its start and report
-    # STREAM_REWIND_REDECOMPRESSES).
+@pytest.mark.parametrize(
+    "declared",
+    [600, 64 * 1024],
+    ids=["span_inside_the_trailer", "archive_ends_inside_the_span"],
+)
+def test_link_zero_span_in_a_large_tar_gz_does_not_rewind(declared: int) -> None:
+    # A random-access walk over a .tar.gz larger than the rewind warning threshold,
+    # whose last member is a link declaring `declared` bytes before a 1024-byte
+    # trailer. The trailer checks run from the span's first block, which the walk
+    # has read past: when the span lies inside the trailer and when the archive ends
+    # inside the span. Either way the bytes are replayed from memory, not seeked
+    # back to (a gzip stream with no resume point would decode again from its start
+    # and report STREAM_REWIND_REDECOMPRESSES).
     chunk = 512 * 1024
     body = b""
     for i in range(4):
         info = tarfile.TarInfo(f"f{i}")
         info.size = chunk
         body += info.tobuf(format=tarfile.USTAR_FORMAT) + bytes(chunk)
-    raw = body + _tar_link_with_data(tarfile.SYMTYPE, b"", size=600, tail=b"\0" * 1024)
+    raw = body + _tar_link_with_data(
+        tarfile.SYMTYPE, b"", size=declared, tail=b"\0" * 1024
+    )
     assert len(raw) > REWIND_REDECODE_WARN_BYTES
     with open_archive(
         io.BytesIO(gzip.compress(raw)), format=ArchiveFormat.TAR_GZ
