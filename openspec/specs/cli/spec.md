@@ -177,15 +177,16 @@ avoid tarbombs. When a cheap member index is available without a streaming scan
 multiple top-level entries; extract into `.` when it already has a single
 top-level directory (no redundant nesting) or the archive is a
 single-file/single-stream archive. When the index gives a single top-level entry whose
-name already exists in the cwd, or whose name extraction may write under another
-spelling (a trailing dot or space, a character Windows refuses, a non-printable
-character), the system SHALL instead extract into `./<archive-stem>/` and hoist, as
-below, so the hoist's rules decide what happens to the operator's entry and
+name already exists in the cwd, or may be written under another spelling that does (a
+trailing dot or space stripped, a character Windows refuses or a non-printable
+character escaped), the system SHALL instead extract into `./<archive-stem>/` and
+hoist, as below, so the hoist's rules decide what happens to the operator's entry and
 `--overwrite` never replaces it. A single-file/single-stream archive keeps writing
 into the cwd under `--overwrite`: its one output name comes from the archive name the
-operator typed, and there is no wrapper to hoist out of. When no cheap index is available (plain TAR,
-an archive read from a pipe, …), the destination SHALL initially be `./<archive-stem>/`
-(always wrap — no pre-extract metadata pass); after a successful extract, if
+operator typed, and there is no wrapper to hoist out of. When no cheap index is
+available (plain TAR, an archive read from a pipe, …), the destination SHALL initially
+be `./<archive-stem>/` (always wrap — no pre-extract metadata pass); after a
+successful extract, if
 that wrapper contains exactly one top-level entry, the system SHALL hoist it to
 the cwd and remove the wrapper. Whether the hoist runs SHALL depend only on what
 the run extracted, never on what was at the wrapper's name before; what the hoist
@@ -203,8 +204,8 @@ inside the entry (`pkg/bin/a -> ../lib/a.so`) means the same thing after the mov
 does not block it. In each of these cases a line says the content was kept in the
 wrapper and why. When it runs, directories merge into existing directories, and under
 `rename` the hoist SHALL produce the same final layout as extracting directly into the
-cwd. To move a root whose name differs
-from the wrapper's, the hoist first renames the wrapper to an aside name
+cwd. To move a root whose name differs from the wrapper's, the hoist first renames the
+wrapper to an aside name
 `<wrapper> (N)/`, and that aside directory SHALL NOT be the entry at the root's
 destination: with nothing at `./foo`, `foo.tar` holding `foo (1)/` (or `FOO (1)/` on a
 case-insensitive filesystem) lands at `./foo (1)/` (`./FOO (1)/` for that spelling),
@@ -223,8 +224,9 @@ print a line naming the first such path, `kept in <wrapper>/: <path> already exi
 and leave the whole root in the wrapper; the run counts as successful (exit `0`) and
 the closing summary names the wrapper. So `replace` and `skip` are not reproduced as a
 direct extraction applies them: the hoist neither replaces the operator's file nor
-throws away the archive's copy. atool's `aunpack` keeps the content in its `Unpack-NNNN/` directory the
-same way. A collision that appears after that check (the cwd changed during the move)
+throws away the archive's copy. atool's `aunpack` keeps the content in its
+`Unpack-NNNN/` directory the same way. A collision that appears after that check (the
+cwd changed during the move)
 SHALL stop the hoist, leave the unmoved remainder under the wrapper (or under the
 wrapper's aside name `<wrapper> (N)/` when the wrapper's name could not be taken
 back), and exit nonzero; a filesystem error during the move does the same.
@@ -244,9 +246,10 @@ extraction into the cwd would have succeeded. After a hoist, the per-member line
 the others) SHALL name each member where it is after the move, as a direct extraction
 into the cwd names it, never a path inside the removed wrapper: a member the merge
 renamed is named under its new name. The lines the merge itself prints (`renamed:` for
-its own collisions, and `kept existing directory's mode`) come before the per-member lines,
-where a direct extraction prints every line in member order: the hoist prints the same
-lines, not in the same order. `kept existing directory's mode` is printed when the
+its own collisions, and `kept existing directory's mode`) come before the per-member
+lines, where a direct extraction prints every line in member order: the hoist prints
+the same lines, not in the same order. `kept existing directory's mode` is printed
+when the
 archive's directory mode, as the platform stores it, differs from the operator's
 directory's mode, on both paths. Windows stores only a read-only attribute, so there the
 line is printed only when that attribute differs. When the hoist stops, a member left

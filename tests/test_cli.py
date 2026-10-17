@@ -2621,6 +2621,47 @@ def test_dry_run_names_where_rename_moves_the_root_past_a_file(
     assert (tmp_path / "foo (1)" / "x.txt").read_bytes() == b"ARCHIVE"
 
 
+def test_indexed_symlink_root_with_a_rewritten_name_lands_in_an_empty_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A rewritable root name that collides with nothing extracts straight into the cwd,
+    so a symlink root stays live instead of being kept in a wrapper."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "target.txt").write_bytes(b"TARGET")
+    archive = tmp_path / "one.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        info = zipfile.ZipInfo("t ")
+        info.create_system = 3
+        info.external_attr = (stat.S_IFLNK | 0o777) << 16
+        zf.writestr(info, "target.txt")
+    assert main(["x", str(archive)]) == EXIT_OK
+    err = capsys.readouterr().err
+    assert _report_lines(err, "kept in ") == []
+    assert not (tmp_path / "one").exists()
+    assert (tmp_path / "t").read_bytes() == b"TARGET"
+
+
+@pytest.mark.parametrize(
+    "stored", ["top ", "top.", "c\x02", "a<b", "q?", "x\\y", "e\x7f"]
+)
+def test_may_land_on_existing_matches_the_spelling_extraction_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stored: str
+) -> None:
+    """Pins ``_may_land_on_existing`` against the library's name policy: whatever top
+    level name extraction writes for ``stored``, the check finds it in the cwd."""
+    from archivey.cli.exit_codes import EXIT_POLICY
+    from archivey.cli.extract_cmd import _may_land_on_existing
+
+    out = tmp_path / "out"
+    archive = tmp_path / "n.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr(zipfile.ZipInfo(stored), b"x")
+    assert main(["x", str(archive), "-d", str(out)]) in (EXIT_OK, EXIT_POLICY)
+    assert len(os.listdir(out)) == 1  # the one spelling extraction wrote
+    monkeypatch.chdir(out)
+    assert _may_land_on_existing(stored)
+
+
 def test_indexed_single_root_renames_past_the_operators_entry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

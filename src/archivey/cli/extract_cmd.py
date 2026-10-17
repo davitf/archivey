@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import stat
 import sys
 from collections.abc import Callable, Iterable, Iterator
@@ -166,9 +167,7 @@ def resolve_smart_dest(
     members = [m for m in indexed if pred is None or pred(m)]
     target = smart_dest(archive, format=fmt, members=members)
     tops = _top_level_names(members)
-    if target == Path(".") and any(
-        os.path.lexists(top) or not _written_as_stored(top) for top in tops
-    ):
+    if target == Path(".") and any(_may_land_on_existing(top) for top in tops):
         # The single root's name is taken in the cwd, or extraction may write it under
         # another spelling that is. Extracting straight into the cwd would apply
         # ``--overwrite`` to the operator's entries there; the hoist never replaces or
@@ -178,7 +177,8 @@ def resolve_smart_dest(
     return _SmartDestPlan(target, may_hoist=False)
 
 
-# Characters the library's name policy rewrites (escapes or turns into ``/``).
+# Characters the library's name policy does not write as stored: it escapes them as
+# ``%XX``, writes ``\`` as ``/``, or refuses the member (``:``).
 _REWRITTEN_CHARS = frozenset('<>:"|?*\\')
 
 
@@ -188,14 +188,41 @@ def _written_as_stored(name: str) -> bool:
     A conservative stand-in for the library's name policy, which the CLI cannot
     import: ``False`` for anything that policy may rewrite (a trailing dot or space,
     a character Windows refuses, a control or other non-printable character, a byte
-    that is not UTF-8). A ``False`` for a name written as stored only costs a wrapper
-    and a hoist; a ``True`` for a rewritten name would let the rewrite land on the
-    operator's entry, so the test errs towards ``False``."""
+    that is not UTF-8), and for some names it writes as stored too."""
     return (
         name.isprintable()
         and not name.endswith((".", " "))
         and _REWRITTEN_CHARS.isdisjoint(name)
     )
+
+
+def _may_land_on_existing(name: str) -> bool:
+    """Whether extracting the top-level ``name`` into the cwd may land on an entry
+    already there, under its own spelling or one the name policy may write instead.
+
+    For a name not written as stored (:func:`_written_as_stored`), each cwd entry is
+    matched against every spelling the policy can give it: each character that may be
+    rewritten stands for itself, nothing, or ``%XX`` escapes; a ``\\`` ends the top
+    level, as it is written as ``/``; trailing dots and spaces may be stripped. The
+    match is loose on purpose: a false match only sends the archive through the
+    wrapper, while a missed one lets ``--overwrite`` touch the operator's entry."""
+    if os.path.lexists(name):
+        return True
+    if _written_as_stored(name):
+        return False
+    head = name.split("\\", 1)[0]
+    stem = head.rstrip(". ")
+    pattern = "".join(
+        re.escape(ch)
+        if _written_as_stored(ch)
+        else f"(?:{re.escape(ch)}|(?:%[0-9A-Fa-f]{{2}})+)?"
+        for ch in stem
+    )
+    written = re.compile(f"{pattern}[. ]*", re.DOTALL)
+    try:
+        return any(written.fullmatch(entry) for entry in os.listdir("."))
+    except OSError:
+        return True  # the cwd could not be listed: take the safe route
 
 
 @dataclass
@@ -666,20 +693,20 @@ def maybe_hoist_single_root(
     The entry stays in the wrapper, and a line says why, for the reasons
     :func:`_keep_reason` gives.
 
-    Recovers unar-style single-root reuse (and filter-aware D1 for streaming)
-    after an always-wrap extract, without a pre-extract metadata pass. Directories
-    merge into existing ones, and under ``rename`` the final layout matches
-    extracting directly into the wrapper's parent (:func:`_merge_move`). The hoist is a convenience, not a promise: it never
-    replaces or deletes anything in the cwd, so when the merge would meet a collision
-    that ``rename`` does not settle (any collision under ``error``, ``skip`` or
-    ``replace``, :func:`_policy_resolves`), nothing is moved, a ``kept in`` line
-    names the first such path, and the run still succeeds with the content in the
-    wrapper. A destination that is the wrapper itself (``FILE`` in
-    ``file/`` on a case-insensitive filesystem) is not a collision, because the
-    wrapper moves aside before the merge. When the sole root shares the wrapper's own
-    name, spelled the same (``src.tar.gz`` containing ``src/``), the child is
-    flattened in place — the wrapper *becomes* the root, so no collision logic
-    applies to it. A root whose name differs only in case is merged like any other.
+    Recovers unar-style single-root reuse (and filter-aware D1 for streaming) after an
+    always-wrap extract, without a pre-extract metadata pass. Directories merge into
+    existing ones, and under ``rename`` the final layout matches extracting directly
+    into the wrapper's parent (:func:`_merge_move`). The hoist is a convenience, not a
+    promise: it never replaces or deletes anything in the cwd, so when the merge would
+    meet a collision that ``rename`` does not settle (any collision under ``error``,
+    ``skip`` or ``replace``, :func:`_policy_resolves`), nothing is moved, a ``kept in``
+    line names the first such path, and the run still succeeds with the content in the
+    wrapper. A destination that is the wrapper itself (``FILE`` in ``file/`` on a
+    case-insensitive filesystem) is not a collision, because the wrapper moves aside
+    before the merge. When the sole root shares the wrapper's own name, spelled the same
+    (``src.tar.gz`` containing ``src/``), the child is flattened in place — the wrapper
+    *becomes* the root, so no collision logic applies to it. A root whose name differs
+    only in case is merged like any other.
     """
     if wrapper == Path(".") or wrapper.is_symlink() or not wrapper.is_dir():
         return _HoistResult(wrapper)
@@ -907,7 +934,9 @@ def predict_hoist(
         )
     else:
         print(f"would move to {label}", file=err)
-    return _HoistResult(dest, dest_label=label, moves=_Moves({name: name}))
+    # ``dest`` is where the root lands, a rename's free name included, as the real
+    # hoist records it.
+    return _HoistResult(dest, dest_label=label, moves=_Moves({name: dest.name}))
 
 
 def _summary_dest_label(
