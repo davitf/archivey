@@ -572,6 +572,27 @@ stays a file. `max_members` is charged on the local headers as they are yielded 
 on the directory's entries, whose text is weighed against `max_metadata_bytes` as it
 arrives.
 
+**Bytes after a member that are no local header.** The walk stops at the first bytes
+after a member that are not a local header and keeps the rest of the stream, as after
+the last member. Bytes a writer left between two members (zeros, junk, a data descriptor
+after a member whose sizes are in its header) and a second archive appended with `cat
+first.zip second.zip` end the walk there (after a bit-3 member they end the pass
+instead, below). Once the directory has been read, each member it places in the kept
+bytes is read from them at the offset it names and yielded before the pass ends, as a
+file read seeks to it. Only the offsets the directory names are read there, so the pass
+yields no member the file read does not list. Of a `cat`, the first archive's members
+are yielded as the walk meets them; the file read lists only the second's, so they are
+dropped and reported as `ARCHIVE_UNLISTED_DATA`. A member the directory places in bytes
+the listing limits dropped ends the pass with `ResourceLimitError`: higher limits keep
+them. Overlapping entries are a different case, malformed input that no limit relieves.
+Every byte an attempt there consumes is counted, a member read or a local header that
+fails to parse, and once the count reaches the bytes held, the next entry ends the pass
+with `CorruptionError` before it is read, so the kept bytes are consumed at most twice,
+not once each. A local header that is there and does not parse fails its entry at the
+end of the pass, with the parse error as the reason. A stub with no local header in the
+scan's 2 MiB window, ending within it on an end record, is read the same way, so an
+empty archive, or one whose members are gone, behind a stub opens as from a file.
+
 **Extraction** writes each member as it arrives and settles at the end of the pass
 (`ExtractionCoordinator._settle_revised_members`): modes and owners applied, a member the
 directory makes a symlink turned into a link after the `filter` and policy run again on
@@ -604,7 +625,9 @@ directory's refusals the file read is to drop:
 - A data descriptor that understates a STORED member, or a bit-3 codec member the pass
   reads past, and the reversed same-name pair, fail a member the file read writes.
 - Junk between a bit-3 codec member's end and its descriptor counts into the member,
-  where the file read refuses it (DR-3).
+  where the file read refuses it (DR-3). The walk searches at least 64 KiB
+  (`_DESCRIPTOR_SEARCH_PAST`) past the bytes the codec was handed for the descriptor,
+  whatever the member's size; with more junk than that the pass can end there.
 - The first of several inconclusive password candidates wins (§6).
 - A local header without bit 3 whose size field holds all ones that no ZIP64 field
   holds is refused (`CorruptionError`); the file read takes the sizes from the directory
@@ -637,6 +660,12 @@ directory's refusals the file read is to drop:
   can make this shape; it is the mirror of the junk case above.
 - A bit-3 LZMA member without the EOS bit is refused (`UnsupportedFeatureError`); a
   file read knows its size and reads it.
+- A bit-3 member followed by bytes that are no ZIP record (a gap before the next
+  member) ends the pass: its descriptor counts only when a ZIP signature follows it,
+  which is what stops a descriptor planted inside its data. A STORED one is
+  `UnsupportedFeatureError`, a codec one `CorruptionError`. A file read knows its size
+  and reads every member. After a sized member the same bytes are read past
+  (§"Bytes after a member that are no local header").
 - A link member the pass wrote as a file keeps the error its data read gave: under no
   password an encrypted link fails with `EncryptionError`, where the file read reports
   `LinkTargetNotFoundError`.
