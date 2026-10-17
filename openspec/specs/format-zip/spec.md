@@ -207,17 +207,20 @@ Zstandard, LZMA with the end-of-stream marker, PPMd with its end mark), followed
 descriptor; a STORED bit-3 member ends at a descriptor whose CRC and size match the
 bytes before it and that a ZIP signature follows. A bit-3 codec member the pass reads
 past (nobody read it to its end) SHALL be decoded no further than the byte past the
-symlink target cap, then the start of a Windows reparse buffer. Where its codec has not ended by then, it ends as a STORED one does, matched on
-its size and the signature after the descriptor: decoding the rest costs what no limit
-bounds. A bit-3 member nobody reads that is encrypted under a codec ends the same way,
-so passing it needs no key. A bit-3 LZMA member without the end-of-stream marker has no end its codec can find:
-its read SHALL raise `UnsupportedFeatureError`. A bit-3 PPMd member without an end mark
-fails its decode, as from a file. A bit-3 codec member whose decode fails or cannot find
-its end SHALL be passed by the same scan for its descriptor on its stored bytes, with no
-key. The scan starts at the last 4 MiB the decode read and counts the bytes before them
-into the size it matches; a decode that read more than that past the data's end leaves
-the descriptor behind the scan's start, and the pass SHALL then end with the scan's
-error. A bit-3 PPMd member is decoded in a child process, and
+symlink target cap, then the reparse prefix a file read reads (a Windows reparse buffer
+and one byte), and one byte past that prefix, since only a decode that returns nothing
+tells bit-3 data it has ended there; the two reads stop at the same place. Where its
+codec has not ended by then, it ends as a STORED one does, matched on its size and the
+signature after the descriptor: decoding the rest costs what no limit bounds. A bit-3
+member nobody reads that is encrypted under a codec ends the same way, so passing it
+needs no key. A bit-3 LZMA member without the end-of-stream marker has no end its codec
+can find: its read SHALL raise `UnsupportedFeatureError`. A bit-3 PPMd member without an
+end mark fails its decode, as from a file. A bit-3 codec member whose decode fails or
+cannot find its end SHALL be passed by the same scan for its descriptor on its stored
+bytes, with no key. The scan starts at the last 4 MiB the decode read and counts the
+bytes before them into the size it matches; a decode that read more than that past the
+data's end leaves the descriptor behind the scan's start, and the pass SHALL then end
+with the scan's error. A bit-3 PPMd member is decoded in a child process, and
 `max_ppmd_in_process_input=None` SHALL refuse it with `ResourceLimitError`. Several
 password candidates SHALL be confirmed on a kept prefix of the member's data
 (`archive-reading`, "A unit read once").

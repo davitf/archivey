@@ -19,6 +19,7 @@ Multi-volume fixtures:
 | --- | --- |
 | `tinyvol.part1.rar` / `tinyvol.part2.rar` | RAR5 `-v` / `.partN.rar` naming |
 | `tinyvol_m3.part1.rar` / `tinyvol_m3.part2.rar` | RAR5 `-m3 -v900b`; a compressed member split across volumes, which still needs unrar (a stored one is joined natively) |
+| `tinyvol_enc.part1.rar` / `tinyvol_enc.part2.rar` | RAR5 `-m0 -v1200b -ppassword`; a stored, encrypted member split across volumes. Each part has its own encryption record, so a program reads it rather than archivey |
 | `tinyvol_hp.part1.rar` … `tinyvol_hp.part4.rar` | RAR5 `-m0 -v900b -hpheader_password`; every part repeats one encryption record, so the header key is derived once per set |
 | `tinyvol_rnn.rar` / `tinyvol_rnn.r00` | RAR4 `-ma4 -vn` classic `.rar` + `.r00` naming |
 | `tinyvol_cut.part1.rar` … `tinyvol_cut.part3.rar` | RAR5 `-m0 -v1500b`, members `a.txt` … `d.txt`; the fourth volume was deleted, so `d.txt` runs into a missing volume |
@@ -41,9 +42,11 @@ Encrypted / hash fixtures of note:
 | `encryption_blake2sp.rar` | RAR5 `-m0 -htb -ppassword`; HASHMAC tweaked BLAKE2sp |
 | `blake2sp.rar` | RAR5 `-m0 -htb`; plaintext BLAKE2sp (no encryption) |
 | `encryption_stored__.rar` | RAR5 `-m0 -ppassword`; stored *and* encrypted with the default CRC32, so the digest sits in the fixed FILE header and survives damage to the extra area |
+| `encryption_stored_sizes__.rar` | RAR5 `-m0 -ppassword`; stored, encrypted members of 0, 7, 16, 3000 and 3001 bytes, which archivey decrypts itself; the ciphertext is padded to whole 16-byte blocks |
 | `encryption_large__rar4.rar` | RAR4 `-ma4 -m3 -ppassword`; two 100 000-byte members, past the 64 KiB password-confirm prefix. Some wrong passwords (`wrong3`) decode the whole member with `unrar`, so only the CRC rejects them |
 | `encryption_large_solid__rar4.rar` | Same members, `-s`: one password for the solid stream |
 | `encryption_large_stored__rar4.rar` | RAR4 `-ma4 -m0 -ppassword`; one stored 100 000-byte member, which every wrong password decrypts to full length |
+| `encryption_stored_sizes__rar4.rar` | RAR4 `-ma4 -m0 -ppassword`; the members of `encryption_stored_sizes__.rar`, AES-128 |
 
 Compressed RAR 2.9-4 archive comments (`-z`). `rar` 6.23 compresses a comment that
 shrinks into the `CMT` SERVICE header, so the text repeats twenty times; RAR 7 cannot
