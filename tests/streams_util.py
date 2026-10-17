@@ -488,7 +488,9 @@ def assert_non_integer_seek_is_type_error(stream: BinaryIO, content: bytes) -> N
             with pytest.raises(TypeError) as excinfo:
                 seek(*args)
             assert type(excinfo.value) is TypeError, args
-            assert str(excinfo.value) == str(expected.value), args
+            # The message is CPython's: PyPy's io.BytesIO words it differently.
+            if sys.implementation.name == "cpython":
+                assert str(excinfo.value) == str(expected.value), args
             position = stream.tell()
             assert type(position) is int and position == at, args
 
