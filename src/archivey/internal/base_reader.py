@@ -566,9 +566,10 @@ class BaseArchiveReader(ArchiveReader):
         # the index's order, with why: the walk's error is the first of them, and
         # extraction gives each its result.
         self._failed_at_end: list[tuple[ArchiveMember, CorruptionError]] = []
-        # Name to the member listed under it, or to a list of them, in listing order,
-        # once a second member has that name. A list per name would be one more object
-        # per member for the collector to walk; read it through ``_listed_named``.
+        # Name to the member listed under it, or to a list of them in listing order
+        # once a second member has that name: a list here always holds two or more. A
+        # list per name would be one more object per member for the collector to walk.
+        # Read it through ``_listed_named`` or ``_last_by_exact_name``.
         self._listed_by_name: dict[str, ArchiveMember | list[ArchiveMember]] = {}
         self._walk_position: int = 0
         self._walk: Iterator[ArchiveMember] | None = None
@@ -1641,8 +1642,10 @@ class BaseArchiveReader(ArchiveReader):
             assert member._member_id is not None
             self._dropped_listed.add(member._member_id)
         self._listed = [member for member in self._listed if id(member) not in gone]
-        for member in dropped:
-            self._unindex_member_name(member, member.name)
+        # One pass per name: dropping one member at a time would rebuild a shared
+        # name's entry once per member.
+        for name in {member.name for member in dropped}:
+            self._unindex_members(name, gone)
         _settle_listing(dropped, links_too=True)
 
     def _abandon_walk(self, exc: BaseException) -> None:
@@ -2535,21 +2538,35 @@ class BaseArchiveReader(ArchiveReader):
         else:
             index[member.name] = [held, member]
 
-    def _unindex_member_name(self, member: ArchiveMember, name: str) -> None:
-        """Take ``member`` (this object, not an equal one) out of ``name``'s entry."""
+    def _unindex_members(self, name: str, gone: Collection[int]) -> None:
+        """Take the members whose ``id()`` is in ``gone`` out of ``name``'s entry.
+
+        By identity: a duplicate can compare equal to the member being removed.
+        """
         index = self._listed_by_name
         held = index.get(name)
-        if held is member:
-            del index[name]
-        elif isinstance(held, list):
-            kept = [m for m in held if m is not member]
-            if not kept:
+        if held is None:
+            return
+        if not isinstance(held, list):
+            if id(held) in gone:
                 del index[name]
-            else:
-                index[name] = kept[0] if len(kept) == 1 else kept
+            return
+        kept = [m for m in held if id(m) not in gone]
+        if len(kept) == len(held):
+            return
+        if not kept:
+            del index[name]
+        elif len(kept) == 1:
+            index[name] = kept[0]
+        else:
+            index[name] = kept
 
     def _listed_named(self, name: str) -> Sequence[ArchiveMember]:
-        """The members listed so far under exactly ``name``, in listing order."""
+        """The members listed so far under exactly ``name``, in listing order.
+
+        Read-only, and only until the index next changes: for a duplicated name it is
+        the index's own list.
+        """
         held = self._listed_by_name.get(name)
         if held is None:
             return ()
@@ -2558,10 +2575,10 @@ class BaseArchiveReader(ArchiveReader):
         return (held,)
 
     def _last_by_exact_name(self, name: str) -> ArchiveMember | None:
-        candidates = self._listed_named(name)
-        if not candidates:
-            return None
-        return candidates[-1]
+        held = self._listed_by_name.get(name)
+        if isinstance(held, list):
+            return held[-1]
+        return held
 
     def _find_link_target(
         self, member: ArchiveMember, *, before_id: int | None = None
@@ -2600,9 +2617,9 @@ class BaseArchiveReader(ArchiveReader):
                 return None
         if before_id is None:
             for name in link_target_name_keys(target_name):
-                candidates = self._listed_named(name)
-                if candidates:
-                    return candidates[-1]
+                last = self._last_by_exact_name(name)
+                if last is not None:
+                    return last
             return None
         best: ArchiveMember | None = None
         best_id = -1

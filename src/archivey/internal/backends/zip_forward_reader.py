@@ -2079,7 +2079,9 @@ class ZipForwardReader(ZipReader):
         member._size_unread = False
 
     def _reindex_name(self, member: ArchiveMember, old_name: str) -> None:
-        self._unindex_member_name(member, old_name)
+        # By identity, though an equality scan would also find ``member``: its new
+        # name is already set, so no other entry under ``old_name`` equals it.
+        self._unindex_members(old_name, {id(member)})
         self._index_member_name(member)
 
     # -- data ----------------------------------------------------------------------

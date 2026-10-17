@@ -53,10 +53,22 @@ Collection time over the same tree listed in each format: ZIP about 40 ms, Info-
 about 37, TAR about 10, 7z about 53. It scales with the objects kept per member, not with
 the format's parse work. The name index holds a name's only member directly rather
 than in a one-item list, which saves one object per member in every format (about 3% of
-ZIP and TAR listing). What else each member keeps is public (`hashes`, `extra`) or held
-elsewhere too (7z's file records stay in the parsed header), so cutting more would change
-`ArchiveMember`'s shape, `replace()` and construction and needs its own design. Exact
-tuples of untracked items drop out of collection; a `NamedTuple` or dataclass does not.
+ZIP and TAR listing). Ideas not yet tried, each still open:
+
+- **One shared, immutable empty `extra` or `hashes`** for members that have none. Both
+  default to a fresh mutable object (`ArchiveMember.extra` and `.hashes`), and `extra` is
+  documented as writable, so a shared one needs a copy on first write. It helps only
+  where the field is empty: ZIP and TAR always fill `extra`, and ZIP's `hashes` holds the
+  CRC.
+- **Fields built on first access** (`hashes`, `extra` from the locator). This changes the
+  dataclass's constructor, `replace()` and `dataclasses.fields()`.
+- **Locators as plain tuples.** The collector stops tracking an exact `tuple` whose items
+  are all untracked (ints, bytes, `None`) after it first looks at it; a `NamedTuple` or
+  a dataclass such as `_ZipLocator` stays tracked. The cost is index access in the read
+  paths.
+
+7z's file records cannot go this way: the parsed header keeps every one of them, so a
+member dropping its reference frees nothing.
 
 ## 7z and TAR
 
