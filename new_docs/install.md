@@ -83,9 +83,9 @@ when `unar` is installed. `cryptography` isn't counted, because only encrypted m
 ## Python versions and platforms
 
 Archivey needs CPython 3.11 or later. Every change is tested on Linux with 3.11 to 3.14, and on
-macOS and Windows with 3.11 and 3.14. Other platforms and interpreters such as PyPy aren't tested.
-The core is pure Python, so it should run there, but some optional packages may not install. [How it
-is built](how-it-is-built.md) has the full test setup.
+macOS and Windows with 3.11 and 3.14. Other platforms aren't tested. PyPy doesn't fully work yet: a
+trial run failed in places, including some LZMA data and the accelerator behind `[seekable]`. [How
+it is built](how-it-is-built.md) has the full test setup.
 
 ## Free-threaded Python
 
