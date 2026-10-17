@@ -7,3 +7,4 @@
 
 - [x] 2.1 Fixture `symlinks_encrypted__rar4.rar` and tests for right, listed, missing and wrong passwords, no `cryptography`, and extraction
 - [x] 2.2 RAR handbook reason table and §7 entry
+- [x] 2.3 Diagnostics scenario row names RAR 2.9-4 for `password_or_damage`
