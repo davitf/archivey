@@ -471,7 +471,8 @@ of other entries' bytes and drop the entries it swallowed (DR-1). A signature fr
 the headers do not chain so is part of the name, and a wrong count alone stays the
 end-record finding above. An entry no header follows whose local header holds the same
 name, or none, is listed without its comment, which a wrong length may have cut, and the
-next entry raises.
+next entry raises. This supersedes the earlier cut-and-warn rule, by davi's 2026-10-17
+ruling (PR 860).
 
 #### Scenario: damaged directory
 

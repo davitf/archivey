@@ -257,6 +257,10 @@ data and no CRC, where a wrong password yields garbage
   answer (PR 371, `formats/rar.md` §6).
 - `created` never holds a change time in any format (DR-5).
 - Streams raise rather than clamp an over-long read (CONTRIBUTING §Coding standards).
+- A ZIP central entry whose name, extra or comment runs past the directory, swallows
+  the entries after it or is shortened is damage: members list from their local
+  headers, then `CorruptionError`, from a file as from a pipe. This supersedes the
+  cut-and-warn rule (2026-10-17, davi, PR 860, `formats/zip.md` §6).
 
 **Reopen if** a case appears where the only alternative to a guess is refusing data that
 real tools read correctly; then the guess must be reported as a diagnostic, not silent.
