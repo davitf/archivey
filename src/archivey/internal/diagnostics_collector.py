@@ -57,6 +57,69 @@ class DiagnosticWatermark:
 class _RetainedEntry:
     sequence: int
     diagnostic: Diagnostic
+    # The scopes open on the emitting thread, for :meth:`DiagnosticScope.summary`.
+    scopes: tuple[DiagnosticScope, ...] = ()
+
+
+class DiagnosticScope:
+    """The emits one call makes, on its own thread, whatever other threads emit.
+
+    A watermark answers "what happened since here" for the whole collector, so on a
+    reader used from several threads it also catches the other threads' emits. A
+    scope counts only the emits made on the thread that entered it, while it is
+    entered (:meth:`DiagnosticCollector.scoped`). Scopes nest: an emit counts in
+    every scope open on its thread.
+    """
+
+    __slots__ = ("_collector", "_counts", "_total")
+
+    def __init__(self, collector: DiagnosticCollector) -> None:
+        self._collector = collector
+        self._total = 0
+        self._counts: Counter[DiagnosticCode] = Counter()
+
+    def summary(self) -> DiagnosticSummary:
+        """The emits counted so far: exact counts, and those still retained."""
+        with self._collector._lock:
+            total = self._total
+            retained = tuple(
+                e.diagnostic
+                for e in self._collector._retained
+                if any(scope is self for scope in e.scopes)
+            )
+            return DiagnosticSummary(
+                total_count=total,
+                counts=dict(self._counts),
+                retained=retained,
+                dropped_count=total - len(retained),
+            )
+
+
+class _ScopedBlock:
+    """The context manager :meth:`DiagnosticCollector.scoped` returns."""
+
+    __slots__ = ("_collector", "_scope", "_thread_id")
+
+    def __init__(self, collector: DiagnosticCollector) -> None:
+        self._collector = collector
+        self._scope = DiagnosticScope(collector)
+        self._thread_id = 0
+
+    def __enter__(self) -> DiagnosticScope:
+        collector = self._collector
+        self._thread_id = thread_id = threading.get_ident()
+        with collector._lock:
+            collector._scopes.setdefault(thread_id, []).append(self._scope)
+        return self._scope
+
+    def __exit__(self, *exc_info: object) -> None:
+        collector = self._collector
+        with collector._lock:
+            scopes = collector._scopes.get(self._thread_id)
+            if scopes is not None:
+                scopes.remove(self._scope)
+                if not scopes:
+                    del collector._scopes[self._thread_id]
 
 
 @dataclass(slots=True)
@@ -192,6 +255,18 @@ class DiagnosticCollector:
         self._replays: dict[int, _Replay] = {}
         # Per thread, the raises a ``deferring_raises()`` block is holding back.
         self._deferred: dict[int, list[Exception]] = {}
+        # Per thread, the ``scoped()`` blocks open on it, outermost first.
+        self._scopes: dict[int, list[DiagnosticScope]] = {}
+
+    def scoped(self) -> _ScopedBlock:
+        """Count this thread's emits in a new :class:`DiagnosticScope` while inside.
+
+        For a call whose result reports its own diagnostics, such as
+        ``extract_all()``: on a reader opened with ``concurrent_members=True`` other
+        threads emit into the same collector meanwhile, and a watermark would hand
+        their emits to this call too.
+        """
+        return _ScopedBlock(self)
 
     def replaying(self, log: EmitLog) -> _ReplayingBlock:
         """Record this thread's emits into ``log``, or replay the ones it already holds.
@@ -417,13 +492,22 @@ class DiagnosticCollector:
             )
             self._total_count += 1
             self._counts[code] += 1
+            open_scopes = self._scopes.get(thread_id)
+            scopes: tuple[DiagnosticScope, ...] = ()
+            if open_scopes:
+                scopes = tuple(open_scopes)
+                for scope in scopes:
+                    scope._total += 1
+                    scope._counts[code] += 1
 
             retained_aggregate = False
             attached = False
             if not ignored:
                 if self._slots_used < self._max_retained:
                     self._retained.append(
-                        _RetainedEntry(sequence=sequence, diagnostic=diagnostic)
+                        _RetainedEntry(
+                            sequence=sequence, diagnostic=diagnostic, scopes=scopes
+                        )
                     )
                     self._slots_used += 1
                     retained_aggregate = True

@@ -305,7 +305,7 @@ class ForwardArchiveReader(ABC):
         another thread, on every format, so the answer does not depend on the
         format. They share the pass's walk of the archive's headers, and a call that
         needs members the pass has not reached yet reads ahead for it.
-        :meth:`extract_all` still raises beside a pass."""
+        :meth:`extract_all` works beside a pass too."""
         ...
 
     @abstractmethod

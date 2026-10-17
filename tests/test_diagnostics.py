@@ -467,6 +467,54 @@ def test_concurrent_emits_are_not_treated_as_reentrancy() -> None:
     assert collector.snapshot().total_count == 2
 
 
+def test_scope_counts_only_its_own_threads_emits() -> None:
+    # On a reader shared between threads, a call's own report must not pick up what
+    # another thread emits meanwhile: that is what a scope is for, over a watermark.
+    import threading
+
+    collector = DiagnosticCollector(max_retained=4)
+    inside = threading.Event()
+    emitted = threading.Event()
+    summaries = {}
+
+    def scoped() -> None:
+        with collector.scoped() as outer:
+            _emit_norm(collector, message="mine")
+            with collector.scoped() as inner:
+                inside.set()
+                emitted.wait(5)
+                _emit_norm(collector, message="nested")
+        summaries["outer"] = outer.summary()
+        summaries["inner"] = inner.summary()
+
+    thread = threading.Thread(target=scoped)
+    thread.start()
+    inside.wait(5)
+    _emit_norm(collector, message="other thread")
+    emitted.set()
+    thread.join(5)
+    _emit_norm(collector, message="after")
+
+    outer, inner = summaries["outer"], summaries["inner"]
+    assert outer.total_count == 2
+    assert [d.message for d in outer.retained] == ["mine", "nested"]
+    assert inner.total_count == 1
+    assert [d.message for d in inner.retained] == ["nested"]
+    assert collector.snapshot().total_count == 4
+    assert collector._scopes == {}
+
+
+def test_scope_counts_exactly_past_retention() -> None:
+    collector = DiagnosticCollector(max_retained=1)
+    with collector.scoped() as scope:
+        for _ in range(3):
+            _emit_norm(collector)
+    summary = scope.summary()
+    assert summary.total_count == 3
+    assert len(summary.retained) == 1
+    assert summary.dropped_count == 2
+
+
 def test_snapshots_are_immutable_points_in_time() -> None:
     collector = DiagnosticCollector()
     _emit_norm(collector, message="one")
@@ -556,7 +604,7 @@ def test_extract_all_report_is_delta_only(tmp_path: Path) -> None:
         before = reader.diagnostics.total_count
         assert before >= 1  # detection conflict already counted
         report = reader.extract_all(dest)
-        # Report is watermark delta — should not re-count pre-extraction diagnostics
+        # The report covers the call only; it does not re-count earlier diagnostics.
         assert report.diagnostics.total_count == 0 or (
             DiagnosticCode.FORMAT_EXTENSION_CONFLICT not in report.diagnostics.counts
         )

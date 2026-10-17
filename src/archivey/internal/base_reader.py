@@ -1417,14 +1417,9 @@ class BaseArchiveReader(ArchiveReader):
             if child_scope:
                 # Also wraps ``_internal_member_opens()`` (live-stream gate exemption) —
                 # the two always travel together for eager link-data reads.
-                # Link-data reads are a private child scope under an active root when one
+                # Link-data reads are a private child scope under an active pass when one
                 # exists; otherwise they only need the live-stream gate exemption.
-                root = self._state.current_root()
-                child = (
-                    self._state.enter_child(root, "link_reads")
-                    if root is not None
-                    else None
-                )
+                child = self._state.enter_child_scope("link_reads")
                 try:
                     with self._internal_member_opens():
                         _resolve()
@@ -3374,8 +3369,8 @@ class BaseArchiveReader(ArchiveReader):
         )
         collector = self._diagnostics_collector
         # This call's report covers only its own extraction-phase events; open-phase
-        # diagnostics stay on reader.diagnostics.
-        wm = collector.watermark()
+        # diagnostics stay on reader.diagnostics. A scope, not a watermark: on a
+        # CONCURRENT reader other threads emit into the same collector meanwhile.
         coordinator = ExtractionCoordinator(
             policy=policy,
             overwrite=overwrite,
@@ -3390,13 +3385,13 @@ class BaseArchiveReader(ArchiveReader):
         token = self._state.acquire_pass("extract_all")
         try:
             # Library-internal member opens (including hardlink recovery) are ungated.
-            with self._internal_member_opens():
+            with self._internal_member_opens(), collector.scoped() as scope:
                 results = coordinator.run(self, dest_path)
         finally:
             self._state.release_pass(token)
         return ExtractionReport(
             results=tuple(results),
-            diagnostics=collector.snapshot(since=wm),
+            diagnostics=scope.summary(),
             _dry_run_top_level=coordinator.dry_run_top_level,
             _dry_run_links=coordinator.dry_run_links,
             _dry_run_entries=coordinator.dry_run_entries,

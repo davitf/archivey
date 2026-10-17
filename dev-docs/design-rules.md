@@ -411,8 +411,9 @@ that is right on one format and wrong on another breaks callers silently.
   (2026-09-29, `new_docs/reading.md` §"Why these aren't on by default").
 - Under `concurrent_members=True`, `open`, `read`, `get` and `members()` work during a
   `stream_members` pass, on every format and from any thread, because they share one lazy
-  walk of the archive with the pass; `extract_all` beside a pass keeps raising (2026-10-13;
-  applied by PR 786).
+  walk of the archive with the pass (2026-10-13; applied by PR 786). `extract_all` joined
+  them on 2026-10-17: under the flag every operation works as if it ran on a reader of its
+  own.
 
 **Reopen if** matching would require an OS feature that one platform lacks; then refuse
 on every platform rather than diverge.
