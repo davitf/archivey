@@ -115,14 +115,16 @@ Each stage: who does the work, what is ZIP-specific rather than general, what is
 
 ### 2.1 Identify
 
-ZIP declares three magics at offset 0 — `PK\x03\x04` (local header), `PK\x05\x06` (empty
-archive) and `PK\x07\x08` (spanned marker) — and six extensions: `.zip`, `.jar`, `.pyz`,
-`.whl`, `.apk`, `.cbz`. Comic-book aliases: `.cbr` → RAR, `.cbz` → ZIP, `.cbt` → TAR,
-`.cb7` → 7z. Magic wins; a ZIP named `.cbr` emits `FORMAT_EXTENSION_CONFLICT` (see
-[`rar.md`](rar.md) §2.1).
+ZIP declares four magics at offset 0 — `PK\x03\x04` (local header), `PK\x05\x06` (empty
+archive), `PK\x07\x08` (spanned marker) and `PK00PK\x03\x04` (APPNOTE 8.5.4's no-span
+marker, which PKZIP may write before the first local header of a one-segment set) —
+and six extensions: `.zip`, `.jar`, `.pyz`, `.whl`, `.apk`, `.cbz`. Comic-book aliases:
+`.cbr` → RAR, `.cbz` → ZIP, `.cbt` → TAR, `.cb7` → 7z. Magic wins; a ZIP named `.cbr`
+emits `FORMAT_EXTENSION_CONFLICT` (see [`rar.md`](rar.md) §2.1).
 
 When searching a prefixed archive for a ZIP, archivey looks only for the local header
-(`PK\x03\x04`). The other two magics are not useful search targets: `PK\x05\x06` would
+(`PK\x03\x04`). The no-span marker is just a local header with 4 bytes in front, so that
+search finds it. The other two magics are not useful search targets: `PK\x05\x06` would
 appear before a local header only for an empty archive, and `PK\x07\x08` is the spanning
 marker — 7-Zip's own `-sfx -v` writes the stub as a standalone executable and the volumes
 as separate `.zip.NNN` files, so a concatenated stub-plus-spanned-ZIP is not the shape that
@@ -341,11 +343,11 @@ took nothing from in `extra["zip.extra_fields"]`.
 | `uid` / `gid` | The owner extra fields, read in blob order as unzip 6.00 reads them (§6): Info-ZIP new Unix `0x7875` (version 1, ids of 2, 4 or 8 bytes; Info-ZIP `zip` writes it on Unix by default, 4-byte ids) and Info-ZIP Unix type 2 `0x7855` (16-bit ids) each decide the owner afresh, readable or not, and a `0x7855` after a `0x7875` is ignored; PKWARE Unix `0x000d` and Info-ZIP old Unix `0x5855` (16-bit ids after two times) count only when neither came before, and then the last one that holds ids wins. The two 16-bit Info-ZIP fields hold the ids in local headers only (their central copies are empty, or the two times alone), so a file read finds them only from writers that copy the ids into the directory. A forward pass yields no owner, and takes the directory's at the end | No such field, or the deciding field holds none. A `0x7875` of another version and the central short copies are silent; a deciding field that is cut short, too short for its ids, a `0x7855` neither empty nor exactly 4 bytes, or a `0x7875` with an id size unzip does not read gives none and is dropped with `MEMBER_HEADER_RECORD_SKIPPED` (`record="unix_owner"`, `record_id` the tag). Writers on Windows store none |
 | `uname` / `gname` | — | Always: no ZIP extra field records owner names |
 | `modified` / `accessed` / `created` / `ctime` | CDH DOS date-time (naive local, 2-second granularity) ← NTFS extra `0x000A` (UTC) ← PKWARE Unix `0x000d` or Info-ZIP old Unix `0x5855` (access and modification time, UTC) ← Extended Timestamp `0x5455` (UTC), later overriding earlier — parsed by archivey. macOS `ditto` and Archive Utility write only `0x5855`, so without it a macOS archive would list naive local DOS times. The Unix fields' times follow unzip 6.00 (measured with `unzip` on crafted local headers, `test_unix_field_times_match_unzip`): ignored in a blob that holds a `0x5455` with data, or after a `0x7855` or `0x7875` (the rule their ids follow), the last one long enough for both times winning. They sit above NTFS, which unzip on Unix does not read. The two "creation" slots (NTFS FILETIME, Extended Timestamp third time; the latter wins) mean what the writer's host says, not what the field says: on Linux and macOS, 7-Zip and p7zip fill the NTFS one from `st_ctime` and libarchive the UT one; Info-ZIP and `ditto` there store no creation time. From a FAT / OS2 / NTFS / VFAT host ("version made by", `_ZIP_BIRTH_TIME_HOSTS`) the time is a birth time and is `created`; from any other host, unknown included, it goes to `ctime` and `created` is `None`. libarchive on Windows stamps host 3 but stores the birth time, so its time lands in `ctime` too. Info-ZIP on Windows puts its birth time in the UT field of the local header only, which listing does not read. Per-writer measurements: [`writer-timestamp-slots.md`](../investigations/writer-timestamp-slots.md) | 1980 sentinel, or every layer invalid. Each invalid layer emits `MEMBER_TIMESTAMP_INVALID`, whose `field` is the member attribute that layer would have filled (the creation slot `created` or `ctime` by the same host rule), even when a lower layer still fills it |
-| `type` | Symlink via the `FILE_ATTRIBUTE_REPARSE_POINT` bit in the low word of `external_attr` — provisionally, until the member's data confirms it (§2.2.1) — or via Unix mode bits in its high word; directory when the decoded name (the one `name` comes from) ends in `/`, or in `\` for a DOS/FAT-origin entry, the same on every host OS and Python version. A directory whose `file_size` is not 0 (APPNOTE 4.3.8 forbids it; unzip, 7-Zip and bsdtar create the directory and drop the bytes silently, Go's `archive/zip` refuses the archive) stays a directory, emits `MEMBER_DIRECTORY_DATA_IGNORED` with both sizes, carries the central-directory CRC-32 in `hashes` (unless that field is 0, the conventional value for a directory: then no digest, and `DIGEST_UNVERIFIABLE` where the CRC was the only check, unencrypted or ZipCrypto; a WinZip AES entry, AE-1 with a zeroed field or AE-2 which stores 0 by design, is checked by its HMAC instead and reports nothing), and reads through `open()` like a file: `_open_with_link_follow` refuses a directory by data and a tombstone or special entry by type. `file_size == 0` over a body larger than an empty one of its method (`_ZIP_EMPTY_BODY_SIZES`: 0 stored, 2 deflated, 14 bzip2, 19 LZMA) is reported too and not readable; `compress_size == 2` deflated is the Java `jar` tool's empty body and is silent. A Unix FIFO, device or socket mode makes `OTHER` only when `file_size` is 0; with data it is a `FILE` (`zip -FI` stores a named pipe's content so, and unzip, 7-Zip, bsdtar and `zipfile` all write it as a file) with `MEMBER_SPECIAL_FILE_HAS_DATA`, DR-25. Both carry `extra["special_file_type"]` | — |
+| `type` | Symlink via the `FILE_ATTRIBUTE_REPARSE_POINT` bit in the low word of `external_attr` — provisionally, until the member's data confirms it (§2.2.1) — or via Unix mode bits in its high word; directory when the decoded name (the one `name` comes from) ends in `/`, or in `\` for a DOS/FAT-origin entry, the same on every host OS and Python version. A directory whose `file_size` is not 0 (APPNOTE 4.3.8 forbids it; unzip, 7-Zip and bsdtar create the directory and drop the bytes silently, Go's `archive/zip` refuses the archive) stays a directory, emits `MEMBER_DIRECTORY_DATA_IGNORED` with both sizes, carries its stored CRC-32 in `hashes` (the central directory's, or the local header's on a listing from local headers) (unless that field is 0, the conventional value for a directory: then no digest, and `DIGEST_UNVERIFIABLE` where the CRC was the only check, unencrypted or ZipCrypto; a WinZip AES entry, AE-1 with a zeroed field or AE-2 which stores 0 by design, is checked by its HMAC instead and reports nothing), and reads through `open()` like a file: `_open_with_link_follow` refuses a directory by data and a tombstone or special entry by type. `file_size == 0` over a body larger than an empty one of its method (`_ZIP_EMPTY_BODY_SIZES`: 0 stored, 2 deflated, 14 bzip2, 19 LZMA) is reported too and not readable; `compress_size == 2` deflated is the Java `jar` tool's empty body and is silent. A Unix FIFO, device or socket mode makes `OTHER` only when `file_size` is 0; with data it is a `FILE` (`zip -FI` stores a named pipe's content so, and unzip, 7-Zip, bsdtar and `zipfile` all write it as a file) with `MEMBER_SPECIAL_FILE_HAS_DATA`, DR-25. Both carry `extra["special_file_type"]` | — |
 | `link_target` | The member's **data**, not its metadata — a bare path for a Unix symlink, a `REPARSE_DATA_BUFFER` for a Windows one (§2.2.1) | The member is encrypted and no password is available, so there is nothing to read it from — `SYMLINK_TARGET_UNAVAILABLE(reason="password_required")`, whose context carries the member's identity and the reason and nothing out of the member; or the ZipCrypto data failed its integrity check under a password only the check byte vouched for, with `reason="password_or_damage"`; or the data failed its CRC, HMAC or decompressor under a password that was not in doubt (or no password at all), with `reason="target_data_damaged"` and the damage raised when the link is opened or extracted; or the writer stored no usable reparse data, with `reason="reparse_data_absent"` (no data at all), `"reparse_data_unrecognized"` (data that is not a link buffer — a file-shaped member is re-typed to carry it, a directory-shaped one stays a targetless link, §2.2.1) or `"reparse_data_nameless"` (a link buffer that parsed but named no target) |
 | `compression` | CDH method → `CompressionMethod` | — |
 | `is_encrypted` | general-purpose bit 0, or method 99: a WinZip AES member is encrypted even when a writer left bit 0 clear, and opening it asks for a password either way, so listing and opening share one predicate | — |
-| `hashes["crc32"]` | CDH CRC, as four big-endian bytes — present for AE-1 (and verified on read); omitted for AE-2, where the format zeroes the field and the HMAC is the integrity signal | WinZip AE-2 members |
+| `hashes["crc32"]` | CDH CRC (the local header's or data descriptor's on a listing from local headers; `_crc_is_digest` says which members carry one), as four big-endian bytes — present for AE-1 (and verified on read); omitted for AE-2, where the format zeroes the field and the HMAC is the integrity signal | WinZip AE-2 members |
 | `comment` | CDH member comment. APPNOTE puts it under the name's bit 11, so it decodes as the name would: UTF-8 when flagged over a valid UTF-8 name; unflagged, or flagged over a name that is not UTF-8, the same sniff as an unflagged name (UTF-8 if valid, else `encoding=`, else `zip_unflagged_fallback_encoding`), with no diagnostic; a byte the codec leaves undefined survives as a lone surrogate. `ArchiveInfo.comment` (the end record's, which has no flag) decodes as an unflagged one | The entry stores none, which is the common case |
 | `create_system` | CDH "version made by", high byte | Never — an unrecognised value maps to `CreateSystem.UNKNOWN` rather than to nothing |
 | `extra` | `zip.compress_type`, plus `zip.aes_vendor_version` / `zip.aes_strength` / `zip.aes_actual_method` on AE members, plus `is_reparse_point` from the attribute bit and `is_junction` when a stored reparse buffer says so (§2.2.1) | — |
@@ -480,22 +482,32 @@ are `None`, and `members_report_if_available()` returns `None`, until the direct
 been read. The full design, row by row, is the `native-zip-reader` change's `design.md`
 (§"Streaming: a forward walk over local headers").
 
-**Where a member's data ends.** A sized local header gives it. With bit 3 set the walk
-decodes to the codec's end marker (DEFLATE, Deflate64, bzip2, Zstandard, LZMA with the
-EOS bit, PPMd with its end mark), then finds the data descriptor by the decoded CRC; a
-STORED member ends at a descriptor whose CRC and size match the bytes before it and that
-a ZIP signature follows, signed or not. An encrypted bit-3 member nobody reads is passed
-the same way on its ciphertext, matched on the size, so no key is needed. A bit-3 LZMA
-member without EOS has no end its codec can find, and its read is
+**Where a member's data ends.** A sized local header gives it. With bit 3 set, a member
+the caller reads to its end is decoded to the codec's end marker (DEFLATE, Deflate64,
+bzip2, Zstandard, LZMA with the EOS bit, PPMd with its end mark), then the walk finds
+the data descriptor by the decoded CRC; a STORED member ends at a descriptor whose CRC
+and size match the bytes before it and that a ZIP signature follows, signed or not. A
+bit-3 codec member the pass reads past (nobody read it, or the caller stopped early) is
+decoded no further than the byte past the 4096-byte target cap, then the reparse prefix
+a file read reads (the buffer and one byte, §2.2.1), and one byte past that prefix:
+bit-3 data has no size, so only a decode that returns nothing says it ended there, and
+the two reads stop at the same place. A member whose codec ends within that is checked
+as a read to its end is. Past it the walk passes the member by the STORED member's scan
+on its stored bytes, matched on the size and the signature after the descriptor, since
+the CRC covers the decoded data: decoding the rest would cost what no limit bounds (a
+900-byte bzip2 member decodes to 1 GiB). A descriptor planted in the data then ends the
+member early, and the directory catches it at the end of the pass. An encrypted bit-3
+member nobody reads is passed the same way on its ciphertext, so no key is needed. A
+bit-3 LZMA member without EOS has no end its codec can find, and its read is
 `UnsupportedFeatureError`. PPMd has no flag for a missing end mark: such a member fails
 its decode, as from a file. A bit-3 codec member whose decode fails or finds no end is
 passed by the same scan on its stored bytes. The scan starts at the bytes the walk kept
-of what the decode read (`_CODEC_RETAIN`, 4 MiB) and counts the ones before them into the
-size it matches, so the descriptor is found unless the decode read more than that past
-the data's end; then the scan runs to the end of the stream and the pass ends with its
-error. A bit-3 PPMd member is always decoded in a child process
-(`max_ppmd_in_process_input=None` refuses it with `ResourceLimitError`). Several password
-candidates are confirmed on the first 1 MiB, kept and replayed (§2.3).
+of what the decode read (`_CODEC_RETAIN`, 4 MiB) and counts the ones before them into
+the size it matches, so the descriptor is found unless the decode read more than that
+past the data's end; then the scan runs to the end of the stream and the pass ends with
+its error. A bit-3 PPMd member is always decoded in a child process
+(`max_ppmd_in_process_input=None` refuses it with `ResourceLimitError`). Several
+password candidates are confirmed on the first 1 MiB, kept and replayed (§2.3).
 
 **What the pass yields, and what changes at the end.** Each member is yielded with what
 its local header gives: `mode`, `create_system` and `comment` are `None`, the type is
@@ -535,15 +547,19 @@ reports `MEMBER_LOCAL_NAME_DIFFERS` as a file read does when it opens the member
 extraction moves what it wrote.
 
 **Where the pass and a file read differ**, each pinned in
-`tests/test_zip_pipe_parity.py` (`_DIFFERS`) or the tests named in §8. The first three
+`tests/test_zip_pipe_parity.py` (`_DIFFERS`) or the tests named in §8. The first four
 are shapes only crafted archives have (DR-5a); the rest come from damage, or from the
 directory's refusals the file read is to drop:
 
-- A data descriptor that understates a STORED member, and the reversed same-name pair,
-  fail a member the file read writes.
+- A data descriptor that understates a STORED member, or a bit-3 codec member the pass
+  reads past, and the reversed same-name pair, fail a member the file read writes.
 - Junk between a bit-3 codec member's end and its descriptor counts into the member,
   where the file read refuses it (DR-3).
 - The first of several inconclusive password candidates wins (§6).
+- A local header without bit 3 whose size field holds all ones that no ZIP64 field
+  holds is refused (`CorruptionError`); the file read takes the sizes from the directory
+  and reads the member
+  (`test_zip_local_walk.py::test_an_unheld_local_size_reads_by_file`).
 - Under `on_error="stop"`, a member whose data fails as the pass writes it stops the run,
   though the directory may then not list it. `abort_on` fires before the end of the pass
   decides a member's selection, and the bomb limits count what the pass wrote until it
@@ -651,6 +667,12 @@ has no rejecting codec: the HMAC covers the whole member. A **STORED** ZipCrypto
 has no decompressor, so the only discriminator is the whole-stream CRC — all surviving
 candidates are resolved in one shared ciphertext pass computing each candidate's CRC in
 constant memory, earliest match winning. That cost is irreducible for the format.
+The CRC each candidate is matched against is the member's CRC-32 digest, not the header
+field (`_member_crc_anchor`). A member that lists none — AE-2, and a directory whose CRC
+field is 0 over declared data (§2.2 `type` row) — has no CRC to match: a ZipCrypto one
+skips the shared pass and takes the bounded confirm, a WinZip AES one is confirmed by its
+HMAC. Matching the field's 0 failed every candidate, the right one included, where one
+password read the member.
 
 From a pipe the data goes by once, so there is no second walk. The pass keeps the first
 `PASSWORD_CONFIRM_MAX_INPUT_BYTES` (1 MiB) of the member's data and runs each candidate's
@@ -908,7 +930,10 @@ info, extended attributes, resource fork; no data length).
     the reader, settles it).
     `extra["size_mod_2_32"]` stays after the fill-in, so the member still says the
     archive stored only the low bits. A pipe pass that decoded the member to its end
-    with the directory's CRC-32 keeps the size it counted. davi chose this (option A,
+    with the directory's CRC-32 keeps the size it counted. For a bit-3 member nobody
+    read, that is one whose codec ended within the symlink target cap; past it the
+    pass decodes no further (§2.2 "Where a member's data ends") and `size` stays `None`,
+    as from a file. davi chose this (option A,
     2026-10-15) over decoding such members while listing, which would read a whole
     archive of videos to list it. An entry with no CRC-32 (a directory carrying data)
     has nothing to check a read against, so it keeps the stored size instead of
