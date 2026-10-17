@@ -1,98 +1,101 @@
 # Archivey
 
-Archivey reads, streams, and safely extracts ZIP / TAR / RAR / 7z / ISO / directory /
-single-file-compressed archives behind one uniform interface.
+Archivey reads ZIP, TAR, 7z, RAR, ISO and single compressed files from Python, with one
+simple API. Untrusted archives extract safely by default. Archive formats hide some slow and
+error-prone ways of reading, and archivey's defaults steer around them whenever possible.
+
+## Install
+
+Install the `archivey` package from PyPI with your usual tool (e.g. `uv add "archivey[recommended]"`
+or `pip install "archivey[recommended]"`). Without `recommended`, archivey has no dependencies and
+reads ZIP, TAR, 7z with its common compression methods, and the single compressed files the standard
+library handles, such as gzip, bzip2 and xz. The extra adds ISO, lz4, Brotli, zstd on Python 3.13
+and older, the rarer compression methods in 7z and ZIP, and AES decryption, which most encrypted 7z
+and ZIP archives need.
+
+RAR archives can be listed, and files stored in them without compression read, with nothing else
+installed. To read compressed files, you also need RARLAB's `unrar` or `rar`, 6.0 or later, or
+`unar` 1.10 or later, which handles fewer RAR archives. [Install](install.md) has the details.
+
+## Open and list
 
 ```python
 import archivey
 
-with archivey.open_archive("photos.zip") as reader:
-    for member in reader:
+with archivey.open_archive("photos.zip") as archive:
+    for member in archive:
         print(member.name, member.size)
 ```
 
-## Thirty seconds
+`open_archive` identifies the format from the file's contents, so the same code opens a `.7z`
+or a `.tar.gz`. Each entry in the archive, whether a file, a directory or a link, is a
+*member*, as in `zipfile` and `tarfile`. [`ArchiveMember`][archivey.ArchiveMember]
+lists everything a member carries. [Opening an archive](opening.md) covers passwords, formats
+and name encodings.
+
+## Read a member
 
 ```python
-import sys
-
-import archivey
-
-# Extract safely. Path traversal, symlink escapes and bombs are blocked by
-# default; you opt out, not in.  -> Safe extraction
-with archivey.open_archive("untrusted.zip") as reader:
-    report = reader.extract_all("out/")
-
-# Read one member, verified. A corrupt or truncated member raises from read(),
-# never quietly returns short.  -> Reading members
-with archivey.open_archive("photos.zip") as reader:
-    data = reader.read("subdir/a.txt")
-
-# Stream one member without materialising it.  -> Reading members
-with archivey.open_archive("big.tar.gz") as reader:
-    for member, stream in reader.stream_members():
-        if member.is_file:
-            for chunk in iter(lambda: stream.read(1 << 20), b""):
-                ...
-
-# Read from a pipe: forward-only, single pass. TAR, ZIP and the single-file compressors
-# only — ISO, 7z and RAR need a seekable source.  -> Access costs
-with archivey.open_archive(sys.stdin.buffer, streaming=True) as reader:
-    for member, stream in reader.stream_members():
-        ...
+with archivey.open_archive("photos.zip") as archive:
+    data = archive.read("holiday/beach.jpg")
 ```
 
-[Safe extraction](extracting.md) · [Reading members](reading-members.md) ·
-[Access costs](access-and-cost.md) · [Install](install.md)
+`read` returns the whole member as bytes. For a large member, `open` gives you a file object
+to read in pieces:
 
-## Highlights
+```python
+import shutil
 
-- **One interface for every format** — ZIP, TAR (`.tar.gz`/`.bz2`/`.xz`/`.zst`/…), RAR, 7z,
-  ISO, plain directories, and single-file streams (gzip, bzip2, xz, zstd, lz4, lzip, zlib,
-  brotli, Unix compress) all read the same way.
-- **Automatic format detection** from content, not just the file extension.
-- **Zero-dependency core** — ZIP/TAR/directory and the stdlib codecs work with no extra
-  installs; optional formats and accelerators are opt-in [extras](install.md).
-- **Native 7z and RAR metadata readers** — no `py7zr`/`rarfile` on the read path (RAR
-  member *data* still uses the system `unrar` or `rar`, or `unar` when neither is found).
-- **Safe by default** — extraction blocks path traversal, symlink escapes, and archive
-  bombs unless you opt out. See [Safe extraction](extracting.md).
-- **Streaming-friendly** — read TAR, ZIP and the single-file compressors straight from a
-  pipe in a single forward pass (7z, RAR and ISO need a seekable source), with explicit,
-  predictable [access costs](access-and-cost.md) for solid archives and seeking.
-- **Consistent handling** of symlinks, timestamps, permissions, passwords, and a single
-  [exception hierarchy](errors-and-diagnostics.md).
+with archive.open("holiday/video.mp4") as stream, open("video.mp4", "wb") as out:
+    shutil.copyfileobj(stream, out)
+```
 
-## User guide
+`archive.get(name)` gives you the member with that name, or `None`.
 
-1. **[Install and extras](install.md)** — what to install for the formats you need
-2. **[Opening and listing](opening-and-listing.md)** — sources, detection, passwords, what's inside
-3. **[Reading members](reading-members.md)** — getting bytes out, and what each outcome means
-4. **[Gotchas](gotchas.md)** — traps worth knowing after the basics (read this next)
-5. **[Safe extraction](extracting.md)** — what “safe by default” means in practice
-6. **[Access costs and pitfalls](access-and-cost.md)** — hidden decompression costs and how to avoid them
-7. **[Formats and extras](formats.md)** — per-format quirks, required libraries, limitations
-8. **[Errors and diagnostics](errors-and-diagnostics.md)** — what is raised, what is recorded
-9. **[Command line](cli.md)** — the `archivey` command
-10. **[Migrating](migrating.md)** — coming from `zipfile`, `tarfile`, `shutil`, `patool`
-11. **[Platforms and threading](support-matrix.md)** — supported Pythons/OSes and what free-threading claims
-12. **[Philosophy](philosophy.md)** — why Archivey exists and the defaults that follow
-13. **[How it is built](how-it-is-built.md)** — AI-written code, and how it is reviewed and checked
-14. **[How it works](how-it-works.md)** — the internals, and the decisions behind them
-15. **[API reference](api.md)** — generated from source
-16. **[Acknowledgements](acknowledgements.md)** — libraries, oracles, and design references
+`open` and `read` follow a link to another member of the archive and give you that member's
+contents. They never follow it outside the archive: a link whose target isn't a member, such as one
+pointing to `/etc/passwd` or to a file the archive doesn't hold, raises `LinkTargetNotFoundError`. A
+directory has no contents to read, so they raise `ArchiveyUsageError`.
 
-## For contributors
+On some archives, reading a member means first decompressing the members stored before it, so
+reading them out of order gets slow. [Solid archives](reading.md#solid-archives) explains when this
+happens. The next section shows how to avoid it by reading them all in one pass.
 
-This site is the user guide, and nothing else. Contributor material lives in the
-[repository](https://github.com/davitf/archivey):
+## Read everything in one pass
 
-- [`CONTRIBUTING.md`](https://github.com/davitf/archivey/blob/main/CONTRIBUTING.md)
-  — coding and testing standards
-- [`openspec/specs/`](https://github.com/davitf/archivey/tree/main/openspec/specs)
-  — the authoritative behaviour contracts
-- [`dev-docs/`](https://github.com/davitf/archivey/tree/main/dev-docs) — decision
-  log, threat model, codec analysis, known issues, roadmap, and finished
-  investigations
-- [`VISION.md`](https://github.com/davitf/archivey/blob/main/VISION.md) — what the
-  project is for and how trade-offs get settled
+```python
+with archivey.open_archive("backup.tar.gz") as archive:
+    for member, stream in archive.stream_members():
+        if not member.is_file or stream is None:
+            continue  # a directory or a link
+        process(member.name, stream.read())
+```
+
+`stream_members` goes through the archive in the order it is stored and gives you each member
+with a stream of its contents. It reads each member once, so it is never slower than reading
+them by name, and on some archives it is much faster. Directories and links come with `None` in
+place of a stream, and each stream works only until the loop moves on. A directory entry that
+hides data in the archive is the exception: it can come with a stream of those bytes, which is
+why the loop tests `member.is_file`.
+
+## Extract
+
+```python
+with archivey.open_archive("download.zip") as archive:
+    archive.extract_all("out/")
+```
+
+`extract_all` writes every member under `out/`. By default it refuses anything that would land
+outside that folder, such as `../` paths, absolute paths or links pointing out of it, and it
+stops archives that expand to far more data than they hold. [Extracting](extracting.md)
+lists every protection and how to relax them for archives you trust, and also shows how to
+extract only some files. [Security](security.md) covers what archivey relies on and where its
+guarantees stop.
+
+## When something goes wrong
+
+Problems with the archive raise a subclass of `ArchiveyError`: `CorruptionError` for damaged
+data, `EncryptionError` for a missing or wrong password, `PackageNotInstalledError` when a
+format needs the extra. Archivey raises these the same way for every format, including where
+the underlying library would stop quietly and hand back short data.
+[Errors](errors-and-diagnostics.md) has the full list.

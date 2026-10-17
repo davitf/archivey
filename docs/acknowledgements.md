@@ -1,98 +1,76 @@
 # Acknowledgements
 
-None of this would exist without the people who built the formats, libraries, and tools
-Archivey leans on — whether we depend on their code directly, learned from their design,
-or just used their project to check our own work. This page is where we say thanks and
-give credit properly.
+Archivey builds on the work of the people who designed these formats and wrote the libraries and
+tools around them. This page credits the code archivey adapted, the projects it learned from and
+checks itself against, and the packages it uses. If we missed a project that should be here, please
+open an issue or a pull request.
 
-License texts for adapted kernels live next to the code
-(`src/archivey/internal/streams/codecs/unix_compress_decoder.py`,
-`src/archivey/internal/backends/rar_parser.py`). Packaging extras and codec rationale:
-[Formats](formats.md), [library analysis](https://github.com/davitf/archivey/blob/main/dev-docs/library-analysis.md).
+## Code adapted from other projects
 
-## Thanks
+Two parts of archivey are adapted from other projects' code, and their licence notices are kept in
+the files that hold it:
 
-Thanks to the maintainers and contributors of every project below — especially the ones
-whose work shaped our design without ever becoming a dependency. When we built our own
-parser or stream layer instead of wrapping a library, it’s usually because it needed to
-fit Archivey’s architecture and behave consistently across formats, not because the
-original wasn’t good. If we missed a project that should be here, open an issue or a
-PR — genuinely.
-
-## Adapted source
-
-| Project | Role in Archivey | License |
+| Project | What archivey adapted | Licence |
 | --- | --- | --- |
-| [uncompresspy](https://github.com/kYwzor/uncompresspy) (Tiago Gomes) | LZW kernel for unix-compress (`.Z`) adapted into `UnixCompressDecompressorStream` / `LzwState`. **Not** a runtime dependency; `[unix-compress]` was removed when the kernel was vendored into core. | BSD-3-Clause |
-| [rarfile](https://github.com/markokr/rarfile) (Marko Kreen) | RAR3 SHA-1 / string-to-key and Unicode filename decompression ported into the native RAR metadata parser. Also a **dev-only** oracle and fixture source (below). | ISC |
+| [uncompresspy](https://github.com/kYwzor/uncompresspy) (Tiago Gomes) | The LZW decoder for `.Z` files ([notice](https://github.com/davitf/archivey/blob/main/src/archivey/internal/streams/codecs/unix_compress_decoder.py)) | BSD-3-Clause |
+| [rarfile](https://github.com/markokr/rarfile) (Marko Kreen) | RAR3 password key derivation and the RAR3 Unicode filename decoder ([notice](https://github.com/davitf/archivey/blob/main/src/archivey/internal/backends/rar_parser.py)) | ISC |
 
-## Format references, oracles, and corpora
+The ARM64 branch filter used in 7z archives follows the algorithm in liblzma, from the
+[xz](https://github.com/tukaani-project/xz) project, and is checked against 7-Zip's.
 
-These are not on the primary read path (except where noted).
+## Projects archivey learned from
 
-| Project | Role |
-| --- | --- |
-| [py7zr](https://github.com/miurahr/py7zr) (Hiroshi Miura et al.) | 7z **format reference** and **dev oracle** / optional external corpus (`ARCHIVEY_PY7ZR_TEST_FILES`). Reading is native (a pure-Python header parser over stdlib codecs, so the common 7z archive needs no third-party package); writing is not shipped yet. |
-| [rarfile](https://github.com/markokr/rarfile) | RAR **format reference**, **dev oracle**, optional corpus (`ARCHIVEY_RARFILE_TEST_FILES`), and two legacy fixtures under `tests/fixtures/rar/` (RAR 1.5 / 2.0). Reading metadata is native; member data uses RARLAB `unrar`, because the RAR decompression algorithm is not licensed for reimplementation. |
-| Python's [`zipfile`](https://docs.python.org/3/library/zipfile.html) and [`tarfile`](https://docs.python.org/3/library/tarfile.html) | Archivey read ZIP and TAR through them until its own parsers replaced them, and those parsers still follow them in places: `ZipFile.open`'s check that a member's data doesn't run into the next member, `tarfile`'s handling of TAR member types, and the `data` extraction filter (PEP 706) that archivey's handling of absolute names matches. Today they're **dev oracles**: the native parsers are compared with them field by field (`tests/test_zip_parser.py`, `tests/test_tar_parser_differential.py`), and they write most ZIP and TAR test fixtures. |
-| [libarchive](https://github.com/libarchive/libarchive) (+ [libarchive-c](https://github.com/Changaco/python-libarchive-c)) | Optional **cross-format corpus** oracle (`ARCHIVEY_LIBARCHIVE_TEST_FILES` → libarchive’s `libarchive/test` uuencoded archives). Dev-only; not a runtime backend. |
-| [7-Zip](https://www.7-zip.org/) / `7z` CLI ([p7zip](https://github.com/p7zip-project/p7zip)) | Fixture builder and anti-item / encrypted-ZIP oracle in tests (when installed). |
-| [RARLAB](https://www.rarlab.com/) `unrar` / `rar` | Runtime decompressor for RAR **member data**; fixture generator for committed RAR samples. |
-| [The Unarchiver](https://theunarchiver.com/) `unar` (XADMaster) | Second runtime decompressor for RAR **member data**, used when no RARLAB program is found and, under `auto`, for a member `unrar` cannot name. |
+[py7zr](https://github.com/miurahr/py7zr) (Hiroshi Miura and contributors) and rarfile were the main
+references for how 7z and RAR archives behave in practice. Archivey's 7z and RAR readers were
+checked against them at every step and take ideas from them, though not code (apart from the rarfile
+pieces above). Python's [`zipfile`](https://docs.python.org/3/library/zipfile.html) and
+[`tarfile`](https://docs.python.org/3/library/tarfile.html) played the same part for ZIP and TAR:
+archivey read both formats through them before it had its own readers, which still follow them in
+places. [7-Zip](https://www.7-zip.org/)'s and [RARLAB](https://www.rarlab.com/)'s UnRAR sources were
+the references for the formats themselves, and WinZip's AES specification for encrypted ZIP files.
 
-## Seekable-stream design references
+The indexed and seekable decompressors ([python-xz](https://github.com/Rogdham/python-xz),
+[indexed_bzip2](https://github.com/mxmlnkn/indexed_bzip2),
+[indexed_gzip](https://github.com/pauldmccarthy/indexed_gzip),
+[ratarmount](https://github.com/mxmlnkn/ratarmount) and
+[indexed_zstd](https://github.com/martinellimarco/indexed_zstd)) shaped how archivey seeks inside
+compressed streams, even though archivey doesn't depend on them.
 
-Indexed / seekable decompressors shaped the stream layer even when Archivey does **not**
-depend on them. Archivey loads **one** accelerator library per process: rapidgzip covers gzip and
-bzip2, and standalone `indexed_bzip2` is deliberately not imported because loading
-both corrupts the heap on macOS. Full scoring lives in
-[library analysis](https://github.com/davitf/archivey/blob/main/dev-docs/library-analysis.md); the accelerator
-lifecycle notes are in the [rapidgzip investigation](https://github.com/davitf/archivey/blob/main/dev-docs/investigations/rapidgzip-upstream-report.md).
+## Packages archivey uses
 
-| Project | Role |
-| --- | --- |
-| [python-xz](https://github.com/Rogdham/python-xz) (Rogdham) | Design reference for native XZ block-index seeking / synthetic single-block streams (`xz_decoder.py` over stdlib `lzma`). Evaluated and **not** used as a dependency (was briefly pinned dead in `[all]`, then removed). |
-| [rapidgzip](https://github.com/mxmlnkn/rapidgzip) (mxmlnkn) | Runtime `[seekable]` accelerator for gzip **and** bzip2 (`IndexedBzip2File` bundled inside rapidgzip). |
-| [indexed_bzip2](https://github.com/mxmlnkn/indexed_bzip2) / [indexed_gzip](https://github.com/pauldmccarthy/indexed_gzip) | Evaluated for random access; standalone `indexed_bzip2` is **deliberately not** imported (macOS dual-load heap corruption with rapidgzip). Same author lineage as rapidgzip; also relevant via [ratarmount](https://github.com/mxmlnkn/ratarmount). |
-| [indexed_zstd](https://github.com/martinellimarco/indexed_zstd) (martinellimarco) | Evaluated for efficient seeking over arbitrary `.zst`; **deferred** (frame-granularity only; C++ coexistence risk). |
-| [pyzstd](https://github.com/animalize/pyzstd) | Evaluated for zstd decode / `SeekableZstdFile` (Seekable Zstd container only). Decode instead targets stdlib `compression.zstd` (Python 3.14+) and [backports.zstd](https://github.com/Rogdham/backports.zstd) below it, so zstd needs no permanent third-party dependency. |
-| [zstandard](https://github.com/indygreg/python-zstandard) | Former zstd backend; replaced after the compression-library evaluation. |
+Archivey itself needs no third-party package. Optional packages add formats and features, and
+[Install](install.md) says which extra brings in which:
 
-## Runtime dependencies (optional extras)
+- **[pyppmd](https://github.com/miurahr/pyppmd):** PPMd compression in 7z and ZIP.
+- **[inflate64](https://github.com/miurahr/inflate64):** Deflate64 in ZIP and 7z.
+- **[brotli](https://github.com/google/brotli), [lz4](https://github.com/python-lz4/python-lz4) and
+  [backports.zstd](https://github.com/Rogdham/backports.zstd):** Brotli, LZ4 and Zstandard, as
+  single files and inside 7z archives (Zstandard also inside ZIP). Python 3.14 and later reads
+  Zstandard without backports.zstd.
+- **[cryptography](https://github.com/pyca/cryptography):** AES decryption for 7z, RAR and WinZip
+  AES ZIP files.
+- **[pycdlib](https://github.com/clalancette/pycdlib):** ISO images.
+- **[tqdm](https://github.com/tqdm/tqdm):** progress bars in the command-line tool.
+- **[rapidgzip](https://github.com/mxmlnkn/rapidgzip):** faster seeking in large gzip and bzip2
+  files.
 
-Bare `pip install archivey` has **no** third-party runtime deps. Named extras pull:
+Compressed or encrypted RAR data is read with RARLAB's `unrar` (or `rar`), or with [The
+Unarchiver](https://theunarchiver.com/)'s `unar`. [Install](install.md) says which one runs when.
 
-| Extra | Packages |
-| --- | --- |
-| `[recommended]` | [pyppmd](https://github.com/miurahr/pyppmd), [inflate64](https://github.com/miurahr/inflate64), [brotli](https://github.com/google/brotli), [lz4](https://github.com/python-lz4/python-lz4), [backports.zstd](https://github.com/Rogdham/backports.zstd) (Python before 3.14; 3.14+ uses stdlib `compression.zstd`), [cryptography](https://github.com/pyca/cryptography), [pycdlib](https://github.com/clalancette/pycdlib), [tqdm](https://github.com/tqdm/tqdm) |
-| `[seekable]` | [rapidgzip](https://github.com/mxmlnkn/rapidgzip) |
-| `[free-threaded]` | the subset of `[recommended]` that keeps the GIL disabled — `pycdlib`, `lz4`, `tqdm`, `backports.zstd`, and `cryptography` on 3.14+ only. See [Platforms and threading](support-matrix.md#free-threaded-python-313t) |
-| `[all]` | `[recommended]` + `[seekable]` |
+## Projects archivey checks itself against
 
-There is no extra per format: member codecs are shared across containers, so
-`[recommended]` is one broad bundle rather than a set of names a caller has to reason
-about. RAR member *data* additionally needs the RARLAB `unrar` binary, or `unar`, which
-no extra can supply. RAR5 BLAKE2sp verification needs no package at all — it is implemented natively on
-stdlib `hashlib`.
+Tests compare what archivey reads with py7zr, rarfile, `zipfile` and `tarfile`, field by field, and
+can also read [libarchive](https://github.com/libarchive/libarchive)'s own test archives through
+[libarchive-c](https://github.com/Changaco/python-libarchive-c). 7-Zip, RARLAB's `rar`,
+[ncompress](https://github.com/valgur/ncompress) and several of these libraries write archivey's
+test archives. Three of those archives are copied from other projects: two old RAR archives from
+rarfile and an LZ4 7z archive from py7zr, each credited in its folder's README. You don't need any
+of them to use archivey.
 
-**Stdlib** (always): [`gzip`](https://docs.python.org/3/library/gzip.html),
-[`bz2`](https://docs.python.org/3/library/bz2.html),
-[`lzma`](https://docs.python.org/3/library/lzma.html),
-[`zlib`](https://docs.python.org/3/library/zlib.html), and on 3.14+
-[`compression.zstd`](https://docs.python.org/3/library/compression.zstd.html).
+## Tools archivey is built with
 
-## Development and test dependencies
-
-Declared in the PEP 735 `dev` / `docs` / `fuzz` groups (not user-facing extras):
-
-| Package | Use |
-| --- | --- |
-| [py7zr](https://github.com/miurahr/py7zr), [rarfile](https://github.com/markokr/rarfile), [libarchive-c](https://github.com/Changaco/python-libarchive-c) | Format oracles / optional external corpora |
-| [ncompress](https://github.com/valgur/ncompress) | LZW **compressor** for `.Z` fixtures (decode is native) |
-| [pycdlib](https://github.com/clalancette/pycdlib), [cryptography](https://github.com/pyca/cryptography), [backports.zstd](https://github.com/Rogdham/backports.zstd), [lz4](https://github.com/python-lz4/python-lz4), [brotli](https://github.com/google/brotli) | Exercise optional backends in the default dev env |
-| [urllib3](https://github.com/urllib3/urllib3), [fsspec](https://github.com/fsspec/filesystem_spec) | Real third-party stream objects in input tests |
-| [hypothesis](https://github.com/HypothesisWorks/hypothesis) | Property tests for safety logic |
-| [pytest](https://github.com/pytest-dev/pytest), [pytest-cov](https://github.com/pytest-dev/pytest-cov), [pytest-timeout](https://github.com/pytest-dev/pytest-timeout), [coverage](https://github.com/nedbat/coveragepy) | Test runner / coverage |
-| [ruff](https://github.com/astral-sh/ruff), [pyrefly](https://github.com/facebook/pyrefly), [ty](https://github.com/astral-sh/ty), [pre-commit](https://github.com/pre-commit/pre-commit) | Lint and type-check |
-| [mkdocs](https://github.com/mkdocs/mkdocs), [mkdocs-material](https://github.com/squidfunk/mkdocs-material), [mkdocstrings](https://github.com/mkdocstrings/mkdocstrings), … | Docs site (`docs` group) |
-| [atheris](https://github.com/google/atheris) | Coverage-guided fuzz (`fuzz` group; CI-only) |
+Archivey is built and tested with [pytest](https://github.com/pytest-dev/pytest),
+[Hypothesis](https://github.com/HypothesisWorks/hypothesis),
+[Atheris](https://github.com/google/atheris), [Ruff](https://github.com/astral-sh/ruff),
+[Pyrefly](https://github.com/facebook/pyrefly), [ty](https://github.com/astral-sh/ty) and
+[MkDocs](https://github.com/mkdocs/mkdocs), among others. Thanks to everyone who maintains them.

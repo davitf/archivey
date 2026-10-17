@@ -1,84 +1,47 @@
 # Philosophy
 
-> End-user framing of what Archivey is for. The full maintainer vision (adoption
-> strategy, quality scaffolding, non-goals) lives in the repository root as
-> [`VISION.md`](https://github.com/davitf/archivey/blob/main/VISION.md).
+Python can already open archives, but each format has its own library, its own API and its own
+gotchas. Archivey aims to put them all behind one interface that behaves the same way for every
+format, does what you'd expect, and helps you avoid footguns. Simple tasks stay simple, but the data
+and options are there if you need more control.
 
-## One sentence
+## What archivey is for
 
-**The default Python library for archives** — read, inspect, stream, or safely extract
-any common format through one interface, the way `requests` became the default for HTTP.
+Archivey reads archives. It opens ZIP, TAR (plain or compressed), 7z, RAR and ISO files, as well as
+single compressed files such as `.gz` or `.xz`, all through one interface. Code that lists or reads
+a ZIP works unchanged on a 7z. It's built for working with an archive's contents from your code:
+you can list the members, read one into memory, or go through all of them in one pass, without
+extracting anything to disk first. It can also extract to disk, with checks that stop a hostile
+archive from writing outside the folder you chose. It doesn't write archives yet.
 
-## Simple API
+Each member carries every field its format records: times, permissions, owner, link targets,
+comments, stored checksums, and the format's own extras. When formats record the same thing,
+archivey puts it in the same field. When they record it differently, the difference stays visible.
+A TAR modification time is in UTC, so `modified` carries a time zone. A ZIP that has only the old
+DOS time stores local time with no zone, so its `modified` has none. Permissions are set only when
+the format stores them, and otherwise `mode` is `None`, rather than a guess.
 
-One opener, one reader shape, one member model:
+## No surprises
 
-```python
-with archivey.open_archive(path) as reader:
-    for member in reader:
-        ...
-```
+Archivey tries to make the easy way to use it also the right one, so that problems show up while
+you write your code, not later on a file you hadn't tried. Where an operation can quietly cost far
+more than it looks, such as seeking inside a compressed member, the default refuses it until you
+ask for it. Where refusing would get in the way of ordinary use, such as reading a solid archive
+out of order, it's allowed, and [Choosing how to read](reading.md#why-these-arent-on-by-default)
+explains the cost. If the data is damaged or cut short, reading it through raises an error instead
+of handing back short data as if it were complete, and you still get what archivey could read
+before the damage. A strict default can be relaxed later without breaking anyone's code, but a
+permissive one can't be tightened.
 
-Format differences show up as **data** (`None`, documented sentinels, cost receipts) —
-not as silent guesses or a different API per backend.
+## Safe with untrusted archives
 
-## Safe by design
+Archivey is meant to be safe on archives from anyone, such as files uploaded to a server.
+Extraction never writes outside the folder you chose, and listing, decompression and extraction
+have limits on memory and size, so a hostile archive raises an error instead of exhausting the
+machine. If you trust your archives, you can relax the limits and the checks on names and
+permissions, but not the check that keeps extraction inside the folder.
+[Extracting](extracting.md#archives-you-trust) and [Security](security.md) have the details.
 
-Extraction cannot be zip-slipped, symlink-escaped, or decompression-bombed unless you
-explicitly opt out. Listing size, decoder memory, password key-derivation work and
-temporary files are bounded too (`ListingLimits`, `DecoderLimits`, `SpoolLimits`), so a
-hostile archive fails with `ResourceLimitError` instead of exhausting the machine.
-Safety is a contract, not a marketing flag. See [Safe extraction](extracting.md).
-
-## Don’t-shoot-yourself by design
-
-Archive formats hide expensive operations: seeking inside a compressed stream can
-re-decompress from the start; opening members out of order in a solid archive can
-decode the same block repeatedly; concurrent member streams need real coordination.
-
-Archivey’s defaults are the **cheap, honest path**:
-
-- forward-only member streams, one live stream at a time
-- no seek indexes or accelerators until you ask (`seekable_members=True`)
-- no concurrent opens until you ask (`concurrent_operations=True`)
-- random-access open fails fast on a non-seekable source (no silent buffering)
-
-When you need more, you **declare** it. Escape hatches are explicit, not ambient. For
-which one fits which job, and what each costs, see
-[Which options to set](opening-and-listing.md#which-options-to-set).
-
-## Escape hatches for advanced use
-
-| Need | How |
-| --- | --- |
-| Read each member once, in any order | `open_archive(..., streaming=True)` — random access is refused, so it cannot slip in by accident |
-| Pipes / sockets | `open_archive(..., streaming=True)` — TAR, ZIP and the single-file compressors; ISO, 7z and RAR need a seekable source in either mode |
-| Seek inside a member | `seekable_members=True` |
-| Many open members / workers | `concurrent_operations=True` |
-| Trusted / unlimited extract | `ExtractionPolicy.TRUSTED`, `ExtractionLimits.UNLIMITED` |
-| Tune limits, strictness, accelerators, the RAR program | `ArchiveyConfig` (`listing_limits`, `decoder_limits`, `spool_limits`, `diagnostic_policy`, `use_rapidgzip`, `rar_decompressor`, …) |
-
-## Content-first, not extraction-first
-
-Reading, streaming, and metadata are the primary surface. Extraction is first-class but
-second in priority. Writing is a natural extension and may land after a “reads everything”
-1.0.
-
-## Honest about damage and cost
-
-Wrong extensions, truncated archives, and solid blocks are normal. Identification is
-evidence-based (magic first). A truncated archive still gives you what was recoverable:
-`members_report()` returns the recovered members plus the error. Access cost is
-queryable (`reader.cost`). Prefer `stream_members()` when order matters. Prefer stored
-hashes (`member.hashes`) when you only need integrity fingerprints.
-
-Wall-time expectations are **aspirational peer-ratio bands** (not a silent promise):
-see [Access costs — wall-time bands](access-and-cost.md#wall-time-bands-aspirational). Re-run the
-harness if you want numbers on your machine.
-
-## What this is not
-
-- Not an everything-tool (no in-place modify, no async before 1.0)
-- Not a backup engine by itself
-- Not a compatibility shim for `zipfile` / `tarfile` / `py7zr` APIs — one clean API, with
-  a [migration guide](migrating.md) rather than a drop-in replacement
+[VISION.md](https://github.com/davitf/archivey/blob/main/VISION.md) explains these principles in more
+depth, and the [design rules](https://github.com/davitf/archivey/blob/main/dev-docs/design-rules.md)
+show how they settle specific cases.
