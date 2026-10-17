@@ -713,7 +713,7 @@ def test_header_encrypted_7z_needs_the_password_at_open(tmp_path: Path) -> None:
     """F9 (guardrail): format law — the listing itself is ciphertext.
 
     Pinned because it bounds the `#225` laziness fix: *data* encryption stays lazy,
-    *header* encryption cannot. `docs/reading-members.md` currently states the lazy
+    *header* encryption cannot. the user docs once stated the lazy
     half without the bound (finding F11).
     """
     from archivey import EncryptionError

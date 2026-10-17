@@ -114,7 +114,7 @@ Two things the magic cannot do. A **v7 tar**, written before POSIX added the mag
 named `.tar.gz`, and its one member is the uncompressed tar. And
 a **zero-filled file** named `.tar` opens as an empty archive by extension, while
 `detect_format()` on the same bytes refuses it, because an empty tar has no header to
-carry the magic ([`docs/gotchas.md`](../../docs/gotchas.md)).
+carry the magic ([`docs/formats.md`](../../docs/formats.md)).
 
 TAR takes no part in the prefixed-archive scan. `open_read` calls `reject_start_offset`,
 so a tar behind a stub is not found or opened.
@@ -723,4 +723,4 @@ python -c "import archivey; archivey.open_archive('sparse.tar').extract_all('out
   [`zip.md`](zip.md) · [`rar.md`](rar.md) ·
   [`topics/stream-ownership.md`](../topics/stream-ownership.md)
 - User-facing: [`docs/formats.md`](../../docs/formats.md#tar-and-compressed-tar) ·
-  [`docs/gotchas.md`](../../docs/gotchas.md)
+  [`docs/formats.md`](../../docs/formats.md)

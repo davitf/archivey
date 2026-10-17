@@ -246,7 +246,7 @@ def _renamed_rar4_hostile(tmp_path: Path, name: bytes, *, extra_flags: int = 0) 
 def test_explicit_rar_volume_paths_in_separate_directories_open(
     tmp_path: Path,
 ) -> None:
-    """docs/opening-and-listing.md: pass the volumes yourself when they are not siblings.
+    """docs/opening.md: pass the volumes yourself when they are not siblings.
 
     "Do that and the order you give is the order used, with no discovery." The
     RAR branch of ``open_archive`` replaces the joined source with volume 1's path

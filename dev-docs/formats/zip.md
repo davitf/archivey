@@ -1279,4 +1279,4 @@ fixture would skip on every machine that matters and prove nothing about the ref
   [`rar-corpus-sweep-diagnosis.md`](../investigations/rar-corpus-sweep-diagnosis.md)
   (per-format symlink digest and size comparison)
 - User-facing: [`docs/formats.md`](../../docs/formats.md#zip) ·
-  [`docs/gotchas.md`](../../docs/gotchas.md)
+  [`docs/formats.md`](../../docs/formats.md)

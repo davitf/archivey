@@ -245,8 +245,7 @@ staying silent where a check normally exists and was skipped. Emit
 unchecked although the caller would expect them checked. Example: 7z AES with stored
 data and no CRC, where a wrong password yields garbage
 (`reason="no_integrity_anchor"`). A format or codec that never carries a checksum
-(plain TAR, legacy LZ4) says so once in the user docs (`docs/opening-and-listing.md`,
-`docs/formats.md`) rather than with a diagnostic on every member.
+(plain TAR, legacy LZ4) says so once in the user docs (`docs/formats.md`) rather than with a diagnostic on every member.
 
 **Rulings.**
 - An over-long symlink target is left unset with `SYMLINK_TARGET_UNAVAILABLE`, never
@@ -420,7 +419,7 @@ that is right on one format and wrong on another breaks callers silently.
   zlib under the accelerator checks Adler-32 like the standard library (2026-09-27).
 - `streaming=True` refuses out-of-order reads on every format, ZIP included, although a
   ZIP could serve them cheaply, so the mistake shows on the first archive tested
-  (2026-09-29, `new_docs/reading.md` §"Why these aren't on by default").
+  (2026-09-29, `docs/reading.md` §"Why these aren't on by default").
 - Under `concurrent_operations=True`, `open`, `read`, `get` and `members()` work during a
   `stream_members` pass, on every format and from any thread, because they share one lazy
   walk of the archive with the pass (2026-10-13; applied by PR 786). `extract_all` joined

@@ -2101,7 +2101,7 @@ def test_stub_ahead_of_its_own_numbered_parts_keeps_joining(tmp_path: Path) -> N
 
     Pins the shape against a later tightening, nothing more: the discovery path
     deliberately leaves a 7-Zip stub out of the volume list
-    (``docs/opening-and-listing.md``), so what is asserted is the bytes
+    (``docs/opening.md``), so what is asserted is the bytes
     :func:`join_volumes` returns, not that ``open_archive`` reads this sequence.
     """
     (tmp_path / "vol.exe").write_bytes(b"S")
@@ -2117,7 +2117,7 @@ def test_stub_ahead_of_its_own_numbered_parts_keeps_joining(tmp_path: Path) -> N
 def test_rar_part_volumes_from_two_sets_are_refused(tmp_path: Path) -> None:
     """The RAR schemes carry a base too, so they are checked the same way.
 
-    ``docs/opening-and-listing.md`` advertises both RAR namings as volume input, and
+    ``docs/opening.md`` advertises both RAR namings as volume input, and
     two sets concatenate into bytes that are neither just as the numbered ones do.
     """
     (tmp_path / "alpha.part1.rar").write_bytes(b"AAA")

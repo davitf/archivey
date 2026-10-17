@@ -130,7 +130,7 @@ Each idea carries a status:
   `openspec/changes/` depends on this design.
 - **Say when a WinZip AES seek re-reads the ciphertext.** *Open idea.* **Good first
   contribution.** To keep the HMAC across seeks, the read that returns an AES member's last
-  byte first reads the ciphertext the seeks skipped. `docs/gotchas.md` states this, but
+  byte first reads the ciphertext the seeks skipped. The user docs don't state this, and
   nothing reports it at run time. A diagnostic past about a megabyte would match
   `STREAM_REWIND_REDECOMPRESSES`.
 - **Confirm a stored encrypted 7z folder from its smallest member.** *Open idea.* For a

@@ -420,9 +420,7 @@ _NOT_ON_API_PAGE = {
 }
 
 
-# The live reference, and its rewrite in the unpublished new_docs tree, which
-# replaces it later and must not fall behind meanwhile.
-@pytest.mark.parametrize("page", ["docs/api.md", "new_docs/api.md"])
+@pytest.mark.parametrize("page", ["docs/api.md"])
 def test_every_public_name_is_on_the_api_page(page: str) -> None:
     """Each API page carries a ``::: archivey.<Name>`` block for each name in ``__all__``.
 

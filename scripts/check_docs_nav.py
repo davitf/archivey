@@ -93,6 +93,9 @@ def anchors_of(path: Path) -> set[str]:
     # The `toc` extension attaches `toc_tokens` to the Markdown instance at convert
     # time, so it is invisible to the type checker.
     walk(getattr(md, "toc_tokens", []))
+    # A mkdocstrings block (`::: archivey.Name`) renders a heading whose id is the
+    # object's full path, so `api.md#archivey.Name` links resolve on the site.
+    found.update(re.findall(r"^::: (\S+)", path.read_text(encoding="utf-8"), re.M))
     return found
 
 

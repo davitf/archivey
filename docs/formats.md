@@ -407,7 +407,10 @@ yielded.
       10 KiB records, so "nothing but zeros" is the strongest rule that does not flag
       what `tar` itself produces. The check looks at most 1 MiB past the trailer, so a
       byte further out goes unseen; on a compressed tar that 1 MiB is decompressed to
-      inspect it. Bytes after the compressed stream itself (after the gzip or xz stream
+      inspect it. From a pipe, the listing reads up to 1 MiB past the trailer, so a sender
+      that keeps the connection open after the tar ends makes the listing wait for more
+      bytes or for the end of the stream. Close the sending side when the tar is done.
+      Bytes after the compressed stream itself (after the gzip or xz stream
       ends) are reported the same way, with the codec's name as `format`; see
       [Single-file compressors](#single-file-compressors). A compressed stream cut
       inside its footer (a missing gzip CRC-32, say) does not fail the listing, since

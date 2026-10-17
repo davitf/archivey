@@ -291,7 +291,7 @@ seek forward past it reads the bytes in between, so the check survives the TAR r
 skips member data by seeking. The child decodes those bytes to seek past them anyway; the
 read-through adds their transfer out of it. For a reader that only skips, that transfer is
 the whole cost: listing a `.tar.zz` under `ON` moves the full decompressed archive out of
-the child once, where the seeks alone moved nothing. `docs/access-and-cost.md` states it. A mismatch is either damage or several zlib
+the child once, where the seeks alone moved nothing. A mismatch is either damage or several zlib
 streams one after another (`rapidgzip` reads all of them; the trailer is the last one's), so
 the standard library then decodes the source again. It reads the first stream only, as it
 does with the accelerator off, where the rest is trailing data. When that stream ends

@@ -1061,7 +1061,7 @@ class TarReader(BaseArchiveReader):
         limit, not a claim that the rest is zero. Read in bounded chunks: the tail may be
         arbitrarily long and must not be materialized. On a forward-only source the
         reads go past the trailer too, so a pipe held open after the tar ends blocks
-        here until more bytes or EOF arrive; ``docs/gotchas.md`` says so to callers.
+        here until more bytes or EOF arrive; ``docs/formats.md`` says so to callers.
 
         A tail that fails to *decode* never raises. Every member was already read
         whole, so a decode failure out here must not turn a good listing into an

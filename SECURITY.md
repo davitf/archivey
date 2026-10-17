@@ -56,7 +56,7 @@ In scope (non-exhaustive):
 - Failure to translate corrupt/truncated input into typed `ArchiveyError`s on
   the defended (non-accelerator) parse path
 
-The [known and accepted limits](https://davitf.github.io/archivey/extracting/#known-and-accepted-limits)
+The [known and accepted limits](https://davitf.github.io/archivey/security/#where-the-guarantees-stop)
 (a crash inside an in-process native decoder, untranslated `MemoryError`, no CPU or
 time bound, accelerators on by default, a crafted `.xz`/`.lz` index after a seek, and
 the Windows directory-source gap) are documented trade-offs, not vulnerabilities. A
@@ -79,8 +79,8 @@ line) in your deployment's trust boundary, and extracting to a
 scratch directory before promoting — lives in the user guide, next to the policies it
 qualifies:
 
-- [Safe extraction](https://davitf.github.io/archivey/extracting/) — trust
-  boundaries, what is enforced, policies, limits, and the hardening notes
+- [Security](https://davitf.github.io/archivey/security/) — what archivey relies on,
+  where its guarantees stop, the limits, and hardening
 - [`dev-docs/threat-model.md`](dev-docs/threat-model.md) — the threat model:
   attackers, trust boundaries, defended properties and accepted non-guarantees
 
