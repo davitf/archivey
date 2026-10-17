@@ -4713,11 +4713,13 @@ class ExtractionCoordinator:
         taken name: the ``os.replace`` of a FILE or HARDLINK (``atomic``), and the
         ``os.symlink`` of a SYMLINK and the ``os.makedirs`` of a DIRECTORY.
 
-        Under ERROR the check lets a member through only to a free name or to a copy
-        this run parked (``_park_earlier_copies``). An atomic landing replaces a parked
-        copy where it stands, so that copy does not count (``_occupied``); the other
-        landings removed it in ``_prepare_destination``, so anything there now appeared
-        after the check. Under the other policies a landing that fails this way is not
+        Under ERROR the check lets a member through only to a free name, to a copy this
+        run parked (``_park_earlier_copies``), or, for a DIRECTORY member, to an existing
+        directory. An atomic landing replaces a parked copy where it stands, so that
+        copy does not count (``_occupied``); the other landings removed it in
+        ``_prepare_destination``. ``os.makedirs(exist_ok=True)`` never raises for an
+        existing directory, so a ``FileExistsError`` there means a non-directory. So
+        anything a landing is refused over appeared after the check. Under the other policies a landing that fails this way is not
         handled: its error goes out as it is."""
         if self._overwrite is not OverwritePolicy.ERROR:
             return False
