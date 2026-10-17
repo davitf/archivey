@@ -40,7 +40,10 @@ from archivey.internal.base_reader import (
 )
 from archivey.internal.config import AcceleratorMode, stream_config_from_archivey
 from archivey.internal.diagnostics_collector import DiagnosticCollector
-from archivey.internal.naming import infer_member_name_from_archive
+from archivey.internal.naming import (
+    COMPRESSED_TAR_SHORT_SUFFIXES,
+    infer_member_name_from_archive,
+)
 from archivey.internal.open_site import OpenSite
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import register_reader
@@ -81,6 +84,7 @@ _T = TypeVar("_T")
 _COMPRESSION_EXTS: frozenset[str] = frozenset(
     ext.lower() for c in SINGLE_FILE_CODECS for ext in c.extensions
 )
+_TAR_SHORT_TO_TAR: dict[str, str] = dict.fromkeys(COMPRESSED_TAR_SHORT_SUFFIXES, ".tar")
 
 
 class _IndexReportRecorder(DiagnosticCollector):
@@ -134,7 +138,9 @@ class _IndexReportRecorder(DiagnosticCollector):
 def _infer_member_name(archive_name: str | None) -> str:
     """Infer the single member's name from the source filename (see the spec)."""
     return infer_member_name_from_archive(
-        archive_name, strip_suffixes=_COMPRESSION_EXTS
+        archive_name,
+        strip_suffixes=_COMPRESSION_EXTS,
+        replace_suffixes=_TAR_SHORT_TO_TAR,
     )
 
 

@@ -343,15 +343,6 @@ class ArchiveEofContext(_JsonSafeContext):
       end record, none of whose fields needs it, is used instead. ``observed_kind`` is
       ``"absent"``, ``observed_bytes`` is the locator's offset and ``expected_bytes``
       is 0.
-    - ``"central_directory"`` (``ARCHIVE_EOF_MARKER_MISSING``) — a ZIP central
-      directory entry's name, extra field or comment length runs past the directory
-      size the end record gives, and that field is cut short. ``expected_bytes`` is
-      that directory size and ``observed_bytes`` where the entry would end, both
-      counted from the directory's start; ``observed_kind`` is ``"nonzero"``. Read
-      from a source that cannot seek, where the entries come before the end record
-      that sizes them, the same marker reports entries that fill more
-      (``"nonzero"``) or fewer (``"short"``) bytes than that size: ``expected_bytes``
-      is the size and ``observed_bytes`` the bytes the entries fill.
     - ``"zeros_to_eof"`` (``ARCHIVE_TRAILING_DATA``) — a non-zero byte follows the
       archive's end within the first MiB past it, so the file carries something the
       listing did not account for. ``format`` names where the end was: ``"tar"`` for
@@ -430,7 +421,9 @@ class MemberHeaderRecordContext(_JsonSafeContext):
     the field it would have populated is absent rather than wrong. ``record`` names
     the record as the format calls it (a RAR5 extra area's ``hash``, ``time``,
     ``redir``, ``version``; ZIP's Unicode Path extra field, ``unicode_path``, and its
-    Unix owner extra fields, ``unix_owner``; ISO's Rock Ridge records, ``rock_ridge``);
+    Unix owner extra fields, ``unix_owner``; ISO's Rock Ridge records, ``rock_ridge``;
+    a TAR device header's ``device_numbers``, when its devmajor or devminor field is
+    not a number);
     ``record_id`` is its numeric type where the format has one (0x7075 for
     ``unicode_path``, the field's tag for ``unix_owner``), so an unnamed record is
     still identifiable.
@@ -891,7 +884,6 @@ _SHARED_KIND_DISCRIMINATORS: Mapping[DiagnosticCode, tuple[str, frozenset[str]]]
                         "end_of_archive_block",
                         "end_of_central_directory",
                         "zip64_end_of_central_directory",
-                        "central_directory",
                     }
                 ),
             ),

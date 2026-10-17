@@ -228,9 +228,8 @@ yielded.
   the Java ``jar`` tool's deflated empty directory body (compressed size 2, size 0) is
   not.
 - An end record that disagrees with the central directory is a warning, not an error:
-  an entry count that does not match, an archive comment length past the end of the
-  file, or a directory entry whose name, extra field or comment runs past the
-  directory. The members list and read; ``ARCHIVE_EOF_MARKER_MISSING`` follows them,
+  an entry count that does not match, or an archive comment length past the end of
+  the file. The members list and read; ``ARCHIVE_EOF_MARKER_MISSING`` follows them,
   which ``DiagnosticPolicy.STRICT`` raises.
 - Timestamps: DOS base; NTFS, then the Unix fields (`0x000d`, `0x5855`), then the
   Extended Timestamp override when present, the Unix fields read as unzip 6.00 reads
