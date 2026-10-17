@@ -8,9 +8,11 @@ copy-pasted per backend. The answers are ``datetime`` + ``timedelta`` arithmetic
 gives the same value on every platform and raises ``OverflowError`` everywhere for a
 value outside ``datetime``'s range. For a field wide enough to hold such a value that
 guard is the load-bearing part: a hostile timestamp must degrade to ``None`` + a reported
-issue, never sink the whole listing. A 32-bit Unix field cannot hold one, so
-:func:`unix32_to_datetime` has no failure case; it tries the faster
-``datetime.fromtimestamp`` first and falls back to the sum wherever the platform refuses.
+issue, never sink the whole listing. The two Unix helpers try the faster
+``datetime.fromtimestamp`` first (:func:`unix_to_datetime` only for an integer) and fall
+back to the sum wherever the platform refuses. A 32-bit Unix field cannot hold a value
+outside the range, so :func:`unix32_to_datetime`'s fallback cannot fail and it has no
+``None`` case.
 """
 
 from __future__ import annotations
@@ -33,12 +35,20 @@ def unix_to_datetime(seconds: float) -> datetime | None:
     ``gmtime()`` on Windows, which rejects negative values, so a member dated before
     1970 would list with the right date on Linux and macOS and as invalid on Windows.
     Epoch plus ``timedelta`` is the same value on every platform, rounded to the
-    microsecond the same way. (:func:`unix32_to_datetime` does call ``fromtimestamp``,
-    for speed, and falls back to this sum when the platform refuses the value.)
+    microsecond the same way.
     ``timedelta`` raises ``OverflowError`` for a value too large for it or a result
     outside ``datetime``'s range, and ``ValueError`` only for NaN, which a float PAX
     time record can carry; both mean "no valid time".
+
+    An integer (a TAR header's mtime) first tries ``fromtimestamp``, which is faster on
+    a listing hot path and gives the same value for an integer; where the platform
+    refuses it, the sum decides.
     """
+    if type(seconds) is int:
+        try:
+            return datetime.fromtimestamp(seconds, UTC)
+        except (OverflowError, OSError, ValueError):
+            pass
     try:
         return _UNIX_EPOCH + timedelta(seconds=seconds)
     except (OverflowError, ValueError):

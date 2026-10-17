@@ -15,7 +15,7 @@ Registers keep the status — this page states the behaviour and links the row.
 | Listing cost | `REQUIRES_SCANNING` — a header-to-header walk cached at open (§1). RAR5 with QO: read the copies, skip matching FILE headers on the walk (§1.1) |
 | Access cost | `SOLID` for a solid archive, `DIRECT` otherwise. `solid_block_count` is always `None` (§1) |
 | Stream capability | `SEEKABLE` — of the source. Member streams are a separate question (§5) |
-| Core dependencies | None to list an unencrypted archive. Member data needs RARLAB `unrar` or `rar` **6.0 or later** on `PATH` (§1), or, by default, `unar` 1.10+ when no RARLAB binary is found (§3) |
+| Core dependencies | None to list an unencrypted archive. Compressed member data needs RARLAB `unrar` or `rar` **6.0 or later** on `PATH` (§1), or, by default, `unar` 1.10+ when no RARLAB binary is found (§3). Stored encrypted members need `cryptography` instead |
 | Optional | `[recommended]` (`cryptography`): header decryption, RAR3/RAR4 and RAR5 alike. BLAKE2sp needs nothing — stdlib `hashlib` |
 | Refuses | Non-seekable sources · a non-RARLAB `unrar`/`rar` (no fallback to `7z` / `bsdtar` / `unrar-free`; `unar` when no RARLAB binary is found, unless `rar_decompressor="unrar"`) · with `unar`: encrypted RAR 2.x-4.x data, a non-ASCII password, a header-encrypted RAR5 volume set, RAR5 solid members after an empty entry, RAR 1.5 compression, a prefixed multi-volume set · a RARLAB binary older than 6.0, or one whose banner version cannot be parsed · a later volume opened without its first · a glob in a directory component, or a backslash in the stored name (unrar path) · a glob-named member whose mask also matches **earlier** members, unless `rar_allow_glob_member_concatenation=True` (under `AUTO`, these and the name refusals go to an accepted `unar` when the read needs no password, the archive is a file with no prefix, and `unar` does not refuse it) · a member whose dictionary, as the chosen program allocates it, is over `DecoderLimits.max_decoder_memory` (`ResourceLimitError`, §7) · writing |
 
@@ -27,7 +27,9 @@ exist. Reads still spawn only `p` (§3).
 
 The 6.0 floor is the **banner probe**, not archive open. Missing or too-old `unrar`
 does not fail `open_archive` or stored reads; compressed comments stay
-`None` (§1, §2.2).
+`None` (§1, §2.2). The public `format_availability()` also runs the probe, and reports
+RAR `PARTIAL` with the probe's refusal as the `unrar` hint; `check_programs=False`
+skips it.
 
 ## 1. Shape
 
@@ -73,7 +75,8 @@ Everything about that boundary is a consequence:
   compressed RAR 2.9-4 `CMT` headers) are filled when the binary is available and
   otherwise stay `None`. A stored, unencrypted member is read by slicing
   the source, whatever its solid flag, and a split one by joining its parts, so an
-  archive of those reads end to end with no subprocess (§2.3).
+  archive of those reads end to end with no subprocess (§2.3). A stored, encrypted
+  member in one part is decrypted from the same slice.
 - **`unrar` seeks the archive, so it cannot be piped one** — which is why a stream source
   is copied to a temp file the first time a member cannot be read directly, the whole
   archive. `CostReceipt.notes` states that caveat at open. There is no
@@ -412,26 +415,31 @@ The absent RAR3 check value is why a wrong header password used to surface as
 Storing the target as data also means a RAR3/4 symlink can arrive with its target out
 of reach, where a RAR5 redirect never can — the redirect is in the header, which the
 reader has already parsed by the time anyone asks. The reader reads those bytes
-directly out of the archive (no `unrar` hop, even in a solid archive) and declines when
+directly out of the archive (no `unrar` hop, even in a solid archive), decrypts a
+stored encrypted target as `open()` would (maintainer decision 2026-10-16, so a
+password gives the same listing as a plain archive, as in ZIP and 7z), and declines when
 it cannot, emitting `SYMLINK_TARGET_UNAVAILABLE` with the reason rather than leaving
 `link_target` silently unset:
 
 | `reason` | When | Archive records a target |
 | --- | --- | --- |
-| `target_data_encrypted` | the member is encrypted, and this direct read does not decrypt | yes |
+| `password_required` | the target is encrypted, stored and in one part, and no password was given | yes |
+| `password_or_damage` | the target decrypted under the password fails its CRC32: RAR 2.9-4 has no password check, so a wrong password and damage look the same | yes |
+| `target_data_encrypted` | the target is encrypted in a form archivey does not decrypt (compressed, split, RAR 2.0's cipher), or `cryptography` is not installed | yes |
 | `target_data_split_across_volumes` | the target is split across volumes and a part was not found (a complete split target is joined and read) | yes |
 | `target_data_compressed` | the target is LZ-compressed rather than stored M0 | yes |
-| `no_target_data` | the member's declared and packed sizes are both zero | no |
+| `no_target_data` | an unencrypted member's declared and packed sizes are both zero | no |
+| `target_empty` | an encrypted member's sizes are both zero: it goes through the decrypting read, which returns no bytes, and the shared empty-target report names it | no |
 
 The code is in `ARCHIVE_INTEGRITY_CODES`, so a strict `DiagnosticPolicy` refuses such
 an archive; a lenient one lists the member as a link with no target. The last column is
-what extraction does with it: only `no_target_data` is the archive's own omission and
-reports `ExtractionStatus.LINK_TARGET_UNAVAILABLE` (`docs/extracting.md`); the other
-three are targets the archive carries and this read could not reach, so they stay
-per-member failures governed by `OnError`. That is why the encrypted row is not called
-`password_required` as the ZIP and 7z readers' equivalent is — those two open the
-member and catch the failure, so a password really is what is missing, whereas this
-path never decrypts and a correct password does not change its answer.
+what extraction does with it: `no_target_data` and `target_empty` are the archive's own
+omission and report `ExtractionStatus.LINK_TARGET_UNAVAILABLE` (`docs/extracting.md`);
+the other five are targets the archive carries and this read could not reach, so they
+stay per-member failures governed by `OnError`. `password_required` is kept for a target
+this read can decrypt, as in the ZIP and 7z readers, so a password really is what is
+missing; a target it cannot decrypt is `target_data_encrypted`, because a correct
+password does not change that answer.
 
 A target the direct read does reach is checked twice before it is used. Its declared
 size must equal its packed size, since a stored target is its packed bytes; a header
@@ -610,8 +618,8 @@ decoding, under the shared rule in `password_confirm.attempt_with_confirm`: each
 runs a bounded probe (`unrar p` of the member, read to at most 64 KiB, then stopped), a
 candidate the probe confirms (a member that fits the prefix, CRC matched) wins at once,
 and when several survive, each in order is decoded to the member's CRC. A stored member's
-probe is native instead: AES-128-CBC with the RAR3 key, CRC over the plaintext, no
-`unrar` (`_rar3_stored_check`). In a non-solid archive each encrypted member is judged on
+probe is native instead, and so is its read: AES-CBC with the member's key, CRC over the
+plaintext (a RAR5 tweaked CRC after `ConvertHashToMAC`), no `unrar` (`_stored_check`). In a non-solid archive each encrypted member is judged on
 its own data; a solid archive, and the pass over a whole archive, judge once on the first
 encrypted member (solid) or the smallest (non-solid). One distinct password still goes to
 `unrar` unjudged, and so does an `-hp` archive's header password. A RAR5 member whose
@@ -852,6 +860,7 @@ its header:
 | Route | When | Cost |
 | --- | --- | --- |
 | **Direct slice** — no subprocess | Stored (`-m0`, or `-ms<ext>` inside a solid archive), unencrypted; a member split across volumes has its parts joined | A read of the source range. Measured: reading every member of `basic_nonsolid__.rar` spawns **zero** processes |
+| **Decrypted slice** — no subprocess | Stored, encrypted, in one part: RAR 2.9-4 (AES-128, key and IV from the password and the 8-byte header salt) or RAR5 (AES-256, PBKDF2 key, IV from the encryption record); `cryptography` installed | `AesDecryptStream` over the slice of `compress_size` bytes (padded to 16), cut to `file_size`, digest-checked, seekable. Password chosen as for `unrar` (below). A split member is not decrypted here: each part carries its own encryption record (measured, `rar` 7.00), so it goes to the program. Without `cryptography` the program reads it; with neither, the error names both |
 | **Named `unrar p`** | Any member the row above does not cover — which in a solid archive is normally all of them, since `rar -s` compresses them | One process per open, and in a solid archive each decodes from the archive start. Concurrent opens do not share that work: three overlapping reads are three live processes and three full decodes. A read the single-live-stream gate refuses costs nothing, the slot being reserved before the spawn (§5). With `seekable_members=True`, a backward `seek()` closes that process; the next `read()` respawns it and skips to the offset. The rewind diagnostic's cost includes the solid prefix, not just the bytes already read from this member |
 | **One unnamed `unrar p` pipe** | A streaming pass over a solid archive | One process for the whole pass. Measured on `basic_solid__.rar`: one streaming pass = 1 spawn; opening each of its 4 members = 4 |
 
@@ -1031,9 +1040,9 @@ over-long is `CorruptionError` at the boundary, short is `TruncatedError`. That 
 covers the members `unrar`'s exit code cannot speak for — a hash-less member, a partial read,
 or an empty stream that reaches EOF cleanly.
 
-**Without the binary**, a compressed or encrypted read raises `PackageNotInstalledError`
-naming RARLAB `unrar` or `rar` and naming the lookalikes that are *not* accepted. A
-RARLAB binary older than 6.0 (or whose banner version cannot be parsed) raises the same
+**Without the binary**, a compressed read, or an encrypted one archivey does not decrypt
+(above), raises `PackageNotInstalledError` naming RARLAB `unrar` or `rar` and naming
+the lookalikes that are *not* accepted. A RARLAB binary older than 6.0 (or whose banner version cannot be parsed) raises the same
 exception at the banner probe, once, cached with the probe, naming the floor and the
 version found. Open, listing, and stored reads still succeed: a missing or too-old
 binary is caught when resolving compressed comments, and those stay `None`
@@ -1285,14 +1294,14 @@ RAR-specific only. General extraction and name hazards are §2.4.
 | Listing an archive works on a machine where reading it fails | **format** | The compressor is proprietary and its reference tool is non-free, so no distribution installs it by default and no pip extra can ship it (§1, §3). `PackageNotInstalledError` names it and names the lookalikes that will not be accepted |
 | `seekable_members=True` on a sequential solid pass is still a pipe | **archivey** | Random `open()` of an `unrar`-backed member respawns the process on a backward seek, the same reopen the other backends use. `stream_members()` is never seekable by design: those handles are a single-pass decode, and seeking would break it. The `seekable_members=True` you declared still holds — it promises what random `open()` can do |
 | Reading one member of a solid archive out of order decodes the whole archive, and doing it twice decodes it twice | **format** / **archivey** | No per-block boundaries to resume from (§1), and nothing caches the decode (§2.4). `AccessCost.SOLID` is the signal |
-| Handing over **any non-path stream** — a `BytesIO`, a file object, a network-backed reader — may write a full-size copy of the archive to `/tmp`; `cost.notes` says so at open | **archivey** | The RARLAB decompressor needs a path (§1). The copy waits for the first member `unrar` has to read, so listing writes nothing and a stored member is free; the next compressed one is not. Open volume streams behave the same way and copy the whole set (§2.3). Bounding the copy to one member rather than moving it is §7 |
+| Handing over **any non-path stream** — a `BytesIO`, a file object, a network-backed reader — may write a full-size copy of the archive to `/tmp`; `cost.notes` says so at open | **archivey** | The RARLAB decompressor needs a path (§1). The copy waits for the first member `unrar` has to read, so listing writes nothing and a stored member (decrypted by archivey, if encrypted) is free; the next member the program has to read, such as a compressed one, is not. Open volume streams behave the same way and copy the whole set (§2.3). Bounding the copy to one member rather than moving it is §7 |
 | A corrupt encrypted member can be reported as a wrong password | **library** / **archivey** | `unrar` reports both as exit 2/3 with empty output on RAR4 and exposes no signal to separate them — that half is upstream's. Resolving the ambiguity toward `EncryptionError` is ours and is reversible (§2.3) |
 | A 7-Zip SFX stub sitting beside a numbered split (`vol.exe` next to `vol.exe.001` / `vol.7z.001` / `vol.zip.001`) | **archivey** | Opening the stub follows that first volume. The stub is still not a sibling. An old-scheme SFX first volume (`name.exe` + `.r00`) is discovered as volume 1 of that `.rNN` set |
 | A RAR on a pipe or socket cannot be opened at all, in either access mode | **format** | Block headers are chained forward but the walk still seeks; nothing is buffered for you (ADR [0010](../decisions/0010-no-silent-buffer-nonseekable.md)) |
 | A RAR 1.5-4 name stored only as 8-bit bytes can list in the wrong code page | **format** | The header records none. Archivey guesses strict UTF-8, then cp437 for a DOS or Windows host and windows-1252 otherwise; `encoding=` overrides the guess, as in ZIP. Reading is unaffected (§2.2) |
 | Some members raise `UnsupportedFeatureError` on the `unrar` path and read with `rar_decompressor='unar'` | **archivey** | A name `unrar` reads as empty or with no name part, one holding a surrogate, any member after a non-ASCII 8-bit name when no UTF-8 locale is available, and a compressed member whose name has a backslash or a glob in a directory component: `unrar` cannot be told which member is meant, and archivey will not guess (§2.3) |
 | Every RAR5 symlink and hard link has no `hashes` entry, where ZIP and 7z have one | **format** | The stored field covers zero bytes, so the only honest answer is no digest (§2.2). RAR3/4 keeps its digest, which is genuine — but note what it covers: the **target string**, not anything the link points at, the same as ZIP's and 7z's (§2.2, §6) |
-| Opening several members of a solid archive at once runs one whole-archive decode **per open**, concurrently | **format** / **archivey** | There are no block boundaries to share (§1), so `concurrent_members=True` makes overlapping reads correct without making them cheap: measured, three open streams are three live `unrar` processes, each decoding from the start, all reaped on close. `AccessCost.SOLID` is the only signal and it does not scale with the number of open streams. Without the flag the second `open()` is refused with `ArchiveyUsageError` and spawns nothing — the live-stream slot is reserved before the member is opened (#293), where it used to be taken after |
+| Opening several members of a solid archive at once runs one whole-archive decode **per open**, concurrently | **format** / **archivey** | There are no block boundaries to share (§1), so `concurrent_operations=True` makes overlapping reads correct without making them cheap: measured, three open streams are three live `unrar` processes, each decoding from the start, all reaped on close. `AccessCost.SOLID` is the only signal and it does not scale with the number of open streams. Without the flag the second `open()` is refused with `ArchiveyUsageError` and spawns nothing — the live-stream slot is reserved before the member is opened (#293), where it used to be taken after |
 | A compressed RAR 1.5 / 2.x old-style comment is `None` without RARLAB `unrar` | **archivey** | Listing and stored old-style comments stay native; the proprietary compressed blob is decoded only when the optional binary is available (§2.2) |
 | An encrypted RAR 1.5 / 2.x old-style comment (PASSWORD or SALT flag) is `None`, with or without `unrar` or a password | **archivey** | Known limitation, because it cannot be tested: RARLAB `rar` 7.00 writes no old-style comment subblocks and no repo fixture carries either flag. The parser (`_parse_rar3_old_comment_subblocks`) drops the comment when either flag is set, stored (`M0`) comments included, so nothing is decoded or spawned. `decompress_rar3_blob` repeats the check as a second guard for direct callers: the comment subblock keeps no salt, so the synthetic FILE header it builds could not carry one (§2.2) |
 | A member read has no time bound | **archivey** | `open_unrar_p` hands the caller a pipe with no read timeout; the only timeouts are the version probe and the teardown. A wall-clock cap refuses legitimately long members, and an idle or first-byte deadline kills valid solid reads, where `unrar` emits nothing while it decodes the members ahead of the target. Documented rather than bounded for 0.2.0; a caller-supplied timeout was the alternative and was not taken |

@@ -47,6 +47,7 @@ from archivey.internal.external.cli import (
     terminate_process,
 )
 from archivey.terminal import display_path, quoted
+from archivey.types import MissingComponent
 
 # Inclusive major.minor floor. ``-n`` glob demux and ``-ver`` were checked
 # against RARLAB unrar 6.02, 6.12, 6.24, and 7.00 (RAR data tests plus
@@ -228,6 +229,23 @@ def _banner_meets_floor(banner: _UnrarBanner) -> bool:
         and banner.version is not None
         and banner.version >= _UNRAR_VERSION_FLOOR
     )
+
+
+def rarlab_unrar_missing() -> tuple[MissingComponent, ...]:
+    """What ``format_availability(RAR)`` names when no usable RARLAB program is found.
+
+    Without one, RAR still opens and lists, and stored members read natively, so the
+    format is PARTIAL. The install hint is the refusal :func:`find_rarlab_unrar`
+    raises, so the query and a member read give the same advice: nothing on ``PATH``,
+    a lookalike, a RARLAB binary under the 6.0 floor, or one that did not answer the
+    probe. ``unar`` is not named: it is a bounded fallback that reads fewer archives,
+    so finding it does not make RAR FULL.
+    """
+    try:
+        find_rarlab_unrar()
+    except PackageNotInstalledError as exc:
+        return (MissingComponent("unrar", str(exc)),)
+    return ()
 
 
 def find_rarlab_unrar() -> str:

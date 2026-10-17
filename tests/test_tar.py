@@ -3015,7 +3015,7 @@ def test_a_concurrent_reader_closes_its_streams_under_the_handle_lock(
     path = tmp_path / "a.tar"
     with tarfile.open(path, "w") as t:
         t.addfile(tarfile.TarInfo("a"), io.BytesIO())
-    ar: Any = open_archive(path, concurrent_members=True)
+    ar: Any = open_archive(path, concurrent_operations=True)
     held = []
     release = ar._release_owned_stream
 

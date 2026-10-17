@@ -569,6 +569,14 @@ directory's refusals the file read is to drop:
   file read knows its stored size, and the pass finds its end by the scan for its
   descriptor (§"Where a member's data ends"). The members after it read the same,
   unless its decode read more than 4 MiB past the data's end: then the pass ends there.
+- A bit-3 codec member whose stream runs on into its descriptor (the stream's last
+  byte is the descriptor's first) reads from a pipe. The file read is the right one:
+  it stops at the compressed size the directory and the descriptor state, and raises
+  `TruncatedError`. The pass does not know where the codec ended, so it finds the
+  descriptor by the decoded CRC and size, and that CRC still checks the data (DR-1).
+  To match the file read, every codec (Deflate64 and PPMd too) would have to say
+  exactly where its input ended, through the decrypt stages (DR-5a). One flipped bit
+  can make this shape; it is the mirror of the junk case above.
 - A bit-3 LZMA member without the EOS bit is refused (`UnsupportedFeatureError`); a
   file read knows its size and reads it.
 - A link member the pass wrote as a file keeps the error its data read gave: under no
@@ -971,7 +979,11 @@ ZIP-specific only. General extraction and name hazards are §2.4.
   and the later one is refused. stdlib raised on 3.11, on 3.12 before 3.12.10 and on
   3.13 before 3.13.3; 3.12.10+, 3.13.3+ and 3.14 warn and read both. archivey keeps
   refusing, because many entries over one local header is the overlapping-entry
-  amplification shape (DR-9a).
+  amplification shape (DR-9a). The guard runs before the local name is compared, so a
+  refused entry reports only the overlap, under every policy, and no
+  `MEMBER_LOCAL_NAME_DIFFERS`. The refusal is a per-member `CorruptionError`, never
+  the always-stop `DiagnosticRaisedError`, so under `OnError.CONTINUE` the rest of the
+  archive still extracts, `STRICT` included.
 - **Confirming a ZipCrypto password costs time that depends on the archive, and that cost
   is observable**: the one-byte verifier cannot decide between candidates, so a STORED
   member is read through and its CRC compared. Timing the call, or watching how much is
@@ -1072,6 +1084,7 @@ move.
 | Non-seekable refused at open under `streaming=False`, naming `streaming=True`; read under `streaming=True` | `::test_non_seekable_zip_fails_fast`, `::test_non_seekable_zip_fails_fast_via_detection`, `::test_non_seekable_zip_opens_via_detection_when_streaming` |
 | From a pipe: the walk and where each member's data ends | `tests/test_zip_local_walk.py`, `tests/test_zip_walk_codec_end.py` |
 | From a pipe: members updated from the directory, `is_current` by directory order, unlisted local entries dropped, failures at the end of the pass, limits | `tests/test_zip_pipe.py`, `tests/test_zip_pipe_directory_checks.py` |
+| A bit-3 codec stream that runs on into its descriptor: `TruncatedError` from a file, read from a pipe (§2.2.2) | `tests/test_zip_pipe.py::test_a_bit3_codec_stream_that_runs_into_its_descriptor_reads_only_from_a_pipe` |
 | From a pipe: encrypted members, one password, several, a provider | `tests/test_zip_pipe_encrypted.py` |
 | From a pipe: extraction settled at the end of the pass, selection made again, failures at the end | `tests/test_zip_pipe_extract.py`, `tests/test_zip_pipe_reparse.py` |
 | Every fixture read from a pipe and from a file gives the same members, data and files, except the recorded differences | `tests/test_zip_pipe_parity.py` |
@@ -1093,7 +1106,7 @@ move.
 | Symlink target from member data; encrypted target withheld | `::test_symlink_member`, `::test_encrypted_symlink_listing_without_password` |
 | Windows reparse points: a file symlink's buffer decoded, a directory one's absent data, a stored junction buffer setting the flag | `tests/test_windows_reparse.py` |
 | Duplicate names read independently | `::test_duplicate_member_names_read_independently` |
-| Overlapping-entry bomb; entries sharing a local header read once | `::test_overlapping_entries_bomb_translated_to_corruption`, `::test_entries_sharing_one_local_header_read_only_once` |
+| Overlapping-entry bomb; entries sharing a local header read once; a refused entry reports no name difference | `::test_overlapping_entries_bomb_translated_to_corruption`, `::test_entries_sharing_one_local_header_read_only_once`, `::test_an_overlapping_entry_with_another_name_reports_only_the_overlap` |
 | A damaged directory lists up to the damage, then the local headers past it; version needed above 6.3 reads; trailing bytes reported; one walk for listing then opening, one index pass when `member_count` comes first, a seekable streaming pass reads the directory then forward only; a listed member keeps no extra field | `tests/test_zip_native_reader.py` |
 | `max_members` refused at open from the declared count, charged by the walk when the count lies | `tests/test_listing_limits.py::test_zip_applies_max_members_at_open`, `::test_zip_walk_charges_max_members_when_the_declared_count_lies` |
 | The parser against stdlib on every fixture, ZIP64, stubs, disk fields | `tests/test_zip_parser.py` |
