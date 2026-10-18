@@ -238,5 +238,5 @@ Also:
 | Structural bench | `uv run --no-sync python -m benchmarks.harness --mode structural --scale ci` |
 | Realistic wall + JSON | `uv run --no-sync python -m benchmarks.harness --mode full --scale realistic --warmup --json-out /tmp/wall.json --text-out /tmp/wall.md` |
 | Docs | `uv run --group docs mkdocs build --strict` |
-| Build only | `uv build` and `uv build packages/archivey-cli` (both publish), then inspect `dist/` |
+| Build only | `uv build` and `uv build packages/archivey-cli --out-dir dist` (both publish), then inspect `dist/` |
 | Version source | `pyproject.toml` → `[project].version` (copied in `packages/archivey-cli/pyproject.toml`) |
