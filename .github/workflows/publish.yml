@@ -68,15 +68,16 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
       - name: Build sdist + wheel
+        # One folder per project, so each uploads in its own step (see the publish jobs).
         run: |
-          uv build
-          uv build packages/archivey-cli --out-dir dist
+          uv build --out-dir dist/archivey
+          uv build packages/archivey-cli --out-dir dist/archivey-cli
       - name: Verify tag matches packaged version
         if: startsWith(github.ref, 'refs/tags/')
         run: |
           tag="${GITHUB_REF_NAME#v}"
-          pkg="$(ls dist/archivey-*.whl | sed -E 's|.*/archivey-([^-]+)-.*|\1|')"
-          cli="$(ls dist/archivey_cli-*.whl | sed -E 's|.*/archivey_cli-([^-]+)-.*|\1|')"
+          pkg="$(ls dist/archivey/archivey-*.whl | sed -E 's|.*/archivey-([^-]+)-.*|\1|')"
+          cli="$(ls dist/archivey-cli/archivey_cli-*.whl | sed -E 's|.*/archivey_cli-([^-]+)-.*|\1|')"
           echo "tag version = $tag"
           echo "built version = $pkg (archivey), $cli (archivey-cli)"
           if [ "$tag" != "$pkg" ] || [ "$tag" != "$cli" ]; then
@@ -86,7 +87,7 @@ jobs:
       # Metadata problems (bad README rendering, malformed classifiers) are rejected by
       # PyPI *after* upload, when the filename can no longer be reused. Catch them here.
       - name: Check distribution metadata
-        run: uvx twine check --strict dist/*
+        run: uvx twine check --strict dist/*/*
       - name: Upload distributions
         uses: actions/upload-artifact@v4
         with:
@@ -110,8 +111,20 @@ jobs:
         with:
           name: dist
           path: dist/
-      - name: Publish
+      # Two steps, not one over dist/: each project gets its own token, and a refused
+      # archivey-cli upload leaves archivey published. skip-existing lets a re-run finish
+      # the missing one instead of failing on the files that are already up (a PyPI
+      # filename can never be uploaded twice).
+      - name: Publish archivey
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/archivey/
+          skip-existing: true
+      - name: Publish archivey-cli
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/archivey-cli/
+          skip-existing: true
 
   testpypi:
     name: Publish to TestPyPI
@@ -130,7 +143,15 @@ jobs:
         with:
           name: dist
           path: dist/
-      - name: Publish
+      - name: Publish archivey
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           repository-url: https://test.pypi.org/legacy/
+          packages-dir: dist/archivey/
+          skip-existing: true
+      - name: Publish archivey-cli
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          packages-dir: dist/archivey-cli/
+          skip-existing: true

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+COMPANION_DIR = REPO_ROOT / "packages" / "archivey-cli"
 
 
 def _project(path: Path) -> dict[str, Any]:
@@ -22,7 +23,7 @@ def _project(path: Path) -> dict[str, Any]:
 
 
 ROOT = _project(REPO_ROOT / "pyproject.toml")
-COMPANION = _project(REPO_ROOT / "packages" / "archivey-cli" / "pyproject.toml")
+COMPANION = _project(COMPANION_DIR / "pyproject.toml")
 
 
 def test_companion_version_matches_root() -> None:
@@ -41,3 +42,23 @@ def test_companion_scripts_run_the_root_cli() -> None:
 
 def test_companion_python_floor_matches_root() -> None:
     assert COMPANION["requires-python"] == ROOT["requires-python"]
+
+
+def test_companion_holds_no_code() -> None:
+    assert not list(COMPANION_DIR.rglob("*.py"))
+    with open(COMPANION_DIR / "pyproject.toml", "rb") as fh:
+        wheel = tomllib.load(fh)["tool"]["hatch"]["build"]["targets"]["wheel"]
+    assert wheel == {"bypass-selection": True}
+
+
+def test_companion_ships_the_root_licence() -> None:
+    root = (REPO_ROOT / "LICENSE").read_bytes()
+    assert (COMPANION_DIR / "LICENSE").read_bytes() == root
+
+
+def test_publish_workflow_builds_and_uploads_the_companion() -> None:
+    workflow = (REPO_ROOT / ".github" / "workflows" / "publish.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "uv build packages/archivey-cli --out-dir dist/archivey-cli" in workflow
+    assert workflow.count("packages-dir: dist/archivey-cli/") == 2

@@ -59,7 +59,14 @@ Do these in order — the `archivey` name must be free before this repo can take
    custom domain if one was used.
 5. **PyPI publishing** (see `.github/workflows/publish.yml`):
     - Configure Trusted Publishing on **PyPI** for owner `davitf`, repo `archivey`,
-      workflow `publish.yml`, environment `pypi`.
+      workflow `publish.yml`, environment `pypi`, and on **TestPyPI** with environment
+      `testpypi`. Do it twice on each index: once for project `archivey` and once for
+      project `archivey-cli` (the CLI companion in `packages/archivey-cli`, published by
+      the same run). A new project is a "pending publisher" until its first upload.
+    - Run the TestPyPI dry run before the first tag: it is the first upload of both new
+      projects through one workflow. The two projects upload in separate steps, each with
+      its own token, and with `skip-existing`, so if the `archivey-cli` step fails a
+      re-run publishes only what is missing.
     - Create the GitHub `pypi` environment with a protection rule (required reviewer).
     - Done: the workflow no longer routes on the `archivey-2` name; a `v*` tag goes to
       PyPI and a manual run picks `testpypi` or `pypi` (see the header of `publish.yml`).
@@ -79,9 +86,11 @@ version bump, tag, publish), use
 
 Minimum mechanical steps once that checklist is satisfied:
 
-1. Bump `[project].version` (drop any `.devN` suffix), commit, merge to `main`.
-2. Tag `vX.Y.Z` and push the tag. `publish.yml` builds, verifies the tag matches the
-   packaged version, and publishes via OIDC.
+1. Bump `[project].version` (drop any `.devN` suffix) in `pyproject.toml` and in
+   `packages/archivey-cli/pyproject.toml`, with that package's `archivey[recommended]==`
+   pin, commit, merge to `main`.
+2. Tag `vX.Y.Z` and push the tag. `publish.yml` builds both packages, verifies the tag
+   matches both packaged versions, and publishes via OIDC.
 
 !!! note "pyproject version source (resolved)"
     The build version has a single source of truth: the static `[project].version` in

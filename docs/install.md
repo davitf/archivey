@@ -102,7 +102,8 @@ On a free-threaded build (3.13t and later), importing a compiled package that do
 free-threading support turns the GIL back on for the rest of the process. If you use `pip install
 "archivey[free-threaded]"`, you get only the optional packages that keep it off: ISO, LZ4 and
 Zstandard support, and CLI progress bars, plus AES decryption from 3.14t. On 3.13t, `[recommended]`
-doesn't install at all, because `cryptography` can't be installed there yet.
+doesn't install at all, because `cryptography` can't be installed there yet, and neither does
+`archivey-cli`, which depends on it. Use `[free-threaded]` there instead.
 
 Other optional packages can still be installed. Archivey imports each one only when a file needs it,
 so the GIL comes back the first time you read PPMd, Deflate64 or Brotli data. Free-threaded builds

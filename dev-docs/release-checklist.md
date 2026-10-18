@@ -221,8 +221,8 @@ Also:
 ## 7. Post-release
 
 - [ ] Bump `[project].version` to the next `X.Y.(Z+1).dev0` (or minor/major
-      `.dev0`) on `main`, in both pyproject files, so installs from the default branch stay distinguishable
-      from the tag.
+      `.dev0`) on `main`, in both pyproject files, so installs from the default
+      branch stay distinguishable from the tag.
 - [ ] Leave `[Unreleased]` ready for the next cycle.
 - [ ] If docs site is Pages-published, confirm the workflow ran on the tag /
       default branch as configured.
@@ -238,5 +238,5 @@ Also:
 | Structural bench | `uv run --no-sync python -m benchmarks.harness --mode structural --scale ci` |
 | Realistic wall + JSON | `uv run --no-sync python -m benchmarks.harness --mode full --scale realistic --warmup --json-out /tmp/wall.json --text-out /tmp/wall.md` |
 | Docs | `uv run --group docs mkdocs build --strict` |
-| Build only | `uv build` then inspect `dist/` |
+| Build only | `uv build` and `uv build packages/archivey-cli` (both publish), then inspect `dist/` |
 | Version source | `pyproject.toml` → `[project].version` (copied in `packages/archivey-cli/pyproject.toml`) |
