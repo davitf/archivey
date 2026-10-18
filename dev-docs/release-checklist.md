@@ -41,9 +41,7 @@ Internal refactors, review docs and chore work stay out.
 
 Previous release tag: `PREV=$(git describe --tags --abbrev=0 2>/dev/null || true)`
 (0.2.0, the first release, has its entry written already: a feature summary rather
-than a change list. Only fill in the date, and re-read it against the current API:
-its "Safe extraction by default" bullet still names `extract()`, which ADR 0019 removed;
-it should say `extract_all()`.)
+than a change list. Only fill in the date, and re-read it against the current API.)
 
 - [ ] List commits / merged PRs since `PREV`:
 

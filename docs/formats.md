@@ -547,8 +547,9 @@ yielded.
   Archivey refuses these reads with `UnsupportedFeatureError` before `unar` runs, because `unar`
   gets them wrong, sometimes with a success exit:
   - encrypted, compressed data in a RAR 2.x-4.x archive (a stored, encrypted member in one part is
-    still decrypted by archivey), and every member of a solid one that has it (RAR5 encryption is
-    read);
+    still decrypted by archivey), and in a solid one, every compressed member after it in the same
+    solid stream; a `stream_members()` pass over a solid one refuses every member (RAR5 encryption
+    is read);
   - a password that is not ASCII;
   - a multi-volume RAR5 set with encrypted headers (Homebrew's `unar` 1.10.8 returns
     nothing for it);
