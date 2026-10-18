@@ -7,7 +7,7 @@ that fixes it; the regression test and git history keep the record. Measurements
 causes and rejected fixes live in [`investigations/`](investigations/), the standing rule a
 mitigation imposes lives on the format handbook page ([`formats/`](formats/)), and by-design
 behaviour lives in the handbook's sharp-edges tables and, when users hit it, in
-[`docs/gotchas.md`](../docs/gotchas.md).
+the user docs ([`docs/formats.md`](../docs/formats.md) for format behaviour).
 
 ## MacPaw `unar` / XADMaster: RAR5 solid after an empty entry is silent-wrong (open)
 

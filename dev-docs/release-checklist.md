@@ -107,7 +107,7 @@ VISION bands stay informational; do not claim CI hard-fails on ≤1.3×.
   artifact you used.
 
 - [ ] Paste a compact summary into the CHANGELOG entry (and refresh
-      `docs/access-and-cost.md` / VISION measured tables if numbers moved materially).
+      VISION measured tables if numbers moved materially).
       Note measurement host / core count (see `benchmarks/RESULTS.md`).
 - [ ] Confirm PR structural gate still passes:
 
@@ -119,15 +119,14 @@ VISION bands stay informational; do not claim CI hard-fails on ≤1.3×.
 
 ## 3. Docs and claims
 
-- [ ] End-user docs still match behavior: `install.md`, `opening-and-listing.md`,
-      `reading-members.md`, `formats.md`, `extracting.md`, `gotchas.md`,
-      `errors-and-diagnostics.md`, `cli.md`, `api.md`, `philosophy.md`,
-      `access-and-cost.md`.
+- [ ] End-user docs still match behavior: `install.md`, `opening.md`, `reading.md`,
+      `extracting.md`, `security.md`, `errors-and-diagnostics.md`, `cli.md`,
+      `formats.md`, `migrating.md`, `api.md`, `philosophy.md`.
 - [ ] `VISION.md` still states what the project wants to provide (it is a vision, not
       a status page), and `README.md` / `docs/` claim only what ships.
 - [ ] `dev-docs/threat-model.md` §5 open design gaps: either closed, consciously
-      deferred with wording, or called out in SECURITY / gotchas; each §4
-      accepted non-guarantee still has its public line in `docs/extracting.md`.
+      deferred with wording, or called out in SECURITY or the user docs; each §4
+      accepted non-guarantee still has its public line in `docs/security.md`.
 - [ ] `dev-docs/known-issues.md` not contradicting shipped decisions (fixed
       entries deleted).
 - [ ] MkDocs builds clean:
@@ -150,7 +149,7 @@ VISION bands stay informational; do not claim CI hard-fails on ≤1.3×.
       capabilities (`packaging-and-extras` spec).
 - [ ] Free-threading / platform support statement matches CI: the `3.13t` job runs
       the full suite on the zero-dep core, then again with the GIL-safe
-      `[free-threaded]` extra (`docs/support-matrix.md`).
+      `[free-threaded]` extra (`docs/install.md`).
 - [ ] Optional: OSS-Fuzz onboarding status noted (may trail the first tag).
 
 ---

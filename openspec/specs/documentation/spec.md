@@ -90,13 +90,13 @@ The MkDocs site SHALL publish end-user material only. Every file under `docs/` M
 be an end-user page carrying a nav entry; maintainer material — decision log, threat
 model, codec analysis, known issues, finished investigations,
 and superseded historical prose — SHALL live under `dev-docs/`, outside the site,
-rather than under `docs/` behind an exclusion list. The user narrative covers
-install, opening and listing, reading members, gotchas, extracting, access
-costs/pitfalls, formats/extras, errors and diagnostics, the command line, migration,
-platforms, philosophy, how the library is built (`how-it-works.md`, after philosophy),
-and the API reference. Each page SHALL do one job, stated in
-its opening lines. Gotchas SHALL sit immediately after `reading-members.md` in
-primary navigation. A published page SHALL NOT link to a path outside `docs/`;
+rather than under `docs/` behind an exclusion list. The user narrative covers,
+in this navigation order: install (including Python versions, platforms and
+free-threaded Python), opening an archive, choosing how to read, extracting, security,
+errors and diagnostics, the command line, formats/extras, migration, philosophy, how
+the library works and how it is built (`how-it-works.md` and `how-it-is-built.md`,
+after philosophy), the API reference, and acknowledgements. Each page SHALL do one
+job, stated in its opening lines. A published page SHALL NOT link to a path outside `docs/`;
 where maintainer depth is worth preserving the link MUST be an absolute
 `https://github.com/davitf/archivey/blob/main/…` URL.
 
@@ -105,7 +105,7 @@ where maintainer depth is worth preserving the link MUST be an absolute
 | Case | Expected |
 | --- | --- |
 | User opens the docs home | Every nav entry is an end-user page; no internal, grab-bag, or decision-log section exists |
-| User finishes reading members | Next recommended page is Gotchas |
+| User finishes choosing how to read | Next page in the navigation is Extracting |
 | User wants to know what to install | `install.md` answers it, including formats needing an external binary |
 | Contributor looks up “why not py7zr” | The full record is in `dev-docs/decisions/` in the repository; `how-it-works.md` gives the reasons in a paragraph and links the maintainer handbook |
 | User wants to know how the library is built | `how-it-works.md` explains the design philosophy, the architecture and how the library is tested, linking to maintainer depth on GitHub |
@@ -114,8 +114,7 @@ where maintainer depth is worth preserving the link MUST be an absolute
 ### Requirement: Document complete-or-raise listing vs MemberListReport
 
 The end-user guide SHALL document the dual listing contract on
-`docs/errors-and-diagnostics.md`, with `docs/opening-and-listing.md` carrying a
-short pointer to it:
+`docs/errors-and-diagnostics.md`:
 
 - `members()` — complete listing or raise (assert completeness); on a streaming
   reader, `members_report()` and raise its `error`.
@@ -136,7 +135,7 @@ scope and separately reserved.
 
 | Case | Expected |
 | --- | --- |
-| Reader wants inventory of a possibly damaged tar | Reaches the `members_report()` recipe (check `error`, use report `.members`) — pointer on `opening-and-listing.md`, recipe on `errors-and-diagnostics.md` |
+| Reader wants inventory of a possibly damaged tar | Reaches the `members_report()` recipe (check `error`, use report `.members`) — recipe on `errors-and-diagnostics.md` |
 | Reader wants “fail if not complete” | Directed to `members()`, or to raising `members_report().error` on a streaming reader |
 | Reader only wants to read a healthy archive | Meets the one-line "we raise rather than return short data" promise in the flow, and is not made to read the contract |
 | Reader looks for salvage/best-effort | Pointed to reserved/future salvage — not `members_report` |
@@ -181,34 +180,6 @@ navigation.
 | `blob/main/dev-docs/…` URL in a published page whose target was renamed | Check fails, naming the URL and the page it appears on |
 | Every `docs/` file navigable and every repo URL resolvable | Check passes; the docs job proceeds to `mkdocs build --strict` |
 
-### Requirement: Gotchas page is a footgun digest, not a format encyclopaedia
-
-The Gotchas page SHALL carry two sections — **what you should / shouldn't do**
-(caller choices that cause mistakes) and **what you should be aware of** (places
-where Archivey cannot fully fail loudly or verify) — with each entry one line plus a
-link to the page that owns the detail.
-
-A topic belongs on Gotchas only if (a) a caller choice is likely to cause a mistake
-or a footgun, or (b) Archivey cannot fulfil its intention of failing loudly and
-verifying. Format encyclopaedia, unsupported-feature lists, full policy tables, and
-"plan around this limitation" rows SHALL live on the owning page (`formats.md`,
-`extracting.md`, `access-and-cost.md`) and MUST NOT be restated here.
-
-The page SHALL carry the user-mitigable threat-model residuals: nested-archive
-amplification (the bomb tracker is not nesting-aware), the unguarded path
-(unbounded `read()`), the 7z
-header-encryption residual, and name-collision behaviour.
-
-#### Scenario: Gotchas inclusion matrix
-
-| Case | Expected |
-| --- | --- |
-| Seeking re-decompresses; solid open order; streaming is one pass | Present, one line each, linking `access-and-cost.md` |
-| Multi-volume ZIP; ISO needing seek; UTF-8 bit-11 | **Absent** — loud errors or normal format requirements; `formats.md` owns them |
-| Full extraction policy table | **Absent** — `extracting.md` owns it |
-| Nested-archive amplification | Present as a one-liner; the bounded-recursion recipe lives on `extracting.md` |
-| A fact stated on Gotchas and on its owning page | Digest line links out rather than restating, so the two cannot drift |
-
 ### Requirement: Document TAR EOF honesty and its diagnostic codes
 
 End-user documentation SHALL state that:
@@ -229,14 +200,14 @@ End-user documentation SHALL state that:
 - A non-zero byte after the trailer is reported as `ARCHIVE_TRAILING_DATA` only within
   1 MiB of it; docs SHALL state the bound, and that zero padding passes.
 
-This SHALL appear in the formats guide and in the user-facing Gotchas page. Internal
+This SHALL appear in the formats guide. Internal
 threat-model / known-issues material MUST NOT be the only place this is written.
 
 #### Scenario: TAR EOF documentation matrix
 
 | Case | Expected |
 | --- | --- |
-| Reader opens formats / Gotchas for TAR quirks | Finds silent-shorten + diagnostic + the rejected-header-raises-by-default vs missing-trailer-warns split |
+| Reader opens the formats guide for TAR quirks | Finds silent-shorten + diagnostic + the rejected-header-raises-by-default vs missing-trailer-warns split |
 | Inventory / dedupe guidance | Shows a `RAISE` disposition on `ARCHIVE_EOF_MARKER_MISSING` as the escalation for the ambiguous residual, not as the only corruption backstop |
 | Trailing data | Documented as reported within 1 MiB of the trailer, and not beyond |
 | Rejected final header | Documented as raising `CorruptionError` in both access modes |

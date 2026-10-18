@@ -59,11 +59,12 @@ with archivey.open_archive("photos.tar.gz") as reader:
 **<https://davitf.github.io/archivey/>**
 
 [Install](https://davitf.github.io/archivey/install/) ·
-[Opening and listing](https://davitf.github.io/archivey/opening-and-listing/) ·
-[Reading members](https://davitf.github.io/archivey/reading-members/) ·
-[Migrating from zipfile/tarfile](https://davitf.github.io/archivey/migrating/) ·
+[Opening an archive](https://davitf.github.io/archivey/opening/) ·
+[Choosing how to read](https://davitf.github.io/archivey/reading/) ·
+[Extracting](https://davitf.github.io/archivey/extracting/) ·
+[Security](https://davitf.github.io/archivey/security/) ·
 [Formats and extras](https://davitf.github.io/archivey/formats/) ·
-[Safe extraction](https://davitf.github.io/archivey/extracting/) ·
+[Migrating from other libraries](https://davitf.github.io/archivey/migrating/) ·
 [API reference](https://davitf.github.io/archivey/api/)
 
 ## How it is built

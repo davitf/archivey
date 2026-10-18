@@ -6,8 +6,8 @@ enforces it and the tests that pin it, and what we deliberately do not defend. A
 here changes when the design changes. A bug in a mechanism belongs in
 [`known-issues.md`](known-issues.md) until it is fixed; this page does not track defects.
 
-The public half is [`docs/extracting.md`](../docs/extracting.md): §Trust boundaries,
-§Known and accepted limits and §What is enforced. This page and that one must agree.
+The public half is [`docs/security.md`](../docs/security.md): §What archivey relies on,
+§Where the guarantees stop and §Hardening. This page and that one must agree.
 Disclosure and reporter scope are in [`SECURITY.md`](../SECURITY.md).
 
 Older references use register ids (`O1` to `O22`, `C1` to `C4`). The
@@ -1094,14 +1094,14 @@ it is finalized
 **Tests.** The required `free-threaded-concurrency` job (Linux CPython 3.13t,
 `.github/workflows/ci.yml`), which runs `tests/test_concurrent_pass_workers.py` among
 the rest; optional backends are not claimed until a job runs them.
-Scope: [`docs/support-matrix.md`](../docs/support-matrix.md); design:
+Scope: [`docs/install.md`](../docs/install.md) §Free-threaded Python; design:
 [`investigations/parallel-reader.md`](investigations/parallel-reader.md) §4.
 
 ## 4. Accepted non-guarantees
 
 Each of these was chosen, and each has a public line so it is not reported as a
 vulnerability. Most are in
-[extracting.md §Known and accepted limits](../docs/extracting.md#known-and-accepted-limits).
+[security.md §Where the guarantees stop](../docs/security.md#where-the-guarantees-stop).
 
 ### No CPU or wall-clock bound
 
@@ -1119,7 +1119,7 @@ its members consume those at most twice more, however many it names there
 for BCJ2 was considered and not added: no other codec has one, and `ExtractionLimits`
 still bounds the amount, only the rate is lower. Callers who need a time bound run
 archivey in a worker they can kill. Public:
-[known and accepted limits](../docs/extracting.md#known-and-accepted-limits).
+[where the guarantees stop](../docs/security.md#where-the-guarantees-stop).
 
 ### A native decoder crash or MemoryError
 
@@ -1129,7 +1129,7 @@ would abort the process. Both rapidgzip decoders run in a child process;
 `scripts/accelerator_crash_search.py` tells whether they still need to. `MemoryError` is not translated, so
 running out of memory is never mistaken for a damaged archive; the limits above exist to
 keep a hostile archive from getting that far. Public:
-[known and accepted limits](../docs/extracting.md#known-and-accepted-limits).
+[where the guarantees stop](../docs/security.md#where-the-guarantees-stop).
 
 ### Accelerators on by default, and unbounded in time
 
@@ -1140,8 +1140,8 @@ process, so an abort costs only the member, but a loop there has no read timeout
 Atheris accelerator targets fuzz them ([Parsers survive hostile bytes](#parsers-survive-hostile-bytes))
 under libFuzzer's timeout; a loop they have not found is still unbounded at run time. Callers
 with a hard latency budget set them to `OFF`. Public:
-[known and accepted limits](../docs/extracting.md#known-and-accepted-limits) and
-[hardening notes](../docs/extracting.md#hardening-notes-for-callers).
+[where the guarantees stop](../docs/security.md#where-the-guarantees-stop) and
+[hardening](../docs/security.md#hardening).
 
 ### A seek trusts the file's own index
 
@@ -1161,7 +1161,7 @@ are correct for their offsets. A seek past the lie followed by a read to the end
 caught, since every later unit is genuine. A diagnostic for an ambiguous trailer walk was
 considered and not taken: an attacker who controls the trailers can avoid it. Public:
 [the integrity guarantee](../docs/errors-and-diagnostics.md#the-integrity-guarantee) and
-[known and accepted limits](../docs/extracting.md#known-and-accepted-limits). Tests:
+[where the guarantees stop](../docs/security.md#where-the-guarantees-stop). Tests:
 `tests/test_seekable_streams.py::test_lzip_cold_seek_trusts_a_self_consistent_trailer_chain`,
 `::test_xz_cold_seek_trusts_a_self_consistent_block_index`.
 
@@ -1175,22 +1175,21 @@ the leaf and runs after the open, so a junction swapped in above it, or a swap r
 the check, reads a same-size file outside the root. Both inferred from the code, not
 measured. On Python 3.11, `DirEntry.is_junction()` does not exist, so a junction may be
 walked ([`formats/directory.md`](formats/directory.md) §7). Public:
-[known and accepted limits](../docs/extracting.md#known-and-accepted-limits).
+[where the guarantees stop](../docs/security.md#where-the-guarantees-stop).
 
 ### Nested-archive amplification
 
 Recursion into archives inside archives is caller-driven, so a zip quine loops only if
 the caller loops. The bomb tracker measures one archive, so a zip of zips can pass the
 budget one level at a time. The caller bounds depth and total size. Public:
-[extracting.md §Limits](../docs/extracting.md#limits) and the "Nested archives" row in
-[§Names change on disk](../docs/extracting.md#names-change-on-disk).
+[security.md §Where the guarantees stop](../docs/security.md#where-the-guarantees-stop)
+("Limits apply to each archive separately").
 
 ### Reads have no output bound
 
 `read()` and `open()` return whatever the member decodes to; `ExtractionLimits` apply to
 `extract` only. Chunk untrusted payloads. Public:
-[extracting.md §Limits](../docs/extracting.md#limits) and
-[`docs/gotchas.md`](../docs/gotchas.md).
+[security.md §Where the guarantees stop](../docs/security.md#where-the-guarantees-stop).
 
 ### A probe can fabricate a member
 
@@ -1198,8 +1197,7 @@ When a content probe's identification is wrong (see
 [detection](#detection-is-bounded-and-says-when-it-guessed)), the listing shows one
 fabricated member, a full read raises, and up to 64 KiB of fabricated output may be
 returned before the raise. It is never a silent success, and it carries
-`PROBE_FORMAT_UNCONFIRMED`. Public: [`docs/formats.md`](../docs/formats.md) §Detection
-and [`docs/gotchas.md`](../docs/gotchas.md).
+`PROBE_FORMAT_UNCONFIRMED`. Public: [`docs/formats.md`](../docs/formats.md) §Detection.
 
 ### The unar password is on its command line
 
@@ -1212,7 +1210,7 @@ caller *with* RARLAB never gets it: the one place `"auto"` reaches for `unar` be
 read that needs a password. A read that needs none gets none, from `unrar` or `unar`
 (`_member_needs_password`): the member and the headers are plaintext, and in a solid
 archive no encrypted member comes before it.
-Public: [hardening notes](../docs/extracting.md#hardening-notes-for-callers).
+Public: [hardening](../docs/security.md#hardening).
 
 ## 5. Open design gaps
 

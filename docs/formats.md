@@ -1,19 +1,22 @@
 # Formats and extras
 
-What each format can do, what optional packages or tools it needs, and the quirks that
-most often surprise callers. For more depth, the maintainer handbook has pages on
+What each format can do, what optional packages or tools it needs, and the quirks that most often
+surprise callers. For more depth, the maintainer handbook has pages on
 [7z](https://github.com/davitf/archivey/blob/main/dev-docs/formats/7z.md),
 [ISO](https://github.com/davitf/archivey/blob/main/dev-docs/formats/iso.md),
 [RAR](https://github.com/davitf/archivey/blob/main/dev-docs/formats/rar.md),
 [TAR](https://github.com/davitf/archivey/blob/main/dev-docs/formats/tar.md) and
-[ZIP](https://github.com/davitf/archivey/blob/main/dev-docs/formats/zip.md), and on the single-file compressors: what they share in
+[ZIP](https://github.com/davitf/archivey/blob/main/dev-docs/formats/zip.md), and on the single-file
+compressors: what they share in
 [single-file.md](https://github.com/davitf/archivey/blob/main/dev-docs/formats/single-file.md), then
 [gzip](https://github.com/davitf/archivey/blob/main/dev-docs/formats/gzip.md),
-[bzip2](https://github.com/davitf/archivey/blob/main/dev-docs/formats/bzip2.md),
-[xz, lzip and LZMA Alone](https://github.com/davitf/archivey/blob/main/dev-docs/formats/xz.md),
-[zstd and LZ4](https://github.com/davitf/archivey/blob/main/dev-docs/formats/zstd-lz4.md),
+[bzip2](https://github.com/davitf/archivey/blob/main/dev-docs/formats/bzip2.md), [xz, lzip and LZMA
+Alone](https://github.com/davitf/archivey/blob/main/dev-docs/formats/xz.md), [zstd and
+LZ4](https://github.com/davitf/archivey/blob/main/dev-docs/formats/zstd-lz4.md),
 [Brotli](https://github.com/davitf/archivey/blob/main/dev-docs/formats/brotli.md) and
-[`.Z`](https://github.com/davitf/archivey/blob/main/dev-docs/formats/unix-compress.md).
+[`.Z`](https://github.com/davitf/archivey/blob/main/dev-docs/formats/unix-compress.md), and on [disk
+images](https://github.com/davitf/archivey/blob/main/dev-docs/formats/dmg.md) and
+[directories](https://github.com/davitf/archivey/blob/main/dev-docs/formats/directory.md).
 
 ## Quick matrix
 
@@ -23,21 +26,24 @@ most often surprise callers. For more depth, the maintainer handbook has pages o
 | TAR | yes | — | scan headers | direct on uncompressed seekable TAR | Compressed TAR is solid for random opens |
 | `.tar.gz` / `.bz2` / `.xz` | yes | — | needs decompression | solid | Prefer `stream_members()` |
 | Directory | yes | — | indexed | direct | Same stream-capability defaults as archives |
-| Single-file gz/bz2/xz | yes | — | one member | seek with `SEEKABLE` | See single-file section |
-| 7z | yes (common codecs) | `[recommended]` for PPMd/Deflate64/zstd/brotli/AES | indexed | solid folders | Native reader; BCJ2 in pure Python |
+| Single-file gz/bz2/xz | yes | — | one member | seek with `seekable_members=True` | See single-file section |
+| 7z | yes (common codecs) | `[recommended]` for PPMd, Deflate64, Brotli, LZ4, AES, and zstd before Python 3.14 | indexed | solid folders | Native reader; BCJ2 in pure Python |
 | RAR | yes (metadata) | **`unrar` or `rar` binary for compressed data**; `[recommended]` for header crypto and stored encrypted members | native metadata | solid when solid | No write |
 | ISO | no | `[recommended]` (`pycdlib`) | indexed | direct | Seekable source required |
-| `.zst` / `.tar.zst` | 3.14+ core; else `[recommended]` | `[recommended]` → `backports.zstd` | — | rewind seek unless indexed later | |
-| `.lz4` / `.tar.lz4` | no | `[recommended]` | — | rewind seek | |
-| `.Z` / `.tar.Z` | yes | — | — | CLEAR seek points when seekable | Best-effort truncation (nonzero leftover bits) |
+| `.zst` / `.tar.zst` | 3.14+ core; else `[recommended]` | `[recommended]` → `backports.zstd` | one member; the `.tar` form as `.tar.gz` | rewind seek unless indexed later | |
+| `.lz4` / `.tar.lz4` | no | `[recommended]` | one member; the `.tar` form as `.tar.gz` | rewind seek | |
+| `.br` | no | `[recommended]` | one member | rewind seek | No magic; detected by name |
+| `.lz` / `.lzma` / `.zz` | yes | — | one member | seek with `seekable_members=True` | `.lzma` and `.zz` detected by name |
+| `.Z` / `.tar.Z` | yes | — | one member; the `.tar` form as `.tar.gz` | CLEAR seek points when seekable | Best-effort truncation (nonzero leftover bits) |
 
-**RAR member data needs RARLAB `unrar` or `rar` 6.0 or later on `PATH`, or `unar`.**
-No pip extra can supply either — listing and metadata work without them, reading bytes
-does not. When no usable RARLAB program is found, archivey uses `unar` 1.10 or later,
-with the limits listed under [RAR](#rar), including a password passed on its command
-line; set `ArchiveyConfig(rar_decompressor="unrar")` to never use it, or
+**RAR member data needs RARLAB `unrar` or `rar` 6.0 or later on `PATH`, or `unar`.** No pip extra
+can supply either. Listing and metadata work without them, and so does reading a stored member. A
+stored member that is encrypted reads without them too when it is in one part and `cryptography` is
+installed. Reading compressed data does not. When no usable RARLAB program is found, archivey
+uses `unar` 1.10 or later, with the limits listed under [RAR](#rar), including a password passed on
+its command line; set `ArchiveyConfig(rar_decompressor="unrar")` to never use it, or
 `rar_decompressor="none"` to run neither program. `7z` is never used. How to get the binary:
-[Install and extras](install.md#getting-rarlab-unrar-or-rar).
+[Install and extras](install.md#getting-unrar).
 
 Recommended install: `archivey[recommended]`, or `archivey[all]` to add the `[seekable]`
 rapidgzip accelerator. Full codec rationale: [library analysis](https://github.com/davitf/archivey/blob/main/dev-docs/library-analysis.md).
@@ -45,13 +51,12 @@ Third-party credits (deps, oracles, design refs): [Acknowledgements](acknowledge
 
 ## The `extra` bags
 
-`ArchiveMember.extra` is a [`MemberExtra`](api.md#extra-bags) and
-`ArchiveInfo.extra` is an [`ArchiveInfoExtra`](api.md#extra-bags).
-Both are `dict[str, object]` subclasses: a subscript of a known key
-(`extra["zip.compress_type"]`) carries that key's type, and unknown keys
-(third-party or future) stay legal and read as `object`. The names are
-importable. The `EXTRA_*` constants on `archivey.types` remain the names for
-the keys that have constants.
+`ArchiveMember.extra` is a [`MemberExtra`](api.md#members-and-archive-details) and
+`ArchiveInfo.extra` is an [`ArchiveInfoExtra`](api.md#members-and-archive-details). Both are
+`dict[str, object]` subclasses: a subscript of a known key (`extra["zip.compress_type"]`) carries
+that key's type, and unknown keys (third-party or future) stay legal and read as `object`. The names
+are importable. The `EXTRA_*` constants on `archivey.types` remain the names for the keys that have
+constants.
 
 Writes are not type-checked — a wrong-type assignment to a known key is
 accepted, same as an unknown key. `.get()` returns `object` for every key.
@@ -96,13 +101,12 @@ and anything in a real folder named `__MACOSX`.
 
 ## Fields that change after a member is returned
 
-`ArchiveMember.member_state_final` is `False` while archivey can still update a member
-you hold ([Streaming for one pass](opening-and-listing.md#streaming-for-one-pass)).
-The fields that change in practice:
+`ArchiveMember.member_state_final` is `False` while archivey can still update a member you hold
+([Reading once](reading.md#reading-once)). The fields that change in practice:
 
 | Format | While `member_state_final` is `False` (always during a `streaming=True` pass) | A symlink whose target is unread (`read_link_targets=False`) |
 | --- | --- | --- |
-| ZIP | `size` of a large macOS member listed `None` (`extra["size_mod_2_32"]`), until a verified full read fills it in; `link_target_member`; `is_current` from a pipe only (a seekable source's pass reads the directory first, so it is final when yielded); from a pipe, until the pass reads the central directory, also every field it gives: `type`, `name` (where a DOS host makes `\` a separator), `mode`, `create_system`, `comment`, times and owner ids from its extra fields | `link_target`; a Windows reparse point whose data is not a link buffer becomes a `FILE` |
+| ZIP | `size` of a large macOS member listed `None` (`extra["size_mod_2_32"]`, reported as `MEMBER_SIZE_WRAPPED`), until a verified full read fills it in; from a pipe, `size`, `compressed_size` and the CRC-32 in `hashes` of a member whose sizes come after its data (bit 3), until the pass gets past its data; `link_target_member`; `is_current` from a pipe only (a seekable source's pass reads the directory first, so it is final when yielded); from a pipe, until the pass reads the central directory, also every field it gives: `type`, `name` (where a DOS host makes `\` a separator), `mode`, `create_system`, `comment`, times and owner ids from its extra fields | `link_target`; a Windows reparse point whose data is not a link buffer becomes a `FILE` |
 | TAR | `is_current`, `link_target_member` | none: the header carries the target |
 | 7z | `is_current`, `link_target_member` | as ZIP |
 | RAR | `is_current`, `link_target_member` | `link_target`, RAR 4 only |
@@ -128,16 +132,19 @@ yielded.
 - Archivey's own parser reads the **central directory** as members are listed; member
   **data** decodes through archivey's shared codec layer. Stdlib ``zipfile`` is not
   used.
-- **From a pipe**, open with ``streaming=True``: the pass finds each member by its local
-  header, and reads the central directory after the last one. A member is yielded with
-  what its local header says, so its ``mode``, ``create_system``, ``comment``, ``uid``
-  and ``gid`` are ``None`` and a symlink is a ``FILE`` until the pass reaches the
-  directory; then every member is updated in place, and ``member_state_final`` turns
-  ``True``. Extraction writes each member as it arrives and, at the end of the pass,
-  applies modes and owners, makes the links (after running your ``filter`` again on
-  them) and removes what a member the directory types ``OTHER`` wrote, so the files on
-  disk match a read from a file. A member the directory does not list (an appended
-  update, a planted entry) is dropped and reported as ``ARCHIVE_UNLISTED_DATA``.
+- **From a pipe**, open with ``streaming=True``: the pass finds each member by its local header,
+  and reads the central directory after the last one. A member is yielded with what its local header
+  says. A member whose sizes come after its data (bit 3, as every writer to a pipe writes them) is
+  yielded with `size`, `compressed_size` and its CRC-32 unknown; they are filled in on that member
+  from its data descriptor once the pass gets past its data. Until the pass reaches the directory, a
+  member's ``mode``, ``create_system``, ``comment``, ``uid`` and ``gid`` are ``None`` and a symlink
+  is a ``FILE``; then every member is updated in place, and ``member_state_final`` turns ``True``.
+  Extraction writes each member as it arrives and, at the end of the pass, applies modes and owners,
+  makes the links (after running your ``filter`` again on them) and removes what a member the
+  directory types ``OTHER`` wrote, so the files on disk match a read from a file. A member the
+  directory does not list (an appended update, a planted entry) is still yielded by the pass when it
+  is met. When the pass reaches the directory, it is dropped from the listing and reported as
+  ``ARCHIVE_UNLISTED_DATA``, and extraction does not keep it.
 - What a pipe cannot read: a member whose sizes come after its data (bit 3) under LZMA
   without an end marker raises ``UnsupportedFeatureError``, as no end can be found; a
   bit-3 PPMd member is decoded in a child process, so
@@ -166,20 +173,21 @@ yielded.
   value itself and the directory's end can be placed (`ARCHIVE_EOF_MARKER_MISSING`);
   otherwise the members the local headers hold are listed, then `CorruptionError` is
   raised.
-- **A ZIP over 4 GiB that macOS wrote without ZIP64** reads. Finder's Compress (macOS
-  Archive Utility, `ditto -c -k`) stores every offset past 4 GiB with its top bits cut
-  off, so 7-Zip and Python's `zipfile` fail on such an archive. Archivey puts back the
-  missing multiple of 4 GiB where an offset falls below the furthest end of the
-  members before it, but only when a local header with the member's name is at the
-  corrected offset; the member's CRC-32 is still checked. Each correction emits
-  `ARCHIVE_OFFSET_WRAPPED`, which `DiagnosticPolicy.STRICT` does not raise on, since
-  macOS writes such archives by default. A single member over 4 GiB has its sizes
-  cut too. Archivey corrects them for entries carrying Archive Utility's marks, with
-  `MEMBER_SIZE_WRAPPED`: the compressed size from where the data really ends, and the
-  size from it where deflate's ratio leaves one value (members under about 4 MB
-  compressed). Where it leaves several, `size` is `None` and `extra["size_mod_2_32"]`
-  holds the stored value; a read to the end, checked against it and the CRC-32, fills
-  in `size`, and the key stays.
+- **A ZIP over 4 GiB that macOS wrote without ZIP64** reads. Finder's Compress (macOS Archive
+  Utility, `ditto -c -k`) stores every offset past 4 GiB with its top bits cut off, so 7-Zip and
+  Python's `zipfile` fail on such an archive. Archivey puts back the missing multiple of 4 GiB where
+  an offset falls below the furthest end of the members before it, but only when a local header with
+  the member's name is at the corrected offset; the member's CRC-32 is still checked. Each
+  correction emits `ARCHIVE_OFFSET_WRAPPED`, which `DiagnosticPolicy.STRICT` does not raise on,
+  since macOS writes such archives by default. A single member over 4 GiB has its sizes cut too.
+  Archivey corrects them for entries carrying Archive Utility's marks, with `MEMBER_SIZE_WRAPPED`:
+  the compressed size from where the data really ends, and the size from it where deflate's ratio
+  leaves one value (members under about 4 MB compressed).
+- **Archive Utility also stores each member's size modulo 4 GiB**, so for a deflated member over
+  about 4 MB compressed the listing cannot tell whether the size passed 4 GiB. This happens in a Mac
+  ZIP of any length. Such a member lists `size=None`, with the stored value in
+  `extra["size_mod_2_32"]` and `MEMBER_SIZE_WRAPPED`. A read to the end, checked against that value
+  and the CRC-32, fills in `size`; the key stays.
 - **Bytes after the end** of the archive (after its end record and comment) emit
   `ARCHIVE_TRAILING_DATA`; zero padding passes, and `DiagnosticPolicy.STRICT`
   refuses. "Version needed to extract" never refuses a member: only a method or
@@ -231,10 +239,12 @@ yielded.
   an empty one of its method is reported too (``read()`` has nothing to return for it);
   the Java ``jar`` tool's deflated empty directory body (compressed size 2, size 0) is
   not.
-- An end record that disagrees with the central directory is a warning, not an error:
-  an entry count that does not match, or an archive comment length past the end of
-  the file. The members list and read; ``ARCHIVE_EOF_MARKER_MISSING`` follows them,
-  which ``DiagnosticPolicy.STRICT`` raises.
+- An end record that disagrees with the central directory is a warning, not an error: an entry
+  count that does not match, or an archive comment length past the end of the file. The members
+  still list and read, and ``ARCHIVE_EOF_MARKER_MISSING`` is reported after the directory's last
+  entry. From a seekable source the listing is complete before any member is handed out, so
+  ``DiagnosticPolicy.STRICT`` raises before the first one. With ``streaming=True``, the pass yields
+  every member and then raises.
 - Timestamps: DOS base; NTFS, then the Unix fields (`0x000d`, `0x5855`), then the
   Extended Timestamp override when present, the Unix fields read as unzip 6.00 reads
   them. macOS `ditto` and Archive Utility write only `0x5855`, so their archives list
@@ -244,29 +254,27 @@ yielded.
 - Owner ids: Info-ZIP `zip` on Unix records `uid` / `gid`, read as unzip 6.00 reads
   them; `uname` / `gname` stay `None`, and Windows writers store no owner.
 - An entry whose Unix mode is a device, FIFO or socket and that stores no data lists as
-  `MemberType.OTHER`, so extraction skips it. One that stores data is a `FILE` (`zip -FI`
-  writes a named pipe's content this way) and `MEMBER_SPECIAL_FILE_HAS_DATA` says so; in
-  both cases `extra["special_file_type"]` names the stored kind. The mode is read only
-  when "version made by" says Unix.
-- **Member-name encoding.** Names flagged UTF-8 decode as UTF-8 when the stored bytes
-  are valid UTF-8 (otherwise see the wrongly-set flag below). For an unflagged name
-  (APPNOTE says cp437), many tools nonetheless write UTF-8 without setting the flag, so
-  Archivey prefers UTF-8 when the stored bytes are valid UTF-8, and otherwise uses the
-  `encoding=` you passed to `open_archive`, or without one a configurable legacy encoding
-  (`ArchiveyConfig.zip_unflagged_fallback_encoding`, default `cp437`). When UTF-8 is
-  inferred for an unflagged name, a `member_name_encoding_inferred` diagnostic records it.
-  So `encoding=` decodes only the unflagged names that are not valid UTF-8, unlike
-  Python's `zipfile` `metadata_encoding` or `unzip -O`, which apply to every unflagged
-  name. Comments decode the same way: a member comment follows its name's flag (a flag
-  the name's bytes refute counts as unset for the comment too), and the archive
-  comment, which has no flag, decodes as an unflagged name. A byte the chosen encoding
-  does not define stays in the comment as a surrogate escape, as in a name. One
-  signal outranks the guess: an Info-ZIP Unicode Path extra field (`0x7075`)
-  whose checksum matches the stored bytes names the member in UTF-8. `raw_name` is then
-  the field's UTF-8 bytes and `extra["alternate_raw_name"]` holds the stored ones. A
-  malformed field (too short, or matching with an empty, cut-short or non-UTF-8 name) is dropped
-  with a `member_header_record_skipped` diagnostic. The archive opens on every Python
-  version; `zipfile` on its own refuses it from Python 3.12.
+  `MemberType.OTHER`, and extraction does not create it: its result is `BLOCKED`, and the other
+  members are extracted. One that stores data is a `FILE` (`zip -FI` writes a named pipe's content
+  this way) and `MEMBER_SPECIAL_FILE_HAS_DATA` says so; in both cases `extra["special_file_type"]`
+  names the stored kind. The mode is read only when "version made by" says Unix.
+- **Member-name encoding.** Names flagged UTF-8 decode as UTF-8 when the stored bytes are valid
+  UTF-8 (otherwise see the wrongly-set flag below). For an unflagged name (APPNOTE says cp437), many
+  tools nonetheless write UTF-8 without setting the flag, so Archivey prefers UTF-8 when the stored
+  bytes are valid UTF-8, and otherwise uses the `encoding=` you passed to `open_archive`, or without
+  one a configurable legacy encoding (`ArchiveyConfig.zip_unflagged_fallback_encoding`, default
+  `cp437`). When UTF-8 is inferred for an unflagged name, a `member_name_encoding_inferred`
+  diagnostic records it. So `encoding=` decodes only the unflagged names that are not valid UTF-8,
+  unlike Python's `zipfile` `metadata_encoding` or `unzip -O`, which apply to every unflagged name.
+  Comments decode the same way: a member comment follows its name's flag (a flag the name's bytes
+  refute counts as unset for the comment too), and the archive comment, which has no flag, decodes
+  as an unflagged name. A byte the chosen encoding does not define stays in the comment as a
+  surrogate escape, as in a name. One signal outranks the guess: an Info-ZIP Unicode Path extra
+  field (`0x7075`) whose checksum matches the stored bytes names the member in UTF-8. `raw_name` is
+  then the field's UTF-8 bytes and `extra["alternate_raw_name"]` holds the stored ones. A malformed
+  field (too short, or matching with an empty, cut-short or non-UTF-8 name) is dropped with a
+  `member_header_record_skipped` diagnostic. The archive opens on every Python version. `zipfile` on
+  its own refuses a too-short field or a non-UTF-8 name from Python 3.12.
 - **A wrongly-set UTF-8 flag is ignored.** When general-purpose bit 11 claims UTF-8
   but the stored bytes are not valid UTF-8, the flag cannot be right, so the name
   decodes as an unflagged name that is not UTF-8 does: with your `encoding=`, else
@@ -277,13 +285,12 @@ yielded.
   time in 256. Its data then fails the CRC or the decompressor, and Archivey raises
   `EncryptionError` saying the password may be wrong or the member corrupt, since a
   damaged member read with the right password fails the same way.
-- ZipCrypto multi-password confirmation can be expensive on **STORED** members — see
-  [access costs](access-and-cost.md). **WinZip AES** (method 99 / AE-1 and AE-2) decrypts via the
-  `[recommended]` extra (PBKDF2 + AES-CTR + HMAC-SHA1); AE-2 members expose no `crc32`
-  (integrity is the HMAC). Without it, an AES member raises
+- ZipCrypto multi-password confirmation can be expensive on **STORED** members. **WinZip AES**
+  (method 99 / AE-1 and AE-2) decrypts via the `[recommended]` extra (PBKDF2 + AES-CTR + HMAC-SHA1);
+  AE-2 members expose no `crc32` (integrity is the HMAC). Without it, an AES member raises
   `PackageNotInstalledError` but is still listed as encrypted. A failing HMAC raises
-  `CorruptionError`, with one password or several: a wrong password gets past the
-  two-byte check only once in 65 536 tries, so damage is by far the likelier cause.
+  `CorruptionError`, with one password or several: a wrong password gets past the two-byte check
+  only once in 65 536 tries, so damage is by far the likelier cause.
 - **PKWARE Strong Encryption** is not supported. Such members list as encrypted, and
   opening one raises `UnsupportedFeatureError`. An archive whose central directory is
   itself encrypted this way cannot be listed; Archivey raises `UnsupportedFeatureError`
@@ -307,7 +314,15 @@ yielded.
   prefer a single forward pass.
 - Hardlinks are first-class at extraction; unfiltered `extract_all` resolves them in one
   pass.
-- `concurrent_operations=True` uses a per-reader shared-handle lock (same shape as ISO).
+- With `concurrent_operations=True`, member reads share one file handle and take turns on it, so
+  reads from several threads are safe but not parallel. ISO works the same way.
+- A device or FIFO lists as `MemberType.OTHER`, and extraction does not create it: its result is
+  `BLOCKED`, and the other members are extracted. `extra["special_file_type"]`
+  names the kind, and a device keeps its numbers in `extra["tar.devmajor"]` and
+  `extra["tar.devminor"]`. A device number field that is not a number is dropped and
+  `MEMBER_HEADER_RECORD_SKIPPED` reports it, as GNU tar lists such a device too.
+- A PAX time record that does not parse leaves that time unset, and `MEMBER_TIMESTAMP_INVALID`
+  reports it.
 - **An old-style directory that declares data is reported.** A regular-file header
   (typeflag NUL, `0` or contiguous `7`) whose name ends in `/` is a directory, as GNU
   tar reads it; 7-Zip agrees for NUL and `0`. When its size field is not zero, the
@@ -316,14 +331,15 @@ yielded.
   the directory returns them, as does the stream `stream_members()` yields for it, in
   both access modes.
   `DiagnosticPolicy.STRICT` refuses the archive.
-- **A member of an unknown type is a file when it has data.** A header whose type byte
-  archivey does not know (such as `9`) and that declares data is a `FILE` of that size,
-  which reads and extracts like any file, as GNU tar extracts it. One that declares no
-  data is `OTHER`, and extraction skips it. Both are reported with `MEMBER_TYPE_UNKNOWN`,
-  which `STRICT` does not refuse, and `extra["tar.type"]` keeps the byte.
+- **A member of an unknown type is a file when it has data.** A header whose type byte archivey
+  does not know (such as `9`) and that declares data is a `FILE` of that size, which reads and
+  extracts like any file, as GNU tar extracts it. One that declares no data is `OTHER`, and
+  extraction does not create it: its result is `BLOCKED`, and the other members are extracted. Both
+  are reported with `MEMBER_TYPE_UNKNOWN`, which `STRICT` does not refuse, and `extra["tar.type"]`
+  keeps the byte.
 - **Sparse members are extracted dense.** A GNU or PAX sparse member (`tar -S`) is
   written with its holes filled by zeros, so it takes its full size on disk. The zeros
-  count as output for the [ratio limit](extracting.md#limits), which a TAR checks across
+  count as output for the [ratio limit](security.md#hardening), which a TAR checks across
   the whole archive because a member has no compressed size. A 10 MiB sparse file packs
   into a 10 KiB tar, 1024:1, and `extract_all` raises `ResourceLimitError` against the
   default `max_ratio` of 1000. `member.is_sparse` tells you which members are sparse
@@ -352,11 +368,10 @@ yielded.
       runs from the block after the damaged one. This needs at least one member before
       the zero block: a file that is only a zero block and then other bytes is not shown
       to be a TAR archive, and it raises `CorruptionError`.
-    - A **device, FIFO or socket header that declares data** (typeflag `3`, `4` or `6`
-      with a non-zero size) raises `CorruptionError` at that header, before the
-      end-marker check runs. Such an entry has no data, and GNU tar skips the header as
-      damaged. Reading on from the next block, an all-zero payload would look like the
-      end of the archive and drop every member after it.
+    - A **device or FIFO header that declares data** (typeflag `3`, `4` or `6` with a non-zero
+      size) raises `CorruptionError` at that header, before the end-marker check runs. Such an entry
+      has no data, and GNU tar skips the header as damaged. Reading on from the next block, an
+      all-zero payload would look like the end of the archive and drop every member after it.
     - A **directory header (typeflag `5`) that declares data** has no data area either,
       so the next header is read straight after it. When that header parses, the
       directory lists with no size, as GNU tar, bsdtar and 7-Zip list it. When the
@@ -392,7 +407,10 @@ yielded.
       10 KiB records, so "nothing but zeros" is the strongest rule that does not flag
       what `tar` itself produces. The check looks at most 1 MiB past the trailer, so a
       byte further out goes unseen; on a compressed tar that 1 MiB is decompressed to
-      inspect it. Bytes after the compressed stream itself (after the gzip or xz stream
+      inspect it. From a pipe, the listing reads up to 1 MiB past the trailer, so a sender
+      that keeps the connection open after the tar ends makes the listing wait for more
+      bytes or for the end of the stream. Close the sending side when the tar is done.
+      Bytes after the compressed stream itself (after the gzip or xz stream
       ends) are reported the same way, with the codec's name as `format`; see
       [Single-file compressors](#single-file-compressors). A compressed stream cut
       inside its footer (a missing gzip CRC-32, say) does not fail the listing, since
@@ -415,10 +433,12 @@ yielded.
 
 - **Native** header parse + stdlib codecs for the common set (LZMA/LZMA2/BCJ/Delta/
   Deflate/BZip2/stored). No `py7zr` on the read path.
-- `[recommended]` adds PPMd, Deflate64, Zstd, Brotli, and AES.
-- **BCJ2** (what 7-Zip writes for x86 executables at `-mx9`) reads on a core install,
-  encrypted or not. Its decoder is pure Python, about half the speed of the same file under
-  BCJ. It keeps no seek points, so a backward seek decodes again from the folder start.
+- `[recommended]` adds PPMd, Deflate64, Brotli, LZ4 and AES, and Zstd on Python before 3.14 (3.14
+  has Zstd in the standard library).
+- **BCJ2** (what 7-Zip writes for x86 executables at `-mx9`) reads on a core install. An encrypted
+  BCJ2 archive also needs AES, which comes with `[recommended]`, as for any encrypted 7z. Its
+  decoder is pure Python, about half the speed of the same file under BCJ. It keeps no seek points,
+  so a backward seek decodes again from the folder start.
 - **ARM64** (what 7-Zip 23 writes for AArch64 executables) reads on a core install. Python's
   `lzma` cannot build that filter, so archivey decodes it in pure Python. On real AArch64
   code a read runs at roughly four fifths of the speed of the same file with no filter.
@@ -426,27 +446,26 @@ yielded.
   runs about 15 times slower than on real code.
 - Solid folders: `stream_members()` decodes each folder once; random `open()` of a mid-
   folder member may re-decode from the folder start.
-- A device node, FIFO or socket that 7-Zip or p7zip stored on Unix has no data stream
-  and lists as `MemberType.OTHER`, so extraction skips it; `extra["special_file_type"]`
-  names the kind. An entry that owns a data stream under such a mode is a `FILE` with
-  `MEMBER_SPECIAL_FILE_HAS_DATA` reported. The mode is trusted for this only when the
-  attribute's `0x8000` Unix-extension bit is set.
-- **Member names** are UTF-16, so `encoding=` has no effect. A name made on Windows can
-  hold a surrogate without its partner, which NTFS allows. Archivey keeps that code unit
-  in `member.name` (`'hi\ud800'`) and lists every member, as 7-Zip does. The CLI shows
-  the name escaped, as `hi\ud800`. Under the `STRICT` and `STANDARD` policies, extraction
-  escapes the surrogate's UTF-8 bytes as it escapes any name that is not portable:
-  `hi\ud800` is written `hi%ED%A0%80` on every OS, and `presented_name` holds the
-  stored name. Under `TRUSTED` it writes what 7-Zip writes. On Linux and other POSIX
-  systems that is the three-byte UTF-8 form, `hi` followed by `ed a0 80`; a filesystem
-  that accepts only valid UTF-8, such as APFS, refuses those bytes, and the member fails
-  with `ExtractionError`. On Windows it is the exact name. One exception: a unit in
-  U+DC80 to U+DCFF looks the same as an undecodable byte (see
-  [Names that do not decode](opening-and-listing.md#names-that-do-not-decode)), so
-  extraction writes it as that byte, where 7-Zip writes three bytes. `member.raw_name`
-  always holds the stored units. The archive comment is UTF-16 too: a lone surrogate
-  stays in `ArchiveInfo.comment`, so be ready for it if you print the comment, and only
-  a comment with an odd byte count raises `CorruptionError`.
+- A device node, FIFO or socket that 7-Zip or p7zip stored on Unix has no data stream and lists as
+  `MemberType.OTHER`, and extraction does not create it: its result is `BLOCKED`, and the other
+  members are extracted. `extra["special_file_type"]` names the kind. An entry that owns a data
+  stream under such a mode is a `FILE` with `MEMBER_SPECIAL_FILE_HAS_DATA` reported. The mode is
+  trusted for this only when the attribute's `0x8000` Unix-extension bit is set.
+- **Member names** are UTF-16, so `encoding=` has no effect, and passing it emits
+  `ENCODING_ARGUMENT_UNUSED`. A name made on Windows can hold a surrogate without its partner, which
+  NTFS allows. Archivey keeps that code unit in `member.name` (`'hi\ud800'`) and lists every member,
+  as 7-Zip does. The CLI shows the name escaped, as `hi\ud800`. Under the `STRICT` and `STANDARD`
+  policies, extraction escapes the surrogate's UTF-8 bytes as it escapes any name that is not
+  portable: `hi\ud800` is written `hi%ED%A0%80` on every OS, and `presented_name` holds the stored
+  name. Under `TRUSTED` it writes what 7-Zip writes. On Linux and other POSIX systems that is the
+  three-byte UTF-8 form, `hi` followed by `ed a0 80`; a filesystem that accepts only valid UTF-8,
+  such as APFS, refuses those bytes, and the member fails with `ExtractionError`. On Windows it is
+  the exact name. One exception: a unit in U+DC80 to U+DCFF looks the same as an undecodable byte
+  (see [Names in other encodings](opening.md#names-in-other-encodings)), so extraction
+  writes it as that byte, where 7-Zip writes three bytes. `member.raw_name` always holds the stored
+  units. The archive comment is UTF-16 too: a lone surrogate stays in `ArchiveInfo.comment`, so be
+  ready for it if you print the comment, and only a comment with an odd byte count raises
+  `CorruptionError`.
 - **AES + store/copy with no folder digest and no member CRC:** 7z has no password check
   value; a wrong password can yield garbage (matches 7-Zip). Archivey emits
   `DIGEST_UNVERIFIABLE` (`reason="no_integrity_anchor"`). Treat the payload as unverified.
@@ -479,51 +498,65 @@ yielded.
   exception is a compressed RAR 1.5-4 comment, which the selected program (`unrar` or
   `unar`) decodes; without it, or when the decoded text fails its CRC, `comment` is
   `None`.
-- An entry from a Unix host whose mode is a device, FIFO or socket and that stores no
-  data lists as `MemberType.OTHER`, so extraction skips it; one that stores data is a
-  `FILE` with `MEMBER_SPECIAL_FILE_HAS_DATA` reported. Either way
-  `extra["special_file_type"]` names the kind. `rar` itself skips such files when
-  archiving.
+- An entry from a Unix host whose mode is a device, FIFO or socket and that stores no data lists
+  as `MemberType.OTHER`, and extraction does not create it: its result is `BLOCKED`, and the other
+  members are extracted. One that stores data is a `FILE` with `MEMBER_SPECIAL_FILE_HAS_DATA`
+  reported. Either way `extra["special_file_type"]` names the kind. `rar` itself skips such files
+  when archiving.
 - A directory entry that declares data (`rar` never writes one) is reported with
   `MEMBER_DIRECTORY_DATA_IGNORED`; extraction creates the directory, as `unrar` does.
   `read()`, and the stream `stream_members()` yields for the directory, return the
   bytes when they are stored and not encrypted; compressed or encrypted directory data
   raises `UnsupportedFeatureError` (from the stream, on its first read), because
   `unrar` emits nothing for a directory entry.
-- Member **data**: a stored (uncompressed) member is read by archivey itself, and so is
-  a stored, encrypted one in one part when `cryptography` is installed (`[recommended]`;
-  RAR 2.9 and later). Everything else needs RARLAB `unrar` or `rar` **6.0 or later** on
-  `PATH` (not `unrar-free` or `7z`). `unrar` is preferred when both exist. By default, when neither is found,
-  archivey uses `unar` 1.10 or later if it is installed; see the next item. `unrar` gets
-  passwords as bare `-p` with the secret on stdin (not in argv). Install:
-  [Getting RARLAB unrar or rar](install.md#getting-rarlab-unrar-or-rar).
-- **`unar` instead of `unrar`:** `ArchiveyConfig.rar_decompressor` chooses the program.
-  The default, `"auto"`, uses `unrar` when a usable one is on `PATH` and `unar`
-  otherwise; the choice is made once, when the archive is opened, and a read `unar`
-  refuses is not retried with `unrar`. When `"auto"` picks `unar`, `ar.cost.notes` says
-  so at open. `"unrar"` and `"unar"` use only that program. `"none"` runs no program
-  at all, for when you don't want `unrar` or `unar` run on your archives: listing still
-  works, and so does reading a stored (uncompressed) member, also when it is split
-  across volumes or sits in a solid archive, or when it is encrypted and in one part
-  (that one needs `cryptography`, and raises `PackageNotInstalledError` without it).
-  A compressed member, an encrypted one split across volumes, or a split one with a
-  volume missing, raises
-  `UnsupportedFeatureError` before anything runs, and `ar.cost.notes` says so at open.
-  `unar` 1.10 or later (`brew install unar`, `apt install unar`) is free software and
-  easy to install on macOS, but it reads less than `unrar`. Archivey runs each `unar`
-  once on a small RAR5 archive and does not use one that decodes it wrong, as the
-  Debian and Ubuntu packages before 1.10.8+ds1-10 do (Ubuntu 22.04 to 26.04 among
-  them); `"auto"` then treats `unar` as absent. Archivey refuses these reads with
-  `UnsupportedFeatureError` before `unar` runs, because `unar` gets them wrong,
-  sometimes with a success exit:
-  - encrypted data in a RAR 2.x-4.x archive, and every member of a solid one that has
-    it (RAR5 encryption is read);
+- Member **data**: a stored (uncompressed) member is read by archivey itself, and so is a stored,
+  encrypted one in one part when `cryptography` is installed (`[recommended]`; RAR 2.9 and later).
+  Everything else needs RARLAB `unrar` or `rar` **6.0 or later** on `PATH` (not `unrar-free` or
+  `7z`). `unrar` is preferred when both exist. By default, when neither is found, archivey uses
+  `unar` 1.10 or later if it is installed; see the next item. `unrar` gets passwords as bare `-p`
+  with the secret on stdin (not in argv). Archivey passes a password to `unrar` or `unar` only when
+  the read needs it: the member is encrypted, the headers are, or an encrypted member comes before
+  it in a solid archive. A stored, encrypted member split across volumes, and any member encrypted
+  with the RAR 2.0 cipher (archives from RAR 2.0 to 2.8), still need `unrar` or `unar`: each part of
+  a split member has its own encryption record, and archivey does not implement the old cipher.
+  `format_availability()` reports RAR as `PARTIAL`, with `unrar` in `missing`, when no RARLAB
+  `unrar` or `rar` 6.0 or later is found, even when a `unar` archivey accepts is installed. Install:
+  [Getting unrar](install.md#getting-unrar).
+
+  Debian 12 and Ubuntu 22.04 package unrar 6.x, and Ubuntu 24.04 packages 7.00; all are recent
+  enough. Archivey refuses a 5.x unrar, which some older releases ship; build from RARLAB's source
+  there. RARLAB's RAR for macOS download also contains `unrar`. It is not notarized by Apple, so
+  macOS may block it until you allow it in System Settings. Ignore the "UnRAR for Mac OS X 64 bit"
+  link on the RARLAB add-ons page: it is a 2018 Intel build someone else contributed.
+
+- **`unar` instead of `unrar`:** `ArchiveyConfig.rar_decompressor` chooses the program. The
+  default, `"auto"`, uses `unrar` when a usable one is on `PATH` and `unar` otherwise; the choice is
+  made once, when the archive is opened, and a read `unar` refuses is not retried with `unrar`. With
+  `unrar` chosen, `"auto"` still reads a member `unrar` cannot be given by name with an accepted
+  `unar`; see the glob item below. When `"auto"` picks `unar`, `ar.cost.notes` says so at open.
+  `"unrar"` and `"unar"` use only that program. `"none"` runs no program at all, for when you don't
+  want `unrar` or `unar` run on your archives: listing still works, and so does reading a stored
+  (uncompressed) member, also when it is split across volumes or sits in a solid archive, or when it
+  is encrypted and in one part (that one needs `cryptography`, and raises `PackageNotInstalledError`
+  without it). A compressed member, an encrypted one split across volumes, or a split one with a
+  volume missing, raises `UnsupportedFeatureError` before anything runs, and `ar.cost.notes` says so
+  at open. `unar` 1.10 or later (`brew install unar`, `apt install unar`) is free software and easy
+  to install on macOS, but it reads less than `unrar`. Archivey runs each `unar` once on a small
+  RAR5 archive and does not use one that decodes it wrong, as the Debian and Ubuntu packages before
+  1.10.8+ds1-10 do (Ubuntu 22.04 to 26.04 among them); `"auto"` then treats `unar` as absent.
+  Archivey refuses these reads with `UnsupportedFeatureError` before `unar` runs, because `unar`
+  gets them wrong, sometimes with a success exit:
+  - encrypted, compressed data in a RAR 2.x-4.x archive (a stored, encrypted member in one part is
+    still decrypted by archivey), and every member of a solid one that has it (RAR5 encryption is
+    read);
   - a password that is not ASCII;
   - a multi-volume RAR5 set with encrypted headers (Homebrew's `unar` 1.10.8 returns
     nothing for it);
   - in a RAR5 solid archive, a member that comes after an empty file, a directory or a
     link;
   - a member compressed with the RAR 1.5 algorithm;
+  - an old-style volume set (`.rar`, `.r00`, ...) of more than 901 volumes: `unar` stops at
+    `.z99`;
   - a multi-volume set with a prefix before the first volume (an SFX stub). A single
     prefixed file is copied to a temporary file first.
   - in `stream_members()` over a solid archive that has one of the members above, any
@@ -544,9 +577,9 @@ yielded.
   not by name. With `"unrar"` or `"unar"` selected, archivey never switches between the
   two programs; with `unar` selected and missing or refused, a read raises
   `PackageNotInstalledError`.
-- `[recommended]`: header-encrypted RAR5. BLAKE2sp verification needs **no** package —
-  it is implemented natively on stdlib `hashlib`. RAR5 members with the HASHMAC flag
-  verify tweaked digests via UnRAR’s `ConvertHashToMAC` when a password is available;
+- `[recommended]`: header-encrypted RAR archives, RAR 1.5-4 and RAR5 alike. BLAKE2sp verification
+  needs **no** package — it is implemented natively on stdlib `hashlib`. RAR5 members with the
+  HASHMAC flag verify tweaked digests via UnRAR’s `ConvertHashToMAC` when a password is available;
   tweaked values are not exposed as plain `member.hashes`.
 - **A RAR5 archive cut exactly between two blocks is warned about, not raised.** RAR5
   always ends each volume with an end-of-archive block, so archivey lists the members
@@ -604,55 +637,57 @@ yielded.
   whose compression version is newer than RAR 7's, or a RAR 1.5-4 member whose unpack
   version is outside 13-29, lists normally and raises `UnsupportedFeatureError` when
   read, where `unrar` says "Unknown method". A stored member reads whatever it declares.
-- **Password lists on encrypted data:** RAR5 records a password check per member, so a
-  list is tried in order and the matching password is used. RAR3/4 records none, so with
-  more than one password archivey judges each by decoding the member: up to 64 KiB of
-  `unrar` output, which a wrong password usually fails, and, when several passwords get
-  that far, the whole member against its CRC. A stored member is checked by decrypting it
-  in archivey and comparing its CRC. The order of the list does not matter, but every
-  wrong password before the right one costs a decode, so put the likely one first.
-- **Partial reads of RAR3/4 encrypted data** emit `ENCRYPTED_MEMBER_UNVERIFIED`. With no
-  password check, only the member's CRC at EOF catches a wrong password, and `unrar`
-  can return the wrong key's bytes before that: a stored member always, a compressed
-  one for some wrong passwords. Closing the stream before EOF, or after a seek, skips
-  the CRC. RAR5 members and header-encrypted archives have checked the password already
-  and never emit it.
+- **Password lists on encrypted data:** RAR5 records a password check per member, so a list is
+  tried in order and the matching password is used. RAR3/4 records none, so with more than one
+  password archivey judges each by decoding the member: up to 64 KiB of `unrar` output, which a
+  wrong password usually fails, and, when several passwords get that far, the whole member against
+  its CRC. A stored member in one part is checked by decrypting it in archivey and comparing its
+  CRC, when `cryptography` is installed. The order of the list does not matter, but every wrong
+  password before the right one costs a decode, so put the likely one first.
+- **Partial reads of RAR3/4 encrypted data** emit `ENCRYPTED_MEMBER_UNVERIFIED`. With no password
+  check, only the member's CRC at EOF catches a wrong password, and a wrong password can still
+  produce bytes before that: a stored member always, whether archivey or `unrar` decrypts it, and a
+  compressed one for some wrong passwords. Closing the stream before EOF, or after a seek, skips the
+  CRC. RAR5 members and header-encrypted archives have checked the password already and never emit
+  it.
 - **File-version history (`-ver`):** revision rows appear in `members()` as names like
   `path;1` with `extra["rar.file_version"]` and `is_current=False`; the live path stays
   `is_current=True`. Default extract **skips** non-current rows.
-- **Links and file copies.** A RAR5 hard link (`rar -oh`) is a `HARDLINK`. A RAR5
-  file copy (`rar -oi`, which `unrar` lists as "File reference") stores a duplicate
-  file once and names the earlier member that holds the bytes. It is a `FILE` with
-  `extra["is_file_copy"] = True`; `link_target` is the source's stored path and
-  `link_target_member` the source member. Reading it gives the source's bytes, and
-  extraction writes an independent file, as `unrar` does, by copying the source's file
+- **Links and file copies.** A RAR5 hard link (`rar -oh`) is a `HARDLINK`. A RAR5 file copy (`rar
+  -oi`, which `unrar` lists as "File reference") stores a duplicate file once and names the earlier
+  member that holds the bytes. It is a `FILE` with `extra["is_file_copy"] = True`; `link_target` is
+  the source's stored path and `link_target_member` the source member. Reading it gives the source's
+  bytes, and extraction writes an independent file, as `unrar` does, by copying the source's file
   when it has just written it. A copy whose source is not an earlier file member raises
-  `LinkTargetNotFoundError` when read. `stream_members(file_copy_streams=False)` yields
-  `None` for each copy; its bytes and digests are its source's.
+  `LinkTargetNotFoundError` when read. `stream_members(file_copy_streams=False)` yields `None` for
+  each copy; its bytes and digests are its source's. A RAR 2.9-4 symlink stores its target as member
+  data. When that data is stored and encrypted, archivey decrypts it while listing if you gave the
+  password and `cryptography` is installed, and checks it against its CRC. Without the password, or
+  without `cryptography`, `link_target` is unset and a `SYMLINK_TARGET_UNAVAILABLE` diagnostic says
+  why.
 - **Compression:** M0 is `STORED`. M1–M5 is `CompressionAlgorithm.RAR` with `level` 1–5.
   Any other method byte stays `UNKNOWN` (`level` omitted). Unpack version is
   `extra["rar.extract_version"]` on every member whose FILE header recorded one,
   stored included: RAR3 copies the `UNP_VER` byte as stored; RAR5 reports `50`.
-- **Glob characters in a stored member name.** `unrar` is told which member to emit with
-  an include *mask* built from its name, so a name containing `*` or `?` also matches its
-  siblings. Names like this are almost always constructed, so reading such a member
-  raises `UnsupportedFeatureError`. On a non-solid archive the extra decode is also
-  unbounded: `ExtractionLimits` apply to extraction, not to `open()` / `read()`, and the
-  error names how many bytes it would have cost. On a solid archive those bytes are
-  already inside `AccessCost.SOLID`, so the error names the flag rather than an
-  avoidable extra decode. Set `ArchiveyConfig.rar_allow_glob_member_concatenation=True`
-  to read it anyway. Two cases are *not* affected: a glob name that matches no other
-  member (the accidental `report*.pdf` beside `report1.pdf`) reads normally with no
-  flag, and a solid `stream_members()` pass reads everything, because it builds no mask
-  at all. A glob in a *directory* component, or a backslash, is refused outright either
-  way; the one exception is a backslash in a RAR5 name written on Windows, which
-  `unrar` on Linux and macOS reads as `_`. `unar` selects members by position, so it
-  has none of these problems: under the default `rar_decompressor='auto'`, archivey
-  reads such a member with `unar` when one it accepts is installed. It does not when
-  the read needs a password (`unar` takes it on its command line), when
-  the archive is a stream or has data before the RAR (`unar` would need its own copy
-  of it), or when `unar` is known to misread the archive. Setting
-  `ArchiveyConfig.rar_decompressor` to `'unar'` reads every member that way.
+- **Glob characters in a stored member name.** `unrar` is told which member to emit with an
+  include *mask* built from its name, so a name containing `*` or `?` also matches its siblings.
+  Names like this are almost always constructed, so reading such a member raises
+  `UnsupportedFeatureError`. On a non-solid archive the extra decode is also unbounded:
+  `ExtractionLimits` apply to extraction, not to `open()` / `read()`, and the error names how many
+  bytes it would have cost. On a solid archive those bytes are already inside `AccessCost.SOLID`, so
+  the error names the flag rather than an avoidable extra decode. Set
+  `ArchiveyConfig.rar_allow_glob_member_concatenation=True` to read it anyway. Two cases are *not*
+  affected: a glob name that matches no other member (the accidental `report*.pdf` beside
+  `report1.pdf`) reads normally with no flag, and a solid `stream_members()` pass reads everything,
+  because it builds no mask at all. `unrar` cannot read a member with a glob in a *directory*
+  component, or a backslash in its name, and the flag does not change that; the one exception is a
+  backslash in a RAR5 name written on Windows, which `unrar` on Linux and macOS reads as `_`. `unar`
+  selects members by position, so it has none of these problems: under the default
+  `rar_decompressor='auto'`, archivey reads such a member with `unar` when one it accepts is
+  installed. It does not when the read needs a password (`unar` takes it on its command line), when
+  the archive is a stream or has data before the RAR (`unar` would need its own copy of it), or when
+  `unar` is known to misread the archive. Setting `ArchiveyConfig.rar_decompressor` to `'unar'`
+  reads every member that way.
 - **Member names.** RAR5 stores names as UTF-8, and RAR 1.5-4 usually as UTF-16
   beside an 8-bit copy. A RAR 1.5-4 name that has only the 8-bit bytes does not say
   which code page they are in. Archivey tries UTF-8 first. When the bytes are not valid
@@ -674,13 +709,14 @@ yielded.
   does not define stays in the comment as a surrogate escape, as in a name. The one
   exception is a RAR 2.9-4 comment flagged as Unicode, which is UTF-16LE. A RAR5
   comment is UTF-8.
-- **Several members under one name.** `unrar` emits every member a name selects, in
-  archive order: two members with the same name, or two names `unrar` reads the same
-  way. Archivey skips to the one you asked for, so each read returns that member's own
-  bytes. A RAR5 name that is not valid UTF-8 is cut by `unrar` at its first invalid
-  byte and is read through that shorter name the same way. A name `unrar` reads as
-  empty, or one archivey cannot give back to `unrar` exactly, raises
-  `UnsupportedFeatureError`; `rar_decompressor="unar"` reads it by position.
+- **Several members under one name.** `unrar` emits every member a name selects, in archive order:
+  two members with the same name, or two names `unrar` reads the same way. Archivey skips to the one
+  you asked for, so each read returns that member's own bytes. A RAR5 name that is not valid UTF-8
+  is cut by `unrar` at its first invalid byte and is read through that shorter name the same way. A
+  name `unrar` reads as empty raises `UnsupportedFeatureError` unless `"auto"` finds a `unar`
+  archivey accepts, which then reads it by position, under the conditions in the glob item above. A
+  name `unrar` reads but that cannot be handed back to it as a mask raises even under `"auto"`.
+  `rar_decompressor="unar"` reads both.
 - Solid archives: one `unrar p` pipe for the whole of `stream_members()`. A random
   `open()` out of order is a separate `unrar` run that decodes from the start of the
   archive each time, so reading *n* members that way costs *n* full decodes — stream them
@@ -694,13 +730,14 @@ yielded.
 - **Encrypted old-style comments are not decoded.** A RAR 1.5 / 2.x comment block with
   its password or salt flag set gives `comment` as `None`. No available tool writes such
   a comment, so there is nothing to test a decode path against.
-- **A stream source is copied to disk for `unrar`.** `unrar` reads only files, so a RAR
-  opened from a `BytesIO` or a file object is copied whole to a temp file (a volume set,
-  to a temp directory) on the first member read that needs `unrar`, and removed on close.
-  Stored, unencrypted members are read in place and need no copy. The copy is
-  bounded by `ArchiveyConfig.spool_limits` (`SpoolLimits.max_bytes`, default 1 GiB):
-  over it, the read raises `ResourceLimitError` before anything is written. Open from a
-  path to avoid the copy. See [Access and cost](access-and-cost.md#non-seekable-sources).
+- **A stream source is copied to disk for `unrar`.** `unrar` reads only files, so a RAR opened from
+  a `BytesIO` or a file object is copied whole to a temp file (a volume set, to a temp directory) on
+  the first member read that needs `unrar`, and removed on close. Members archivey reads itself
+  (stored ones, and stored encrypted ones in one part when `cryptography` is installed) are read in
+  place and need no copy. The copy is bounded by `ArchiveyConfig.spool_limits`
+  (`SpoolLimits.max_bytes`, default 1 GiB): over it, the read raises `ResourceLimitError` before
+  anything is written. Open from a path to avoid the copy. See [Reading
+  once](reading.md#reading-once).
 - Read-only — no RAR writer.
 
 ## ISO 9660
@@ -731,7 +768,7 @@ yielded.
   Without it, a Rock Ridge name takes the Joliet name of the same file or directory
   when the image has a Joliet tree and the two line up, with a
   `member_name_encoding_inferred` diagnostic, and is escaped otherwise (see
-  [Names that do not decode](opening-and-listing.md#names-that-do-not-decode)). Joliet
+  [Names in other encodings](opening.md#names-in-other-encodings)). Joliet
   names are UTF-16 and ignore `encoding=`. A Joliet name can hold a surrogate without
   its partner, as a 7z name can: archivey keeps it in `member.name` and extracts it as
   it does a 7z name (see 7z above).
@@ -746,11 +783,11 @@ yielded.
   and TAR. That includes a file and its associated file (such as the resource fork on a
   Mac hybrid image), which list as two members with one name and nothing to tell the
   fork apart. Entries within a directory list in on-disc record order.
-- A Rock Ridge device node, FIFO or socket over an empty extent lists as
-  `MemberType.OTHER`, so extraction skips it; over a non-empty extent it is a `FILE` with
-  `MEMBER_SPECIAL_FILE_HAS_DATA` reported. Either way `extra["special_file_type"]` names
-  the kind. The `rr_moved` directory that holds relocated deep subtrees is not listed;
-  those subtrees appear at their logical place.
+- A Rock Ridge device node, FIFO or socket over an empty extent lists as `MemberType.OTHER`, and
+  extraction does not create it: its result is `BLOCKED`, and the other members are extracted; over
+  a non-empty extent it is a `FILE` with `MEMBER_SPECIAL_FILE_HAS_DATA` reported. Either way
+  `extra["special_file_type"]` names the kind. The `rr_moved` directory that holds relocated deep
+  subtrees is not listed; those subtrees appear at their logical place.
 - A bootable image lists its El Torito boot catalog (`boot.catalog`, `BOOT.CAT`) as an
   ordinary file, with the catalog's bytes as its data, as a mounted image shows it.
 - A file of 4 GiB or more, stored in several extents, lists and reads as one member.
@@ -778,46 +815,48 @@ yielded.
 
 ## Disk images
 
-- A UDIF image (`.dmg`) is recognised by its `koly` block — the last 512 bytes, or
-  the first 12 when an old image puts the block at the start — and refused with
-  `UnsupportedFeatureError`. A compressed image stores its blocks as zlib, bzip2 or
-  xz, so opening one used to extract the first block and treat the rest as trailing
-  data. An uncompressed image whose disk is an ISO 9660 filesystem is reported as
-  that ISO instead: `CD001` at byte 32 769 is checked first, and the image is read
-  as an ISO. Reading a UDIF image itself is not supported. To get at the files,
-  convert or mount the image first (for example with `7z x`, `dmg2img`, or
-  `hdiutil attach` on macOS). A pipe is not rewound. A short image is still
-  refused, because detection has already read through to its end. A longer
-  zlib-first image on a pipe still opens as that stream.
+- A UDIF image (`.dmg`) is recognised by its `koly` block — the last 512 bytes, or the first 12
+  when an old image puts the block at the start — and refused with `UnsupportedFeatureError`. A
+  compressed image stores its blocks as zlib, bzip2 or xz, so without this check, opening one would
+  extract the first block and treat the rest as trailing data. An uncompressed image whose disk is
+  an ISO 9660 filesystem is reported as that ISO instead: `CD001` at byte 32 769 is checked first,
+  and the image is read as an ISO. Reading a UDIF image itself is not supported. To get at the
+  files, convert or mount the image first (for example with `7z x`, `dmg2img`, or `hdiutil attach`
+  on macOS). A pipe is not rewound. A short image is still refused, because detection has already
+  read through to its end. A longer image on a pipe whose first block is bzip2 or xz still opens as
+  that stream. One whose first block is zlib fails with `FormatDetectionError`, because no content
+  probe runs on a nameless source.
 
 ## Directory
 
 - A filesystem tree as a pseudo-archive (uniform API for tests and dir↔archive flows).
-- Same default stream contract as archives: forward-only, one live stream, until you
-  declare `SEEKABLE` / `CONCURRENT`.
+- Same default stream contract as archives: forward-only, one live stream, until you pass
+  `seekable_members=True` or `concurrent_operations=True`.
 - Hardlinks list as a tar lists them. When several names inside the root share one
   file, the first name the walk reaches is a `FILE` and each later name is a `HARDLINK`
   to it, with `size` `None`. The walk visits a directory's files by name, then its
   subdirectories, so which name keeps the data is fixed. With `streaming=True`,
   extracting a later name whose first name a filter left out fails, as for a streamed
   tar.
+- Names come from the filesystem, so `encoding=` has no effect, and passing it emits
+  `ENCODING_ARGUMENT_UNUSED`.
 
 ## Single-file compressors
 
 - One synthetic member (name from the source path, or `data` for anonymous streams).
+  `encoding=` has no effect, and passing it emits `ENCODING_ARGUMENT_UNUSED`.
 - `.gz` may expose `extra["gzip.original_filename"]` when the header carries `FNAME`.
-- **`size` arrives with the first full read** when listing left it `None`: always for
-  `.gz`, `.bz2`, `.zz`, `.br` and `.Z`, and for the others when their size field is
-  absent or out of reach (an `.xz` from a pipe). A read that reaches the end having
-  returned every byte from the start, which the decoder finishes without error, sets
-  `member.size` on the member `members()` returned. Seeking back is fine, and so is
-  seeking forward on these codecs: the seek decodes the bytes it skips anyway, and
-  they count. A read that stops early or raises leaves it `None`, as does a copy made
-  with `replace()`. The filled size is only as good as the codec's end check: for a
-  `.Z` (no end marker or checksum) or an accelerated `.gz` (see the rapidgzip caveat
-  below), a cut the decoder cannot see fills the size of the cut data.
-  `member_state_final` reads `False` until the size is filled in, a `streaming=True`
-  pass ends, or the reader closes.
+- **`size` arrives with the first full read** when listing left it `None`: always for `.gz`,
+  `.bz2`, `.zz`, `.br`, `.zst`, `.lz4` and `.Z` (a zstd or LZ4 frame's content-size field is not
+  used), and for `.xz`, `.lz` and `.lzma` when their size is absent or out of reach (an `.xz` from a
+  pipe, an `.lzma` written with an unknown size). A read that reaches the end having returned every
+  byte from the start, which the decoder finishes without error, sets `member.size` on the member
+  `members()` returned. Seeking back is fine, and so is seeking forward on these codecs: the seek
+  decodes the bytes it skips anyway, and they count. A read that stops early or raises leaves it
+  `None`, as does a copy made with `replace()`. The filled size is only as good as the codec's end
+  check: for a `.Z` (no end marker or checksum) or an accelerated `.gz` (see the rapidgzip caveat
+  below), a cut the decoder cannot see fills the size of the cut data. `member_state_final` reads
+  `False` until the size is filled in, a `streaming=True` pass ends, or the reader closes.
 - `.gz` exposes `extra["gzip.isize"]`, the trailer's size field, when the file's end is
   cheap to reach (a path or an in-memory stream; not a pipe or another archive's
   member). It is the size modulo 2^32 only for a file of one gzip member with nothing
@@ -828,11 +867,11 @@ yielded.
   at open would mean reading the whole compressed file. The decoder still checks every
   member's CRC as it reads.
 - With the `[seekable]` rapidgzip accelerator on a seekable `.gz`, truncation detection is
-  **best-effort** (empty→stdlib fallback + single-member ISIZE) — stronger than naked
-  rapidgzip, weaker than stdlib alone. Do **not** rely on it when you need certainty;
-  set `use_rapidgzip=OFF`. This caveat applies to **bare** `.gz` / `open_stream` (and
-  bare zlib/raw deflate), not to ZIP/7z/… **members**: those already carry CRC/size and
-  fail via `VerifyingStream` when the decoded payload is short or wrong.
+  **best-effort** (empty→stdlib fallback + single-member ISIZE) — stronger than naked rapidgzip,
+  weaker than stdlib alone. Do **not** rely on it when you need certainty; set
+  `ArchiveyConfig(use_rapidgzip=AcceleratorMode.OFF)`. This caveat applies to **bare** `.gz` /
+  `open_stream` (and bare zlib/raw deflate), not to ZIP/7z/… **members**: those already carry
+  CRC/size and fail via `VerifyingStream` when the decoded payload is short or wrong.
 - `.lz` surfaces a whole-member CRC-32 the same way **size** is exposed: whenever the
   source can be seeked — a file path and an in-memory stream both qualify, a pipe does
   not. Declaring `seekable_members=True` is not required and makes no difference:
@@ -848,13 +887,12 @@ yielded.
   in version 0 (lzip before 1.0) or any later version raises `UnsupportedFeatureError`,
   wherever it is in the file: a member that starts with the `LZIP` magic is never
   skipped as trailing data.
-- A header the format's own tool calls unsupported raises `UnsupportedFeatureError`,
-  not `CorruptionError`: a gzip member with a method other than deflate or a reserved
-  flag bit, an LZ4 frame in a version other than `01`, a zstd frame that needs a
-  dictionary, and a `.Z` file with a code width over 16 bits. A damaged byte in one of
-  those same fields raises the same error, because nothing tells the two apart; the
-  message says a damaged header reads the same way (see
-  [Errors and diagnostics](errors-and-diagnostics.md)).
+- A header the format's own tool calls unsupported raises `UnsupportedFeatureError`, not
+  `CorruptionError`: a gzip member with a method other than deflate or a reserved flag bit, an LZ4
+  frame in a version other than `01`, a zstd frame that needs a dictionary, and a `.Z` file with a
+  code width over 16 bits. A damaged byte in one of those same fields raises the same error, because
+  nothing tells the two apart; the message says a damaged header reads the same way (see [Errors and
+  diagnostics](errors-and-diagnostics.md#damaged-archives)).
 - `.bz2` / `.xz` / zlib / brotli / `.Z` have no cheap whole-member stored digest
   (zlib's RFC 1950 Adler-32 is still verified by the decompressor on read; it is not
   surfaced on `member.hashes` because the wrapper has no size fields for a reliable
@@ -974,26 +1012,28 @@ full decode. Pick by provenance (`stored` vs `computed`) for your index policy.
 
 ## Detection
 
-- **Strongest signal first**, and the filename is the last of them; wrong extensions are
-  expected. In order: exact magic in the first 4 KiB → an SFX scan behind an executable
-  stub → exact magic further in (ISO 9660's `CD001` at 32 769, on one extended peek that
-  a source too small for it never pays) → the 512-byte `koly` block at the end of a
-  seekable source (a UDIF disk image; see Disk images) → content probes for the formats
-  with no magic (see the next item) → the extension. A bzip2 or xz header that is the first block of such
-  an image loses to that block. A step that matches nothing falls through to the next;
-  nothing is ever rejected for failing an earlier one. A pipe is not rewound to read
-  the block at the end.
-- **Content probes run only for a matching name by default.** LZMA Alone, zlib and
-  Brotli have no magic, so a trial decode of the first bytes (a content probe) is the
-  only thing that recognises them, and ordinary binary files sometimes pass one. By
-  default `open_archive` and `detect_format` run a probe only when the name ends in one of
-  that format's extensions: `.lzma` or `.tlz` for LZMA Alone, `.zz` or `.zlib` for zlib,
-  `.br` or `.brotli` for Brotli, and the `.tar.` form of each except `.tlz`. A matching probe confirms the name and still finds a TAR inside. A source with
-  no name, or another extension, runs no probe: a nameless raw stream of these formats
-  raises `FormatDetectionError`, and one named for another format gets that format's
-  guess. If you read such sources, give the file its format's extension, pass `format=`,
-  use `open_stream()` (which always runs every probe), or set
-  `ArchiveyConfig(always_probe_content=True)`.
+- **Strongest signal first**, and the filename is the last of them; wrong extensions are expected.
+  In order: exact magic in the first 4 KiB → an SFX scan behind an executable stub → exact magic
+  further in (ISO 9660's `CD001` at 32 769, on one extended peek that a source too small for it
+  never pays) → the 512-byte `koly` block at the end of a seekable source (a UDIF disk image; see
+  [Disk images](#disk-images)) → content probes for the formats with no magic (see the next item) →
+  the extension. A bzip2 or xz header that is the first block of such an image loses to that block.
+  A step that matches nothing falls through to the next; nothing is ever rejected for failing an
+  earlier one. A pipe is not rewound to read the block at the end. When only the extension matched
+  and the decode then fails, the error has `format_unconfirmed=True` and archivey emits
+  `EXTENSION_FORMAT_UNCONFIRMED`.
+- **Content probes run only for a matching name by default.** LZMA Alone, zlib and Brotli have no
+  magic, so a trial decode of the first bytes (a content probe) is the only thing that recognises
+  them, and ordinary binary files sometimes pass one. By default `open_archive` and `detect_format`
+  run a probe only when the name ends in one of that format's extensions: `.lzma` or `.tlz` for LZMA
+  Alone, `.zz` or `.zlib` for zlib, `.br` or `.brotli` for Brotli, and the `.tar.` form of each
+  except `.tlz`. A matching probe confirms the name and still finds a TAR inside. A source with no
+  name, or another extension, runs no probe: a nameless raw stream of these formats raises
+  `FormatDetectionError`, and one named for another format gets that format's guess. If you read
+  such sources, give the file its format's extension, pass `format=`, use `open_stream()` (which
+  always runs every probe), or set `ArchiveyConfig(always_probe_content=True)` (on the command line,
+  `--probe-content`). No probe runs on a file that starts with a valid executable header or an OLE
+  (old Office) header, even when it is named for one of these formats.
 - **zstd skippable frames** — a magic in `0x184D2A50`–`0x184D2A5F` plus a declared payload
   size — may precede the first real frame, so detection walks past them by their declared
   sizes within the peeked bytes and matches the regular frame behind. Skippable frames
@@ -1023,21 +1063,19 @@ full decode. Pick by provenance (`stored` vs `computed`) for your index policy.
   later (a two-byte magic such as gzip's reported below `CERTAIN`, say). Branch on
   `format`, not on `confidence`. **`detected_by` is an open set**: new detection steps
   may add values, so handle an unknown one rather than matching every value.
-- **Brotli** has no magic, so detection uses a content probe (when it runs; see above)
-  plus framing checks
-  **when the source length is known** (paths, `BytesIO`, and short non-seekable
-  peeks): a first meta-block that *declares* more bytes than the source holds is
-  rejected; when the source is 64 KiB or less, the whole of it is decoded and a stream
-  that still wants more input after a declared output drain is rejected; and
-  a bounded walk of self-describing meta-blocks
-  rejects a later link that overruns or a declared end with trailing bytes. On a
-  non-seekable stream of unknown length those checks are skipped and today's
-  probe behaviour remains. Probe-only confidence is `PROBABLE` when the first meta-block
-  is compressed (or when the name ends in `.br`), and `GUESS` for uncompressed/metadata-first
-  without that extension. A later decode failure on a **probe-only** result (no matching
-  extension and no inner-TAR upgrade), at any confidence, sets
-  `ArchiveyError.format_unconfirmed` and emits `PROBE_FORMAT_UNCONFIRMED` — the bytes
-  may never have been Brotli, and a prefix of fabricated output may already have been
-  delivered before the error.
-- Confidence and evidence are part of `detect_format` / `FormatInfo` — see
-  `format-detection` spec.
+- **Brotli** has no magic, so detection uses a content probe (when it runs; see above) plus
+  framing checks **when the source length is known** (paths, `BytesIO`, and short non-seekable
+  peeks): a first meta-block that *declares* more bytes than the source holds is rejected; when the
+  source is 64 KiB or less, the whole of it is decoded and a stream that still wants more input
+  after a declared output drain is rejected; and a bounded walk of self-describing meta-blocks
+  rejects a later link that overruns or a declared end with trailing bytes. On a non-seekable stream
+  of unknown length those checks are skipped and today's probe behaviour remains. Without a Brotli
+  extension, a probe runs only under `always_probe_content=True`. When the decoded start is a TAR
+  header, the format becomes `tar.br` with confidence `PROBABLE`. Otherwise the confidence is
+  `PROBABLE` when the first meta-block is compressed and `GUESS` when it is not, and a later decode
+  failure sets `ArchiveyError.format_unconfirmed` and emits `PROBE_FORMAT_UNCONFIRMED`: the bytes may
+  never have been Brotli, and a prefix of fabricated output may already have been delivered before
+  the error. A `tar.br` found this way is not flagged.
+  With a Brotli extension (`.br`, `.brotli`, `.tar.br`) it is `PROBABLE`.
+- Confidence and evidence are part of `detect_format`, which returns them on `FormatInfo`; the
+  [API reference](api.md#detection-budgets) lists what detection may read.

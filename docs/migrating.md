@@ -1,191 +1,176 @@
-# Migrating from zipfile, tarfile, shutil, and patool
+# Migrating from other libraries
 
-Recipes for replacing the tool you're using now. Each section shows the old code, the
-Archivey equivalent, and — where it matters — what actually changes in behaviour.
+Archivey reads ZIP, TAR, 7z, RAR and ISO archives, and single compressed files, through one
+interface, so code written for zipfile, tarfile or a `7z` subprocess becomes the same few calls.
+This page gives the archivey version of each, then what behaves differently. Archivey puts
+correctness and the same behaviour in every format ahead of matching any one library. The difference
+you'll meet first is in extraction: archivey refuses some members that zipfile or tarfile would
+write, and it stops an archive that expands past its limits.
 
-The recurring theme: the stdlib modules are per-format and extract permissively by
-default; Archivey is one interface for every format and **blocks unsafe members unless
-you opt out**. Most migrations are shorter code plus stricter defaults.
+## Equivalent calls
 
-## Cheat sheet
+| To do this | With the standard library | With py7zr or rarfile | With archivey | What's different |
+| --- | --- | --- | --- | --- |
+| Open an archive | `zipfile.ZipFile(p)`, `tarfile.open(p)` | `py7zr.SevenZipFile(p)`, `rarfile.RarFile(p)` | `archivey.open_archive(p)` | [Any format, identified from its contents, with options for how you'll read it](#opening-an-archive) |
+| List the names | `zf.namelist()`, `tf.getnames()` | `z.getnames()`, `rf.namelist()` | `[m.name for m in reader]` | [A name can appear more than once](#members-and-their-details) |
+| Look up one member | `zf.getinfo(n)`, `tf.getmember(n)` | `z.getinfo(n)`, `rf.getinfo(n)` | `reader.get(n)` | Returns an [`ArchiveMember`][archivey.ArchiveMember] |
+| Read one member | `zf.read(n)`, `tf.extractfile(n).read()` | `z.extract(targets=[n], factory=f)`, `rf.read(n)` | `reader.read(n)` | [A directory raises an error](#reading-members) |
+| Open one member as a file object | `zf.open(n)`, `tf.extractfile(n)` | `rf.open(n)` | `reader.open(n)` | [One open at a time, and not seekable, by default](#reading-members) |
+| Read every member, in order | `for info in tf: tf.extractfile(info)` | `z.extractall(factory=f)` | `for member, stream in reader.stream_members():` | [One pass over the archive, in every format](#reading-members) |
+| Give a password | `zf.read(n, pwd=b"...")` | `SevenZipFile(p, password="...")`, `rf.setpassword("...")` | `archivey.open_archive(p, password="...")` | [Given once, when opening, and can be a list](#opening-an-archive) |
+| Extract everything | `zf.extractall(d)`, `tf.extractall(d)` | `z.extractall(d)`, `rf.extractall(d)` | `reader.extract_all(d)` | [Unsafe members are refused, and policies and filters choose what's written](#extracting) |
+| Unpack any supported format | `shutil.unpack_archive(p, d)` | | `open_archive(p)`, then `reader.extract_all(d)` | [More formats, and a report of what was written](#extracting) |
+| Decompress a single file | `gzip.open(p)`, `bz2.open(p)`, `lzma.open(p)` | | `archivey.open_stream(p)` | [One call for every compression format](opening.md#single-compressed-files) |
+| Identify the format | `zipfile.is_zipfile(p)`, `tarfile.is_tarfile(p)` | | `archivey.detect_format(p)` | [Names the format, among all those archivey reads](opening.md#format) |
 
-| You're doing | Now | With Archivey |
-| --- | --- | --- |
-| Open an archive | `zipfile.ZipFile(p)` / `tarfile.open(p)` | `archivey.open_archive(p)` |
-| List names | `zf.namelist()` / `tf.getnames()` | `[m.name for m in reader]` |
-| Member metadata | `ZipInfo` / `TarInfo` | `ArchiveMember` (same shape for every format) |
-| Read one member | `zf.read(n)` / `tf.extractfile(n).read()` | `reader.read(n)` |
-| Extract everything | `zf.extractall(d)` / `tf.extractall(d, filter="data")` | `reader.extract_all(d)` |
-| Unpack any format | `shutil.unpack_archive(p, d)` | `open_archive(p)`, then `reader.extract_all(d)` |
-| Decompress a `.gz` (a `.tar.gz` gives the tar bytes) | `gzip.open(p)` | `archivey.open_stream(p)` |
-| Detect the format | guess from the extension | `archivey.detect_format(p)` |
+## Opening an archive
 
-## From `zipfile`
+`open_archive` opens every format archivey reads and identifies it from the file's contents, so a
+TAR file named `backup.bin` opens too, where `shutil.unpack_archive` fails because of the extension.
+If your code actually needs to handle only one format, you can pass `format="zip"` or
+`format=archivey.ArchiveFormat.TAR_GZ` to skip detection. A file in another format then fails like a
+damaged one ([Format](opening.md#format)).
 
-```python
-# Before
-import zipfile
-with zipfile.ZipFile("photos.zip") as zf:
-    for name in zf.namelist():
-        print(name, zf.getinfo(name).file_size)
-    data = zf.read("subdir/a.txt")
-    zf.extractall("out/")
+A password is given once, when opening: one string, a list of candidates, or a function that
+supplies them ([Passwords](opening.md#passwords)). zipfile takes one per read or through
+`setpassword`, and only for the older ZIP encryption. With the `recommended` extra, archivey also
+reads WinZip AES. py7zr takes the password when opening, like archivey, and rarfile takes it per
+read or through `setpassword`.
 
-# After
-import archivey
-with archivey.open_archive("photos.zip") as reader:
-    for member in reader:
-        print(member.name, member.size)
-    data = reader.read("subdir/a.txt")
-    reader.extract_all("out/")
-```
+Like rarfile, archivey reads files stored without compression in a RAR archive on its own, and needs
+a program for compressed ones: RARLAB's `unrar` or `rar`, or `unar` when neither is installed.
+rarfile can also use `7z` or `bsdtar`, and archivey can't.
 
-What changes:
+Three options to `open_archive` allow ways of reading that are off by default:
 
-- **`extractall` was never safe.** `zipfile.extractall` sanitizes absolute paths and `..`
-  by mangling them, but happily writes symlinks that point outside the destination.
-  `extract_all` **blocks** traversal and symlink escapes by default and reports them as
-  `ExtractionStatus.BLOCKED`. For absolute names and `..` traversal only, you can
-  pass `filter=archivey.sanitize_names` to rename the member into the destination
-  instead, much as `zipfile` does. A symlink that points outside the destination stays
-  blocked whatever the filter does. See [Safe extraction](extracting.md).
-- **Passwords are an open-time argument**, not per-call `pwd=`:
-  `open_archive("secret.zip", password="hunter2")`. Archivey also reads **WinZip AES**
-  members (with the `[recommended]` extra), which `zipfile` cannot decrypt at all.
-- **Duplicate names are visible.** `namelist()` returns duplicates with no way to tell
-  which one wins; Archivey marks the live entry with `member.is_current`. See
-  [duplicate names](opening-and-listing.md#duplicate-names-and-is_current).
-- `reader.read(name)` needs no `getinfo` round-trip, and works the same on every format.
+| To do this | zipfile | tarfile | py7zr | rarfile | archivey |
+| --- | --- | --- | --- | --- | --- |
+| Seek in a member | Allowed; a seek back decompresses again from the start | Allowed; the same | No member streams | Allowed; the same | `seekable_members=True`; with the [`seekable` extra](reading.md#seeking-inside-a-member), seeks in bzip2 and large gzip data restart near their target |
+| Keep several members open at once | Allowed | Allowed | No member streams | Allowed | `concurrent_operations=True` |
+| Read from a pipe | Not possible | One pass, with mode `"r\|*"` | Not possible | Not possible | One pass, with `streaming=True`, for TAR, ZIP and single compressed files |
 
-## From `tarfile`
+Seeking and keeping several members open are cheap on some archives and slow on others, and nothing
+in the calling code shows which. Archivey turns them off by default so that code tested on a ZIP
+doesn't first turn slow on a `.tar.gz` in production. [Choosing how to read](reading.md) explains
+each option and what it costs.
 
-```python
-# Before
-import tarfile
-with tarfile.open("backup.tar.gz") as tf:
-    for info in tf:
-        print(info.name, info.size)
-    with tf.extractfile("etc/config") as f:
-        data = f.read()
-    tf.extractall("out/", filter="data")
+## Members and their details
 
-# After
-import archivey
-with archivey.open_archive("backup.tar.gz") as reader:
-    for member in reader:
-        print(member.name, member.size)
-    data = reader.read("etc/config")
-    reader.extract_all("out/")
-```
+Every format gives an [`ArchiveMember`][archivey.ArchiveMember] with the same fields. The
+ones code using `ZipInfo` or `TarInfo` reads most map like this:
 
-What changes:
+| zipfile | tarfile | py7zr | rarfile | archivey |
+| --- | --- | --- | --- | --- |
+| `info.filename` | `info.name` | `info.filename` | `info.filename` | `member.name` |
+| `info.file_size` | `info.size` | `info.uncompressed` | `info.file_size` | `member.size` |
+| `info.compress_size` | | `info.compressed` | `info.compress_size` | `member.compressed_size` |
+| `info.date_time` | `info.mtime` | `info.creationtime` | `info.mtime` | `member.modified` |
+| `info.external_attr >> 16` | `info.mode` | | `info.mode` | `member.mode` |
+| `info.is_dir()` | `info.isdir()`, `info.isfile()`, `info.issym()` | `info.is_directory`, `info.is_file`, `info.is_symlink` | `info.is_dir()`, `info.is_file()`, `info.is_symlink()` | `member.is_dir`, `member.is_file`, `member.is_link` |
+| | | | `info.ctime` | `member.created` or `member.ctime` |
+| | `info.linkname` | | | `member.link_target` |
 
-- **You no longer choose a filter.** `tarfile`'s `filter="data"` (the 3.14 default, and a
-  `DeprecationWarning` before that) is closest to Archivey's default
-  `ExtractionPolicy.STRICT`. Archivey's policies are
-  `STRICT` / `STANDARD` / `TRUSTED` and apply to *every* format, not just tar.
-- **`extractfile` can return `None`** for non-regular members, so stdlib code needs a
-  `None` check; `reader.read(name)` raises a typed error instead.
-- **Compressed tars are solid.** `tarfile` lets you call `extractfile` in any order and
-  silently re-decompresses from the start each time — that's the classic accidental
-  O(n²). Archivey makes the cost visible via `reader.cost` and steers you to
-  `stream_members()`. See [Access costs](access-and-cost.md).
-- **Truncated archives.** `tarfile` often stops silently at a short read. Archivey gives
-  you the recovered prefix *and* the error via `members_report()`.
+zipfile doesn't recognize symbolic links: a ZIP entry that records one is a plain file to it, and
+`extractall` writes the target's path as the file's contents. Archivey reports it as a link, with
+`member.is_link` and `member.link_target`.
 
-## From `shutil.unpack_archive`
+A field the archive doesn't record is `None`, such as `compressed_size` for a member of a
+`.tar.gz`. A directory's name ends with `/` in every format, so a directory tarfile lists as `docs`
+is `docs/` in archivey. `reader.get` returns `None` for a name that isn't there, where `getinfo` and
+`getmember` raise `KeyError`.
 
-```python
-# Before
-import shutil
-shutil.unpack_archive("bundle.tar.xz", "out/")
+`member.modified` is a `datetime` with the time zone the archive records. Some ZIPs, such as those
+made by the `zip` command, carry a UTC time beside the old local one. zipfile ignores it, and
+archivey uses it, so `modified` is in UTC there. A ZIP without it, or a RAR 4 archive, records a
+local time with no zone, and `modified` has no zone either. TAR, 7z and RAR 5 archives record UTC:
+tarfile gives a number of seconds, and py7zr, rarfile and archivey give a UTC `datetime`. py7zr's
+`creationtime` holds this modification time. `member.modified_utc()` gives UTC for every format, and
+treats a time with no zone as your local time unless you pass another zone.
 
-# After
-import archivey
-with archivey.open_archive("bundle.tar.xz") as reader:
-    reader.extract_all("out/")
-```
+RAR, 7z and ZIP archives have a slot for a creation time, and what goes in it depends on where the
+archive was made. Tools on Windows store when the file was created, and tools on Linux and macOS
+store when its metadata last changed, Unix's `ctime`. rarfile gives the slot as `ctime` whatever it
+holds. Archivey puts a creation time in `member.created` and a change time in `member.ctime`, so
+`created` never holds a change time.
 
-What changes:
+When an archive holds a name twice, zipfile, tarfile and archivey all list it twice, and reading by
+name gives the last copy. Going through the member list, `member.is_current` tells you which copy
+that is ([Members with the same name](opening.md#members-with-the-same-name)).
 
-- **More formats.** `unpack_archive` handles zip/tar family only. Archivey adds RAR, 7z,
-  ISO, and single-file streams through the same calls.
-- **Format comes from content, not the filename.** `unpack_archive` dispatches on the
-  extension and fails on a misnamed file; Archivey sniffs the bytes.
-- **Safe by default.** `extract_all` blocks unsafe members unless you choose a looser
-  policy.
-- You get an `ExtractionReport` back — what was written, skipped, or blocked — instead of
-  `None`.
+## Reading members
 
-## From `patool` / shelling out to `7z` / `unrar`
+`reader.read` and `reader.open` work like their zipfile and tarfile counterparts, in every format
+archivey opens. For ZIP, the `recommended` extra adds compression methods zipfile can't read:
+Deflate64, PPMd, and zstd before Python 3.14.
 
-```python
-# Before
-subprocess.run(["7z", "x", "-o" + dest, "archive.7z"], check=True)
+Calling `read` or `open` on a directory raises `ArchiveyUsageError`, where zipfile returns empty
+bytes and tarfile's `extractfile` returns `None`. Reading a symbolic link gives its target's
+contents, as tarfile does, and raises `LinkTargetNotFoundError` when the target isn't in the
+archive, where tarfile raises `KeyError`. zipfile gives the link's own text, the target's path.
 
-# After
-import archivey
-with archivey.open_archive("archive.7z") as reader:
-    reader.extract_all(dest)
-```
+In a `.tar.gz`, in most 7z archives and in some RAR archives, members are compressed together, so
+reading one member on its own means decompressing everything before it. tarfile avoids repeating
+that work when you read each member while iterating over the archive, and py7zr when you pass all
+the names to one `extract` call. rarfile has no way to avoid it. With archivey, use
+`stream_members()` whenever you need several members and their order doesn't matter: it reads each
+member once, in order, in every format ([Solid archives](reading.md#solid-archives)). `read` and
+`open` cost more. In a `.tar.gz`, the first one lists the whole archive, which takes a pass of its
+own, and reading members in the archive's order after that takes one more pass. Going back to an
+earlier member starts again from the beginning. In 7z and RAR, each read decompresses again
+everything before its member. If you want to make sure your code avoids these costs, open the
+archive with `streaming=True`: `read` and `open` then always raise, and `stream_members()` is the
+only way to read members.
 
-What changes:
+## Extracting
 
-- **No external binary for 7z**, and no CLI output parsing. Archivey has a native 7z
-  reader (common codecs in the core; PPMd/Deflate64 and AES via `[recommended]`).
-- **RAR still needs RARLAB `unrar` or `rar`** for member *data* — metadata and listing
-  are native. That is a licensing constraint, not an oversight: RARLAB publishes the
-  header layout but not the compression format, and the UnRAR source licence forbids
-  using that source to re-create the RAR compression algorithm. So a RARLAB binary
-  stays in the picture for data, while metadata does not need it.
-- **Errors are exceptions, not exit codes**, and hostile archives can't reach a shell:
-  the whole point is not handing untrusted filenames to a subprocess.
-- Wrong passwords raise `EncryptionError` rather than prompting on a tty and hanging.
+`extract_all` never writes outside the destination folder, in any format or under any policy.
+zipfile and tarfile treat the same members differently:
 
-## From `py7zr` / `rarfile`
+| Member | zipfile | tarfile with `filter="data"` | archivey, `strict` (the default) | archivey, `standard` |
+| --- | --- | --- | --- | --- |
+| `/abs.txt` | Written as `abs.txt` | Written as `abs.txt` | Refused | Written as `abs.txt` |
+| `../up.txt` | Written as `up.txt` | Raises, ending the extraction | Refused | Refused |
+| Link to `../../etc/passwd` | A plain file holding the path | Raises, ending the extraction | Refused | Refused |
+| File with mode 4755 (setuid) | Not kept | 755 | 755 | 755 |
+| File with mode 666 | Not kept | 644 | 644 | 666 |
+| File with mode 755 | Not kept | 755 | 755 | 755 |
 
-Both remain useful as *writers* and as cross-check oracles; Archivey does not write 7z or
-RAR. For reading:
+zipfile ignores the permissions an archive records, so each file gets the system's default for new
+files, usually 644. py7zr raises on `../up.txt` and on a link pointing outside, and rarfile renames
+`../up.txt` and `/abs.txt` as zipfile does and raises on the link. Both keep the recorded
+permissions. The data filter is tarfile's default from Python 3.14. Before that, tarfile with
+no filter writes every member as recorded, outside the destination too, and Python 3.12 and 3.13
+warn about it. The Extracting page has [a longer
+table](extracting.md#what-each-policy-does-with-unusual-members), with more kinds of member and
+every policy.
 
-```python
-# Before
-import py7zr
-with py7zr.SevenZipFile("a.7z") as z:
-    z.extractall("out/")
+When archivey refuses a member, it skips it and goes on with the others, where tarfile's data
+filter raises and ends the whole extraction. `abort_on=["blocked_member"]` makes archivey stop too.
+If you want zipfile's renaming, pass `filter=archivey.sanitize_names`. `filter=` also takes your own
+function, which can rename, skip or change each member ([Extracting all or some
+members](extracting.md#extracting-all-or-some-members)).
 
-# After
-import archivey
-with archivey.open_archive("a.7z") as reader:
-    reader.extract_all("out/")
-```
+zipfile and tarfile write as much as the archive holds. Archivey stops at 2 GiB written, 262,144
+members, or a member that expands more than 1000 times, and all three can be changed ([Archives you
+trust](extracting.md#archives-you-trust)). `extract_all` returns an `ExtractionReport` saying what
+happened to each member, where `extractall` returns `None`.
 
-The reason to switch is memory safety and uniformity: Archivey parses 7z and RAR metadata
-in pure Python rather than delegating to a third-party parser, and the same reader
-interface covers every other format you handle. One RAR difference: `rarfile` will use
-`unar` or `7z` for member data if that is what is on `PATH`; archivey uses RARLAB
-`unrar` or `rar`, then `unar` when no RARLAB program is installed (or, with one, for a
-member `unrar` cannot name that needs no password), and never `7z`.
-Under `unar` it refuses the reads `unar` gets wrong, and the password goes on `unar`'s
-command line ([Formats and extras](formats.md#rar)). Set
-`ArchiveyConfig(rar_decompressor="unrar")` to never use `unar`.
+`shutil.unpack_archive` picks the format from the extension, handles ZIP and TAR (with gzip, bzip2,
+xz, and zstd from Python 3.14), and extracts them through zipfile and tarfile, so the comparison
+above applies to it too.
 
-## Things that will bite you
+## Errors
 
-Worth reading before you migrate a production path:
+Every problem with the archive raises a subclass of `archivey.ArchiveyError`, so one `except` covers
+what took several exception types before:
 
-1. **Extraction is strict.** Archives that "worked" with `extractall` may now report
-   `BLOCKED` members. That is the point — but check the
-   [`ExtractionReport`](extracting.md) rather than assuming success.
-2. **One live member stream by default.** If you held several `extractfile()` handles
-   open, pass `concurrent_operations=True`. See
-   [supported platforms and threading](support-matrix.md).
-3. **`read()` is all-or-raise.** A truncated member raises instead of returning a short
-   body; use a chunked loop if you want the recoverable prefix
-   ([reading members](reading-members.md#read-a-member)).
-4. **Random access on a pipe fails loudly** instead of silently buffering the whole thing
-   into memory — an unbounded allocation you did not ask for is worse than an error.
-   Pass `streaming=True` for a forward-only pass where the format has one (TAR, ZIP, the
-   single-file compressors); ISO, 7z and RAR need seek in either mode, and the error
-   says so instead of proposing a retry.
-5. **Salvage is not implemented yet.** Reading a badly damaged archive gives you the
-   recoverable prefix plus an honest error, not a best-effort resync past the damage.
+| Problem | zipfile | tarfile | py7zr | rarfile | archivey |
+| --- | --- | --- | --- | --- | --- |
+| Not an archive | `BadZipFile` | `ReadError` | `Bad7zFile` | `NotRarFile` | `FormatDetectionError` |
+| Damaged or cut short | `BadZipFile` | `ReadError`, or `EOFError` from the decompressor | `Bad7zFile`, `CrcError` | `BadRarFile` | `CorruptionError`, or `TruncatedError` when cut short |
+| Wrong password | `RuntimeError` | | `LZMAError` | `BadRarFile`, or `RarWrongPassword` when the names are encrypted too | `EncryptionError` |
+| No member with that name | `KeyError` | `KeyError` | `KeyError` | `NoRarEntry` | `KeyError` |
+
+A missing name raises `KeyError`, which isn't an `ArchiveyError`, because the mistake is in the
+calling code, not the archive. [Errors and diagnostics](errors-and-diagnostics.md) explains each
+exception, and the warnings archivey reports without raising.

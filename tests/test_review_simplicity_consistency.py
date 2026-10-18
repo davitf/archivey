@@ -704,8 +704,7 @@ def test_container_formats_report_compressed_size_from_either_shape(
 
 
 # ---------------------------------------------------------------------------
-# F9 — header encryption needs the password at open (format law), and the
-# user guide's laziness bullet does not say so
+# F9 — header encryption needs the password at open (format law)
 # ---------------------------------------------------------------------------
 
 
@@ -713,8 +712,7 @@ def test_header_encrypted_7z_needs_the_password_at_open(tmp_path: Path) -> None:
     """F9 (guardrail): format law — the listing itself is ciphertext.
 
     Pinned because it bounds the `#225` laziness fix: *data* encryption stays lazy,
-    *header* encryption cannot. `docs/reading-members.md` currently states the lazy
-    half without the bound (finding F11).
+    *header* encryption cannot (finding F11).
     """
     from archivey import EncryptionError
 

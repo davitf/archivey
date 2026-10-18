@@ -1064,7 +1064,7 @@ def _validate_volume_sequence_bases(paths: Sequence[Path]) -> None:
     documented way to call this.
 
     Parts with the same base in *different directories* join, which discovery could
-    never produce but ``docs/opening-and-listing.md`` advertises this path for.
+    never produce but ``docs/opening.md`` advertises this path for.
 
     And on a case-sensitive filesystem ``gamma.zip.001`` and ``GAMMA.zip.002`` are
     genuinely distinct files that the case-folding lets through.

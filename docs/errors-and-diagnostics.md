@@ -1,407 +1,202 @@
 # Errors and diagnostics
 
-What gets raised, what gets recorded, and — if an archive turns out to be damaged —
-what you can still get out of it.
+Archivey tells you about problems in two ways. An exception means it couldn't give you a correct
+answer, so it stopped. A diagnostic means the answer is correct, but something along the way is
+worth knowing, such as a password that wasn't needed or a timestamp that was invalid and is
+`None`.
 
-## The exception tree
-
-Every failure that comes from the archive or its environment derives from
-[`ArchiveyError`][archivey.ArchiveyError], so one `except` covers them all:
+## Exceptions
 
 ```python
-from archivey import open_archive, ArchiveyError
-
 try:
-    with open_archive("maybe.7z") as reader:
-        reader.extract_all("out/")
-except ArchiveyError as e:
-    print("could not process archive:", e)
+    with archivey.open_archive("maybe.7z") as archive:
+        archive.extract_all("out/")
+except archivey.ArchiveyError as e:
+    print("Could not extract:", e)
 ```
 
-React to specific cases with the subtypes:
+Every problem with the archive, or with something archivey needs in order to read it, raises a
+subclass of `ArchiveyError`. These are the ones you're most likely to handle:
 
 | Exception | Raised when |
-| --- | --- |
-| [`OpenError`][archivey.OpenError] | reading could not start — `FormatDetectionError` (not a format archivey recognizes, or not a compressed stream under `open_stream()`), `StreamNotSeekableError` (a pipe, where the format or the access mode needs seek), or a volume file that cannot be opened |
-| [`ReadError`][archivey.ReadError] | the archive's data is bad or cannot be read, whether at open (a damaged header) or later; the parent of the next three rows, and the thing to catch when you do not care which. A damaged header raises one of these from `open_archive()`, not `OpenError`, except a damaged method, codec or version number in a header with no checksum, which raises `UnsupportedFeatureError` (see that row) |
-| [`EncryptionError`][archivey.EncryptionError] | a password is required, missing, or wrong; for a ZipCrypto member, also when its data fails its integrity check after the password passed the format's one-byte check, which a damaged member can cause too (see [Gotchas](gotchas.md)) |
-| [`CorruptionError`][archivey.CorruptionError] | the archive's bytes are damaged: a checksum mismatch, a malformed header or data block, or data cut short. [`TruncatedError`][archivey.TruncatedError], its subclass, marks damage that looks like the data ending early, as a best-effort label (see [The integrity guarantee](#the-integrity-guarantee)) |
-| [`LinkTargetNotFoundError`][archivey.LinkTargetNotFoundError] | a symlink or hardlink member points at a target the archive does not contain, or a RAR file copy names a source it does not contain. Its `reason` ([`LinkTargetNotFoundReason`][archivey.LinkTargetNotFoundReason]) tells a link the archive left without a target from an unreadable target and from one that names no member or loops |
-| [`PackageNotInstalledError`][archivey.PackageNotInstalledError] | an optional package or tool is absent — for the whole format at open (ISO without `pycdlib`) or for one member when you read it (PPMd without `pyppmd`) — or RARLAB `unrar`/`rar` is older than 6.0 (see [Install](install.md#getting-rarlab-unrar-or-rar)) |
-| [`ExtractionError`][archivey.ExtractionError] | writing a member to disk failed; the parent of the next two rows |
-| [`FilterRejectionError`][archivey.FilterRejectionError] | extraction blocked an unsafe member: a path that escapes the destination, a symlink that resolves outside it, a device node, FIFO or socket, a name the destination OS cannot store safely (such as a Windows-reserved name), or a name built to display as something it is not (such as a bidi override). The message says which |
-| [`NameCollisionError`][archivey.NameCollisionError] / [`NameRewrittenError`][archivey.NameRewrittenError] | raised only when you opted in with `abort_on` (see [Safe extraction](extracting.md)); without it, a collision or a portable-name rewrite is recorded in the result, not raised |
-| [`UnsupportedFeatureError`][archivey.UnsupportedFeatureError] | the format is recognized but this archive uses something archivey cannot handle: a variant or layout (a raw CD sector image, a UDIF disk image, a 7z coder graph that is not a tree of chains, multi-volume where the format has none) or a request the backend cannot serve (a RAR password with a line break, which `unrar` cannot be given). An unknown compression method, codec or version number read from a header with no checksum, such as a ZIP method, may also mean that header is damaged: archivey cannot tell the two apart, so it reports it as unsupported, and the message says a damaged header reads the same way |
-| [`DiagnosticRaisedError`][archivey.DiagnosticRaisedError] | a diagnostic whose disposition you set to `RAISE` fired; carries the `Diagnostic` (see [Diagnostics](#diagnostics)) |
-| [`ResourceLimitError`][archivey.ResourceLimitError] | a listing, extraction, decoder or spool safety limit was exceeded — member count and metadata bytes when a list is materialized (and, for RAR, member count and comment bytes at open, compressed RAR 1.5-4 comments by declared or packed size, whichever is larger), total bytes and ratio during extraction, the working memory an archive's own header asks a codec for, checked when the member is opened, the total password-hashing rounds an encrypted archive asks for, checked before each key is derived, or the size of the temp copy a RAR stream source needs for `unrar`, checked before it is written (opening from a path avoids that copy). A large PPMd member also raises it when its child decoder process cannot run it: no child can be started, the child cannot allocate the member's model, or the system kills it with SIGKILL (see [Extracting](extracting.md)). So does an `unrar` or `unar` process the system kills with SIGKILL while it reads a RAR member |
+|---|---|
+| `CorruptionError` | The archive's data is damaged. Its subclass `TruncatedError` means the data seems to end early, but that's a guess, so catch `CorruptionError` for both |
+| `EncryptionError` | A password is needed and none was given, or none of the ones given works |
+| `FormatDetectionError` | The file isn't in a format archivey recognizes |
+| `UnsupportedFeatureError` | The format is recognized, but this archive uses something archivey can't handle, such as an unknown compression method |
+| `PackageNotInstalledError` | The archive needs an optional package or program that isn't installed. The message names it |
+| `ResourceLimitError` | The archive went over one of the [limits](security.md#hardening) |
 
-Mistakes in **your** code are deliberately kept out of that hierarchy: opening a second
-overlapping stream without `concurrent_operations=True`, using a closed reader, calling
-`members()` or `open()` on a `streaming=True` reader, and similar misuse raise
-[`ArchiveyUsageError`][archivey.ArchiveyUsageError], which is **not** an `ArchiveyError`
-— so a blanket `except ArchiveyError` never silently swallows a bug. (When an *archive*
-genuinely can't provide something, that is a real `ArchiveyError`:
-`UnsupportedFeatureError`. A refused `seek()` on a member stream raises
-`io.UnsupportedOperation`, as any file object does.)
+The [reference][archivey.ArchiveyError] lists the rest, such as `ReadError`, the parent of
+the first two.
 
-Every archivey exception can be pickled and copied with its message and attributes
-intact, so one raised in a `ProcessPoolExecutor` or `multiprocessing` worker arrives in
-the parent as the same type. As with any Python exception, its `__cause__` and
-`__context__` do not travel with it.
+Damage can look like something else, and then the exception names what it looks like. In an
+encrypted member, a format with no reliable password check can't tell damaged data from a wrong
+password, so it raises `EncryptionError`. That's the case for 7z, and for the old ZIP encryption,
+whose check is a single byte. WinZip AES and RAR 5 check the password on its own, so damage there
+raises `CorruptionError`. A damaged header field that nothing else checks, such as a ZIP entry's
+compression method, can look like a feature archivey doesn't support and raise
+`UnsupportedFeatureError`. Either way, you can't use the file.
 
-Messages are safe to print. Control characters in an exception's message or a
-`Diagnostic.message` are backslash-escaped when the object is built, so printing one, or
-an uncaught traceback, cannot move the cursor or rewrite a terminal line. The structured
-fields — `member_name`, `archive_name`, `link_target`, a diagnostic's `context` — stay
-raw, and so does `raw_message`: escape them with
-[`escape_control_chars()`][archivey.terminal.escape_control_chars] before you show them.
+If reading fails and the format was only a guess, the exception has `format_unconfirmed=True`. That
+happens when nothing in the file confirmed its format, so archivey went by the file name, or when
+the format has no reliable signature and only a check of the contents suggested it, as for zlib or
+Brotli data. The file may not be in that format at all, such as a file of zeros named `backup.gz`,
+rather than a damaged one.
 
-The same applies to an argument that is the wrong type or an unusable value — a
-`config=` that is not an `ArchiveyConfig`, a `detection_budget=` that is not a
-`DetectionBudget`, an `encoding=` naming a codec Python does not have, a
-`members=` holding something that is neither a name nor an `ArchiveMember`.
-Each is refused as `ArchiveyUsageError` at the call that made it, rather than failing
-somewhere further in. The error is also a `TypeError` when the argument is the wrong
-type, and a `ValueError` when the type is right but the value is not (an unknown format
-or enum spelling, a negative limit), so `except TypeError`, `except ValueError` and
-`except ArchiveyUsageError` all catch it. The source and destination arguments follow
-the same rule: `open_archive(0)` raises an `ArchiveyUsageError` that is also a
-`TypeError`, and an empty string raises one that is also a `ValueError` instead of
-meaning the current directory. Misuse that is not about one argument's type or value,
-such as using a closed reader, raises a plain `ArchiveyUsageError`. Looking up a member
-name that is not in the archive raises `KeyError`, like a mapping.
+Errors that aren't about the archive also pass through as themselves. A missing file raises
+`FileNotFoundError`, and a disk or permission error while reading or writing raises `OSError`, so
+catch `OSError` next to `ArchiveyError` if your program cares about both. Any other exception type
+from inside archivey is a bug, and we'd like to hear about it.
 
-`ArchiveyConfig`, the limits types and `DetectionBudget` check their own fields when you
-construct them, for the same reason: a limit is a promise about an operation that has not
-started yet, so the constructor is the last place a message can still name what you wrote.
-That also covers the values that would quietly switch a guard off — `None` on
-`ratio_activation_threshold` or `live_ratio_activation_threshold`, which are not optional, and a NaN or an infinity on
-`max_ratio`, neither of which any ratio ever exceeds. Pass `None` on a field that allows
-it to disable that guard on purpose.
+Exception messages are safe to print. Control characters from the archive, such as a member name
+built to move the terminal cursor, are escaped in the message. Attributes like `e.member_name` keep
+the raw value.
 
-### What is translated, and what passes through
+### Mistakes in the calling code
 
-The libraries archivey decodes with — `zlib`, `lzma`, `pycdlib`, `unrar`
-and the others — raise their own exceptions. Archivey translates the ones it recognises
-into the tree above and keeps the original as `__cause__`, so the traceback still shows
-what the library said. It never converts *every* exception, and that shapes your
-`except` clauses:
+Mistakes in the calling code raise `ArchiveyUsageError`, which isn't an `ArchiveyError`, so a
+catch-all for archive problems never hides a bug. The ones you're most likely to meet are:
 
-- **`OSError`, `KeyboardInterrupt` and `MemoryError` pass through as themselves.** A
-  disk error, a permission error or a failing stream you passed in is not reported as
-  `CorruptionError` or `TruncatedError`, so handle `OSError` beside `ArchiveyError` if
-  your program cares about both. `seek()` on a stream that cannot seek raises
-  `io.UnsupportedOperation`, which is also an `OSError`.
-- **Under `OnError.CONTINUE`, a filesystem error while writing one member does not
-  propagate.** It is recorded as that member's failure, in `ExtractionResult.error`, and
-  extraction moves on. Under `OnError.STOP` it propagates as itself.
-- **Any other type raised from inside archivey is a bug.** An `IndexError` or
-  `struct.error` from a read means a library raised something archivey does not
-  recognise yet. It is let through unchanged instead of being given a guessed type.
-  [Report it](https://github.com/davitf/archivey/issues) rather than catching it.
+- calling `members()`, `open()` or `read()` on a reader opened with `streaming=True`;
+- opening a second member stream while another is still open, without `concurrent_operations=True`;
+- calling `open()` or `read()` on a directory;
+- giving an option a value it doesn't know, such as `policy="strictt"`. The error names the
+  accepted values.
+
+[Choosing how to read](reading.md) explains the first two. A source that isn't a path or a file
+object raises `TypeError`, and asking for a member name the archive doesn't have raises `KeyError`,
+as a dictionary would.
+
+## Damaged archives
+
+`members()` raises if the archive is damaged partway through its list of members, and gives you
+nothing. Iterating over the reader, or over `stream_members()`, gives you the members before the
+damage, then raises. `members_report()` gives you both at once:
+
+```python
+with archivey.open_archive("damaged.tar") as archive:
+    report = archive.members_report()
+    for member in report:
+        print(member.name)
+    if report.error is not None:
+        print("The list stops early:", report.error)
+```
+
+??? note "Why does `members()` raise if the archive is damaged?"
+    It returns a list, and a shorter list looks just like a complete one, so code that only looks at
+    the list would carry on as if the archive ended there. Iterating hands you each member as it's
+    found, so the exception at the end still tells you the rest is missing.
+
+A TAR archive cut between two members, or inside a member's header, has nothing left that looks
+wrong, so it lists as a complete, shorter archive with no error. Only the diagnostic
+`ARCHIVE_EOF_MARKER_MISSING` shows it, and
+[`DiagnosticPolicy.STRICT`](#raising-or-quieting-a-diagnostic) turns it into an exception.
+
+A ZIP read from a pipe gives you its members before its index, which comes last, so some damage
+shows only once the index has been read, and iterating raises it after the last member. A member the
+index doesn't list, such as an update appended to the archive, is dropped from the list then and
+logged as `ARCHIVE_UNLISTED_DATA`, since reading the same archive from a file never sees it.
+
+Where the format stores a checksum for each member, reading a member from start to end checks it,
+and the read that reaches the end raises if the data is damaged. If you stop early, nothing is
+checked. A loop that reads in chunks gets every byte that could be read before the error, but those
+bytes may be wrong too, since archivey can't tell where the damage starts. Some archives store
+nothing to check a single member against, so damage there can go unnoticed:
+
+- A TAR member has no checksum of its own, and the checksum of a `.tar.gz` covers the whole file
+  rather than one member.
+- ISO images and Brotli, `.Z` and `.lzma` files have no checksums at all.
+- `.xz`, `.zst` and `.lz4` files have one only if the program that wrote them added it.
+
+When archivey can't check a member that you'd expect to be checked, such as a 7z member encrypted
+without a CRC, it records the diagnostic `DIGEST_UNVERIFIABLE`, which `STRICT` also turns into an
+exception.
+
+A damaged member doesn't always raise before its end. Depending on the compression method, damaged
+data can decode to wrong bytes with no error, and only the checksum at the end catches it. A member
+stored without compression never notices damage on its own.
+
+A cut-off member can also end early without an error. `stream.read(member.size)` then returns fewer
+bytes than the member should hold, and the next read raises `TruncatedError`. So code that reads a
+member in one call and then stops should check the length it got, or call `read()` once more.
+
+No option makes archivey check a member before handing you its bytes. If you must never use
+unchecked data, read the whole member into memory or a temporary file first, and use it only once
+the read has finished without an error.
+
+An encrypted member whose password was accepted only on a weak check, such as the one-byte check of
+old ZIP encryption, is in the same position. If you close its stream before the end, or seek past
+bytes without reading them, archivey logs `ENCRYPTED_MEMBER_UNVERIFIED`, since the bytes you read
+may come from a wrong password. WinZip AES members are the exception: their check holds across
+seeks.
+
+If you opened the archive with `seekable_members=True` (see [Choosing how to read](reading.md)),
+most seeks keep the checksum check: a seek back, a seek to or past the end, and a seek forward that
+the next read has to decode its way through anyway. Bytes you read again after a seek back aren't
+checked a second time. A seek forward that jumps over bytes without decoding them, and lands before
+the end, stops the checksum check once you read on from there. That happens in a member stored
+without compression, and through the `seekable` accelerator when it has a restart point between
+what you've read and where you seek to. Seeking back to a point you had already read up to brings
+it back. The length is still checked after a jump, and damage the decompressor itself notices still
+raises. Once a read has raised, a later read that reaches the end raises the same error, even after
+a seek, so seeking back can't hand you the damaged member as if it were complete.
+
+[Damaged members](extracting.md#damaged-members) covers what extraction does.
 
 ## Diagnostics
 
-### How diagnostics work
+Each diagnostic, such as one for a name with characters that make it display as a different one,
+has a `code` to check for, a `message` meant for people, and a `context` with details such as the
+member's name, kept raw as in `e.member_name`. Archivey keeps them in a few places, depending on
+what you called:
 
-Archivey has two ways of telling you something went wrong. An **exception** means the
-operation could not give you a correct answer, so it stopped. A **diagnostic** means the
-operation finished and its answer is correct, but something on the way is worth knowing:
-a name was rewritten to display safely, a password you offered was never needed, a
-timestamp in the archive was invalid and is `None`, an archive listed no members. Nothing
-you would want a batch job to stop for is a diagnostic by default, and nothing that makes
-the result wrong is only a diagnostic.
+| After | Read them from |
+|---|---|
+| Opening, and anything on the reader | `archive.diagnostics`: everything since the archive was opened |
+| `archive.open(member)` | `stream.diagnostics`: that one read |
+| `extract_all` | `report.diagnostics`: that one call |
+| `members_report()` | `report.diagnostics`: that one listing |
+| Any listing | `member.diagnostics`: the ones about that member |
 
-Each diagnostic is a frozen [`Diagnostic`][archivey.Diagnostic] record with a stable
-`code` (a [`DiagnosticCode`][archivey.DiagnosticCode], the thing to match on), a human
-`message` (not stable; do not parse it), and a typed `context` with the structured facts,
-such as `member_name` or `archive_name`. `to_dict()` on either gives JSON.
+All but the last are summaries: `counts` has an exact count for each code, and `retained` keeps the
+records themselves. An archive keeps at most 256 records by default, counting those attached to
+members, and `max_retained_diagnostic_references` in `ArchiveyConfig` changes that.
 
-**Where a diagnostic lands.** Every diagnostic is recorded once, at the moment it
-happens, in one collector that belongs to the reader. You read that record through
-whichever view fits what you were doing:
+??? note "Why a cap?"
+    A crafted archive can have a problem in each of a million members, and a record for each would
+    take memory that the listing limits don't count. `counts` stays exact either way.
 
-| You call | Where the diagnostics are | What it covers |
-| --- | --- | --- |
-| `open_archive(...)` and anything on the reader | `reader.diagnostics` | Everything since detection started, cumulative, including any of the rows below |
-| `reader.open(member)` | `stream.diagnostics` on the returned stream | That one member read |
-| `reader.read(member)` | `reader.diagnostics` | `read()` opens and closes the stream inside the call, so there is no stream to ask |
-| `reader.members()` / `reader.stream_members()` | `member.diagnostics` on each `ArchiveMember` | The diagnostics about that member (a rewritten name, an invalid timestamp) |
-| `reader.members_report()` | `report.diagnostics` | The listing |
-| `reader.extract_all(...)` | `report.diagnostics` | **That extraction call only.** Diagnostics from opening the archive are on `reader.diagnostics`, not here, and a second call gets a fresh window |
-| `detect_format(...)` | `FormatInfo.diagnostics` | Detection alone |
+Each diagnostic is also logged as a warning on a logger under `archivey`, such as
+`archivey.normalization`, so a script that calls `logging.basicConfig()` prints a line for each. To
+handle them as they happen instead, pass a function as `on_diagnostic=` in
+`archivey.ArchiveyConfig`. Archivey calls it with each [`Diagnostic`][archivey.Diagnostic] as
+it's recorded, the same record the summaries keep. An exception it raises stops the operation and
+reaches your code.
 
-Each view is a [`DiagnosticSummary`][archivey.DiagnosticSummary], a snapshot taken when
-you read the property: `total_count` and `counts` (per code) are exact; `retained` holds
-the full records, in order, up to a budget
-(`ArchiveyConfig.max_retained_diagnostic_references`, 256 by default); `dropped_count`
-says how many records the budget did not keep. The counts are always right even when the
-records are not all there.
-
-Two more things happen when a diagnostic is recorded, and both are on by default: it is
-**logged** at `WARNING` under the `archivey` logger hierarchy, which is why a script with
-`logging.basicConfig()` prints a line and why the `archivey` command prints `WARNING:`
-lines; and if you set `ArchiveyConfig(on_diagnostic=...)` your **callback** is called
-with the record as it happens. Neither is the source of truth. The summary is.
-
-**What to do about one.** For most programs: nothing. Read the result, and if you care
-about a specific condition, check `reader.diagnostics.counts` for its code after the
-operation. For a program that must not proceed on an anomalous archive, set a policy:
+## Raising or quieting a diagnostic
 
 ```python
-from archivey import ArchiveyConfig, DiagnosticCode, DiagnosticPolicy
-
-config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
+config = archivey.ArchiveyConfig(diagnostic_policy=archivey.DiagnosticPolicy.STRICT)
 ```
 
-A [`DiagnosticPolicy`][archivey.DiagnosticPolicy] gives every code one of three
-dispositions. `COLLECT` (every code you name in neither set) records, logs and calls back.
-`RAISE` does all of that and then raises
-[`DiagnosticRaisedError`][archivey.DiagnosticRaisedError] (an `ArchiveyError`, carrying
-the `Diagnostic`) from the call that hit it. `IGNORE` counts the event and does nothing
-else: no record, no log line, no callback. Whether a condition stops you or is only noted
-is decided by the disposition; every diagnostic is a warning, there is no severity
-axis. To raise on a code, put it in `raise_on`; to silence one code's log line, put it
-in `ignore`:
+With `DiagnosticPolicy.STRICT`, the diagnostics that say the archive itself is unusual, such as a
+name that displays as a different one, raise `DiagnosticRaisedError` from the call that found them.
+The ones about your own arguments, such as an unused password, and a few others, such as an empty
+archive, are only recorded as before. The [reference][archivey.ARCHIVE_INTEGRITY_CODES] lists which
+codes raise. `DiagnosticPolicy.PEDANTIC` raises on every code, including codes a later release adds.
 
 ```python
-DiagnosticPolicy(ignore={DiagnosticCode.PASSWORD_ARGUMENT_UNUSED})
+config = archivey.ArchiveyConfig(
+    diagnostic_policy=archivey.DiagnosticPolicy(
+        ignore={archivey.DiagnosticCode.PASSWORD_ARGUMENT_UNUSED},
+    ),
+)
 ```
 
-Both take any collection of codes (or their values as strings), and a code in both is
-refused. The [named presets](#named-policy-presets) below cover the common cases.
-
-Two things a reader might expect here are deliberately not diagnostics: what extraction
-did to each member, which lives on `ExtractionReport.results` (see
-[what is not here](#what-is-not-here-per-member-extraction-outcomes) below), and a
-password offered to a format that can use one (see the `PASSWORD_ARGUMENT_UNUSED` row
-in the next table).
-
-The full list of codes, one line each, is on [`DiagnosticCode`][archivey.DiagnosticCode]
-in the API reference; the ones that need more than a line are in the next table. The
-context classes (`NameNormalizationContext` and the others) live in
-`archivey.diagnostics`; you receive them on `Diagnostic.context` and can match on
-`context.kind` or `isinstance`, but never need to construct one.
-
-### Things that are said with a diagnostic rather than an exception
-
-A handful of conditions are real enough to tell you about and not wrong enough to
-refuse. Each has a `DiagnosticCode` you can match on, and any of them can be escalated
-to an exception with a `DiagnosticPolicy` if your program would rather stop:
-
-| Code | Means |
-| --- | --- |
-| `EMPTY_ARCHIVE` | The listing finished, with no error, and there were no members. Not an error: an empty tar is a real thing (`tar cf empty.tar --files-from /dev/null`), and it is byte-identical to a zero-filled junk file of the same size. |
-| `ARCHIVE_EOF_MARKER_MISSING` | The archive ended without the end marker its format writes, so it may have been cut exactly between two members, which leaves bytes that otherwise read as a complete, shorter archive. The listing still completes; the code fires once, after the members. `context.expected_marker` names the marker: `"two_zero_blocks"` for TAR's two-block null trailer, `"second_zero_block"` when that trailer's first block is zero and its second is not, `"end_of_archive_block"` for the end-of-archive block RAR5 writes at the end of every volume. The same RAR marker with `context.observed_kind="nonzero"` means the block is there but fails its checksum, in RAR 1.5-4 or RAR5: every member is listed and reads normally, the code fires once per damaged volume, and `context.observed_bytes` is where the block starts in that volume, counted from the volume's first byte rather than across the set as member offsets are; the message names the volume. For TAR, `"second_zero_block"` means the first trailer block ended the members and only the second is damaged: every member is listed and reads normally. TAR's `"two_zero_blocks"` with `observed_kind="nonzero"` is a different case and always comes with `CorruptionError`: a header was rejected and the listing is shortened, or the file has no member at all. For ZIP, `"end_of_central_directory"` means the end record does not match the archive: with `observed_kind="nonzero"` its entry count is not the number of entries the central directory holds, and with `"short"` its comment length runs past the end of the file. `"zip64_end_of_central_directory"` (with `observed_kind="absent"`) means the ZIP64 end record before it is damaged or missing, and the end record, which holds every value itself, is used instead; `context.observed_bytes` is where the ZIP64 locator starts. A trailer-less tar made with `cat` looks the same as a cut one, so this is a warning; `DiagnosticPolicy.STRICT` raises it. |
-| `ARCHIVE_UNLISTED_DATA` | A ZIP read from a source that cannot seek holds a member its central directory does not list: an update appended without rewriting the directory, or a member planted between two others. The pass meets it, and yields it, before the directory arrives; once the directory is read the member is dropped from the listing, because reading the same archive from a file never sees it. The context names the entry, the id the pass gave it, and where it starts. In `ARCHIVE_INTEGRITY_CODES`, so `DiagnosticPolicy.STRICT` refuses the archive. |
-| `EXTENSION_FORMAT_UNCONFIRMED` | The format came from the **filename**, nothing in the bytes confirmed it, and either the listing came back empty or a read failed. The classic shapes are 32 KiB of zeros called `z.tar` (empty listing) and zeros called `backup.gz` (a read error). On a read error the exception also has `format_unconfirmed=True`, as for `PROBE_FORMAT_UNCONFIRMED`. |
-| `PROBE_FORMAT_UNCONFIRMED` | A single-file format came from a content probe with nothing corroborating it (no matching extension, no inner-TAR upgrade), and a decode failed (at `open_archive`, which decodes the first byte of a seekable single-file source, or on a later read) or a limit refused the read (`ResourceLimitError`, such as a declared LZMA dictionary over `DecoderLimits.max_decoder_memory`) — at any detection confidence. The matching exception also has `format_unconfirmed=True`. After a decode failure, partial output may already have been produced. |
-| `EXPLICIT_FORMAT_LISTED_EMPTY` | You passed `format=`, the listing came back empty, and detection disagrees. `format=` stays an override — wrong extensions are exactly what it is for — so this tells you rather than refusing. |
-| `PASSWORD_ARGUMENT_UNUSED` | You passed a password or a password list to a format with no encryption (a `PasswordProvider` callable does not count: it was never asked). Passing a keyring across a batch of mixed archives is the intended use, so it is accepted and simply never consulted. |
-| `ENCODING_ARGUMENT_UNUSED` | You passed `encoding=` to a backend that decodes names another way — 7z stores UTF-16, directory and single-file names come from the filesystem. |
-| `MEMBER_SELECTOR_UNMATCHED` | An entry in your `members=` collection matched no member, so a typo does not look like an archive that lacks the file. One diagnostic for each such entry, reported once every member has been offered to the selector: by `stream_members()` only when you iterate to the end, and by `extract_all()` before it writes or creates anything when the listing is free, else at the end. A predicate selector is never reported. If you set this code to `RAISE`, `extract_all()` refuses with nothing written only when the listing is free. On TAR and forward-only streams the members before the end are already on disk, and the error replaces the report. |
-| `MEMBER_NAME_BIDI_CONTROL` | A member name or link target contains a Unicode bidi formatting control (the context's `field` says which). The context names the exact codepoints, because an *override* (U+202A–202E, U+2066–2069 — how `evil‮gnp.exe` displays as a `.png`) is a different thing from a *directional mark* (U+061C, U+200E, U+200F), which appears in ordinary Arabic and Hebrew filenames. |
-| `MEMBER_NAME_ZERO_WIDTH_CHARACTER` | A member name or link target contains a zero-width space (U+200B), word joiner (U+2060) or BOM (U+FEFF). They display as nothing and have no use inside a filename, so `invoice.pdf` and `invoice<U+200B>.pdf` look the same and extract side by side. The context's `controls` names the codepoints. In `ARCHIVE_INTEGRITY_CODES`, so `DiagnosticPolicy.STRICT` refuses the archive. |
-| `MEMBER_NAME_INVISIBLE_CHARACTER` | A member name or link target contains any other character of Unicode category Cf that is not a bidi control: a zero-width joiner or non-joiner (U+200D, U+200C), soft hyphen (U+00AD), tag characters and the like. They display as nothing, but some are legitimate: a zero-width joiner is part of ordinary emoji sequences, a non-joiner of Persian and Indic spelling, and tag characters spell subdivision flags. The context's `controls` names the codepoints. Advisory: `DiagnosticPolicy.STRICT` does not raise on it. `DiagnosticPolicy.PEDANTIC` does; to refuse such names under any other policy, add the code to `raise_on`. |
-| `MEMBER_HEADER_RECORD_SKIPPED` | One optional record in a member's header was malformed and was dropped; the member is listed without whatever it carried. Today this is the RAR5 extra area — a checksum, a timestamp, a redirect target — the Rock Ridge entries of an ISO image, a ZIP member's Unicode Path extra field (`record="unicode_path"`), whose name is then decoded from the header, a ZIP member's Unix owner extra field (`record="unix_owner"`), whose member then has no `uid` or `gid`, and a TAR character or block device whose `devmajor` or `devminor` field is not a number (`record="device_numbers"`), which then has no `tar.devmajor` or `tar.devminor`; GNU tar lists such a device too. A RAR 1.5-4 archive keeps a member's owner in a separate `UOW` header right after it; one that names no owner is reported on the member it follows (`record="UOW"`). The field it would have filled is **absent, never wrong**, and the context names the record and the parse failure. Refusing the whole archive over one bad checksum record would discard every member that parsed, and `unrar` itself lists such archives. A member header is attacker-sized, so how many records one member may drop is capped, and a record whose declared *size* cannot be used stops the walk outright — there is no way to find the next record. Either way one diagnostic reports it with `list_truncated` set and names which fault ended the walk, and a member whose header was cut short is reported as encrypted rather than as plaintext, since the walk may have stopped before the record that would have said so. That last part also decides how the member reads: a member archivey reads by slicing the archive (stored, whether or not it is split across volumes or inside a solid archive) is sliced only once its bytes have been checked against a checksum that survived the damage — where no checksum survived, or the bytes fail it, the read raises `CorruptionError` naming the header. A cut-short member that needs `unrar` is decoded by it as before, with any surviving checksum checked as the member is read. The archive as a whole is not reported encrypted by one such member. A RAR5 archive's own `CMT` and `QO` service headers carry the same records and are reported the same way, in every volume; they are not members, so those diagnostics carry no member name and the message says what the archive does without — the comment, or the quick-open index. How many of them one archive may report is capped, because nothing lists them and `max_members` therefore never counted them; past the cap one more diagnostic says how many went undescribed. |
-| `MEMBER_DIRECTORY_DATA_IGNORED` | A directory entry declares member data (ZIP, TAR, RAR). No format gives a directory content, and every official tool (unzip, 7-Zip, bsdtar, GNU tar, unrar) creates the directory and drops the bytes without a word; archivey creates the directory too, and says so. The context carries the declared and compressed sizes. The bytes are not out of reach: `reader.read()` on the directory returns them where the format's reader can decode them, and `stream_members()` yields a stream of the same bytes, under the same checks, except from a ZIP read from a pipe whose directory entry has a data descriptor, where the size comes too late and the message says the pass yields no stream for it (ZIP always: the bytes are checked against the entry's CRC-32, or against the HMAC for a WinZip AES entry. A CRC field of 0, the conventional value for a directory, is no digest; where that CRC was the entry's only check, unencrypted or ZipCrypto, `DIGEST_UNVERIFIABLE` says the bytes come back unchecked, while a WinZip AES entry, AE-1 or AE-2, has its HMAC check them and nothing is reported. TAR when the entry is an old-style directory, a regular-file header named `d/`, unchecked, since a plain tar stores no digest; a `DIRTYPE` header with a size that the archive ends right after is reported too, but its blocks cannot be told from the end-of-archive marker, so it has no `size`, `open()` refuses it and `stream_members()` yields no stream for it. RAR only when they are stored and not encrypted, otherwise `UnsupportedFeatureError`), because `open()` refuses a directory for declaring no data, where a tombstone or a special entry is refused for its type. In `ARCHIVE_INTEGRITY_CODES`, so `DiagnosticPolicy.STRICT` refuses the archive: a directory with data is a spec violation that could hide a payload. A directory declaring size 0 is also reported when its body is larger than an empty one of its compression method takes, so a payload cannot hide behind a zeroed size field; it has no declared data, so `read()` refuses it and `stream_members()` yields no stream for it. The Java `jar` tool's deflated empty directory body (2 bytes, size 0) is not reported. |
-| `MEMBER_LINK_DATA_IGNORED` | A TAR symlink or hard link header declares data (a non-zero size). A link has no data area: GNU tar and `tarfile` read the next header straight after it, so declared blocks of zeros read as the end of the archive and every later member is lost. Archivey lists the link and skips the declared blocks, so the members after them stay listed; extraction creates the link and writes the bytes nowhere. When a member header follows the link header at once, the size names no data, and nothing is skipped or reported. When the declared blocks are all zeros and no member header follows them, they are read as the end-of-archive marker, as for a link whose blocks were never written, so the trailer checks report nothing about an intact trailer; the link is still reported. The context carries the declared `size`. In `ARCHIVE_INTEGRITY_CODES`, so `DiagnosticPolicy.STRICT` refuses the archive, as for a directory that declares data. |
-| `MEMBER_SPECIAL_FILE_HAS_DATA` | A member whose mode names a FIFO, device or socket also stores data. It is listed as a `FILE`, because the data stream is the structure and the mode only an attribute: refusing it would hide bytes that every other extractor writes out, and Info-ZIP's `zip -FI` produces exactly this shape when it archives a named pipe's content. The stored type stays in `extra["special_file_type"]` and the context carries it with the size. Advisory: `DiagnosticPolicy.STRICT` does not raise on it. A special-mode entry with **no** data stays `OTHER` and is skipped by extraction. |
-| `MEMBER_TYPE_UNKNOWN` | A TAR member header has a type byte (typeflag) archivey does not know, such as `9`. GNU tar extracts such a member as a regular file and warns, so archivey lists one that declares data as a `FILE` of that size, which reads and extracts like any file; one that declares no data is `OTHER` and extraction skips it. The context's `stored_type` is the byte, which `extra["tar.type"]` also keeps. Advisory: `DiagnosticPolicy.STRICT` does not raise on it. |
-| `MEMBER_LOCAL_NAME_DIFFERS` | A ZIP member's local header, the copy of its entry stored in front of its data, stores other name bytes than the central directory (another code page, or `\` for `/`), and the member is read anyway, as `unzip` reads it. The member keeps the directory's name; the local bytes are in the context's `local_raw_name_base64` (`field="name"`). The report comes when the member's data is first read; a directory never reports it. In `ARCHIVE_INTEGRITY_CODES`, so `DiagnosticPolicy.STRICT` refuses the member: a tool that trusts the local header shows it under another name. |
-| `MEMBER_LOCAL_CRC_USED` | A ZIP member's central directory stores CRC-32 0 and its local header a real value, given in the context's `local_crc32` (`field="crc32"`). `hashes` holds the local value, the data is checked against it, as `unzip` checks it, and the report comes at listing. Every Adobe AIR package stores `META-INF/AIR/hash` this way. Outside `ARCHIVE_INTEGRITY_CODES`, so `STRICT` reads the member: the data is still checked. |
-| `ARCHIVE_OFFSET_WRAPPED` | A ZIP written past 4 GiB without ZIP64 stores its offsets with the top bits cut off, as macOS Archive Utility (Finder's Compress) does. Archivey corrected one: a member's local header offset (`record="local_header"`, one diagnostic per member) or the end record's offset of the central directory (`record="central_directory"`, once, with no member name). The context carries the stored and the corrected offset. A correction is made only when a local header with the member's name is at the corrected offset, and the member's CRC-32 is still checked when it is read. Advisory: `DiagnosticPolicy.STRICT` does not raise on it, because macOS writes and reads such archives by default. |
-| `MEMBER_SIZE_WRAPPED` | The same macOS archives store a member's sizes with the top bits cut off too: archivey corrected them for a member past 4 GiB, or, for a deflated member over about 4 MB compressed in an archive of any length, could not tell from the listing whether the size passed 4 GiB. Archive Utility marks every entry it writes (version made by Unix 2.1, a data descriptor, the old Info-ZIP `UX` extra field alone), and only such entries are corrected. The compressed size comes from where the member's data really ends, at the next member's local header or the central directory. A stored member's size is its compressed size. A deflated member's size is the stored value plus whichever multiple of 4 GiB deflate's ratio allows: at most 1032 to 1, with no lower bound. When several fit (any deflated member over about 4 MB compressed), `size` is `None` and `extra["size_mod_2_32"]` holds the stored value; a read to the end checks the length against it, then the CRC-32, and only then sets `member.size`; the key stays. The context carries the stored and the corrected sizes, with `size=None` for an unknown one. Advisory, as `ARCHIVE_OFFSET_WRAPPED`. |
-
-#### What is *not* here: per-member extraction outcomes
-
-Extraction is the one operation that returns a structured per-item report, so
-[`ExtractionReport.results`][archivey.ExtractionReport] is the **sole** record of what
-happened to each member — blocked, failed, collided, renamed, rewritten. None of it is
-also a diagnostic. A fact has exactly one authoritative channel, and when a return value
-can carry it, the return value wins.
-
-Practically: to find out what extraction did, read `results`, not
-`report.diagnostics`. The summary still carries what was observed while *reading* the
-archive during extraction (invalid timestamps, unresolvable symlinks, unverifiable
-digests, stream rewinds) — those have no per-member result to live on.
-
-Escalation is not lost with the codes: `abort_on` (see
-[Safe extraction](extracting.md)) is the named opt-in for being stopped by a blocked
-member, a collision, or a name rewrite. For a ZIP read from a pipe it fires as the pass
-writes a member, before the end of the pass decides whether the member is selected, so
-it can stop a run for a member the end would have removed; the extraction limits
-(`ResourceLimitError`) count such a member too while it is on disk
-([A ZIP from a pipe](extracting.md#a-zip-from-a-pipe)).
-
-### Named policy presets
-
-Hand-curating a disposition per code means re-reading the whole taxonomy every release.
-Two ready-made policies do it for you:
-
-```python
-from archivey import ArchiveyConfig, DiagnosticCode, DiagnosticPolicy, ARCHIVE_INTEGRITY_CODES
-
-config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
-```
-
-- **`DiagnosticPolicy.STRICT`** raises on `ARCHIVE_INTEGRITY_CODES` — the codes that
-  report the archive's own bytes or metadata as anomalous — and collects the rest.
-- **`DiagnosticPolicy.PEDANTIC`** raises on everything.
-
-Fourteen codes are deliberately outside the strict set: `EMPTY_ARCHIVE` (an empty archive
-is legitimate), `PASSWORD_ARGUMENT_UNUSED`, `ENCODING_ARGUMENT_UNUSED` and
-`MEMBER_SELECTOR_UNMATCHED` (argument hygiene — a pipeline passing a password, or one
-list of names, to every call would otherwise raise on every archive they do not fit),
-`EXPLICIT_FORMAT_LISTED_EMPTY` (an override that halts you is not an override),
-`STREAM_REWIND_REDECOMPRESSES` (your access pattern, not the archive — most useful as a
-targeted tripwire), `ENCRYPTED_MEMBER_UNVERIFIED` (it fires when you close an encrypted
-member's stream before EOF, or after a seek that gave up its CRC, having read bytes that
-no checksum has checked yet; under `STRICT` a peek at a ZipCrypto or RAR3/4 encrypted
-member would raise),
-`PROBE_FORMAT_UNCONFIRMED` (it is emitted while the matching `TruncatedError` or
-`CorruptionError` is raised, and that error already carries `format_unconfirmed=True`),
-`MEMBER_SPECIAL_FILE_HAS_DATA` (a documented writer option produces it, and the bytes
-are delivered and checked like any file's), `MEMBER_NAME_INVISIBLE_CHARACTER` (a
-zero-width joiner is part of ordinary emoji, so `STRICT` would refuse archives of
-legitimately named files; its sibling `MEMBER_NAME_ZERO_WIDTH_CHARACTER` is in the set),
-`ARCHIVE_OFFSET_WRAPPED` and `MEMBER_SIZE_WRAPPED` (macOS writes ZIPs past 4 GiB this
-way by default and reads them back, and each correction is checked against the
-archive's own bytes and the CRC-32), `MEMBER_TYPE_UNKNOWN` (GNU tar extracts the
-member as a file, and archivey delivers its bytes), `FORMAT_EXTENSION_CONFLICT` (the
-file's name is wrong, not its bytes: a tarball saved as `b.gz` opens and reads in full,
-and the code is still recorded; to refuse such files, add the code to `raise_on`), and
-`MEMBER_LOCAL_CRC_USED` (Adobe AIR writes it, and the data is still checked, against
-the local header's CRC-32; its sibling `MEMBER_LOCAL_NAME_DIFFERS` is in the set).
-`ARCHIVE_INTEGRITY_CODES` is exported, and the presets are ordinary policies built from
-it, so you adjust one by building your own from the same set:
-
-```python
-DiagnosticPolicy(raise_on=ARCHIVE_INTEGRITY_CODES - {DiagnosticCode.ARCHIVE_TRAILING_DATA})
-DiagnosticPolicy(raise_on=ARCHIVE_INTEGRITY_CODES, ignore={DiagnosticCode.PASSWORD_ARGUMENT_UNUSED})
-```
-
-**New codes may appear in minor releases.** `PEDANTIC`, or any policy built from
-`frozenset(DiagnosticCode)`, raises on every code of the installed version, and is therefore
-not version-stable: an upgrade can start raising on events your working program never
-produced. `STRICT`, whose membership is versioned alongside the taxonomy, is the
-recommended strict mode. Removing a code stays a breaking change.
-
-## When an archive is damaged
-
-The rest of this page is the detail behind "we raise rather than quietly returning
-wrong data". Most callers never need it; reach for it when you are recovering data
-from archives you do not control.
-
-### Listing a damaged archive
-
-`members()` asserts a **complete** listing (raises on terminal archive damage). When
-you want the recoverable prefix *and* the error together, use `members_report()`. It
-returns the damage in `report.error` instead of raising it; it still raises on a
-listing limit (`ResourceLimitError`), on misuse (`ArchiveyUsageError`) and on other read
-failures. On a streaming reader, where `members()` refuses, it is also the way to get
-the member list, and raising `report.error` gives you complete-or-raise:
-
-```python
-with archivey.open_archive("messy.tar") as reader:
-    report = reader.members_report()
-    for member in report:                    # recovered members (may be a prefix)
-        print(member.name)
-    if report.error is not None:             # incomplete listing
-        raise report.error
-```
-
-`__iter__` / `stream_members()` **yield the prefix then raise** on the same failures,
-and `extract_all()` **writes the prefix then raises**, in either access mode, with no
-report: the destination holds the members listed before the damage. Diagnostics alone
-are not the primary signal. This is not salvage (resync past damage); `--salvage`
-remains reserved.
-
-### The integrity guarantee
-
-**Read a member from its start to its end, with no seek, and Archivey checks it.**
-Where the archive stores a checksum or an authentication tag, that read verifies it and
-raises if it does not match. A seek back to the start counts as a fresh start: whatever
-seeks came before, a read from position 0 to the end is checked in full. Stop early and
-nothing is checked. Errors always come from `read()`, never from `close()` — so a
-`finally` block can't mask one.
-
-"To its end" means `read(-1)`, reading until `read()` returns `b""`, or — for a member
-with a declared size — reading that many bytes.
-
-What that does and does not promise:
-
-- **We try to raise on every error we can detect** — not on every error. Some formats
-  store no checksum at all, and some damage decodes into something that looks
-  perfectly valid.
-- **`CorruptionError` vs `TruncatedError` is a best-effort guess, not a diagnosis.**
-  Damage that happens to decode into a shorter stream is indistinguishable from a
-  genuine truncation. Don't branch on which one you got — `except archivey.CorruptionError`
-  catches both.
-- **Bytes delivered before the error are of unknown quality.** When a compressed
-  member fails mid-stream, some of what you already read is probably fine — but we
-  can't tell you which part, or how much. Treat the prefix as unverified: not
-  known-good, not known-bad.
-- **A full-length return from a read with no skipped bytes means the checksum matched.**
-  Trust it as far as you trust that digest. Most seeks keep the check: a seek back, a
-  seek to position 0 (which starts it again), and a forward seek in a compressed
-  member, whose skipped bytes the next read decodes and hashes before its own. The check
-  covers the first pass over each byte: bytes read again after a seek back are not
-  checked again.
-- **After a seek that jumps, checking is best effort.** When a forward seek jumps over
-  bytes without decoding them (a stored member, or a seek by an index or the
-  `[seekable]` accelerator) and you read on from there, the member's stored checksum is
-  no longer checked (a WinZip AES HMAC still is), but the length is, and damage that
-  the codec's own checks reach still raises. A seek into a `.xz` or `.lz` file jumps
-  by the file's own index, and a crafted index can send it to the wrong bytes with no
-  error. Checking that would mean decoding everything before the target, which is the
-  cost a seek exists to avoid. When the bytes must be right, seek back to where your
-  reads had reached before the jump (or to 0) and read to the end.
-- **Once a stream has raised, it keeps raising.** Every later `read()` raises the same
-  error. A seek back works and the bytes before the damage read again, but the read
-  that reaches the end raises the error again, so seeking back cannot hand you the
-  damaged member as complete, clean data. That includes a `read(member.size)` that
-  would return every byte. Open the member again if you want to retry.
-- **A short return with no exception does not mean "complete".** `read(member.size)`
-  on a truncated member hands back what it has and stays quiet. Check the length — or
-  just read again, because the *next* read raises.
-
-That last point is what makes the ordinary chunked loop safe: it delivers every byte
-that was readable and *then* raises, rather than ending quietly on a short member. So
-the recoverable prefix and the error both reach you.
-
-```python
-buf = bytearray()
-try:
-    with reader.open("member.bin") as stream:
-        while chunk := stream.read(1 << 20):
-            buf.extend(chunk)
-except archivey.ReadError:
-    ...  # buf holds everything that was readable; the member is damaged
-```
-
-Archivey has no mode that verifies a whole member before returning any of it. If you
-need "never hand me unverified bytes", read the member to its end into a buffer or a
-temporary file, and use the bytes only after that read finishes without raising.
-
-#### What each call does
-
-For a member whose declared size is 500 bytes, truncated after 110:
-
-| Call | Corrupt at full length | Truncated after 110 of 500 |
-| --- | --- | --- |
-| `read(109)` | not yet at the end — no error | returns 109, no error |
-| `read(110)` | not yet at the end — no error | returns 110, no error |
-| `read(111)` | not yet at the end — no error | returns 110; the next `read()` raises |
-| `read(member.size)` | raises `CorruptionError` | returns 110 short, **no exception** |
-| `read(-1)` | raises `CorruptionError` | raises `TruncatedError` |
-| chunked until `b""` | raises on the chunk that reaches the size, and withholds it | delivers the prefix, then raises |
-| partial read, then `close()` | quiet — you stopped early | quiet — you stopped early |
-
-The one row worth remembering is **`read(member.size)`**: it raises on corruption but
-returns a short buffer on truncation. Known-wrong bytes are withheld; an apparently
-incomplete prefix is handed over. So a short return from that call is a signal, not a
-success — check the length.
-
-Members with no declared size have nothing to read *to*, so `read(n)` can't
-self-certify at all. Use `read(-1)` or read until `b""`.
+A policy is two sets of codes. A code in `ignore` is no longer logged, passed to the callback or
+kept, but `counts` still counts it. A code in `raise_on` raises. Every other code is recorded as
+before. To change a preset, build a policy from the same set: `STRICT` is
+`DiagnosticPolicy(raise_on=archivey.ARCHIVE_INTEGRITY_CODES)`, so
+`raise_on=archivey.ARCHIVE_INTEGRITY_CODES - {archivey.DiagnosticCode.ARCHIVE_TRAILING_DATA}` is
+`STRICT` without that one code. The [reference][archivey.DiagnosticCode] lists every code.

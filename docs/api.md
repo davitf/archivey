@@ -1,14 +1,12 @@
 # API reference
 
-Everything documented here is re-exported from the top-level `archivey` package and
-listed in `archivey.__all__`, except three side modules at the end: the
-[detection budget and receipt](#detection-cost) types in `archivey.detection_cost`, and
-the [front-end helpers](#front-end-helpers) in `archivey.terminal` and `archivey.paths`.
-Narrative guide:
-[Home](index.md).
-Authoritative contracts: `openspec/specs/`.
+This page lists archivey's public API, grouped by what you use it for. Each entry is headed by the
+full name to import, such as `archivey.open_archive` or `archivey.terminal.quoted`, and each group
+links to the page that explains it, where there is one.
 
-## Opening archives
+## Opening
+
+See [Opening an archive](opening.md).
 
 ::: archivey.open_archive
 ::: archivey.open_stream
@@ -22,20 +20,31 @@ Authoritative contracts: `openspec/specs/`.
 ::: archivey.list_supported_formats
 ::: archivey.list_known_formats
 
-## The reader interface
+## Readers and streams
+
+See [Choosing how to read](reading.md), in particular [Reading once](reading.md#reading-once).
+
+`open_archive` returns an `ArchiveReader` unless you pass `streaming=True`. Then its return type is
+`ForwardArchiveReader`, which leaves out `members`, `get`, `read` and `open`, so a type checker
+flags calls to them. The object is still an `ArchiveReader` at run time, and those calls raise
+`ArchiveyUsageError`. `stream_members()` is the way to read members.
 
 ::: archivey.ForwardArchiveReader
 ::: archivey.ArchiveReader
 ::: archivey.ArchiveStream
 ::: archivey.MemberPass
 ::: archivey.MemberSelector
+::: archivey.MemberListReport
 
-## Data model
+## Members and archive details
+
+See [Open and list](index.md#open-and-list) and [Members with the same
+name](opening.md#members-with-the-same-name).
 
 ::: archivey.ArchiveMember
 ::: archivey.ArchiveInfo
-
-## Extra bags
+::: archivey.HashAlgorithm
+::: archivey.crc32_digest
 
 ::: archivey.MemberExtra
     options:
@@ -47,37 +56,27 @@ Authoritative contracts: `openspec/specs/`.
       members:
         - __getitem__
 
+## Formats and member types
+
+See [Format](opening.md#format).
+
 ::: archivey.ArchiveFormat
 ::: archivey.ContainerFormat
 ::: archivey.StreamFormat
 ::: archivey.MemberType
-::: archivey.HashAlgorithm
-::: archivey.crc32_digest
-::: archivey.CompressionAlgorithm
 ::: archivey.CompressionMethod
+::: archivey.CompressionAlgorithm
 ::: archivey.CreateSystem
-
-## Diagnostics
-
-Structured advisories (formerly log-only warnings). See the `diagnostics` capability
-spec for lifecycle, retention, and policy.
-
-::: archivey.Diagnostic
-::: archivey.DiagnosticContext
-::: archivey.DiagnosticCode
-::: archivey.DiagnosticPolicy
-::: archivey.ARCHIVE_INTEGRITY_CODES
-::: archivey.DiagnosticSummary
-::: archivey.OnDiagnostic
-::: archivey.ExtractionReport
-::: archivey.MemberListReport
 
 ## Extraction
 
+See [Extracting](extracting.md).
+
+::: archivey.ExtractionReport
 ::: archivey.ExtractionResult
-::: archivey.ExtractionProgress
 ::: archivey.ExtractionStatus
 ::: archivey.NameRewrite
+::: archivey.ExtractionProgress
 ::: archivey.ExtractionPolicy
 ::: archivey.OverwritePolicy
 ::: archivey.OnError
@@ -85,7 +84,10 @@ spec for lifecycle, retention, and policy.
 ::: archivey.MemberFilter
 ::: archivey.sanitize_names
 
-## Configuration
+## Configuration and passwords
+
+See [Configuration](opening.md#configuration), [Passwords](opening.md#passwords) and
+[Hardening](security.md#hardening).
 
 ::: archivey.ArchiveyConfig
 ::: archivey.DEFAULT_ARCHIVEY_CONFIG
@@ -99,12 +101,17 @@ spec for lifecycle, retention, and policy.
 ::: archivey.PasswordRequest
 ::: archivey.PasswordProvider
 
-## Access cost
+## Diagnostics
 
-::: archivey.CostReceipt
-::: archivey.ListingCost
-::: archivey.AccessCost
-::: archivey.StreamCapability
+See [Diagnostics](errors-and-diagnostics.md#diagnostics).
+
+::: archivey.Diagnostic
+::: archivey.DiagnosticContext
+::: archivey.DiagnosticCode
+::: archivey.DiagnosticPolicy
+::: archivey.ARCHIVE_INTEGRITY_CODES
+::: archivey.DiagnosticSummary
+::: archivey.OnDiagnostic
 
 ## Errors
 
@@ -141,14 +148,20 @@ subclasses of `ArchiveyError` and unrelated to each other.
 
 ::: archivey.ArchiveyUsageError
 
-## Detection cost
+## Access cost
 
-These live in the `archivey.detection_cost` module and are not re-exported from
-`archivey`. A budget bounds what [`detect_format`][archivey.detect_format] and
-`open_archive` may read and decode before they answer; it is set on
-`ArchiveyConfig(detection_budget=...)`, `BALANCED_BUDGET` by default. The receipt on
-[`FormatInfo.cost_receipt`][archivey.FormatInfo] says what detection actually did. Both
-are stable under the same rule as the rest of this page.
+::: archivey.CostReceipt
+::: archivey.ListingCost
+::: archivey.AccessCost
+::: archivey.StreamCapability
+
+## Detection budgets
+
+These live in the `archivey.detection_cost` module and are not re-exported from `archivey`. A budget
+bounds what [`detect_format`][archivey.detect_format] and `open_archive` may read and decode before
+they answer. You set it with `ArchiveyConfig(detection_budget=...)`, and `BALANCED_BUDGET` is the
+default. The receipt on [`FormatInfo.cost_receipt`][archivey.FormatInfo] says what detection
+actually did.
 
 ::: archivey.detection_cost.DetectionBudget
 ::: archivey.detection_cost.DetectionBudgetPreset
@@ -159,13 +172,14 @@ are stable under the same rule as the rest of this page.
 ::: archivey.detection_cost.TierSkip
 ::: archivey.detection_cost.TierSkipReason
 
-## Front-end helpers
+## Display and naming helpers
 
 These live in the `archivey.terminal` and `archivey.paths` modules and are not
 re-exported from `archivey`. archivey's own command-line tool is built on them.
 
 The `archivey.terminal` helpers are for showing archive-derived text, such as member
-names, to a person without letting it control the terminal.
+names, to a person without letting it control the terminal ([Names in other
+encodings](opening.md#names-in-other-encodings)).
 
 ::: archivey.terminal.escape_control_chars
 ::: archivey.terminal.display_path
@@ -180,7 +194,8 @@ extraction would have chosen.
 It also holds two functions that turn patterns into a `members=` argument, for
 selecting by pattern where `members=` itself matches names exactly. They read the same
 pattern differently: `match_glob` keeps `*` inside one folder, as archivey's CLI does,
-and `match_tar_glob` follows `tar`, where `*` also matches `/`.
+and `match_tar_glob` follows `tar`, where `*` also matches `/` ([Extracting all or some
+members](extracting.md#extracting-all-or-some-members)).
 
 ::: archivey.paths.match_glob
 ::: archivey.paths.match_tar_glob

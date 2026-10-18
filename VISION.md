@@ -34,7 +34,7 @@ feels like stdlib**.
    archive structure without native-code parser attack surface" is a differentiator no
    mainstream alternative offers. Decompression is the exception: it runs through
    native codecs, so the known crash cases are isolated in a child process or designed
-   around, and the rest are listed as accepted limits in `docs/extracting.md`.
+   around, and the rest are listed as accepted limits in `docs/security.md`.
 
 Both claims must be *earned in public*: a written threat model, an adversarial corpus,
 coverage-guided fuzzing of every native parser, and a disclosure process — before the
@@ -88,8 +88,7 @@ That origin story encodes priorities that remain core:
 
 Wall-time targets are **aspirational peer-ratio bands**, not a claim that every
 path meets them today. Measured figures, with their host and commit, live in
-[`benchmarks/RESULTS.md`](benchmarks/RESULTS.md); the bands are also published in
-[`docs/access-and-cost.md`](docs/access-and-cost.md). To check on your host, run
+[`benchmarks/RESULTS.md`](benchmarks/RESULTS.md). To check on your host, run
 `uv run --extra all python -m benchmarks.harness --mode full --scale realistic`.
 
 - **Decompression-dominated** common paths (large-member ZIP/TAR/gzip read):

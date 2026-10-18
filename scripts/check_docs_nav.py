@@ -28,7 +28,9 @@ the same way it reports an unlisted page — at INFO, then exit 0. Shrinking
 renamed the one a third pointed at; all three shipped, and the strict build stayed
 green. Rewriting pages moves headings constantly, so this is the check most likely
 to catch the next one. Anchors come from Python-Markdown's own `toc` extension
-rather than a reimplemented slug rule, so they match what the site will serve.
+rather than a reimplemented slug rule, so they match what the site will serve. The
+one exception is a mkdocstrings block (`::: archivey.Name`), whose id is read from the
+block itself.
 
 Run by hand with:
 
@@ -81,7 +83,8 @@ def anchors_of(path: Path) -> set[str]:
     import markdown
 
     md = markdown.Markdown(extensions=["toc", "attr_list"])
-    md.convert(path.read_text(encoding="utf-8"))
+    text = path.read_text(encoding="utf-8")
+    md.convert(text)
 
     found: set[str] = set()
 
@@ -93,6 +96,11 @@ def anchors_of(path: Path) -> set[str]:
     # The `toc` extension attaches `toc_tokens` to the Markdown instance at convert
     # time, so it is invisible to the type checker.
     walk(getattr(md, "toc_tokens", []))
+    # A mkdocstrings block (`::: archivey.Name`) renders a heading whose id is the
+    # object's full path, because mkdocs.yml sets `show_root_heading: true`; without
+    # that option the site serves no such id. Only the block's own object is added,
+    # not the ids mkdocstrings also emits for its members.
+    found.update(re.findall(r"^::: (\S+)", text, re.M))
     return found
 
 

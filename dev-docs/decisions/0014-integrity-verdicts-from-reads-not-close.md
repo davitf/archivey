@@ -72,8 +72,8 @@ Callers who need verification regardless of access pattern use
 
 - Settles the contract `gzip-zlib-truncation-recovery` (#183) implements, revising
   its earlier "never withhold the last chunk" rule for size-declared corruption.
-- The user-facing guarantee and the call × failure matrix are published on
-  `docs/reading-members.md`.
+- The user-facing guarantee is published on `docs/errors-and-diagnostics.md`
+  §Damaged archives.
 - Rationale, rejected alternatives, the full-count trade-off analysis, and the
   implementation notes are in
   [`dev-docs/investigations/adr-0014-investigation.md`](../investigations/adr-0014-investigation.md).

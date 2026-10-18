@@ -20,7 +20,6 @@ on:
       - ".*/**"
       - "!**.md"
       - "!docs/**"
-      - "!new_docs/**"
       - "!docs_templates/**"
       - "!mkdocs.yml"
       - "!LICENSE"

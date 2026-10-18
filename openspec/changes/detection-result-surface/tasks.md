@@ -28,7 +28,7 @@ replay buffer on a non-seekable source.
 - [ ] 2.6 Non-seekable sources: the replay buffer travels with the result; a result whose
       buffer was released raises rather than re-reading bytes that are gone
 - [ ] 2.7 Confirm `format=` still performs **no** detection I/O of any kind
-- [ ] 2.8 `docs/opening-and-listing.md`: inspect-then-open
+- [ ] 2.8 `docs/opening.md`: inspect-then-open
 
 ## 3. Verify
 

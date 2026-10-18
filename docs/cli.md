@@ -1,202 +1,195 @@
 # Command line
 
-The `archivey` command ships with the base package (`pip install archivey`). Progress bars
-need `tqdm`, which comes with `[recommended]`; without it the command still runs.
+The `archivey` command lists, checks and extracts archives, and prints members to the terminal. It
+comes with the base package. Progress bars need `tqdm`, which `[recommended]` installs; without it
+the command works the same, just without the bars.
 
 ```bash
-archivey photos.zip                 # same as: archivey list photos.zip
-archivey l photos.zip               # list (alias)
-archivey l --long photos.zip        # add packed size, space saved, method and CRC columns
-archivey l --details photos.zip     # every stored field of each member, key: value
-archivey t photos.zip               # full-read integrity check
-archivey x photos.zip               # safe extract (alias for extract)
-archivey info photos.zip            # format / identity + access cost (alias: detect)
-archivey cat photos.zip notes.txt   # a member's contents to stdout
-archivey --version -v               # version + format availability for this install
+archivey photos.zip                 # list the members (same as archivey list)
+archivey test photos.zip            # read every member and check its checksum
+archivey extract photos.zip         # extract safely, into ./photos/
+archivey info photos.zip            # the format, and what reading it costs
+archivey cat photos.zip notes.txt   # write one member to stdout
 ```
 
-### Safer extract demo
+`list`, `test`, `extract` and `info` also answer to `l`, `t`, `x` and `i`. `archivey <command>
+--help` lists every option.
 
-```bash
-# Default policy=strict, overwrite=rename, on_error=continue. With no -d, a
-# multi-entry archive lands in ./photos/ instead of splattering the current
-# directory (tarbomb-safe). Hostile/corrupt members are reported and skipped;
-# remaining members are still extracted. Exit 3 if only policy blocks; 1 if
-# any member failed.
-archivey extract photos.zip
+## Listing and inspecting
 
-# Classic unzip-into-cwd (opt-in):
-archivey extract photos.zip -d .
+`archivey list` prints one line per member: its type, permissions, size, modification time and
+name. Three options add more:
 
-# All-or-nothing on member *failures* (library STOP). Policy blocks are still
-# reported and skipped; remaining members extract. Exit 3 if only blocks.
-archivey extract photos.zip --stop-on-error
+- `--long` adds columns for the compressed size, the space saved, the compression method and the
+  CRC-32 checksum.
+- `--details` prints everything archivey knows about each member, as `key: value` lines.
+- `--digests` adds the checksums the archive stores, such as `[crc32=363a3020]`, without reading
+  the members' data.
 
-# Filters: positionals are includes; --exclude subtracts. Unmatched includes
-# warn on stderr; extract/test exit 1 when the patterns select nothing, also when
-# --exclude removed every match (list warns but stays 0). A sole unmatched
-# pattern that looks like a destination gets a -d hint. On an archive with no
-# index (a compressed TAR) these warnings come after the run: the run's own pass
-# is what checks the patterns, so the archive is decompressed once. A listing
-# that ends in damage settles no pattern: no verb warns that a pattern matched
-# nothing, because the members past the damage are unknown, and an extract that
-# aborts there may leave the destination directory it created.
-archivey extract photos.zip -d out/ '*.py' --exclude '*_test.py'
-archivey extract photos.zip --policy trusted -d /tmp/out
+`--long` and `--details` can't be used together.
 
-# Dry run: every check and every read, nothing written. Same report lines
-# and exit code as a real extraction into an empty directory. Without -d, a
-# single top-level folder is named where it would be moved to, or why it would
-# stay in its wrapper; whether a directory already there can be written to is
-# not checked.
-archivey extract photos.zip --dry-run
-```
+`archivey info` describes the archive instead of its members: its format and how archivey
+recognised it, whether it's encrypted, solid or split into volumes, how many members it has, and
+what reading it costs. For a `.tar.gz`, it says that listing means decompressing the whole archive,
+and that reading one member may mean decoding the ones before it.
 
-### Defaults that differ from the library
+`archivey --version -v` prints the version, then each format and whether this install can read it
+fully, partly or not at all. [Install](install.md#checking-what-an-install-can-read) explains what
+each one needs.
 
-`archivey extract` uses the library's `policy=strict`, but two of its defaults differ
-from `reader.extract_all()`. They are what breaks a script ported from one to the other:
+## Checking an archive
 
-| Setting | CLI default | Library default |
+`archivey test` reads every member to the end and compares it with the checksum the archive
+stores, without writing anything. It prints how many members passed and failed, and `-v` adds a
+line for each member.
+
+It exits with `1` when a member fails, and also when a member couldn't be tested or its checksum
+couldn't be checked, even if nothing failed. That happens, for example, when the members after a
+damaged spot can't be reached, or when a gzip file's checksum sits past the point where archivey
+stops looking for it. The warning printed for each one says why. A member whose format stores no
+checksum at all, such as a Brotli or `.Z` file, passes once it reads to the end without an error.
+
+`--outer` checks only the compression layer, as `gzip -t` does. For a `.tar.gz`, archivey reads the
+whole decompressed tar and checks gzip's own checksum, without looking at the members inside. gzip,
+lzip, bzip2 and zlib always carry that checksum, xz does unless it was written with `--check=none`,
+zstd and LZ4 only when the program that wrote the file added one, and Brotli and `.Z` never do. A
+ZIP, 7z, RAR, ISO or plain tar has no compression layer, so `--outer` refuses it.
+
+## Extracting
+
+`archivey extract photos.zip` puts the members in a new folder named after the archive, `photos/`,
+so an archive with many top-level entries doesn't spread them over the current directory. If the
+archive holds a single top-level folder, that folder lands in the current directory instead. The
+new folder is always new: if something named `photos` is already there, archivey uses `photos (1)`.
+To choose the folder yourself, pass `-d out/`, or `-d .` for the current directory.
+
+??? note "When does a single folder stay inside `photos/`?"
+    Without `-d`, archivey never replaces or deletes anything in the current directory. If a name it
+    needs is already taken, the default `--overwrite rename` gives the new entry a free name, such
+    as `notes (1).txt`; with `error`, `skip` or `replace`, the folder stays in `photos/` instead.
+
+    For an archive that doesn't list its members up front, such as a TAR, archivey extracts into
+    `photos/` first and moves the folder out at the end. It leaves the folder in `photos/`, and
+    prints why, if the move could change what a link points to (the folder is a symlink, or holds
+    one that leads outside it), or if part of it couldn't be listed.
+
+Extraction uses the `strict` policy by default: a member that would land outside the destination,
+or a link that points outside it, is refused and reported, and the rest are still extracted.
+`--policy standard` and `--policy trusted` relax it, as
+[What each policy does](extracting.md#what-each-policy-does-with-unusual-members) describes.
+
+Two defaults differ from the library's `extract_all()`, because a command is expected to finish and
+report instead of stopping at the first problem:
+
+| When | `archivey extract` | `extract_all()` |
 | --- | --- | --- |
-| Name collision | `--overwrite rename` (`photo (1).jpg`) | `OverwritePolicy.ERROR` |
-| Member failure | continue and report; exit `1` at the end | `OnError.STOP`: raise at the first one |
+| A file with the member's name is already there | writes the member as `photo (1).jpg` | raises an error |
+| A member fails | reports it, carries on, and exits with `1` at the end | raises an error at once |
 
-Where the library raises, the CLI finishes the run and reports. To get the library's
-behaviour, pass `--overwrite error --stop-on-error`. For the CLI's in Python, pass
-`overwrite="rename", on_error="continue"`.
+`--overwrite error --stop-on-error` makes the command behave like the library. `--overwrite` also
+takes `skip` (keep the file that's there) and `replace` (write over it).
 
-### Writing to stdout
+`--stop-on-error` stops at the first member that fails, but refused members are still only
+reported. To stop on those too, pass `--abort-on blocked-member`, which is the safest choice for an
+archive you don't trust. `--abort-on name-collision` stops when two members land on the same name,
+and `--abort-on name-sanitized` when a name had to be changed to be written. `--abort-on` can be
+given more than once. Files written before the stop stay on disk.
 
-`archivey cat` writes the contents of the selected members to stdout, one after another
-in archive order, like `unzip -p` or `tar -xO`. Patterns select members as they do for
-`extract`. Directories and links are skipped; with `-v`, each member's name goes to
-stderr.
+`--dry-run` runs every check and reads every member, but writes nothing. It prints the same report
+and exits with the same code as a real extraction into an empty folder.
+
+`--outer` removes only the compression layer: `archivey extract data.tgz --outer` writes
+`data.tar` and keeps the original, as `gunzip -k` does.
+
+## Writing members to stdout
+
+`archivey cat` writes the selected members to stdout, one after another in archive order, as
+`unzip -p` and `tar -xO` do. Directories and links are skipped, and with `-v` each member's name
+goes to stderr.
 
 ```bash
 archivey cat config.zip settings.ini     # one member
-archivey cat logs.tar.zst '**/*.log'     # every .log, at any depth, in one pass
+archivey cat logs.tar.zst '**/*.log'     # every .log file, at any depth
 curl -s URL | archivey cat - '*.txt'     # - reads the archive from stdin
-```
-
-`--outer` removes only the compression layer and writes what is inside unchanged: the
-tar inside a `.tar.gz`, the file inside a `.gz`. The compressor is detected by content,
-so one command decompresses whatever arrives:
-
-```bash
 curl -s URL | archivey cat - --outer | tar t
 ```
 
-From a pipe, the archive is read in one forward pass, with the same format limits as an
-archive piped to the other verbs (see the notes below). A redirect from a regular file
-(`archivey cat - < a.zip`) can seek, so every format reads.
+With `--outer`, `cat` writes what's inside the compression layer unchanged: the tar inside a
+`.tar.gz`, the file inside a `.gz`.
 
-The bytes reach stdout as they are decoded, so some or all of a member whose checksum
-fails may already have been written when the failure is found. `cat` then prints the error, stops, and exits
-`1`, as `zcat` does. Check the exit code before you trust the output.
+Data reaches stdout as it's decoded, so if a member's checksum fails at the end, its data is
+already written. `cat` then prints the error and exits with `1`, as `zcat` does, so check the exit
+code before you trust the output.
 
-### Removing only the compression layer
+## Choosing members
 
-`archivey x data.tgz --outer` writes `data.tar` and leaves the source in place, as
-`gunzip -k` does; `-d`, `--overwrite` and `--dry-run` work as for any `.gz`.
-`archivey t data.tar.gz --outer` reads the whole decompressed stream and checks the
-compressor's end-of-stream checksum, as `gzip -t` does, without looking inside the
-tar. gzip, xz, lzip, bzip2 and zlib always carry one, zstd and LZ4 only when the writer
-added it, and Brotli and `.Z` never. As with `cat --outer`, the compressor is detected by
-content, so a raw zlib or Brotli stream is found whatever it is named, with no
-`--probe-content`. Both need a file on disk: for a pipe, use `archivey cat - --outer`.
-A ZIP, 7z, RAR, ISO or plain tar has no compression layer, so `--outer` refuses it, and
-it takes no member patterns or `--exclude`.
+`list`, `test`, `extract` and `cat` take patterns after the archive name, and work on the members
+that match:
 
-### Passwords
+- `*` matches within one folder: `'*.md'` matches `README.md` at the top level, not
+  `docs/guide.md`.
+- `**` matches any number of folders: `'**/*.md'` matches every `.md` file.
+- A folder brings its contents: `docs` and `docs/` both match `docs/` and everything in it, but not
+  `docs.txt`.
 
-`--password` puts the password on the command line, where other users of the machine can
-see it in the process list (`ps`) and your shell may keep it in its history. Leave it out
-if you can: when an archive needs a password and stdin is a terminal, `archivey` asks for
-it without echoing. With no terminal, as in a pipe or a cron job, it does not ask, and the
-encrypted members fail as if no password had been given.
+`--exclude PATTERN` leaves out the members it matches, even ones a pattern selected, and can be
+given more than once. On Windows, `\` works in place of `/`. Quote patterns, so the shell doesn't
+expand them first.
 
-### Notes
+If a pattern matches nothing, archivey says so. `test`, `extract` and `cat` then exit with `1`, as
+they do when `--exclude` leaves nothing; `list` exits with `0`. From Python, the same matching is
+`members=match_glob(pattern, with_contents=True)` from `archivey.paths`.
 
-- Verbs are bare words (`x`, `list`); dash-prefixed forms like `-x` are not mode selectors.
-- Shared flags (`--password`, `-v`, `--hide-progress`, `--track-io`, `--probe-content`)
-  go before or after the verb; a verb's own flags (`-d`, `--policy`, `--exclude`, ...)
-  go after a verb that owns them (`--policy` after `extract`, `--exclude` after `list`,
-  `test`, `extract` or `cat`).
-- A raw LZMA, zlib or Brotli stream has no magic bytes, so it is recognised only by its
-  extension (`.lzma`, `.zz`, `.br`, ...). For a file named otherwise, pass
-  `--probe-content`: detection then trial-decodes the start of the file. It is off by
-  default because arbitrary binary files sometimes pass the trial.
-- Patterns are globs where `*` stays inside one folder and `**` matches any depth:
-  `archivey extract a.zip '*.md'` extracts the top-level `.md` files, and `'**/*.md'`
-  those at every depth. A pattern matching a directory selects it and everything under
-  it, as `tar` does: `archivey extract a.zip docs` and `docs/` both extract `docs/` and
-  its contents, but not a file named `docs.txt`. On Windows, `docs\sub` works like
-  `docs/sub`. `--exclude` matches the same way. In the Python API this is
-  `members=match_glob(pattern, with_contents=True)` from `archivey.paths`; `members=`
-  on its own needs the exact stored name (`docs/` for the directory entry).
-- A pattern that matches is a pattern, even if a local folder has the same name:
-  `archivey x a.tar out` extracts the archive's `out/` subtree and gives no `-d` hint.
-  The hint appears only when such a pattern matches nothing.
-- A bare verb word is always a verb: `archivey x a.zip` extracts. Any path-qualified
-  token is a path and gets listed, so a file named `x` is reached as `archivey ./x`
-  (or `archivey dir/x`, `archivey /abs/x`, `archivey list x`).
-- A file whose name starts with `-` is reached after `--`: `archivey -- -weird.zip`
-  (or `archivey list -- -weird.zip`). Every word after `--` is a file or pattern, so
-  `archivey -- list` opens a file named `list`.
-- Without `-d`, `extract` may wrap the members in a folder named after the archive.
-  That folder is always a new one: if anything already has that name (a folder, a file
-  or a symlink), `extract` uses the next free `name (N)` instead, whatever `--overwrite`
-  says. It never writes into an existing folder or through a link it did not choose. To
-  re-extract into an existing folder, name it: `archivey x backup.zip -d backup
-  --overwrite replace`.
-- When the wrapper ends up holding a single entry, `extract` moves that entry up into
-  the working directory. This move never replaces or deletes anything already there:
-  under `--overwrite rename` (the default) a colliding entry gets the next free `name
-  (N)`, and under any other `--overwrite` a collision keeps the content in the wrapper.
-  An archive with a member index whose single top-level entry already has a name in the
-  working directory, or may be written under another spelling that does (a trailing
-  space stripped, a control character escaped), goes through the wrapper too, so
-  `--overwrite` never replaces that entry. It skips the move when the entry is a
-  symlink, or when a symlink in it leaves it on the way to its target (or is absolute),
-  because such a link would point somewhere else after the move. It also skips the move
-  when part of the entry could not be listed, since it may hold such a link. Whenever
-  the move is skipped, nothing is moved and the run still succeeds. It prints a line
-  saying why the files stayed in the wrapper.
-- `test` exits `1` when its summary reports members as not tested, or digests as not
-  verified, even if none failed. A digest is not verified when the library could not
-  check it (`DIGEST_UNVERIFIABLE` or `ENCRYPTED_MEMBER_UNVERIFIED`), for example a gzip
-  trailer past the trailing-data scan bound; the warning logged for it says why.
-- `test` reads a directory entry that declares data (`MEMBER_DIRECTORY_DATA_IGNORED`)
-  and fails it on a bad checksum, as `unzip -t` does; `cat` skips it. Such a
-  directory's data, where archivey cannot decode it, is reported as not tested; a
-  file's undecodable data, and a directory's data that needs a password, fail as
-  before. A ZIP read from a pipe whose directory entry
-  has a data descriptor is the one exception: its size arrives after its data, so the
-  bytes are not read, and the entry is left out of the counts.
-- Member names, paths and messages are printed with control characters escaped, so a
-  hostile name cannot rewrite the terminal line that reports it
-  (see [Errors and diagnostics](errors-and-diagnostics.md#the-exception-tree)).
-- Exit codes: `0` success, `1` operation failed or extract aborted on a member
-  failure (`--stop-on-error`), `2` usage error, `3` extract
-  **completed** with ≥1 safety-policy block and no member failure (safe members
-  on disk; under CONTINUE or STOP), `130` interrupted by Ctrl-C (it prints
-  `interrupted`; `130` is 128 + 2, the shell's code for SIGINT), `141` output
-  pipe closed (see below). Codes `4` to `127` are reserved.
-- When the pipe that stdout or stderr writes to closes (`archivey t big.zip 2>&1 |
-  head -1`), every verb stops quietly with exit `141` (128 + 13, the shell's code
-  for SIGPIPE; the same code on Windows). So do `--help` and a usage error whose
-  message is lost. `141` says output was lost: for `test` the archive may not have
-  been fully verified, so treat it as a result you do not have.
-- When the archive path is a pipe (FIFO) or a character device, which can be read
-  only once, every verb reads it in one forward pass. That works for TAR (also
-  compressed), ZIP and single-file formats such as `.gz`. 7z, RAR and ISO need to
-  seek, so for those the verb exits `1` and says to copy the input to a regular file
-  first.
-- Such a path can be `/dev/stdin`, so on Linux and macOS an archive piped on stdin
-  can be read: `cat a.tar | archivey list /dev/stdin`. On Linux, `/proc/self/fd/N`
-  works the same way. The same format limits apply.
-- `--salvage` and `hash` / `create` / `convert` are reserved for later, and so is the
-  `-` token for stdin outside `cat`.
-- An empty archive path or `--dest ""` is a usage error, not the current
-  directory. Write `.` for the current directory.
+## Passwords
+
+When an archive needs a password and stdin is a terminal, archivey asks for it without showing what
+you type. With no terminal, as in a pipe or a cron job, it doesn't ask, and the encrypted members
+fail as if no password had been given.
+
+`--password` passes it on the command line instead. If you use it, other users of the machine can
+see the password in the process list, and your shell may keep it in its history.
+
+## Reading from a pipe
+
+`archivey cat -` reads the archive from stdin. The other commands take a path, and a pipe can
+still reach them as `/dev/stdin` on Linux and macOS:
+
+```bash
+cat backup.tar.gz | archivey list /dev/stdin
+```
+
+A pipe can only be read once, from start to end, so archivey reads it in a single pass. That works
+for TAR (compressed or not), ZIP and single compressed files such as `.gz`. 7z, RAR and ISO
+archives need to jump around in the file, so from a pipe they fail with exit `1` and a message to
+copy the input to a file first. `extract --outer` and `test --outer` also need a file; for a pipe,
+use `archivey cat - --outer`. A redirect from a file, as in `archivey cat - < backup.7z`, isn't a
+pipe, so every format works that way.
+
+## Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Success. |
+| `1` | The command failed: a member failed, a pattern matched nothing, `test` couldn't check everything, or an extraction stopped early. |
+| `2` | The command line was wrong. |
+| `3` | `extract` finished, with every member written or refused, and at least one refused. |
+| `130` | Interrupted with Ctrl-C. |
+| `141` | The output was closed early, as with `archivey test -v big.zip 2>&1 \| head -1`. For `test`, that means you don't have the result. |
+
+## File names and shared options
+
+The first word after `archivey` is read as a command when it is one, so `archivey x a.zip`
+extracts. A file named `x` is reached as `archivey ./x` or `archivey list x`. A file whose name
+starts with `-` goes after `--`: `archivey -- -weird.zip`. An empty name is an error, not the
+current directory; write `.` for that.
+
+Options shared by every command can go before or after the command; a command's own options,
+such as `-d` or `--exclude`, go after it. Besides `--password` and `-v`, the shared ones are:
+
+- `--hide-progress` turns off progress bars.
+- `--track-io` reports how many bytes archivey decompressed and read, and how often it seeked.
+- `--probe-content` recognises a raw LZMA, zlib or Brotli stream whatever the file is named. These
+  have no signature at their start, so archivey normally knows them only by their extension
+  (`.lzma`, `.zz`, `.br` and the like). With this option it tries decoding the start of the file
+  instead. It's off by default because some unrelated files pass the trial. `--outer` always tries
+  decoding, so it doesn't need this option.

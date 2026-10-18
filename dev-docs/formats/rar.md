@@ -1797,4 +1797,4 @@ need `-qo+` or live AUTO; the gap and what would close it are in
 - Topic: [`prefixed-archives.md`](../topics/prefixed-archives.md) (the shared SFX machinery)
 - User-facing: [`docs/formats.md`](../../docs/formats.md#rar) ·
   [`docs/install.md`](../../docs/install.md#getting-rarlab-unrar-or-rar) ·
-  [`docs/gotchas.md`](../../docs/gotchas.md)
+  [`docs/formats.md`](../../docs/formats.md)

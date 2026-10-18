@@ -4,8 +4,6 @@ Thanks for working on Archivey! This file is the **coding and testing standards*
 gates, and the OpenSpec mechanics. The *design* is authoritative elsewhere: the
 capability specs under `openspec/specs/`, the handbook under `dev-docs/`, and
 `VISION.md`. [`dev-docs/index.md`](dev-docs/index.md) maps where everything lives.
-`new_docs/` is an unpublished rewrite of the user guide, page by page; until it covers
-`docs/`, `docs/` is authoritative (`new_docs/README.md`).
 
 ## Getting started
 
@@ -536,8 +534,7 @@ On every PR that touches `openspec/specs/` or a change delta:
 Five questions, in order. The first `yes` wins.
 
 1. **Would someone who only *uses* the library need it?** → `docs/`, **and add it to
-   `mkdocs.yml`'s nav in the same commit**. If `new_docs/` already has a rewrite of that
-   page, change it there too. Curated "why we chose X" one-liners for
+   `mkdocs.yml`'s nav in the same commit**. Curated "why we chose X" one-liners for
    curious users belong inline on the page that raises the question, not as a new
    page per decision. Use
    [`write-user-docs`](.claude/skills/write-user-docs/SKILL.md) for structure and voice,

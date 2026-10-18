@@ -1,175 +1,103 @@
-# Install and extras
+# Install
 
-Archivey's core installs with no dependencies at all and reads ZIP, TAR, directories
-and the stdlib codecs. Everything else — RAR, ISO, the 7z extended codecs, the seek
-accelerator — is an opt-in extra, and one format also needs a binary that no extra
-can supply. This page is the whole answer to "what do I have to install?"
+Archivey is on PyPI as `archivey`. It needs Python 3.11 or later and has no dependencies of its own.
+Optional packages, grouped as extras, add the rest:
 
 ```bash
-pip install archivey                 # zero-dep core: ZIP, TAR, gz/bz2/xz, directory, …
-pip install archivey[recommended]    # every format and codec that installs everywhere
-pip install archivey[seekable]       # + rapidgzip: gz/bz2 random access (seekable_members=True)
-pip install archivey[all]            # both of the above
+pip install archivey                 # no dependencies
+pip install "archivey[recommended]"  # every format and compression method that installs everywhere
+pip install "archivey[seekable]"     # faster seeking in large gzip, bzip2 and DEFLATE data
+pip install "archivey[all]"          # recommended and seekable together
 ```
 
-There are four extras and no per-format ones — member codecs are shared across
-containers, so a format name would be the wrong thing to install. On a free-threaded
-build use `archivey[free-threaded]`; see
-[Platforms and threading](support-matrix.md#free-threaded-python-313t).
+If you use a free-threaded Python build, [Free-threaded Python](#free-threaded-python) has the extra
+to use instead. There's no extra per format, because ZIP, 7z and TAR share their compression
+methods.
 
-RAR **member data** also needs RARLAB `unrar` or `rar` **6.0 or later** on `PATH`
-(listing works without it). How to get that binary is below; format quirks live on
-[Formats and extras](formats.md).
-
-## What each format needs
-
-The per-format detail lives on [Formats and extras](formats.md); the short version
-is that every format except RAR is a pip install away, and RAR **member data** needs
-RARLAB `unrar` or `rar` **6.0 or later** on `PATH` — not `unrar-free` or `7z`.
-Listing and metadata work without it, except a compressed comment in a RAR 1.5-4
-archive, which is then `None`. When no RARLAB program is found, archivey uses `unar`
-1.10 or later instead if it is installed. With one found, it still uses `unar` for a
-member whose name `unrar` cannot be given, but never for a member that needs a password.
-`unar` reads fewer RAR archives and takes the password on its command line, where
-other local users can see it; set
-`ArchiveyConfig(rar_decompressor="unrar")` to never use it, or `"none"` to run
-neither program and read only stored members (an encrypted one needs `cryptography`). See [Formats and extras](formats.md#rar).
-
-What each install line adds, by what you type. [Formats and extras](formats.md) stays
-the authority on what each format can do:
-
-| You install | It adds |
+| You install | It reads |
 | --- | --- |
-| `archivey` (core) | ZIP, TAR, directories, 7z with its common codecs, and RAR listing and metadata. The stdlib codecs — gzip, bzip2, xz, LZMA, zlib — plus lzip and `.Z`, as single files and inside TAR. zstd too on Python 3.14 and later |
-| `[recommended]` | ISO, `.lz4`, Brotli, zstd before Python 3.14; PPMd, Deflate64 and zstd members in ZIP and 7z, and Brotli members in 7z; AES encryption in 7z, WinZip AES ZIP and RAR headers; progress bars in the CLI |
-| `[seekable]` | No new format. `seekable_members=True` streams over gzip, zlib, raw deflate and bzip2 use `rapidgzip` for random access |
-| `[free-threaded]` | The part of `[recommended]` that keeps the GIL disabled: ISO, `.lz4`, zstd, CLI progress bars, and AES on 3.14t. Not PPMd, Deflate64, Brotli or `[seekable]` |
-| `[all]` | `[recommended]` and `[seekable]` |
+| `archivey` | ZIP, TAR and 7z with their common compression methods, and directories. gzip, bzip2, xz, LZMA, zlib, lzip and `.Z` files, alone or inside a TAR, and Zstandard too on Python 3.14 and later. RAR archives can be listed, and their uncompressed, unencrypted files read. |
+| `[recommended]` adds | ISO images, and LZ4, Brotli and Zstandard files (Zstandard only before Python 3.14). PPMd, Deflate64 and Zstandard inside 7z and ZIP, and Brotli and LZ4 inside 7z. AES decryption for 7z, RAR and WinZip AES ZIP files. Progress bars in the command-line tool. |
+| `[seekable]` adds | No new format. Faster seeking inside large gzip, zlib and bzip2 data, and large DEFLATE members in ZIP and 7z, when you open with `seekable_members=True`. |
 
-### Check what this install can read
+Compressed RAR files, and a few encrypted ones, also need an outside program, which no extra can
+install. The next section covers it.
 
-`format_availability()` answers at runtime, so a program can check a format before it
-promises a user that it works:
+## RAR needs an outside program
 
-```python
-from archivey import FormatSupport, format_availability
+RAR is a proprietary format, and there's no self-contained Python decoder for it, so archivey reads
+compressed RAR members with an outside program. It lists RAR archives and reads stored
+(uncompressed) members itself, encrypted ones too when `cryptography` is installed and the member is
+in one part.
 
-availability = format_availability("7z")
-if availability.support is not FormatSupport.FULL:
-    for component in availability.missing:
-        print(component.name, component.install_hint)
-```
+The preferred program is RARLAB's `unrar` (or `rar`), version 6.0 or later. Archivey also supports
+`unar` 1.10 or later, from The Unarchiver, but it has some limitations. Archivey uses `unar` when it
+finds no usable `unrar`, and then passes an encrypted archive's password on `unar`'s command line,
+where other users on the same machine can see it while it runs. Some `unar` packages in Debian and
+Ubuntu have a bug that drops some files; archivey tests the `unar` it finds and won't use one that
+has it. If you want to choose the program yourself, set `rar_decompressor` in `ArchiveyConfig` to
+`"unrar"`, `"unar"`, `"none"` or `"auto"` (the default). With `"unrar"`, archivey never runs `unar`.
 
-- **`FULL`** — the format opens, and every optional codec it can use is installed.
-- **`PARTIAL`** — the format opens and lists, and members in its common codecs read. A
-  member that needs a missing codec raises `PackageNotInstalledError` when you read it.
-  ZIP and 7z are `PARTIAL` when a codec package is missing. RAR is `PARTIAL` when no
-  RARLAB `unrar` or `rar` 6.0 or later is on `PATH`: stored members read, and a stored,
-  encrypted one in one part reads with `cryptography`. Compressed members, and
-  encrypted ones split across volumes, need that program, or `unar` when it is
-  installed, which reads fewer archives (see below).
-- **`NONE`** — the format cannot be opened. `open_archive()` raises
-  `PackageNotInstalledError` naming the package: ISO without `pycdlib`, `.lz4` without
-  `lz4`, `.tar.zst` without a zstd backend. The exception is a source that cannot seek,
-  such as a pipe, for a format that needs seek (ISO): it raises
-  `StreamNotSeekableError` first, because the package would not make a pipe readable.
+### Getting `unrar`
 
-`missing` is empty when support is `FULL`. Each entry is an absent package with the
-`pip install` line that adds it, or, for RAR, the `unrar` program with the reason none
-was accepted: none on `PATH`, a binary that is not RARLAB's, one older than 6.0, or one
-that did not answer. To find out, `format_availability()` runs each candidate on `PATH`
-once to read its banner, for at most 10 seconds each, and remembers the answer. It
-does this whatever `rar_decompressor` is set to, because it takes no config; pass
-`check_programs=False` to run no program, and RAR then reports as if `unrar` were
-installed. The answer is for the default `rar_decompressor`, so a usable `unar` does
-not make RAR `FULL`. One requirement is not counted: `cryptography`, which only
-encrypted members need.
-`list_supported_formats()` returns every format that is `FULL` or `PARTIAL`. Whether a
-format can be read from a pipe is a separate question, answered by `required_source` on
-[Opening and listing](opening-and-listing.md).
+On Debian and Ubuntu, `sudo apt install unrar` installs RARLAB's program. It's in the non-free
+(Debian) or multiverse (Ubuntu) section, and the `unrar-free` package is a different program that
+archivey doesn't use. Other Linux distributions have a package of RARLAB's UnRAR under a similar
+name.
 
-## Getting RARLAB `unrar` or `rar`
+On Windows, download the command-line UnRAR from [RARLAB](https://www.rarlab.com/rar_add.htm) and
+put `UnRAR.exe` on your `PATH`.
 
-Listing a RAR works without either. Reading member bytes does not. Archivey looks for
-`unrar` first, then `rar`, and accepts the first whose banner is RARLAB **6.0 or later**:
-`UNRAR 6.02` / `UNRAR 7.00` plus `Alexander Roshal` or `RARLAB`, or the writer's
-`RAR 7.00 … Alexander Roshal` (often with `Trial version`). A `RAR` token is not taken
-from inside `UNRAR`. Run the binary with no arguments to check. An older RARLAB build
-is refused at identification, not per member. `7z` and `unrar-free` are never used,
-even if they sit on `PATH` under another name. `unar` 1.10 or later (`brew install unar`
-on macOS, `sudo apt install unar` on Debian and Ubuntu) is used when no RARLAB program
-is found, for a member whose name `unrar` cannot be given in an archive with no
-encryption, or always with `ArchiveyConfig(rar_decompressor="unar")`. A `unar` that fails
-archivey's one-time RAR5 check is not used: the Debian and Ubuntu packages before
-1.10.8+ds1-10, which includes Ubuntu 22.04 to 26.04, drop some RAR5 members. On those,
-install `unrar`.
-
-### Linux
-
-```bash
-sudo apt install unrar    # Debian/Ubuntu: non-free / multiverse, not the `unrar-free` package
-unrar                     # confirm UNRAR 6.00+ and RARLAB / Alexander Roshal
-```
-
-Debian 12 and Ubuntu 22.04 ship 6.x, which is enough. Ubuntu 24.04 ships 7.00.
-A 5.x package (some older releases) is refused — compile from RARLAB source
-(same steps as the macOS recipe below) rather than trusting `apt` on those distros.
-
-`apt install rar` puts RARLAB's trialware writer on `PATH` and only Suggests `unrar`.
-That `rar` binary is accepted when `unrar` is missing (same 6.0 floor; confirm
-`RAR 6.00+` and Alexander Roshal / RARLAB). Prefer `unrar` when both are installed.
-
-Other distros ship an equivalently named package of RARLAB UnRAR.
-
-### Windows
-
-Download the official command-line UnRAR from
-[RARLAB](https://www.rarlab.com/rar_add.htm) (the Windows UnRAR row) and put
-`UnRAR.exe` on `PATH`. The WinRAR `Rar.exe` writer is looked up as `rar` the same
-way as on Unix; its identification banner has not been measured here, so prefer
-`UnRAR.exe` until you have confirmed a `RAR x.yy` / Alexander Roshal banner.
-
-### macOS
-
-Homebrew core does not ship `unrar` (the UnRAR license is not open source). The
-`rar` cask that used to install RARLAB's macOS binaries is disabled: those builds
-are not Apple-notarized.
-
-**If you use Homebrew**, an unofficial formula installs RARLAB UnRAR:
+On macOS, Homebrew no longer ships `unrar`. You can install it from an unofficial Homebrew tap,
+which builds or downloads RARLAB's program:
 
 ```bash
 brew install gromgit/new-life/unrar
-unrar   # confirm UNRAR 6.0+ and RARLAB / Alexander Roshal
 ```
 
-The tap is not Homebrew core. `brew install` trusts whatever formula the tap serves
-at install time and again on every `brew upgrade` — there is no lockfile pin. Where
-a bottle matches your macOS version, Homebrew pours a prebuilt binary from the
-tap's GHCR; otherwise it compiles the formula's RARLAB source tarball. Both paths
-skip Gatekeeper (they are a formula, not a cask).
-
-If you do not want to trust the tap, compile UnRAR from RARLAB's source yourself
-(needs a C++ compiler — Xcode command-line tools):
+If you'd rather not trust that tap, download the UnRAR source from
+[RARLAB](https://www.rarlab.com/rar_add.htm) and build it with Xcode's command-line tools:
 
 ```bash
-# Download "UnRAR source" (unrarsrc-*.tar.gz) from https://www.rarlab.com/rar_add.htm
 tar xf unrarsrc-*.tar.gz
 cd unrar
 make
-mkdir -p "$HOME/.local/bin"
-cp unrar "$HOME/.local/bin/"
-# add ~/.local/bin to PATH if it is not already there
+cp unrar ~/.local/bin/   # or any folder on your PATH
 ```
 
-RARLAB's current [RAR for macOS](https://www.rarlab.com/download.htm) packages
-(ARM and Intel) also include an `unrar` binary. They are not Apple-notarized, so a
-browser download may be blocked until you allow it in System Settings. Compiling
-from source yourself does not hit that prompt. Do not use the
-"UnRAR for Mac OS X 64 bit" link on the add-ons page — that is a 2018 Intel
-user contribution, not the current official binary.
+Running `unrar` with no arguments prints its version, so you can check it's 6.0 or later.
 
-## Free-threaded builds
+### Getting `unar`
 
-Use `archivey[free-threaded]` on 3.13t and later: it is the measured subset of extras
-that leaves the GIL disabled. See
-[Platforms and threading](support-matrix.md#free-threaded-python-313t).
+On macOS, `brew install unar` installs a version archivey accepts. On Debian and Ubuntu, the
+packaged `unar` may have the bug described above; if archivey won't use it, either install `unrar`
+or build `unar` 1.10.8 from [The Unarchiver's source](https://github.com/MacPaw/XADMaster).
+
+## Checking what an install can read
+
+If your program needs to know at run time which formats work with what's installed,
+[`format_availability()`](api.md#archivey.format_availability) says whether a format is fully
+supported, partly supported (it opens, but some members need a missing package) or not available,
+and which packages would add the rest. RAR counts as partly supported without RARLAB's `unrar`, even
+when `unar` is installed. To find out, it runs each `unrar` or `rar` on your `PATH` once to read its
+version, whatever `rar_decompressor` says; pass `check_programs=False` to run nothing. `cryptography`
+isn't counted, because only encrypted members need it.
+
+## Python versions and platforms
+
+Archivey needs CPython 3.11 or later. Every change is tested on Linux with 3.11 to 3.14, and on
+macOS and Windows with 3.11 and 3.14. Other platforms aren't tested. PyPy doesn't fully work yet: a
+trial run failed in places, including some LZMA data and the accelerator behind `[seekable]`. [How
+it is built](how-it-is-built.md) has the full test setup.
+
+## Free-threaded Python
+
+On a free-threaded build (3.13t and later), importing a compiled package that doesn't declare
+free-threading support turns the GIL back on for the rest of the process. If you use `pip install
+"archivey[free-threaded]"`, you get only the optional packages that keep it off: ISO, LZ4 and
+Zstandard support, and CLI progress bars, plus AES decryption from 3.14t. On 3.13t, `[recommended]`
+doesn't install at all, because `cryptography` can't be installed there yet.
+
+Other optional packages can still be installed. Archivey imports each one only when a file needs it,
+so the GIL comes back the first time you read PPMd, Deflate64 or Brotli data. Free-threaded builds
+are tested on Linux only.
