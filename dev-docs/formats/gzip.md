@@ -344,8 +344,10 @@ CRC (`FHCRC`) that does not match and reserved `FLG` bits, which RFC 1952 §2.3.
 decoder must refuse. Before starting it, `_gzip_header_refused` feeds the source to a zlib
 gzip window until the first byte of output; if zlib refuses, the stream opens on the
 standard library engine instead, which raises the same error on the first read as with the
-accelerator off. Later members are not checked, because `rapidgzip` does not say where
-they start (§5, §7).
+accelerator off. That probe sees only the first member, because `rapidgzip` does not say
+where later members start. A later member that zlib would refuse still raises on the read:
+`rapidgzip` 0.16 rejects a later header CRC itself, and a later reserved flag is not accepted as
+a further member by the scan, so the trailer check hands the read to zlib (§5).
 
 **A wrong ISIZE on a member before the last reads under `rapidgzip`.** It checks every
 member's CRC-32 but not the ISIZE of one that another member follows, where zlib raises
@@ -495,7 +497,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | A backward seek on a `.gz` re-decodes from the start | **format** | No restart points (§1). Install `[seekable]` and pass `seekable_members=True`; under `AUTO`, only from 16 MiB |
 | The same truncated `.gz` raises `TruncatedError` on Linux and `CorruptionError` on Windows under `rapidgzip` | **library** | Windows loses the message detail (§2.3). Catch `ReadError` for both |
 | A truncated multi-member `.gz` read through `rapidgzip` can end short with no error | **library** / **archivey** | `rapidgzip` ends softly. The backstop raises when the decode stopped before the end of the file; a cut whose decode still reaches the end, with zlib confirming a later member, can pass. Summing each member's ISIZE is deferred (§7) |
-| A member after the first with a header CRC that does not match or reserved `FLG` bits reads clean under `rapidgzip`; the standard library raises | **library** / **archivey** | `rapidgzip` does not check these, and hides member boundaries. The first member's header is checked (§2.3); the rest is the per-member question in §7 |
+| A member after the first with a header CRC that does not match, or with reserved `FLG` bits, raises the same error with `rapidgzip` as without it | **archivey** | Measured on rapidgzip 0.16.0 (2026-10-18). A later header CRC makes rapidgzip raise, and the read falls back to zlib (`CorruptionError`). A later reserved flag is accepted by rapidgzip, but the further-member scan skips that header, the single-member trailer check fails, and the read falls back to zlib (`UnsupportedFeatureError`). The pre-start probe still sees only the first member (§2.3) |
 | A wrong ISIZE on any member but the last reads clean under `rapidgzip` builds that do not compare the size; the standard library raises | **library** / **archivey** | Every member's CRC-32 is still checked, so the data is right; the spec accepts this difference (§2.3). `rapidgzip` 0.16.0 compares it only in its own chunk decoder, for a stream that lies wholly in one chunk; the inflate-wrapper decoder (ISA-L, in the Linux wheels) appends the footer without comparing. The last member's ISIZE is checked by the backstop, which finds the trailer by the CRC-32 of the output. After a seek that skipped output there is no CRC-32 and the file's last four bytes stand in for the ISIZE; in that case only, four bytes appended after a wrong ISIZE, equal to the length, pass for the trailer. Found by the `gzip_accel` fuzz target |
 | A truncated bare raw DEFLATE stream under `use_rapidgzip=ON` can end short with no error | **library** | No size or checksum to check it against (§2.3). `AUTO` never does this. A stream cut before its first byte of output raises, as with the accelerator off |
 | `rapidgzip` does not check a zlib stream's Adler-32 | **library** | archivey checks it after `rapidgzip`, once the stream is read to its end (§2.3). Found by `tests/test_nested_archives.py` |
