@@ -3441,6 +3441,7 @@ def test_unrar_not_installed_message_names_lookalikes() -> None:
     assert "unrar or rar" in msg
     for name in ("unrar-free", "unar", "7z", "7zz"):
         assert name in msg
+    assert "rar_decompressor" in msg
 
 
 def test_rarlab_rar_is_accepted_when_unrar_is_missing(

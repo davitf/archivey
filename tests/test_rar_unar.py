@@ -44,7 +44,7 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
-from archivey.internal.backends import rar_reader, rar_unar
+from archivey.internal.backends import rar_parser, rar_reader, rar_unar
 from archivey.internal.external import cli, unar
 from tests.conftest import requires_binary
 from tests.corruption_util import raises_corruption_not_truncation
@@ -947,6 +947,28 @@ def test_refusal_names_the_way_out() -> None:
         with pytest.raises(UnsupportedFeatureError) as info:
             archive.read("secret.txt")
     assert "rar_decompressor to 'unrar'" in str(info.value)
+
+
+def test_rar4_member_after_encrypted_data_in_its_solid_stream_is_refused() -> None:
+    """``open()`` refuses a plain member that unar reaches only through encrypted data.
+
+    ``rar`` 6.23 will not append a plain member to a solid RAR4 archive that starts
+    with an encrypted one, so the first member of a solid fixture is marked
+    encrypted after parsing. No program runs: this checks the refusal only.
+    """
+    with open(_RAR / "basic_solid__rar4.rar", "rb") as f:
+        archive = rar_parser.parse_rar_archive(f)
+    compressed = [m for m in archive.members if not rar_unar.uses_no_dictionary(m)]
+    assert len(compressed) >= 2 and all(m.file_solid for m in compressed[1:])
+    compressed[0].is_encrypted = True
+    policy = rar_unar.UnarRarPolicy(archive)
+    for info in compressed[1:]:
+        reason = policy.member_refusal(info)
+        assert reason == rar_unar.REFUSE_RAR4_AFTER_ENCRYPTED
+        assert "encrypted RAR 2.x-4.x data" in reason
+    compressed[1].file_solid = False
+    policy = rar_unar.UnarRarPolicy(archive)
+    assert policy.member_refusal(compressed[1]) is None
 
 
 @requires_binary("unar")

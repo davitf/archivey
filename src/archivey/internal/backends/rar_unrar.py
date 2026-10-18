@@ -137,7 +137,9 @@ UNAR_BY_POSITION_HINT = (
 _NOT_INSTALLED_MSG = (
     "RARLAB unrar or rar is required to read RAR member data, but neither was found "
     "on PATH (or the unrar/rar on PATH is not a RARLAB binary). Install RARLAB unrar "
-    "or rar — unrar-free / unar / 7z / 7zz are not supported as substitutes."
+    "or rar 6.0 or later; unrar-free, 7z and 7zz are not substitutes. unar 1.10 or "
+    "later reads most RAR data too, when installed and ArchiveyConfig.rar_decompressor "
+    "is 'auto' or 'unar'."
 )
 
 
