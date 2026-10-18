@@ -137,9 +137,10 @@ UNAR_BY_POSITION_HINT = (
 _NOT_INSTALLED_MSG = (
     "RARLAB unrar or rar is required to read RAR member data, but neither was found "
     "on PATH (or the unrar/rar on PATH is not a RARLAB binary). Install RARLAB unrar "
-    "or rar 6.0 or later; unrar-free, 7z and 7zz are not substitutes. unar 1.10 or "
-    "later reads most RAR data too, when installed and ArchiveyConfig.rar_decompressor "
-    "is 'auto' or 'unar'."
+    "or rar 6.0 or later; unrar-free, 7z and 7zz are not substitutes. With "
+    "ArchiveyConfig.rar_decompressor 'auto' or 'unar', a unar 1.10 or later that "
+    "passes archivey's RAR5 check reads most RAR data too; Debian and Ubuntu packages "
+    "before 1.10.8+ds1-10 fail that check and are not used."
 )
 
 
@@ -240,8 +241,8 @@ def rarlab_unrar_missing() -> tuple[MissingComponent, ...]:
     format is PARTIAL. The install hint is the refusal :func:`find_rarlab_unrar`
     raises, so the query and a member read give the same advice: nothing on ``PATH``,
     a lookalike, a RARLAB binary under the 6.0 floor, or one that did not answer the
-    probe. ``unar`` is not named: it is a bounded fallback that reads fewer archives,
-    so finding it does not make RAR FULL.
+    probe. The hint names ``unar`` as a way to read most RAR data, but finding one does
+    not make RAR FULL: it is a bounded fallback that reads fewer archives.
     """
     try:
         find_rarlab_unrar()

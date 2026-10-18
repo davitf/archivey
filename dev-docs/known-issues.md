@@ -23,8 +23,9 @@ or with `ArchiveyConfig.rar_decompressor="unar"`). `internal/backends/rar_unar.p
 refuses, from the native listing, every RAR5 solid member with data that follows an empty
 file, a directory or a link, and names only the readable members to `unar`, so it never
 reaches the crash. The same module handles the six other `unar` failures found on the
-fixtures: it refuses RAR 1.5 compression, encrypted RAR 2.x to 4.x data, non-ASCII
-passwords, header-encrypted RAR5 volume sets and prefixed volume sets, copies a prefixed
+fixtures: it refuses RAR 1.5 compression, encrypted RAR 2.x to 4.x data (and compressed
+members after it in the same solid stream), non-ASCII passwords, header-encrypted RAR5
+volume sets and prefixed volume sets, copies a prefixed
 single archive from where the RAR starts, and names stream volumes under the set's own
 scheme. Pinned by `tests/test_rar_unar.py`, which CI's macOS leg runs against the
 Homebrew bottle.
