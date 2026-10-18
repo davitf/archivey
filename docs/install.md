@@ -10,6 +10,12 @@ pip install "archivey[seekable]"     # faster seeking in large gzip, bzip2 and D
 pip install "archivey[all]"          # recommended and seekable together
 ```
 
+If you only want the `archivey` command, `uvx archivey-cli` runs it with everything
+`[recommended]` adds, without installing anything for good, and `pipx install archivey-cli`
+installs it. `archivey-cli` is a separate package that holds no code: it depends on
+`archivey[recommended]` at the same version. `uvx archivey` works too, but it runs the base
+package only, because an extra must be named to be installed.
+
 If you use a free-threaded Python build, [Free-threaded Python](#free-threaded-python) has the extra
 to use instead. There's no extra per format, because ZIP, 7z and TAR share their compression
 methods.

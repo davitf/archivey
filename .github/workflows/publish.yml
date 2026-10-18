@@ -1,8 +1,10 @@
 name: Publish
 
 # Build the sdist + wheel and publish to PyPI, triggered by pushing a version tag
-# (`vX.Y.Z`, including pre-releases like `v0.2.0a1`). Ported from the v1/dev repo's
-# `deploy-pypi.yml` and modernised:
+# (`vX.Y.Z`, including pre-releases like `v0.2.0a1`). Each run publishes two projects:
+# `archivey` and `archivey-cli` (packages/archivey-cli: no code, depends on
+# `archivey[recommended]` at the same version, so `uvx archivey-cli` gets the full CLI).
+# Ported from the v1/dev repo's `deploy-pypi.yml` and modernised:
 #   - builds with `uv build` (the repo's standard tooling) instead of bare hatch;
 #   - publishes via PyPI **Trusted Publishing (OIDC)** — no API token secret to rotate;
 #   - guards on `github.repository` so only the canonical repos ever publish, and a
@@ -20,6 +22,8 @@ name: Publish
 #   • TestPyPI (https://test.pypi.org/manage/account/publishing/):
 #       project `archivey`, owner `davitf`, repo `archivey`,
 #       workflow `publish.yml`, environment `testpypi`.
+#   • The same two entries again for project `archivey-cli` (a "pending publisher"
+#     until its first upload). Without them the upload of `archivey-cli` is refused.
 # Also create the GitHub environments `pypi` and `testpypi` (Settings → Environments)
 # and add protection rules (e.g. required reviewer) to the `pypi` one.
 #
@@ -64,16 +68,19 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
       - name: Build sdist + wheel
-        run: uv build
+        run: |
+          uv build
+          uv build packages/archivey-cli --out-dir dist
       - name: Verify tag matches packaged version
         if: startsWith(github.ref, 'refs/tags/')
         run: |
           tag="${GITHUB_REF_NAME#v}"
-          pkg="$(ls dist/*.whl | sed -E 's|.*/archivey-([^-]+)-.*|\1|')"
+          pkg="$(ls dist/archivey-*.whl | sed -E 's|.*/archivey-([^-]+)-.*|\1|')"
+          cli="$(ls dist/archivey_cli-*.whl | sed -E 's|.*/archivey_cli-([^-]+)-.*|\1|')"
           echo "tag version = $tag"
-          echo "built version = $pkg"
-          if [ "$tag" != "$pkg" ]; then
-            echo "::error::Tag '$GITHUB_REF_NAME' does not match packaged version '$pkg'. Bump [project].version in pyproject.toml (and drop any .devN suffix) before tagging." >&2
+          echo "built version = $pkg (archivey), $cli (archivey-cli)"
+          if [ "$tag" != "$pkg" ] || [ "$tag" != "$cli" ]; then
+            echo "::error::Tag '$GITHUB_REF_NAME' does not match packaged versions '$pkg' / '$cli'. Bump [project].version in pyproject.toml and packages/archivey-cli/pyproject.toml (and drop any .devN suffix) before tagging." >&2
             exit 1
           fi
       # Metadata problems (bad README rendering, malformed classifiers) are rejected by
