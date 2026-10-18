@@ -43,6 +43,11 @@ REFUSE_RAR4_ENCRYPTED = (
     "unar 1.10 returns no data, and reports success, for encrypted RAR 2.x-4.x data "
     "even with the right password. " + _USE_UNRAR
 )
+REFUSE_RAR4_AFTER_ENCRYPTED = (
+    "This member continues a solid stream that holds encrypted data, and unar 1.10 "
+    "returns no data, and reports success, for encrypted RAR 2.x-4.x data even with "
+    "the right password. " + _USE_UNRAR
+)
 REFUSE_NON_ASCII_PASSWORD = (
     "unar 1.10 does not decrypt with a password that is not ASCII. " + _USE_UNRAR
 )
@@ -193,6 +198,31 @@ def _rar5_solid_after_empty(archive: RarArchive) -> set[int]:
     return refused
 
 
+def _rar4_solid_after_encrypted(archive: RarArchive) -> set[int]:
+    """``id``s of RAR 2.x-4.x members whose solid stream holds encrypted data before them.
+
+    To decode such a member, ``unar`` decodes the solid stream from its start, and
+    that includes the encrypted data it returns nothing for. The streams are the ones
+    :func:`unar_dictionary_costs` walks: a member that uses the dictionary without the
+    solid flag starts one, and a stored member or an entry without data neither starts
+    nor continues one. An encrypted member is refused on its own already.
+    """
+    if archive.version == 5:
+        return set()
+    refused: set[int] = set()
+    tainted = False
+    for info in archive.members:
+        if uses_no_dictionary(info):
+            continue
+        if not info.file_solid:
+            tainted = False
+        if _needs_password(archive, info):
+            tainted = True
+        elif tainted:
+            refused.add(id(info))
+    return refused
+
+
 def _needs_password(archive: RarArchive, info: RarMemberInfo) -> bool:
     return archive.has_header_encryption or info.is_encrypted or info.encryption_unknown
 
@@ -222,6 +252,7 @@ class UnarRarPolicy:
         self._archive = archive
         self._index = unar_entry_index(archive)
         self._solid_after_empty = _rar5_solid_after_empty(archive)
+        self._solid_after_encrypted = _rar4_solid_after_encrypted(archive)
         self._archive_refusal = _archive_refusal(archive)
         self._pass_refusals: dict[int, str] = {}
         self._pass_indexes: list[int] | None = None
@@ -270,6 +301,8 @@ class UnarRarPolicy:
             return REFUSE_UNKNOWN_COMPRESSION.format(version=version)
         if _rar4_encrypted(self._archive, info):
             return REFUSE_RAR4_ENCRYPTED
+        if id(info) in self._solid_after_encrypted:
+            return REFUSE_RAR4_AFTER_ENCRYPTED
         if self._archive_refusal == REFUSE_HEADER_ENCRYPTED_VOLUMES:
             return self._archive_refusal
         if (
