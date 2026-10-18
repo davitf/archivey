@@ -12,6 +12,11 @@ one line. How to write the entry: see
 
 ## [Unreleased]
 
+## [0.2.0rc1] - 2026-10-18
+
+Release candidate for 0.2.0, to test the release flow. Its contents are the 0.2.0 entry
+below.
+
 ## [0.2.0] - Unreleased
 
 First public release. This repository is a rewrite: the earlier v1 / alpha line
@@ -38,9 +43,10 @@ and each change will be listed here. No major changes are expected.
   `rar`, or `unar`.
 - **Encrypted archives:** ZipCrypto and WinZip AES in ZIP, AES in 7z (headers too),
   and RAR3/RAR5 encryption, with one password or a list of candidates.
-- **Safe extraction by default.** `extract()` blocks path traversal, symlink and hardlink
-  escapes, special files and deceptive names, and caps total size, compression ratio and
-  entry count. Three policies (`STRICT`, `STANDARD`, `TRUSTED`) set how much to allow.
+- **Safe extraction by default.** `extract_all()` blocks path traversal, symlink and
+  hardlink escapes, special files and deceptive names, and caps total size, compression
+  ratio and entry count. Three policies (`STRICT`, `STANDARD`, `TRUSTED`) set how much
+  to allow.
 - **Resource limits beyond extraction:** caps on listing size, decoder memory,
   password key-derivation work and temporary spool files, all on `ArchiveyConfig`, and
   all raising `ResourceLimitError`.
@@ -52,7 +58,7 @@ and each change will be listed here. No major changes are expected.
 - **Verified reads.** A member whose CRC or other checksum fails, or that ends short,
   raises from `read()`. Codec errors map to one `ArchiveyError` hierarchy, and
   non-fatal oddities are reported as structured diagnostics that
-  `DiagnosticPolicy.strict()` turns into errors.
+  `DiagnosticPolicy.STRICT` turns into errors.
 - **Zero-dependency core.** ZIP, TAR, directories and the standard-library codecs need
   no extra packages. `[recommended]` adds the other codecs, crypto and ISO;
   `[seekable]` adds the rapidgzip accelerator; `[free-threaded]` is the GIL-safe set.
