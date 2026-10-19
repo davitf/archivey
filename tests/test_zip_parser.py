@@ -44,6 +44,7 @@ from tests.sample_archives import (
     corpus_archive_path,
     skip_unless_runnable,
 )
+from tests.streams_util import NonSeekableBytesIO
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -806,22 +807,41 @@ def test_the_end_record_past_the_window_is_found_after_the_directory() -> None:
         assert reader.read(member) == b"hello"
 
 
+def _lists_member_then_zip64_truncation(
+    source: io.BytesIO | NonSeekableBytesIO, *, streaming: bool
+) -> str:
+    """Names listed before the ZIP64 size fault, and the fault's message."""
+    names: list[str] = []
+    with pytest.raises(
+        TruncatedError, match="ZIP64 end of central directory"
+    ) as raised:
+        with open_archive(source, streaming=streaming) as reader:
+            for member in reader:
+                names.append(member.name)
+    assert names == ["a.txt"]
+    text = str(raised.value)
+    assert str((1 << 64) - 1) in text
+    assert "stream ends inside that record" in text
+    return text
+
+
 def test_a_zip64_record_size_past_the_file_is_truncation() -> None:
     """A ZIP64 end-record size of 2**64-1 must not be used as a seek offset.
 
     The end record sits past the search window, so the reader steps over the
     directory. The fuzzer's input sought that size and raised OverflowError.
+    A pipe lists the same member and raises the same truncation: the helper has
+    no file, only the stream.
     """
     data = _zip({"a.txt": b"hello"})
     eocd = data.rindex(b"PK\x05\x06")
     huge = struct.pack("<4sQ", b"PK\x06\x06", (1 << 64) - 1)
     body = data[:eocd] + huge + data[eocd:] + b"\x00" * (1 << 17)
-    with pytest.raises(
-        TruncatedError, match="ZIP64 end of central directory"
-    ) as raised:
-        with open_archive(io.BytesIO(body)) as reader:
-            list(reader)
-    assert str((1 << 64) - 1) in str(raised.value)
+    from_file = _lists_member_then_zip64_truncation(io.BytesIO(body), streaming=False)
+    from_pipe = _lists_member_then_zip64_truncation(
+        NonSeekableBytesIO(body), streaming=True
+    )
+    assert from_file == from_pipe
 
 
 def test_a_digital_signature_record_is_not_stepped_over() -> None:
