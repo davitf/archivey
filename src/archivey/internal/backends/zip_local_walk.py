@@ -46,6 +46,7 @@ diagnostic. Damage raises ``CorruptionError``, a stream that ends early
 from __future__ import annotations
 
 import io
+import struct
 import zlib
 from collections import deque
 from dataclasses import dataclass, replace
@@ -1425,20 +1426,32 @@ def missing_end_record_error(
     stopped: int,
     *,
     whole: bool,
+    file_size: int | None = None,
 ) -> ArchiveyError | None:
     """Why no end record follows the members, from the first four bytes after them
     (at stream offset ``members_end``, ``after`` the walk's last member) and those
     where the step over the directory stopped (``stopped``, ``step_over_directory``).
 
     The stream ends inside the directory (only when ``whole``: every byte after the
-    members was seen), bytes that are no ZIP record follow the directory, the
-    directory is encrypted, or no ZIP structure follows the members at all. ``None``
-    for bytes that start an end record: the end records' own fault, in the parser's
-    words.
+    members was seen), a ZIP64 end record declares a size the file does not hold,
+    bytes that are no ZIP record follow the directory, the directory is encrypted,
+    or no ZIP structure follows the members at all. ``None`` for bytes that start an
+    end record: the end records' own fault, in the parser's words.
     """
     head = read_at(members_end, 4)
     if head == CENTRAL_HEADER_SIGNATURE:
         rest = read_at(stopped, 4)
+        if rest == ZIP64_EOCD_SIGNATURE and file_size is not None:
+            header = read_at(stopped, 12)
+            if len(header) == 12:
+                declared = struct.unpack_from("<Q", header, 4)[0]
+                room = file_size - stopped - 12
+                if room < 0 or declared > room:
+                    return TruncatedError(
+                        "ZIP64 end of central directory record at stream offset "
+                        f"{stopped} declares {declared} bytes after its first twelve, "
+                        "and the file ends inside that record"
+                    )
         if len(rest) == 4 and rest not in _STEPPED_OVER:
             return CorruptionError(
                 f"bytes at stream offset {stopped} after the central directory are "
@@ -1620,6 +1633,7 @@ class ForwardTail:
                     self.after,
                     stopped,
                     whole=not self.dropped,
+                    file_size=self.size,
                 )
                 if error is not None:
                     raise error

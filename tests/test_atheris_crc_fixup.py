@@ -279,12 +279,19 @@ def test_fixup_tar_checksum_keeps_a_mutated_header_readable() -> None:
 
 
 def test_fixup_tar_broken_mode_still_rejects() -> None:
+    """Broken mode starts from a valid archive and writes a sum off by one."""
     from archivey import open_archive
-    from tests.atheris_fuzz.crc_fixup import fixup_tar_header_checksums
+    from tests.atheris_fuzz.crc_fixup import (
+        _tar_block_checksum,
+        fixup_tar_header_checksums,
+    )
 
-    original = bytearray(_tar_bytes())
-    original[0] ^= 0x01
-    fixed_broken = fixup_tar_header_checksums(bytes(original), broken=True)
+    original = _tar_bytes()
+    fixed_broken = fixup_tar_header_checksums(original, broken=True)
+    field = fixed_broken[148:156]
+    assert field.endswith(b"\x00 ")
+    stored = int(field[:6], 8)
+    assert stored == _tar_block_checksum(original[:512]) ^ 1
     with pytest.raises(ArchiveyError):
         with open_archive(io.BytesIO(fixed_broken), format="tar") as arc:
             list(arc)

@@ -7,7 +7,7 @@ import gzip
 import io
 import lzma
 import shutil
-import subprocess
+import sys
 import tarfile
 import tempfile
 import zipfile
@@ -15,6 +15,7 @@ import zlib
 from collections.abc import Callable
 from pathlib import Path
 
+from tests.conftest import run_7z
 from tests.sample_archives import CORPUS, corpus_archive_path
 
 # Small corpus entry ids that build quickly and cover common layouts.
@@ -198,9 +199,7 @@ def detect_format_seeds() -> list[bytes]:
     # the open_detected target is what then opens them.
     seeds.append(_koly_block())
     seeds.append(b"BZh9" + b"\x00" * 32 + _koly_block())
-    for blob in _synthetic_zip_seeds():
-        seeds.append(b"MZ" + b"\x00" * 64 + blob)
-        break
+    seeds.append(b"MZ" + b"\x00" * 64 + _synthetic_zip_seeds()[0])
     # Dedup while preserving order.
     seen: set[bytes] = set()
     out: list[bytes] = []
@@ -543,26 +542,18 @@ def _x86_like(size: int = 4096) -> bytes:
     return (chunk * ((size // len(chunk)) + 1))[:size]
 
 
-def _uncompressed_header_sevenzip_seeds(tmp: Path) -> list[bytes]:
-    """Small 7z archives whose next header is not compressed.
-
-    The CRC fixup patches the next-header bytes the parser then reads. A compressed
-    header turns a mutation into a failed decompress, so the coder-graph fields are
-    never parsed. ``-mhc=off`` leaves those fields in the clear. Dictionaries stay
-    at 1 MiB so a read stays inside the fuzz decoder cap.
-    """
-    if shutil.which("7z") is None:
-        return []
-    payload = tmp / "code.bin"
-    payload.write_bytes(_x86_like())
-    other = tmp / "other.bin"
-    other.write_bytes(b"second member\n" * 32)
-    specs: list[list[str]] = [
-        ["-mhc=off", "-m0=Copy"],
-        ["-mhc=off", "-m0=LZMA2", "-md=1m"],
-        ["-mhc=off", "-m0=LZMA2", "-m1=BCJ", "-md=1m"],
-        ["-mhc=off", "-m0=LZMA2", "-m1=Delta:4", "-md=1m"],
-        [
+# ``-mhc=off`` leaves the next header uncompressed, so a mutated coder field is
+# still a header. Dictionaries stay at 1 MiB, inside the fuzz decoder cap.
+# ``aes`` is the exception: ``-mhe=on`` encrypts that header. It is here for the
+# password path, not because its coder fields are in the clear.
+_UNCOMPRESSED_HEADER_SPECS: tuple[tuple[str, tuple[str, ...], str], ...] = (
+    ("copy", ("-mhc=off", "-m0=Copy"), "one"),
+    ("lzma2", ("-mhc=off", "-m0=LZMA2", "-md=1m"), "one"),
+    ("bcj", ("-mhc=off", "-m0=LZMA2", "-m1=BCJ", "-md=1m"), "one"),
+    ("delta", ("-mhc=off", "-m0=LZMA2", "-m1=Delta:4", "-md=1m"), "one"),
+    (
+        "bcj2",
+        (
             "-mhc=off",
             "-m0=BCJ2",
             "-m1=LZMA2",
@@ -572,26 +563,52 @@ def _uncompressed_header_sevenzip_seeds(tmp: Path) -> list[bytes]:
             "-mb0s1:2",
             "-mb0s2:3",
             "-md=1m",
-        ],
-        ["-mhc=off", "-m0=ARM64", "-m1=Copy"],
-        ["-mhc=off", "-m0=PPMd:mem=8m"],
-        ["-mhc=off", "-mhe=on", "-ppassword", "-m0=LZMA2", "-md=1m"],
-        ["-mhc=off", "-ms=on", "-m0=LZMA2", "-md=1m"],
-    ]
-    out: list[bytes] = []
-    for index, switches in enumerate(specs):
-        archive = tmp / f"filter-{index}.7z"
-        inputs = [payload.name, other.name] if "-ms=on" in switches else [payload.name]
-        result = subprocess.run(
-            ["7z", "a", "-y", "-bd", *switches, archive.name, *inputs],
+        ),
+        "one",
+    ),
+    ("arm64", ("-mhc=off", "-m0=ARM64", "-m1=Copy"), "one"),
+    ("ppmd", ("-mhc=off", "-m0=PPMd:mem=8m"), "one"),
+    ("aes", ("-mhc=off", "-mhe=on", "-ppassword", "-m0=LZMA2", "-md=1m"), "one"),
+    ("solid", ("-mhc=off", "-ms=on", "-m0=LZMA2", "-md=1m"), "both"),
+)
+
+
+def _uncompressed_header_sevenzip_archives(tmp: Path) -> list[tuple[str, bytes]]:
+    """``(name, bytes)`` for each spec in :data:`_UNCOMPRESSED_HEADER_SPECS`.
+
+    A missing ``7z`` returns an empty list. A spec ``7z`` rejects is omitted and
+    its switches and stderr are written to stderr, so the loss is not silent.
+    """
+    if shutil.which("7z") is None:
+        return []
+    payload = tmp / "code.bin"
+    payload.write_bytes(_x86_like())
+    other = tmp / "other.bin"
+    other.write_bytes(b"second member\n" * 32)
+    out: list[tuple[str, bytes]] = []
+    for name, switches, which in _UNCOMPRESSED_HEADER_SPECS:
+        archive = tmp / f"{name}.7z"
+        inputs = [payload.name, other.name] if which == "both" else [payload.name]
+        result = run_7z(
+            ["a", "-y", "-bd", *switches, archive.name, *inputs],
             cwd=tmp,
-            capture_output=True,
-            stdin=subprocess.DEVNULL,
             check=False,
         )
         if result.returncode == 0 and archive.is_file():
-            out.append(archive.read_bytes())
+            out.append((name, archive.read_bytes()))
+            continue
+        detail = result.stderr.decode("utf-8", "replace").strip()
+        print(
+            f"7z seed {name} was not built ({result.returncode}): "
+            f"{' '.join(switches)}\n{detail}",
+            file=sys.stderr,
+        )
     return out
+
+
+def _uncompressed_header_sevenzip_seeds(tmp: Path) -> list[bytes]:
+    """The archives from :func:`_uncompressed_header_sevenzip_archives`, bytes only."""
+    return [blob for _name, blob in _uncompressed_header_sevenzip_archives(tmp)]
 
 
 def _compressed_tar_seeds() -> list[bytes]:
@@ -675,10 +692,13 @@ def filter_seeds() -> list[bytes]:
     """One seed per filter kind, plus a BCJ2 split with a declared output size.
 
     Byte 0 selects the filter. The rest is payload, except the BCJ2 seed, whose
-    next twelve bytes are four split weights and an output size.
+    next twelve bytes are four split weights and an output size. The kind count
+    is the one ``filters_one`` uses.
     """
+    from tests.atheris_fuzz.targets import FILTER_KIND_COUNT
+
     sample = _x86_like(2048)
-    seeds = [b"", *(bytes([kind]) + sample for kind in range(9))]
+    seeds = [b"", *(bytes([kind]) + sample for kind in range(FILTER_KIND_COUNT))]
     weights = b"\x40\x00\x10\x00\x10\x00\x08\x00"
     unpack = (4096).to_bytes(4, "little")
     seeds.append(bytes([0]) + weights + unpack + sample)

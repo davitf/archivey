@@ -464,16 +464,15 @@ def _tar_block_checksum(block: bytes) -> int:
 
 
 def fixup_tar_header_checksums(data: bytes, *, broken: bool | None = None) -> bytes:
-    """Recompute every ustar header checksum (or leave them all wrong).
+    """Recompute the checksum of every block whose magic starts with ``ustar``.
 
-    A block counts as a header when its magic starts with ``ustar``, which covers
-    POSIX and old GNU. A data block is not rewritten: its bytes at the checksum
-    offset are file contents once a member is longer than 148 bytes. A v7 header
-    has no magic, so it is left alone too. Zero blocks stay zero: two of them are
-    the end marker, and rewriting one would turn the end of the archive into
-    another member. A partial trailing block is left alone. Broken mode writes a
-    sum that is off by one, so the field is still a number and the reject path is
-    the checksum check.
+    That magic is POSIX and old GNU. A data block is rewritten too when those
+    five bytes sit at offset 257: the fuzzer can plant them, and the eight
+    checksum bytes then replace payload. A v7 header has no magic, so it is left
+    alone. Zero blocks stay zero: two of them are the end marker, and rewriting
+    one would turn the end of the archive into another member. A partial trailing
+    block is left alone. Broken mode writes a sum that is off by one, so the
+    field is still a number and the reject path is the checksum check.
     """
     if len(data) < _TAR_BLOCK:
         return data

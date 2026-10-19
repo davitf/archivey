@@ -816,9 +816,12 @@ def test_a_zip64_record_size_past_the_file_is_truncation() -> None:
     eocd = data.rindex(b"PK\x05\x06")
     huge = struct.pack("<4sQ", b"PK\x06\x06", (1 << 64) - 1)
     body = data[:eocd] + huge + data[eocd:] + b"\x00" * (1 << 17)
-    with pytest.raises(TruncatedError, match="central directory"):
+    with pytest.raises(
+        TruncatedError, match="ZIP64 end of central directory"
+    ) as raised:
         with open_archive(io.BytesIO(body)) as reader:
             list(reader)
+    assert str((1 << 64) - 1) in str(raised.value)
 
 
 def test_a_digital_signature_record_is_not_stepped_over() -> None:

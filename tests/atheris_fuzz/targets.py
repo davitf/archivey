@@ -76,6 +76,7 @@ from tests.atheris_fuzz.seeds import (
     zstd_seeds,
 )
 from tests.detection_cost_util import within_budget
+from tests.streams_util import NonSeekableBytesIO
 
 # 64 MiB, not the 2 GiB default. A mutated 7z or ZIP can declare a dictionary of
 # that default, and the read below would reserve it. Real seeds in this harness
@@ -202,7 +203,7 @@ def _zip_seekable(data: bytes) -> None:
 def _zip_forward(data: bytes) -> None:
     try:
         with open_archive(
-            _Unseekable(data),
+            NonSeekableBytesIO(data),
             format=ArchiveFormat.ZIP,
             streaming=True,
             config=_FUZZ_CONFIG,
@@ -298,26 +299,6 @@ def rar_open_one(data: bytes) -> None:
         return
 
 
-class _Unseekable(io.RawIOBase):
-    """A pipe over a fixed buffer. ``seekable()`` is false, so ZIP opens forward."""
-
-    def __init__(self, data: bytes) -> None:
-        self._data = data
-        self._pos = 0
-
-    def readable(self) -> bool:
-        return True
-
-    def seekable(self) -> bool:
-        return False
-
-    def readinto(self, b: bytearray | memoryview) -> int:  # type: ignore[override]
-        n = min(len(b), len(self._data) - self._pos)
-        b[:n] = self._data[self._pos : self._pos + n]
-        self._pos += n
-        return n
-
-
 def _sample_seekable(arc: ArchiveReader, *, max_reads: int, max_bytes: int) -> None:
     """List up to ``_MAX_MEMBERS`` and read the first file members."""
     reads = 0
@@ -359,13 +340,10 @@ def _exercise_hit_validators(data: bytes) -> None:
         return data[:n]
 
     known = len(data)
-    try:
-        for remaining in (known, None):
-            validate_zip_local_header(peek_more, remaining)
-            validate_rar_main_header(peek_more, remaining)
-            validate_sevenzip_signature_header(peek_more, remaining)
-    except ArchiveyError:
-        return
+    for remaining in (known, None):
+        validate_zip_local_header(peek_more, remaining)
+        validate_rar_main_header(peek_more, remaining)
+        validate_sevenzip_signature_header(peek_more, remaining)
 
 
 # Containers that can be read from a pipe. 7z, RAR and ISO refuse one.
@@ -407,7 +385,7 @@ def open_detected_one(data: bytes) -> None:
     _open_sampled(io.BytesIO(data), streaming=False, config=config, password=password)
     if container in _PIPE_CONTAINERS:
         _open_sampled(
-            _Unseekable(data), streaming=True, config=config, password=password
+            NonSeekableBytesIO(data), streaming=True, config=config, password=password
         )
     if (
         container is ContainerFormat.TAR
@@ -456,6 +434,9 @@ _LIBLZMA_BRANCHES = (
     lzma.FILTER_ARMTHUMB,
     lzma.FILTER_SPARC,
 )
+# Byte 0 of a filter input selects one of these: BCJ2, ARM64, Delta, then each
+# liblzma branch. ``filter_seeds`` builds one seed per value.
+FILTER_KIND_COUNT = 3 + len(_LIBLZMA_BRANCHES)
 
 
 def filters_one(data: bytes) -> None:
@@ -467,7 +448,7 @@ def filters_one(data: bytes) -> None:
     """
     if not data:
         return
-    kind = data[0] % (3 + len(_LIBLZMA_BRANCHES))
+    kind = data[0] % FILTER_KIND_COUNT
     body = data[1:]
     try:
         if kind == 0:
@@ -508,7 +489,7 @@ def _fuzz_bcj2(body: bytes) -> None:
 def _split4(data: bytes, weights: list[int]) -> list[bytes]:
     if not data:
         return [b"", b"", b"", b""]
-    usable = [weight if weight > 0 else 0 for weight in weights]
+    usable = list(weights)
     if sum(usable) == 0:
         usable = [1, 1, 1, 1]
     total = sum(usable)
@@ -829,7 +810,9 @@ def iter_target_specs() -> list[dict]:
             "fn": zip_open_one,
             "seeds": zip_seeds,
             "fixup": None,  # CRC fixup applied inside zip_open_one
-            "per_input_timeout": None,
+            # Seekable and pipe opens both decode members. A spin there has to
+            # die inside the slice, the same as the other read targets.
+            "per_input_timeout": stream_timeout,
         },
         {
             "name": "tar",

@@ -8,17 +8,20 @@ exist to reach: an SFX payload, a ZIP pipe, a UDIF refusal, a filter decode.
 from __future__ import annotations
 
 import io
+import shutil
 import zipfile
 from pathlib import Path
 
 import pytest
 
 from archivey import ArchiveFormat, ArchiveyError, open_archive
+from archivey.internal.streams.codecs import Codec, is_codec_available
 from tests.atheris_fuzz import TARGET_NAMES
 from tests.atheris_fuzz.seeds import (
+    _UNCOMPRESSED_HEADER_SPECS,
     _compressed_tar_seeds,
     _koly_block,
-    _uncompressed_header_sevenzip_seeds,
+    _uncompressed_header_sevenzip_archives,
     filter_seeds,
     open_detected_seeds,
 )
@@ -76,13 +79,22 @@ def test_sevenzip_open_reads_an_uncompressed_header(tmp_path: Path) -> None:
 
     Header compression would hide a coder-field mutation behind a failed
     decompress. These seeds are the ones that keep the coder graph reachable,
-    and the open target has to actually decode them.
+    and the open target has to actually decode them. The ``aes`` seed encrypts
+    its header; the password candidates still read it. PPMd needs ``pyppmd``,
+    which a core-only install does not have, so that one seed is built and not
+    decoded there.
     """
-    blobs = _uncompressed_header_sevenzip_seeds(tmp_path)
-    if not blobs:
-        pytest.skip("7z CLI cannot write the filter seeds")
-    for blob in blobs:
+    built = _uncompressed_header_sevenzip_archives(tmp_path)
+    if not built and shutil.which("7z") is None:
+        pytest.skip("7z CLI is not on PATH")
+    assert [name for name, _blob in built] == [
+        name for name, _switches, _which in _UNCOMPRESSED_HEADER_SPECS
+    ]
+    ppmd = is_codec_available(Codec.PPMD)
+    for name, blob in built:
         sevenzip_open_one(blob)
+        if name == "ppmd" and not ppmd:
+            continue
         with open_archive(
             io.BytesIO(blob),
             format=ArchiveFormat.SEVEN_Z,
@@ -105,7 +117,9 @@ def test_open_detected_seeds_stay_inside_the_typed_error_contract() -> None:
 
 
 def test_workflow_sets_a_budget_for_every_atheris_target() -> None:
-    text = Path(".github/workflows/atheris-fuzz.yml").read_text(encoding="utf-8")
+    text = (
+        Path(__file__).resolve().parents[1] / ".github/workflows/atheris-fuzz.yml"
+    ).read_text(encoding="utf-8")
     missing = [
         name
         for name in TARGET_NAMES

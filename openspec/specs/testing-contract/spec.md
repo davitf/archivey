@@ -352,27 +352,30 @@ The default main-branch / nightly run SHALL partition wall-clock budget across t
 targets below (exact seconds MAY be env-overridable). The partition MUST size the
 total budget to include every required stream/codec target — there is no hard short
 ceiling that permits dropping those slices. `workflow_dispatch` MAY lengthen
-budgets further.
+budgets further. A target that reads archive members or a filter payload MUST
+use a per-input wall-clock kill timeout.
 
 | Target | Role |
 | --- | --- |
 | Native 7z header parse | Deep coverage of the pure-Python header parser. Seeds MUST include archives whose next header is not compressed, so a mutation of a coder field is still a header |
-| 7z `open_archive` + member list + bounded member `open`/`read` | Reader/spine path after parse, including the coder pipeline, solid folders, AES and branch/Delta filters. MUST pass password candidates. MUST use a per-input wall-clock kill timeout |
+| 7z `open_archive` + member list + bounded member `open`/`read` | Reader/spine path after parse, including the coder pipeline, solid folders, AES and branch/Delta filters. MUST pass password candidates |
 | `detect_format` over arbitrary/prefix seeds | Magic/peek-replay entry point. Each input MUST also be offered to the ZIP, RAR and 7z SFX hit validators, once with a known remaining length and once with an unknown length |
 | ZIP `open_archive` + member list + bounded member `open`/`read` | Wrapper + native codec/AES read path; mutate local/CD headers and compressed content with CRC fixup. A second open MUST use a non-seekable source and `streaming=True`, so the forward reader walks local headers and data descriptors |
-| TAR `open_archive` + member list + bounded member read | Header checksum mutate-then-fixup, then the walk, including PAX/GNU extended headers and sparse maps when the seed has them. MUST use a per-input wall-clock kill timeout |
+| TAR `open_archive` + member list + bounded member read | Header checksum mutate-then-fixup, then the walk, including PAX/GNU extended headers and sparse maps when the seed has them |
 | ISO `open_archive` + member list + bounded file read | Shallow; MUST use a hard wall-clock kill timeout |
 | Native RAR header parse | Deep coverage of the pure-Python RAR3/RAR5 metadata parser (CRC mutate-then-fixup) |
-| RAR `open_archive` + member list + bounded member read | Reader/spine path after parse, including the external decoder. MUST pass password candidates. MUST use a per-input wall-clock kill timeout |
-| `open_archive` with format detection, then a bounded member read | SFX payload offset, the single-file reader, compressed tar, and UDIF refusal. A pipe pass MUST run when the detected format can be read from a non-seekable source. MUST use a per-input wall-clock kill timeout |
-| Filter decoders (BCJ2, ARM64, Delta, liblzma branch filters) | Hostile payloads for filters a container mutation does not assemble. MUST use a per-input wall-clock kill timeout |
+| RAR `open_archive` + member list + bounded member read | Reader/spine path after parse, including the external decoder. MUST pass password candidates |
+| `open_archive` with format detection, then a bounded member read | SFX payload offset, the single-file reader, compressed tar, and UDIF refusal. A pipe pass MUST run when the detected format can be read from a non-seekable source |
+| Filter decoders (BCJ2, ARM64, Delta, liblzma branch filters) | Hostile payloads for filters a container mutation does not assemble |
 | Stream/codec: unix-compress, xz, lzip, gzip, bzip2, lzma-alone, zlib | Direct `open_codec_stream` hostile input per standalone archivey-owned codec; seekable indexing on when the codec supports it; MUST use a per-input wall-clock kill timeout when hang classes are known |
 | Stream/codec optional extras (zstd, brotli, lz4, deflate64) | Same pattern when the backend is installed; skip-clean when absent |
 | Accelerators: gzip, zlib, raw DEFLATE (rapidgzip), bzip2 (rapidgzip's bzip2 decoder) | Accelerator `ON` against `OFF` on the same input; skip-clean when the accelerator cannot run |
 
 The Atheris CI workflow SHALL install RARLAB `unrar` on Linux so the RAR
 open+list target is not skipped solely for missing decompressor binary. RAR
-targets MAY still skip cleanly when the RAR backend is not registered.
+targets MAY still skip cleanly when the RAR backend is not registered. The
+workflow SHALL install `7z` and check that `7z i` lists ARM64, so the
+clear-header 7z seeds, including the ARM64 coder, are built.
 
 Full member **extract** remains out of scope for this harness (covered by the
 mutation harness). Filter-only codecs (BCJ, Delta) are not required as standalone
