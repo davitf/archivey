@@ -24,7 +24,11 @@ first, and `AccessCost.DIRECT` when archivey can jump straight to it. Its `listi
 listing the members takes. It's `ListingCost.INDEXED` when the archive keeps a list of its members,
 as ZIP and 7z do. It's `ListingCost.REQUIRES_SCANNING` when archivey has to jump from one member's
 header to the next, as in a plain `.tar` or a RAR. It's `ListingCost.REQUIRES_DECOMPRESSION` when
-the headers are inside compressed data, as in a `.tar.gz`.
+the headers are inside compressed data, as in a `.tar.gz`. Its `stream_capability` is
+`StreamCapability.SEEKABLE` when the source you opened can seek, and
+`StreamCapability.FORWARD_ONLY` when it can only be read forward, as a pipe. `archive.cost` is
+worked out once, when the archive opens. It describes what each kind of read costs, but it never
+allows or refuses one: the options below do that.
 
 ## Reading once
 

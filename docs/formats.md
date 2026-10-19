@@ -152,10 +152,15 @@ yielded.
   passwords, a member is confirmed on its first 1 MiB, and when more than one candidate
   is still possible after that, the first one is used.
 - Where a pipe and a file differ, on archives no writer produces or damaged ones: a
-  data descriptor that disagrees with the central directory, a local header the
-  directory contradicts, or two same-named members whose directory order reverses their
-  file order make the member fail at the end of the pass (`CorruptionError`), where a
-  read from a file writes it.
+  data descriptor that disagrees with the central directory, or a local header the
+  directory contradicts, makes the pass raise `CorruptionError` for that member once it
+  reaches the directory, where a read from a file reads it. Two same-named members whose
+  directory order reverses their file order list and stream from a pipe as from a file,
+  but extraction from a pipe raises `CorruptionError` for that name, where extraction
+  from a file writes the copy the directory lists last.
+- The pass reads the pipe to its end before it reads the directory, so it ends, and the
+  members are final, only when the sender closes the pipe. A sender that keeps the pipe
+  open after the ZIP keeps the pass waiting after the last member.
 - **A member whose local header disagrees with the central directory on its name, or
   stores a real CRC-32 where the directory stores 0, is read**, from a file and a pipe
   alike, as `unzip` reads it. The directory's name is used, reported as
@@ -235,7 +240,7 @@ yielded.
   (unencrypted or ZipCrypto), ``DIGEST_UNVERIFIABLE`` says the bytes come back
   unchecked, while a WinZip AES entry (AE-1 or AE-2) has its HMAC check the bytes, so
   nothing is reported for it.
-  Strict refuses the archive. A directory declaring size 0 over a body larger than
+  `DiagnosticPolicy.STRICT` refuses an archive with such a directory. A directory declaring size 0 over a body larger than
   an empty one of its method is reported too (``read()`` has nothing to return for it);
   the Java ``jar`` tool's deflated empty directory body (compressed size 2, size 0) is
   not.
@@ -264,7 +269,7 @@ yielded.
   bytes are valid UTF-8, and otherwise uses the `encoding=` you passed to `open_archive`, or without
   one a configurable legacy encoding (`ArchiveyConfig.zip_unflagged_fallback_encoding`, default
   `cp437`). When UTF-8 is inferred for an unflagged name, a `member_name_encoding_inferred`
-  diagnostic records it. So `encoding=` decodes only the unflagged names that are not valid UTF-8,
+  diagnostic records it, and `DiagnosticPolicy.STRICT` refuses it. So `encoding=` decodes only the unflagged names that are not valid UTF-8,
   unlike Python's `zipfile` `metadata_encoding` or `unzip -O`, which apply to every unflagged name.
   Comments decode the same way: a member comment follows its name's flag (a flag the name's bytes
   refute counts as unset for the comment too), and the archive comment, which has no flag, decodes
@@ -480,7 +485,10 @@ yielded.
   when confirmation stopped at its 64 KiB budget without reaching a CRC, the member's own
   CRC at EOF is the only check, and a stream closed before EOF skips it.
 - **Header-encrypted wrong password:** a decoded header with zero file records is
-  rejected as `EncryptionError` (never a silent empty listing).
+  rejected as `EncryptionError` (never a silent empty listing). 7z's AES has no password
+  check value, so the header's CRC is what catches a wrong password. 7-Zip stores that
+  CRC; `py7zr` doesn't, and for its archives a wrong password can, rarely, decode to a
+  header that parses with members in it, and that garbage listing is returned.
 - **Bytes after the archive's end** (its next header or its last packed stream,
   whichever is later) are reported as `ARCHIVE_TRAILING_DATA` with `format="7z"`: a
   warning under the default policy, raised under `STRICT`. Zero padding passes,
@@ -514,7 +522,9 @@ yielded.
   Everything else needs RARLAB `unrar` or `rar` **6.0 or later** on `PATH` (not `unrar-free` or
   `7z`). `unrar` is preferred when both exist. By default, when neither is found, archivey uses
   `unar` 1.10 or later if it is installed; see the next item. `unrar` gets passwords as bare `-p`
-  with the secret on stdin (not in argv). Archivey passes a password to `unrar` or `unar` only when
+  with the secret on stdin (not in argv). `unrar` reads that password as one line and drops
+  anything after a line break or a NUL character, so a password containing either raises
+  `UnsupportedFeatureError` instead of being cut short. Archivey passes a password to `unrar` or `unar` only when
   the read needs it: the member is encrypted, the headers are, or an encrypted member comes before
   it in a solid archive. A stored, encrypted member split across volumes, and any member encrypted
   with the RAR 2.0 cipher (archives from RAR 2.0 to 2.8), still need `unrar` or `unar`: each part of

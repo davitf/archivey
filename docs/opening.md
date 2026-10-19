@@ -12,8 +12,8 @@ archive. A RAR set with a volume missing still opens, as `unrar` would, but `mem
 `TruncatedError` naming the missing volume, and so does reading a member with data in it.
 
 A file object is read from its current position to its end, so an archive that starts partway
-through a larger file opens as is. Bytes after the archive don't stop it opening. They're recorded
-as `ARCHIVE_TRAILING_DATA`, which `DiagnosticPolicy.STRICT` turns into an exception. Behind more
+through a larger file opens as is. Bytes after the archive don't stop it opening. Any that aren't
+zeros are recorded as `ARCHIVE_TRAILING_DATA`, which `DiagnosticPolicy.STRICT` turns into an exception. Behind more
 than 64 KiB of them, a ZIP's index is found by walking its members from the start, which takes
 longer. A file object that can't seek, such as a pipe or an HTTP response, needs `streaming=True`
 and works only for some formats, which [Reading once](reading.md#reading-once) lists.

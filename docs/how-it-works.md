@@ -32,8 +32,9 @@ archive can result in wrong data but can't corrupt memory.
 Its own parsers mean every format follows the same rules for metadata, and any archive, solid ones
 included, can be read in a single forward pass with `stream_members()`.
 
-In archivey's tests, the 7z and RAR parsers are checked against py7zr, rarfile and `unrar`,
-comparing both metadata and bytes. Archivey never imports py7zr or rarfile at run time. For each
+In archivey's tests, the ZIP, 7z and RAR parsers are checked against zipfile, py7zr, rarfile and
+`unrar`, comparing both metadata and bytes. Archivey never imports zipfile, py7zr or rarfile at run
+time. For each
 format's details, see the [format
 handbooks](https://github.com/davitf/archivey/tree/main/dev-docs/formats) and the [library
 analysis](https://github.com/davitf/archivey/blob/main/dev-docs/library-analysis.md), both written
