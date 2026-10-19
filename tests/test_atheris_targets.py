@@ -7,6 +7,7 @@ exist to reach: an SFX payload, a ZIP pipe, a UDIF refusal, a filter decode.
 
 from __future__ import annotations
 
+import importlib.util
 import io
 import shutil
 import zipfile
@@ -18,12 +19,12 @@ from archivey import ArchiveFormat, ArchiveyError, open_archive
 from archivey.internal.streams.codecs import Codec, is_codec_available
 from tests.atheris_fuzz import TARGET_NAMES
 from tests.atheris_fuzz.seeds import (
-    _UNCOMPRESSED_HEADER_SPECS,
     _compressed_tar_seeds,
     _koly_block,
     _uncompressed_header_sevenzip_archives,
     filter_seeds,
     open_detected_seeds,
+    uncompressed_header_spec_names,
 )
 from tests.atheris_fuzz.targets import (
     filters_one,
@@ -80,20 +81,20 @@ def test_sevenzip_open_reads_an_uncompressed_header(tmp_path: Path) -> None:
     Header compression would hide a coder-field mutation behind a failed
     decompress. These seeds are the ones that keep the coder graph reachable,
     and the open target has to actually decode them. The ``aes`` seed encrypts
-    its header; the password candidates still read it. PPMd needs ``pyppmd``,
-    which a core-only install does not have, so that one seed is built and not
-    decoded there.
+    its header; the password candidates still read it when ``cryptography`` is
+    installed. PPMd needs ``pyppmd``. A core-only install has neither, so those
+    seeds are built and not decoded there. ARM64 is required only when this
+    ``7z`` lists the filter.
     """
     built = _uncompressed_header_sevenzip_archives(tmp_path)
     if not built and shutil.which("7z") is None:
         pytest.skip("7z CLI is not on PATH")
-    assert [name for name, _blob in built] == [
-        name for name, _switches, _which in _UNCOMPRESSED_HEADER_SPECS
-    ]
+    assert [name for name, _blob in built] == uncompressed_header_spec_names()
     ppmd = is_codec_available(Codec.PPMD)
+    aes = importlib.util.find_spec("cryptography") is not None
     for name, blob in built:
         sevenzip_open_one(blob)
-        if name == "ppmd" and not ppmd:
+        if (name == "ppmd" and not ppmd) or (name == "aes" and not aes):
             continue
         with open_archive(
             io.BytesIO(blob),

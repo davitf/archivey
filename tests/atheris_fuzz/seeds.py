@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import base64
+import functools
 import gzip
 import io
 import lzma
+import re
 import shutil
 import sys
 import tarfile
@@ -573,11 +575,39 @@ _UNCOMPRESSED_HEADER_SPECS: tuple[tuple[str, tuple[str, ...], str], ...] = (
 )
 
 
+@functools.cache
+def _7z_lists_arm64() -> bool:
+    """Whether this ``7z`` can write ``-m0=ARM64``.
+
+    p7zip 16.02, Homebrew's ``7z`` on macOS, predates the filter and exits 2 on
+    that switch. 7-Zip 23 and later list ARM64 in ``7z i``.
+    """
+    if shutil.which("7z") is None:
+        return False
+    listing = run_7z(["i"], text=True).stdout
+    return re.search(r"\bARM64\b", listing) is not None
+
+
+def uncompressed_header_spec_names() -> list[str]:
+    """Spec names this ``7z`` is expected to build.
+
+    ARM64 is required only when ``7z i`` lists it. Every other spec is required
+    whenever ``7z`` is on PATH.
+    """
+    arm64 = _7z_lists_arm64()
+    return [
+        name
+        for name, _switches, _which in _UNCOMPRESSED_HEADER_SPECS
+        if name != "arm64" or arm64
+    ]
+
+
 def _uncompressed_header_sevenzip_archives(tmp: Path) -> list[tuple[str, bytes]]:
-    """``(name, bytes)`` for each spec in :data:`_UNCOMPRESSED_HEADER_SPECS`.
+    """``(name, bytes)`` for each spec in :func:`uncompressed_header_spec_names`.
 
     A missing ``7z`` returns an empty list. A spec ``7z`` rejects is omitted and
     its switches and stderr are written to stderr, so the loss is not silent.
+    ARM64 is not attempted when this ``7z`` does not list the filter.
     """
     if shutil.which("7z") is None:
         return []
@@ -585,8 +615,11 @@ def _uncompressed_header_sevenzip_archives(tmp: Path) -> list[tuple[str, bytes]]
     payload.write_bytes(_x86_like())
     other = tmp / "other.bin"
     other.write_bytes(b"second member\n" * 32)
+    wanted = set(uncompressed_header_spec_names())
     out: list[tuple[str, bytes]] = []
     for name, switches, which in _UNCOMPRESSED_HEADER_SPECS:
+        if name not in wanted:
+            continue
         archive = tmp / f"{name}.7z"
         inputs = [payload.name, other.name] if which == "both" else [payload.name]
         result = run_7z(
