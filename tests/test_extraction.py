@@ -52,7 +52,6 @@ from archivey.internal.extraction import (
     _CHUNK,
     BombTracker,
     ExtractionCoordinator,
-    _AlwaysStopExtractionError,
     _AlwaysStopResourceLimitError,
 )
 from archivey.internal.filters import (
@@ -63,6 +62,7 @@ from archivey.internal.filters import (
     transform_standard,
     transform_strict,
 )
+from archivey.internal.link_watch import LinkWatch
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.types import ArchiveFormat, ArchiveInfo, ArchiveMember, MemberType
 from tests.conftest import case_sensitive
@@ -599,9 +599,6 @@ def test_entry_count_independent_of_bytes() -> None:
     t.start_member(_member("a"))
     with pytest.raises(_AlwaysStopResourceLimitError):
         t.start_member(_member("b"))  # trips on count, not bytes
-
-    # Alias still resolves for older imports.
-    assert _AlwaysStopExtractionError is _AlwaysStopResourceLimitError
 
 
 def test_bomb_tracker_member_bytes_mirrors_count() -> None:
@@ -2891,6 +2888,42 @@ def test_orphan_first_link_skipped_writes_to_next(tmp_path: Path) -> None:
     assert not (dest / "A.txt").exists()  # excluded source never materialized by name
 
 
+def test_orphan_link_failing_after_the_content_was_placed_fails_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The second pass writes the excluded source's content at L1, then links L2 to
+    # it. A failure linking L2 is L2's own: L1's content is on disk, so L1 stays
+    # EXTRACTED and no failure group joins the two.
+    src = _orphan_tar(tmp_path, ["L1.txt", "L2.txt"])
+    dest = tmp_path / "out"
+    calls: list[str] = []
+    resolve = ExtractionCoordinator._resolve_collision
+
+    def fail_in_second_pass(
+        self: ExtractionCoordinator, original: ArchiveMember, *args: object
+    ) -> object:
+        # L2's destination is resolved once in each pass.
+        calls.append(original.name)
+        if original.name == "L2.txt" and calls.count("L2.txt") == 2:
+            raise OSError(errno.EIO, "injected")
+        return resolve(self, original, *args)
+
+    monkeypatch.setattr(
+        ExtractionCoordinator, "_resolve_collision", fail_in_second_pass
+    )
+    with open_archive(src) as r:
+        results = r.extract_all(
+            dest, members=["L1.txt", "L2.txt"], on_error=OnError.CONTINUE
+        ).results
+
+    by_name = {res.member.name: res for res in results}
+    assert by_name["L1.txt"].status is ExtractionStatus.EXTRACTED
+    assert (dest / "L1.txt").read_bytes() == b"hello world"
+    assert calls.count("L2.txt") == 2
+    assert by_name["L2.txt"].status is ExtractionStatus.FAILED
+    assert by_name["L2.txt"].failure_group_id is None
+
+
 def test_orphan_all_links_skipped_writes_nothing(tmp_path: Path) -> None:
     # Companion to the above: when EVERY selected link's destination already exists under
     # SKIP, all links are recorded NOT_OVERWRITTEN, existing files stay untouched, and no stray
@@ -4994,6 +5027,10 @@ def test_anti_delete_releases_the_collision_claim(tmp_path: Path) -> None:
         dest=dest,
         dest_root=dest.resolve(),
         tracker=BombTracker(None, None),
+        # An anti-item does not read the reader. It writes to the link watch only
+        # when it removes a symlink, and these remove none, so a fresh one is enough.
+        reader=cast("BaseArchiveReader", SimpleNamespace()),
+        links=LinkWatch(dest.resolve(), None),
         written_paths=written_paths,
         collision_map=collision_map,
     )
@@ -5023,6 +5060,10 @@ def test_anti_no_op_leaves_an_unrelated_claim_alone(tmp_path: Path) -> None:
         dest=dest,
         dest_root=dest.resolve(),
         tracker=BombTracker(None, None),
+        # An anti-item does not read the reader. It writes to the link watch only
+        # when it removes a symlink, and these remove none, so a fresh one is enough.
+        reader=cast("BaseArchiveReader", SimpleNamespace()),
+        links=LinkWatch(dest.resolve(), None),
         written_paths=set(),
         collision_map=collision_map,
     )
@@ -5057,6 +5098,10 @@ def test_anti_item_finds_a_case_variant_through_the_collision_map(
         dest=dest,
         dest_root=dest.resolve(),
         tracker=BombTracker(None, None),
+        # An anti-item does not read the reader. It writes to the link watch only
+        # when it removes a symlink, and these remove none, so a fresh one is enough.
+        reader=cast("BaseArchiveReader", SimpleNamespace()),
+        links=LinkWatch(dest.resolve(), None),
         written_paths=written_paths,
         collision_map=collision_map,
     )
@@ -5092,6 +5137,10 @@ def test_anti_item_is_exact_under_trusted(tmp_path: Path) -> None:
         dest=dest,
         dest_root=dest.resolve(),
         tracker=BombTracker(None, None),
+        # An anti-item does not read the reader. It writes to the link watch only
+        # when it removes a symlink, and these remove none, so a fresh one is enough.
+        reader=cast("BaseArchiveReader", SimpleNamespace()),
+        links=LinkWatch(dest.resolve(), None),
         written_paths=written_paths,
         collision_map=collision_map,
     )
@@ -5128,6 +5177,10 @@ def test_anti_item_prefers_the_exact_directory_it_names(tmp_path: Path) -> None:
         dest=dest,
         dest_root=dest.resolve(),
         tracker=BombTracker(None, None),
+        # An anti-item does not read the reader. It writes to the link watch only
+        # when it removes a symlink, and these remove none, so a fresh one is enough.
+        reader=cast("BaseArchiveReader", SimpleNamespace()),
+        links=LinkWatch(dest.resolve(), None),
         written_paths=written_paths,
         collision_map=collision_map,
     )
