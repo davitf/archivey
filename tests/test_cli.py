@@ -22,6 +22,8 @@ from archivey import (
     MemberPass,
     MissingComponent,
     OverwritePolicy,
+    format_availability,
+    list_known_formats,
     open_archive,
 )
 from archivey.cli import test_cmd
@@ -33,6 +35,7 @@ from archivey.cli.exit_codes import (
     EXIT_USAGE,
 )
 from archivey.cli.extract_cmd import _report_extraction
+from archivey.cli.format import format_format_label
 from archivey.cli.info_cmd import _can_reread
 from archivey.cli.main import _inject_default_list, _parse_cli_args, build_parser, main
 from archivey.diagnostics import DiagnosticSummary
@@ -161,18 +164,22 @@ def test_version_verbose_names_each_install_hint_once() -> None:
 def test_version_verbose_never_repeats_an_install_hint(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Each printed ``— missing`` line names every install hint once.
+    """Each format's printed line names each of its install hints exactly once.
 
-    Vacuous on a full install (no line is missing anything); real on the core-only
-    legs, where the recommended-extra packages must share one hint.
+    Vacuous on a full install (nothing is missing); real on the core-only legs, where
+    the recommended-extra packages must share one hint. Hints are free text (unrar's
+    is a whole refusal with ``;`` and parentheses), so count them, don't parse them.
     """
     assert main(["--version", "-v"]) == EXIT_OK
-    for line in capsys.readouterr().out.splitlines():
-        if " — missing " not in line:
+    lines = capsys.readouterr().out.splitlines()
+    for fmt in list_known_formats():
+        hints = {m.install_hint for m in format_availability(fmt).missing}
+        if not hints:
             continue
-        groups = line.split(" — missing ", 1)[1].split("; ")
-        hints = [group[group.index(" (") + 2 : -1] for group in groups]
-        assert len(hints) == len(set(hints)), line
+        prefix = f"  {format_format_label(fmt)}: "
+        line = next(ln for ln in lines if ln.startswith(prefix))
+        for hint in hints:
+            assert line.count(hint) == 1, line
 
 
 def test_default_list_dispatch(
