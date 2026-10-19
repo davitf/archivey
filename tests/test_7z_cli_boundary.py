@@ -68,7 +68,7 @@ _UNCONVERTED: dict[str, int] = {
     "test_link_target_cap.py": 1,
     "test_listing_limits.py": 1,
     "test_password.py": 4,
-    "test_sevenzip_arm64.py": 4,
+    "test_sevenzip_arm64.py": 3,
     "test_sevenzip_bcj2.py": 1,
     "test_sevenzip_parser_hardening.py": 1,
     "test_sevenzip_password_confirm.py": 1,

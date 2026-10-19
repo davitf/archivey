@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import base64
-import functools
 import gzip
 import io
 import lzma
-import re
 import shutil
 import sys
 import tarfile
@@ -17,7 +15,7 @@ import zlib
 from collections.abc import Callable
 from pathlib import Path
 
-from tests.conftest import run_7z
+from tests.conftest import run_7z, sevenzip_lists_arm64
 from tests.sample_archives import CORPUS, corpus_archive_path
 
 # Small corpus entry ids that build quickly and cover common layouts.
@@ -548,11 +546,14 @@ def _x86_like(size: int = 4096) -> bytes:
 # still a header. Dictionaries stay at 1 MiB, inside the fuzz decoder cap.
 # ``aes`` is the exception: ``-mhe=on`` encrypts that header. It is here for the
 # password path, not because its coder fields are in the clear.
-_UNCOMPRESSED_HEADER_SPECS: tuple[tuple[str, tuple[str, ...], str], ...] = (
-    ("copy", ("-mhc=off", "-m0=Copy"), "one"),
-    ("lzma2", ("-mhc=off", "-m0=LZMA2", "-md=1m"), "one"),
-    ("bcj", ("-mhc=off", "-m0=LZMA2", "-m1=BCJ", "-md=1m"), "one"),
-    ("delta", ("-mhc=off", "-m0=LZMA2", "-m1=Delta:4", "-md=1m"), "one"),
+# Each row is the seed name, the ``7z`` switches, ``"one"`` or ``"both"``
+# members, and the package a decode of that seed needs. ``None`` decodes with
+# no optional package. The seed is still built when the package is absent.
+_UNCOMPRESSED_HEADER_SPECS: tuple[tuple[str, tuple[str, ...], str, str | None], ...] = (
+    ("copy", ("-mhc=off", "-m0=Copy"), "one", None),
+    ("lzma2", ("-mhc=off", "-m0=LZMA2", "-md=1m"), "one", None),
+    ("bcj", ("-mhc=off", "-m0=LZMA2", "-m1=BCJ", "-md=1m"), "one", None),
+    ("delta", ("-mhc=off", "-m0=LZMA2", "-m1=Delta:4", "-md=1m"), "one", None),
     (
         "bcj2",
         (
@@ -567,44 +568,40 @@ _UNCOMPRESSED_HEADER_SPECS: tuple[tuple[str, tuple[str, ...], str], ...] = (
             "-md=1m",
         ),
         "one",
+        None,
     ),
-    ("arm64", ("-mhc=off", "-m0=ARM64", "-m1=Copy"), "one"),
-    ("ppmd", ("-mhc=off", "-m0=PPMd:mem=8m"), "one"),
-    ("aes", ("-mhc=off", "-mhe=on", "-ppassword", "-m0=LZMA2", "-md=1m"), "one"),
-    ("solid", ("-mhc=off", "-ms=on", "-m0=LZMA2", "-md=1m"), "both"),
+    ("arm64", ("-mhc=off", "-m0=ARM64", "-m1=Copy"), "one", None),
+    ("ppmd", ("-mhc=off", "-m0=PPMd:mem=8m"), "one", "pyppmd"),
+    (
+        "aes",
+        ("-mhc=off", "-mhe=on", "-ppassword", "-m0=LZMA2", "-md=1m"),
+        "one",
+        "cryptography",
+    ),
+    ("solid", ("-mhc=off", "-ms=on", "-m0=LZMA2", "-md=1m"), "both", None),
 )
-
-
-@functools.cache
-def _7z_lists_arm64() -> bool:
-    """Whether this ``7z`` can write ``-m0=ARM64``.
-
-    p7zip 16.02, Homebrew's ``7z`` on macOS, predates the filter and exits 2 on
-    that switch. 7-Zip 23 and later list ARM64 in ``7z i``.
-    """
-    if shutil.which("7z") is None:
-        return False
-    listing = run_7z(["i"], text=True).stdout
-    return re.search(r"\bARM64\b", listing) is not None
 
 
 def uncompressed_header_spec_names() -> list[str]:
     """Spec names this ``7z`` is expected to build.
 
-    ARM64 is required only when ``7z i`` lists it. Every other spec is required
-    whenever ``7z`` is on PATH.
+    ARM64 is required only when :func:`tests.conftest.sevenzip_lists_arm64` is
+    true. Every other spec is required whenever ``7z`` is on PATH.
     """
-    arm64 = _7z_lists_arm64()
+    arm64 = sevenzip_lists_arm64()
     return [
         name
-        for name, _switches, _which in _UNCOMPRESSED_HEADER_SPECS
+        for name, _switches, _which, _package in _UNCOMPRESSED_HEADER_SPECS
         if name != "arm64" or arm64
     ]
 
 
-def _uncompressed_header_sevenzip_archives(tmp: Path) -> list[tuple[str, bytes]]:
-    """``(name, bytes)`` for each spec in :func:`uncompressed_header_spec_names`.
+def _uncompressed_header_sevenzip_archives(
+    tmp: Path,
+) -> list[tuple[str, bytes, str | None]]:
+    """``(name, bytes, package)`` for each spec in :func:`uncompressed_header_spec_names`.
 
+    ``package`` is the optional import a decode of that seed needs, or ``None``.
     A missing ``7z`` returns an empty list. A spec ``7z`` rejects is omitted and
     its switches and stderr are written to stderr, so the loss is not silent.
     ARM64 is not attempted when this ``7z`` does not list the filter.
@@ -616,8 +613,8 @@ def _uncompressed_header_sevenzip_archives(tmp: Path) -> list[tuple[str, bytes]]
     other = tmp / "other.bin"
     other.write_bytes(b"second member\n" * 32)
     wanted = set(uncompressed_header_spec_names())
-    out: list[tuple[str, bytes]] = []
-    for name, switches, which in _UNCOMPRESSED_HEADER_SPECS:
+    out: list[tuple[str, bytes, str | None]] = []
+    for name, switches, which, package in _UNCOMPRESSED_HEADER_SPECS:
         if name not in wanted:
             continue
         archive = tmp / f"{name}.7z"
@@ -628,7 +625,7 @@ def _uncompressed_header_sevenzip_archives(tmp: Path) -> list[tuple[str, bytes]]
             check=False,
         )
         if result.returncode == 0 and archive.is_file():
-            out.append((name, archive.read_bytes()))
+            out.append((name, archive.read_bytes(), package))
             continue
         detail = result.stderr.decode("utf-8", "replace").strip()
         print(
@@ -641,7 +638,9 @@ def _uncompressed_header_sevenzip_archives(tmp: Path) -> list[tuple[str, bytes]]
 
 def _uncompressed_header_sevenzip_seeds(tmp: Path) -> list[bytes]:
     """The archives from :func:`_uncompressed_header_sevenzip_archives`, bytes only."""
-    return [blob for _name, blob in _uncompressed_header_sevenzip_archives(tmp)]
+    return [
+        blob for _name, blob, _package in _uncompressed_header_sevenzip_archives(tmp)
+    ]
 
 
 def _compressed_tar_seeds() -> list[bytes]:

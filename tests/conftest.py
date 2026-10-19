@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import functools
 import importlib.util
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -246,6 +248,23 @@ def run_7z(
         stdin=subprocess.DEVNULL if input is None else None,
         timeout=timeout,
     )
+
+
+@functools.cache
+def sevenzip_lists_arm64() -> bool:
+    """Whether ``7z i`` lists the ARM64 filter.
+
+    p7zip 16.02, and Homebrew's ``7z`` on macOS, predate the filter and exit 2 on
+    ``-m0=ARM64``. 7-Zip 23 and later name ARM64 in that listing. A missing ``7z``
+    or a run that does not finish is false, so a test that needs the filter skips.
+    """
+    if shutil.which("7z") is None:
+        return False
+    try:
+        listing = run_7z(["i"], text=True).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return re.search(r"\bARM64\b", listing) is not None
 
 
 def requires_zstd() -> pytest.MarkDecorator:
