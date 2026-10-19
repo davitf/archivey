@@ -270,8 +270,8 @@ bytes. The outcome is the same on every platform. ADR
   `max_extracted_bytes` and the archive-wide `max_ratio` (see
   [Extraction bombs](#extraction-bombs)).
 - On Windows each filesystem call the extraction code (`internal/extraction.py`,
-  `internal/link_watch.py`, `resolve_or_raise_on_loop`) makes under the destination or a
-  dry run's scratch copy takes a path of 200 characters or more in the extended `\\?\`
+  `internal/dry_run.py`, `internal/link_watch.py`, `resolve_or_raise_on_loop`) makes
+  under the destination or a dry run's scratch copy takes a path of 200 characters or more in the extended `\\?\`
   form (`internal/long_paths.py`), so a path past `MAX_PATH` is written without
   `LongPathsEnabled`. `test_filesystem_calls_take_the_long_path_form` holds the inventory
   of those calls. The CLI's own walks after a run (the hoist) take plain paths. The
@@ -713,7 +713,7 @@ the pass, and declined rather than refused when the cap has no room.
 
 **Property.** `extract` stops a decompression bomb before it fills the disk.
 
-**Mechanism.** `internal/extraction.py` `BombTracker` enforces `ExtractionLimits`: total
+**Mechanism.** `internal/bomb_tracker.py` `BombTracker` enforces `ExtractionLimits`: total
 bytes (2 GiB), per-member ratio and archive-wide ratio (1000, active after 5 MiB), a
 live ratio for sources of unknown size (active after 256 MiB, so an honest blank start
 read from a pipe is not judged before the data after it arrives), and an entry cap
@@ -725,7 +725,7 @@ must not stop the whole run. A non-seekable
 caller stream's `size` attribute counts as unknown size: nothing can check it, and an
 inflated claim used as the static denominator would also switch off the live ratio
 (`BaseArchiveReader._trusted_source_size`). The global guards
-raise `_AlwaysStopResourceLimitError`, so they halt even under `OnError.CONTINUE`.
+raise `AlwaysStopResourceLimitError`, so they halt even under `OnError.CONTINUE`.
 
 **Residual.** The tracker is per archive and not nesting-aware
 ([accepted](#nested-archive-amplification)). A nested archive's static denominator is

@@ -28,7 +28,9 @@ src/archivey/
 ├── cli/                 the CLI — a *consumer* of the public API, not a peer of it
 └── internal/            everything else; not importable contract
     ├── base_reader.py   BaseArchiveReader ABC + the ReadBackend ABC
-    ├── extraction.py    extraction coordinator + decompression-bomb tracker
+    ├── extraction.py    extraction coordinator
+    ├── bomb_tracker.py  decompression-bomb tracker: byte, ratio and entry-count limits
+    ├── dry_run.py       the dry run's scratch tree and its path translation
     ├── filters.py       path-safety checks and policy permission transforms
     ├── detection.py     detect_format() and FormatInfo
     ├── registry.py      ArchiveFormat → backend; format_availability()
@@ -75,7 +77,7 @@ reader.members() / .open(m)                          reader.py → base_reader.p
 reader.extract_all(dest)                             base_reader.py → internal/extraction.py
   └─ member selection                                internal/selection.py
   └─ path safety + policy                            internal/filters.py
-  └─ bomb accounting                                 internal/extraction.py
+  └─ bomb accounting                                 internal/bomb_tracker.py
 ```
 
 Three things about this path are worth knowing before you debug it:
@@ -125,7 +127,7 @@ Three things about this path are worth knowing before you debug it:
 | Seeking inside a compressed stream | `streams/decompressor_stream.py`; spec `seekable-decompressor-streams` |
 | Stream wrapping / slicing / locking | `streams/streamtools/`; handbook [`topics/stream-ownership.md`](topics/stream-ownership.md); archived review `review/archive/2026-07-19-stream-layering/` |
 | Extraction safety, path traversal, symlinks | `internal/filters.py` + `internal/extraction.py`; a later member changing where an earlier link resolves: `internal/link_watch.py`; Windows paths past `MAX_PATH`: `internal/long_paths.py`; `dev-docs/threat-model.md` |
-| Decompression-bomb limits | `internal/extraction.py`; listing-side caps in `internal/listing_limits.py` |
+| Decompression-bomb limits | `internal/bomb_tracker.py`; listing-side caps in `internal/listing_limits.py` |
 | Member names, encoding, bidi, cross-platform safety | `internal/naming.py`; ADRs 0013, 0017 |
 | The error hierarchy or a translation | `exceptions.py` + the backend's translator; spec `error-handling` |
 | Warnings-as-data | `diagnostics.py` (public types) + `internal/diagnostics_collector.py` (emission) |

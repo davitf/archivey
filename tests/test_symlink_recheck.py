@@ -28,8 +28,8 @@ from archivey import (
 )
 from archivey.internal import link_watch
 from archivey.internal.base_reader import BaseArchiveReader
+from archivey.internal.bomb_tracker import BombTracker
 from archivey.internal.extraction import (
-    BombTracker,
     ExtractionCoordinator,
     _RunState,
     _symlink_problem,

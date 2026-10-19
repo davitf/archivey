@@ -613,8 +613,8 @@ def test_anti_item_removes_a_read_only_file_this_run_wrote(
 ) -> None:
     """Driven on the coordinator, as the anti-item tests in test_extraction.py are: no
     test archive of ours carries an anti-item after a read-only file."""
+    from archivey.internal.bomb_tracker import BombTracker
     from archivey.internal.extraction import (
-        BombTracker,
         ExtractionCoordinator,
         _Claim,
         _RunState,
@@ -709,8 +709,8 @@ def test_anti_item_removes_a_read_only_directory_this_run_wrote(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Driven on the coordinator, as the file case above is."""
+    from archivey.internal.bomb_tracker import BombTracker
     from archivey.internal.extraction import (
-        BombTracker,
         ExtractionCoordinator,
         _RunState,
     )
