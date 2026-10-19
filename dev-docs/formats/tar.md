@@ -693,7 +693,7 @@ GNU `tar` writes the real thing; BSD and Windows `tar` refuse
 truncate -s 10M f && printf x | dd of=f bs=1 seek=5000000 conv=notrunc
 tar cf sparse.tar --sparse f     # 10 240 bytes; add --format=pax for the PAX encoding
 python -c "import archivey; archivey.open_archive('sparse.tar').extract_all('out')"
-# _AlwaysStopResourceLimitError: Archive-wide decompression ratio 1024:1 exceeds limit max_ratio=1000:1
+# AlwaysStopResourceLimitError: Archive-wide decompression ratio 1024:1 exceeds limit max_ratio=1000:1
 ```
 
 ## 9. References
@@ -718,7 +718,8 @@ python -c "import archivey; archivey.open_archive('sparse.tar').extract_all('out
   `internal/backends/tar_reader.py` (members, member streams, the end-of-archive checks)
   · `internal/streams/streamtools/sparse.py` (`SparseStream`) · `internal/detection.py`
   (`_probe_inner_tar`) · `internal/streams/codecs/` (the decompressors the walker
-  reads) · `internal/extraction.py` (hardlinks, the ratio guard) · `internal/naming.py`
+  reads) · `internal/extraction.py` (hardlinks) · `internal/bomb_tracker.py` (the
+  ratio guard) · `internal/naming.py`
 - Handbook: [`7z.md`](7z.md) (link targets as member data, for contrast) ·
   [`zip.md`](zip.md) · [`rar.md`](rar.md) ·
   [`topics/stream-ownership.md`](../topics/stream-ownership.md)

@@ -713,7 +713,7 @@ the pass, and declined rather than refused when the cap has no room.
 
 **Property.** `extract` stops a decompression bomb before it fills the disk.
 
-**Mechanism.** `internal/extraction.py` `BombTracker` enforces `ExtractionLimits`: total
+**Mechanism.** `internal/bomb_tracker.py` `BombTracker` enforces `ExtractionLimits`: total
 bytes (2 GiB), per-member ratio and archive-wide ratio (1000, active after 5 MiB), a
 live ratio for sources of unknown size (active after 256 MiB, so an honest blank start
 read from a pipe is not judged before the data after it arrives), and an entry cap
@@ -725,7 +725,7 @@ must not stop the whole run. A non-seekable
 caller stream's `size` attribute counts as unknown size: nothing can check it, and an
 inflated claim used as the static denominator would also switch off the live ratio
 (`BaseArchiveReader._trusted_source_size`). The global guards
-raise `_AlwaysStopResourceLimitError`, so they halt even under `OnError.CONTINUE`.
+raise `AlwaysStopResourceLimitError`, so they halt even under `OnError.CONTINUE`.
 
 **Residual.** The tracker is per archive and not nesting-aware
 ([accepted](#nested-archive-amplification)). A nested archive's static denominator is

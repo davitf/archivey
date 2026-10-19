@@ -304,7 +304,7 @@ def test_member_name_bidi_control_context_says_name(tmp_path: Path) -> None:
 
 
 def test_byte_cap_message_counts_only_what_was_written() -> None:
-    from archivey.internal.extraction import BombTracker
+    from archivey.internal.bomb_tracker import BombTracker
 
     tracker = BombTracker(max_bytes=100, max_ratio=None)
     tracker.count(60)
