@@ -52,10 +52,11 @@ a wrong ISIZE of a gzip member other than the last. The first member was
 already checked before rapidgzip starts (`_gzip_header_refused`). The handbook
 row described an older result.
 
-**Test.** `test_later_gzip_member_header_raises_with_the_accelerator` in
-`tests/test_audit3_gzip.py`. It is not marked `xfail`. The code already
-raised, so an `xfail` would be an unexpected pass on this branch. The test
-fails if a later change returns the payload.
+**Test.** `test_gzip_accelerator_refuses_a_later_member_the_stdlib_refuses`
+in `tests/test_audit2_tar_streams.py`, beside the first-member refusal. It is
+not marked `xfail`. The code already raised, so an `xfail` would be an
+unexpected pass on this branch. The test fails if a later change returns the
+payload.
 
 **Fix.** §2.3 and the sharp-edge row now say the read raises. Done in this
 pull request.
@@ -115,5 +116,6 @@ Skimmed:
 - `docs/how-it-works.md`, `docs/philosophy.md`, `docs/install.md`, and
   `docs/acknowledgements.md`.
 
-`./scripts/check.sh --fix` passed. `pytest tests/test_audit3_gzip.py` passed
-(2 tests). The full `./scripts/test.sh` suite was not run.
+`./scripts/check.sh --fix` passed. `pytest tests/test_audit2_tar_streams.py
+-k later_member` passed (2 tests). The full `./scripts/test.sh` suite was not
+run.

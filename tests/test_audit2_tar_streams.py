@@ -343,6 +343,31 @@ def test_gzip_accelerator_refuses_what_the_stdlib_refuses(
         _read_single(data, ArchiveFormat.GZ, config=_ACCEL_ON, seekable_members=True)
 
 
+@requires("rapidgzip")
+@pytest.mark.parametrize(
+    ("case", "error"),
+    [
+        ("header-crc-mismatch", CorruptionError),
+        ("reserved-flag-bit", UnsupportedFeatureError),
+    ],
+)
+def test_gzip_accelerator_refuses_a_later_member_the_stdlib_refuses(
+    case: str, error: type[Exception]
+) -> None:
+    """The same refusals on a member after the first.
+
+    rapidgzip 0.16 rejects a later header CRC itself. A later reserved flag it
+    accepts, and the further-member scan skips that header, so the trailer check
+    hands the read to zlib. Either way the error class matches the standard library.
+    The accelerator may differ only on a wrong ISIZE of a member other than the last.
+    """
+    data = gzip.compress(b"A" * 10_000, mtime=0) + _gzip_cases()[case]
+    with pytest.raises(error):
+        _read_single(data, ArchiveFormat.GZ)
+    with pytest.raises(error):
+        _read_single(data, ArchiveFormat.GZ, config=_ACCEL_ON, seekable_members=True)
+
+
 def _two_gzip_members(first_isize_delta: int, second_crc_delta: int = 0) -> bytes:
     """Two members of the same payload; the first's ISIZE and the second's CRC-32 can be
     made wrong."""
