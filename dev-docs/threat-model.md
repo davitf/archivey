@@ -881,8 +881,12 @@ writes itself) is exercised against mutated and coverage-guided input.
    `tests/fuzz_sevenzip_parser.py` for local runs.
 2. `tests/test_property_safety.py` (Hypothesis) over the pure safety logic.
 3. `tests/atheris_fuzz/` (Atheris, coverage-guided) over 7z and RAR header parse with CRC
-   fix-up, 7z/RAR open and list, `detect_format` with a cost-within-budget assertion,
-   ZIP open and bounded member read, TAR/ISO open and list, and the standalone codecs.
+   fix-up, 7z/RAR/ISO open with a bounded member read, `detect_format` with a
+   cost-within-budget assertion and the ZIP/RAR/7z hit validators, ZIP open and bounded
+   member read on a seekable source and on a pipe, TAR open with header-checksum fix-up
+   and a bounded member read, auto-detect open (SFX payload offset, single-file readers,
+   compressed tar, UDIF refusal), the BCJ2/ARM64/Delta/branch-filter decoders, and the
+   standalone codecs.
    Four accelerator targets (`gzip_accel`, `zlib_accel`, `deflate_accel`,
    `bzip2_accel`) decode each input with the accelerator on and off and fail when the
    accelerated bytes differ, before or after a seek, or when it ends cleanly where the

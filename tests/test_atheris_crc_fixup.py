@@ -246,3 +246,72 @@ def test_fixup_rar_noop_on_non_magic() -> None:
 
     blob = b"not a rar archive" + b"\x00" * 64
     assert fixup_rar_header_crcs(blob, broken=False) == blob
+
+
+def _tar_bytes() -> bytes:
+    import tarfile
+
+    payload = b"atheris\n"
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as tf:
+        info = tarfile.TarInfo("dir/file.txt")
+        info.size = len(payload)
+        tf.addfile(info, io.BytesIO(payload))
+    return buf.getvalue()
+
+
+def test_fixup_tar_checksum_keeps_a_mutated_header_readable() -> None:
+    """A one-byte name edit fails the checksum. The fixup puts it back."""
+    from archivey import open_archive
+    from tests.atheris_fuzz.crc_fixup import fixup_tar_header_checksums
+
+    original = bytearray(_tar_bytes())
+    original[0] ^= 0x01
+    broken = bytes(original)
+    with pytest.raises(ArchiveyError):
+        with open_archive(io.BytesIO(broken), format="tar") as arc:
+            list(arc)
+
+    fixed = fixup_tar_header_checksums(broken, broken=False)
+    with open_archive(io.BytesIO(fixed), format="tar") as arc:
+        names = [member.name for member in arc]
+    assert names
+
+
+def test_fixup_tar_broken_mode_still_rejects() -> None:
+    from archivey import open_archive
+    from tests.atheris_fuzz.crc_fixup import fixup_tar_header_checksums
+
+    original = bytearray(_tar_bytes())
+    original[0] ^= 0x01
+    fixed_broken = fixup_tar_header_checksums(bytes(original), broken=True)
+    with pytest.raises(ArchiveyError):
+        with open_archive(io.BytesIO(fixed_broken), format="tar") as arc:
+            list(arc)
+
+
+def test_fixup_tar_leaves_the_end_marker() -> None:
+    from tests.atheris_fuzz.crc_fixup import fixup_tar_header_checksums
+
+    blob = _tar_bytes()
+    assert blob.endswith(bytes(1024))
+    fixed = fixup_tar_header_checksums(blob, broken=False)
+    assert fixed.endswith(bytes(1024))
+    assert fixup_tar_header_checksums(b"short", broken=False) == b"short"
+
+
+def test_fixup_tar_does_not_rewrite_file_bytes() -> None:
+    """A member longer than the checksum field keeps those payload bytes."""
+    import tarfile
+
+    from tests.atheris_fuzz.crc_fixup import fixup_tar_header_checksums
+
+    payload = bytes((index * 3) % 251 for index in range(512))
+    assert payload[257:262] != b"ustar"
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT) as tf:
+        info = tarfile.TarInfo("wide.bin")
+        info.size = len(payload)
+        tf.addfile(info, io.BytesIO(payload))
+    fixed = fixup_tar_header_checksums(buf.getvalue(), broken=False)
+    assert payload in fixed

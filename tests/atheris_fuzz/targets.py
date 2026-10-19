@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import lzma
 import os
 import zlib
 from collections.abc import Callable
@@ -11,16 +12,26 @@ from dataclasses import replace
 from archivey import (
     AcceleratorMode,
     ArchiveFormat,
+    ArchiveReader,
     ArchiveyConfig,
     ArchiveyError,
+    ContainerFormat,
+    DecoderLimits,
+    ForwardArchiveReader,
+    StreamFormat,
     detect_format,
     format_availability,
     open_archive,
 )
 from archivey.exceptions import PackageNotInstalledError
+from archivey.internal.backends.rar_detect import validate_rar_main_header
 from archivey.internal.backends.rar_parser import parse_rar_archive
 from archivey.internal.backends.rar_unrar import find_rarlab_unrar
+from archivey.internal.backends.sevenzip_detect import (
+    validate_sevenzip_signature_header,
+)
 from archivey.internal.backends.sevenzip_reader import load_sevenzip_archive
+from archivey.internal.backends.zip_detect import validate_zip_local_header
 from archivey.internal.config import StreamConfig
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.streams.codecs import (
@@ -28,11 +39,15 @@ from archivey.internal.streams.codecs import (
     is_codec_available,
     open_codec_stream,
 )
+from archivey.internal.streams.codecs.arm64_filter import FILTER_ARM64, arm64_decode
+from archivey.internal.streams.codecs.bcj2_filter import Bcj2DecoderStream
 from archivey.internal.streams.codecs.gzip_codec import _MEMBER_PROBE_INPUT
+from archivey.internal.streams.codecs.lzma_filter_decoder import FilterStream
 from archivey.types import FormatSupport
 from tests.atheris_fuzz.crc_fixup import (
     fixup_rar_header_crcs,
     fixup_sevenzip_header_crcs,
+    fixup_tar_header_checksums,
     fixup_zip_local_and_cd_crc,
 )
 from tests.atheris_fuzz.seeds import (
@@ -44,11 +59,13 @@ from tests.atheris_fuzz.seeds import (
     bzip2_seeds,
     deflate64_seeds,
     detect_format_seeds,
+    filter_seeds,
     gzip_seeds,
     iso_seeds,
     lz4_seeds,
     lzip_seeds,
     lzma_alone_seeds,
+    open_detected_seeds,
     rar_seeds,
     sevenzip_seeds,
     tar_seeds,
@@ -60,8 +77,14 @@ from tests.atheris_fuzz.seeds import (
 )
 from tests.detection_cost_util import within_budget
 
+# 64 MiB, not the 2 GiB default. A mutated 7z or ZIP can declare a dictionary of
+# that default, and the read below would reserve it. Real seeds in this harness
+# use a 1 MiB dictionary or none.
+_FUZZ_DECODER_LIMITS = DecoderLimits(max_decoder_memory=64 * 1024 * 1024)
 _FUZZ_CONFIG = ArchiveyConfig(
-    use_rapidgzip=AcceleratorMode.OFF, use_indexed_bzip2=AcceleratorMode.OFF
+    use_rapidgzip=AcceleratorMode.OFF,
+    use_indexed_bzip2=AcceleratorMode.OFF,
+    decoder_limits=_FUZZ_DECODER_LIMITS,
 )
 
 # Seekable indexing on (interesting crash class); accelerators forced off.
@@ -82,13 +105,16 @@ _ACCEL_ON_CONFIG = replace(
 
 # Cap listing work so a pathological member table cannot burn the whole slice.
 _MAX_MEMBERS = 10_000
-# Bounded ZIP member reads — exercise codec/AES without full extract.
+# Bounded member reads — exercise codec/AES/folder decode without full extract.
 _MAX_ZIP_READ_MEMBERS = 8
+_MAX_MEMBER_READS = 4
 _MAX_ZIP_READ_BYTES = 64 * 1024
 _MAX_STREAM_READ_BYTES = 256 * 1024
 # Bounded TAR member reads: the walk's data skip and sparse expansion.
 _MAX_TAR_READ_MEMBERS = 8
 _MAX_TAR_READ_BYTES = 64 * 1024
+# Filter payloads. A BCJ2 main stream of E8 bytes is the slow case; keep it here.
+_MAX_FILTER_BYTES = 64 * 1024
 
 # Empty + common corpus password for the encrypted ZIP and 7z seeds.
 _PASSWORD_CANDIDATES: list[str | bytes] = ["", "password"]
@@ -105,14 +131,21 @@ def sevenzip_header_one(data: bytes) -> None:
 
 
 def sevenzip_open_one(data: bytes) -> None:
+    """List a 7z archive and read the first file members.
+
+    Listing stops at the folder graph. The read is what runs the coder pipeline,
+    solid demux, AES and the BCJ2 / Delta / ARM64 filters.
+    """
     try:
         with open_archive(
-            io.BytesIO(data), format=ArchiveFormat.SEVEN_Z, config=_FUZZ_CONFIG
+            io.BytesIO(data),
+            format=ArchiveFormat.SEVEN_Z,
+            config=_FUZZ_CONFIG,
+            password=_PASSWORD_CANDIDATES,
         ) as arc:
-            for i, member in enumerate(arc):
-                if i >= _MAX_MEMBERS:
-                    break
-                _ = member.name
+            _sample_seekable(
+                arc, max_reads=_MAX_MEMBER_READS, max_bytes=_MAX_ZIP_READ_BYTES
+            )
     except ArchiveyError:
         return
 
@@ -122,6 +155,9 @@ def detect_format_one(data: bytes) -> None:
 
     # The fuzzer has no file name to give, so by default no content probe would run;
     # always_probe_content keeps the probe decoders under the fuzzer.
+    # Validators run even when detection refuses the bytes: a scan that never
+    # accepts the magic never calls them.
+    _exercise_hit_validators(data)
     try:
         info = detect_format(
             io.BytesIO(data),
@@ -138,29 +174,43 @@ def detect_format_one(data: bytes) -> None:
 
 
 def zip_open_one(data: bytes) -> None:
-    """ZIP open → list a few members → bounded ``open``/``read`` (native codec/AES)."""
+    """ZIP open → list a few members → bounded ``open``/``read`` (native codec/AES).
+
+    The second open is a pipe. That selects the forward reader, which walks local
+    headers and data descriptors instead of the central directory.
+    """
     fixed = fixup_zip_local_and_cd_crc(data)
+    _zip_seekable(fixed)
+    _zip_forward(fixed)
+
+
+def _zip_seekable(data: bytes) -> None:
     try:
         with open_archive(
-            io.BytesIO(fixed),
+            io.BytesIO(data),
             format=ArchiveFormat.ZIP,
             config=_FUZZ_CONFIG,
             password=_PASSWORD_CANDIDATES,
         ) as arc:
-            reads = 0
-            for i, member in enumerate(arc):
-                if i >= _MAX_MEMBERS:
-                    break
-                _ = member.name
-                if reads >= _MAX_ZIP_READ_MEMBERS or not member.is_file:
-                    continue
-                try:
-                    with arc.open(member) as stream:
-                        _ = stream.read(_MAX_ZIP_READ_BYTES)
-                    reads += 1
-                except ArchiveyError:
-                    # Wrong password / unsupported codec / truncated — keep listing.
-                    continue
+            _sample_seekable(
+                arc, max_reads=_MAX_ZIP_READ_MEMBERS, max_bytes=_MAX_ZIP_READ_BYTES
+            )
+    except ArchiveyError:
+        return
+
+
+def _zip_forward(data: bytes) -> None:
+    try:
+        with open_archive(
+            _Unseekable(data),
+            format=ArchiveFormat.ZIP,
+            streaming=True,
+            config=_FUZZ_CONFIG,
+            password=_PASSWORD_CANDIDATES,
+        ) as arc:
+            _sample_forward(
+                arc, max_reads=_MAX_ZIP_READ_MEMBERS, max_bytes=_MAX_ZIP_READ_BYTES
+            )
     except ArchiveyError:
         return
 
@@ -186,14 +236,14 @@ def tar_open_one(data: bytes) -> None:
 
 
 def iso_open_one(data: bytes) -> None:
+    """List an ISO and read the first files. The directory walk is not the only path."""
     try:
         with open_archive(
             io.BytesIO(data), format=ArchiveFormat.ISO, config=_FUZZ_CONFIG
         ) as arc:
-            for i, member in enumerate(arc):
-                if i >= _MAX_MEMBERS:
-                    break
-                _ = member.name
+            _sample_seekable(
+                arc, max_reads=_MAX_MEMBER_READS, max_bytes=_MAX_ZIP_READ_BYTES
+            )
     except ArchiveyError:
         return
 
@@ -229,16 +279,273 @@ def rar_header_one(data: bytes) -> None:
 
 
 def rar_open_one(data: bytes) -> None:
+    """List a RAR archive and read the first files through the external decoder.
+
+    Header parse does not start ``unrar``. The read is the glue around it: solid
+    copies, passwords, and whatever exception the decoder's failure becomes.
+    """
     try:
         with open_archive(
-            io.BytesIO(data), format=ArchiveFormat.RAR, config=_FUZZ_CONFIG
+            io.BytesIO(data),
+            format=ArchiveFormat.RAR,
+            config=_FUZZ_CONFIG,
+            password=_PASSWORD_CANDIDATES,
         ) as arc:
-            for i, member in enumerate(arc):
-                if i >= _MAX_MEMBERS:
-                    break
-                _ = member.name
+            _sample_seekable(
+                arc, max_reads=_MAX_MEMBER_READS, max_bytes=_MAX_ZIP_READ_BYTES
+            )
     except ArchiveyError:
         return
+
+
+class _Unseekable(io.RawIOBase):
+    """A pipe over a fixed buffer. ``seekable()`` is false, so ZIP opens forward."""
+
+    def __init__(self, data: bytes) -> None:
+        self._data = data
+        self._pos = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return False
+
+    def readinto(self, b: bytearray | memoryview) -> int:  # type: ignore[override]
+        n = min(len(b), len(self._data) - self._pos)
+        b[:n] = self._data[self._pos : self._pos + n]
+        self._pos += n
+        return n
+
+
+def _sample_seekable(arc: ArchiveReader, *, max_reads: int, max_bytes: int) -> None:
+    """List up to ``_MAX_MEMBERS`` and read the first file members."""
+    reads = 0
+    for i, member in enumerate(arc):
+        if i >= _MAX_MEMBERS:
+            break
+        _ = member.name
+        if reads >= max_reads or not member.is_file:
+            continue
+        try:
+            with arc.open(member) as stream:
+                _ = stream.read(max_bytes)
+            reads += 1
+        except ArchiveyError:
+            # One damaged member does not end the listing.
+            continue
+
+
+def _sample_forward(
+    arc: ForwardArchiveReader, *, max_reads: int, max_bytes: int
+) -> None:
+    """The streaming pass: members arrive with their data, and ``open`` does not exist."""
+    reads = 0
+    for i, (member, stream) in enumerate(arc.stream_members()):
+        if i >= _MAX_MEMBERS:
+            break
+        _ = member.name
+        if stream is None or reads >= max_reads or not member.is_file:
+            continue
+        try:
+            stream.read(max_bytes)
+        except ArchiveyError:
+            pass
+        reads += 1
+
+
+def _exercise_hit_validators(data: bytes) -> None:
+    def peek_more(n: int) -> bytes:
+        return data[:n]
+
+    known = len(data)
+    try:
+        for remaining in (known, None):
+            validate_zip_local_header(peek_more, remaining)
+            validate_rar_main_header(peek_more, remaining)
+            validate_sevenzip_signature_header(peek_more, remaining)
+    except ArchiveyError:
+        return
+
+
+# Containers that can be read from a pipe. 7z, RAR and ISO refuse one.
+_PIPE_CONTAINERS = frozenset(
+    {ContainerFormat.ZIP, ContainerFormat.TAR, ContainerFormat.RAW_STREAM}
+)
+
+
+def open_detected_one(data: bytes) -> None:
+    """Open whatever ``detect_format`` names, then read a few members.
+
+    Forced ``format=`` starts at byte 0, so a stub in front of an archive never
+    reaches the payload. Leaving format unset is the SFX path. A compressed tar
+    is also opened as the single-file stream around it: detection reports the
+    tar, and that reader is a different module from the codec target.
+    """
+    from archivey.detection_cost import BALANCED_BUDGET
+
+    config = ArchiveyConfig(
+        detection_budget=BALANCED_BUDGET,
+        always_probe_content=True,
+        use_rapidgzip=AcceleratorMode.OFF,
+        use_indexed_bzip2=AcceleratorMode.OFF,
+        decoder_limits=_FUZZ_DECODER_LIMITS,
+    )
+    try:
+        info = detect_format(io.BytesIO(data), config=config)
+    except ArchiveyError:
+        return
+    container = info.format.container
+    if container in (ContainerFormat.UNKNOWN, ContainerFormat.DIRECTORY):
+        return
+    password = (
+        _PASSWORD_CANDIDATES
+        if container
+        in (ContainerFormat.ZIP, ContainerFormat.SEVEN_Z, ContainerFormat.RAR)
+        else None
+    )
+    _open_sampled(io.BytesIO(data), streaming=False, config=config, password=password)
+    if container in _PIPE_CONTAINERS:
+        _open_sampled(
+            _Unseekable(data), streaming=True, config=config, password=password
+        )
+    if (
+        container is ContainerFormat.TAR
+        and info.format.stream is not StreamFormat.UNCOMPRESSED
+    ):
+        single = ArchiveFormat(ContainerFormat.RAW_STREAM, info.format.stream)
+        _open_sampled(
+            io.BytesIO(data),
+            streaming=False,
+            config=config,
+            password=None,
+            format=single,
+        )
+
+
+def _open_sampled(
+    source: io.RawIOBase | io.BytesIO,
+    *,
+    streaming: bool,
+    config: ArchiveyConfig,
+    password: list[str | bytes] | None,
+    format: ArchiveFormat | None = None,
+) -> None:
+    try:
+        with open_archive(
+            source,
+            format=format,
+            streaming=streaming,
+            config=config,
+            password=password,
+        ) as arc:
+            _sample_forward(
+                arc, max_reads=_MAX_MEMBER_READS, max_bytes=_MAX_ZIP_READ_BYTES
+            )
+    except ArchiveyError:
+        return
+
+
+# liblzma branch filters whose start offset of 0 it accepts. ARM64 is separate:
+# Python's lzma refuses that id, and the decoder here is archivey's.
+_LIBLZMA_BRANCHES = (
+    lzma.FILTER_X86,
+    lzma.FILTER_POWERPC,
+    lzma.FILTER_IA64,
+    lzma.FILTER_ARM,
+    lzma.FILTER_ARMTHUMB,
+    lzma.FILTER_SPARC,
+)
+
+
+def filters_one(data: bytes) -> None:
+    """Run one filter decoder. Byte 0 picks which.
+
+    A 7z mutation does not assemble a BCJ2 folder or an ARM64 property block, so
+    those decoders stay dark unless a seed already has them. This target feeds
+    them hostile payloads directly.
+    """
+    if not data:
+        return
+    kind = data[0] % (3 + len(_LIBLZMA_BRANCHES))
+    body = data[1:]
+    try:
+        if kind == 0:
+            _fuzz_bcj2(body)
+        elif kind == 1:
+            pc = int.from_bytes(body[:4], "little") & ~3
+            arm64_decode(body[4 : 4 + _MAX_FILTER_BYTES], pc)
+            _fuzz_filter_stream(body[4:], {"id": FILTER_ARM64, "start_offset": pc})
+        elif kind == 2:
+            dist = 1 + (body[0] % 256 if body else 0)
+            _fuzz_filter_stream(body[1:], {"id": lzma.FILTER_DELTA, "dist": dist})
+        else:
+            _fuzz_filter_stream(
+                body, {"id": _LIBLZMA_BRANCHES[kind - 3], "start_offset": 0}
+            )
+    except ArchiveyError:
+        return
+
+
+def _fuzz_bcj2(body: bytes) -> None:
+    if len(body) < 12:
+        return
+    weights = [int.from_bytes(body[i : i + 2], "little") for i in range(0, 8, 2)]
+    unpack = int.from_bytes(body[8:12], "little") % (_MAX_FILTER_BYTES + 1)
+    parts = _split4(body[12 : 12 + _MAX_FILTER_BYTES], weights)
+    decoder = Bcj2DecoderStream(
+        *(io.BytesIO(part) for part in parts), unpack_size=unpack
+    )
+    try:
+        decoder.read(min(4096, unpack))
+        if unpack and decoder.seekable():
+            decoder.seek(0)
+            decoder.read(128)
+    finally:
+        decoder.close()
+
+
+def _split4(data: bytes, weights: list[int]) -> list[bytes]:
+    if not data:
+        return [b"", b"", b"", b""]
+    usable = [weight if weight > 0 else 0 for weight in weights]
+    if sum(usable) == 0:
+        usable = [1, 1, 1, 1]
+    total = sum(usable)
+    bounds: list[int] = []
+    acc = 0
+    for weight in usable[:-1]:
+        acc += weight
+        bounds.append(len(data) * acc // total)
+    parts: list[bytes] = []
+    prev = 0
+    for bound in bounds:
+        parts.append(data[prev:bound])
+        prev = bound
+    parts.append(data[prev:])
+    return parts
+
+
+def _fuzz_filter_stream(payload: bytes, lzma_filter: dict[str, int]) -> None:
+    payload = payload[:_MAX_FILTER_BYTES]
+    unpack = min(len(payload) + 16, _MAX_FILTER_BYTES)
+    with FilterStream(
+        io.BytesIO(payload),
+        lzma_filter=lzma_filter,
+        unpack_size=unpack,
+        seekable=True,
+    ) as stream:
+        got = stream.read(4096)
+        if not stream.seekable():
+            return
+        try:
+            stream.seek(0)
+            stream.read(1024)
+            if got:
+                stream.seek(len(got) // 2)
+                stream.read(1024)
+        except (OSError, io.UnsupportedOperation, ArchiveyError):
+            return
 
 
 def iso_per_input_timeout() -> float:
@@ -507,7 +814,8 @@ def iter_target_specs() -> list[dict]:
             "fn": sevenzip_open_one,
             "seeds": sevenzip_seeds,
             "fixup": fixup_sevenzip_header_crcs,
-            "per_input_timeout": None,
+            # Member decode (LZMA, BCJ2) can spin. The header target has no read.
+            "per_input_timeout": stream_timeout,
         },
         {
             "name": "detect_format",
@@ -527,8 +835,8 @@ def iter_target_specs() -> list[dict]:
             "name": "tar",
             "fn": tar_open_one,
             "seeds": tar_seeds,
-            "fixup": None,
-            "per_input_timeout": None,
+            "fixup": fixup_tar_header_checksums,
+            "per_input_timeout": stream_timeout,
         },
         {
             "name": "iso",
@@ -550,8 +858,23 @@ def iter_target_specs() -> list[dict]:
             "fn": rar_open_one,
             "seeds": rar_seeds,
             "fixup": fixup_rar_header_crcs,
-            "per_input_timeout": None,
+            # unrar on a mutated solid archive is the hang class here.
+            "per_input_timeout": stream_timeout,
             "skip_unless": rar_open_available,
+        },
+        {
+            "name": "open_detected",
+            "fn": open_detected_one,
+            "seeds": open_detected_seeds,
+            "fixup": None,
+            "per_input_timeout": stream_timeout,
+        },
+        {
+            "name": "filters",
+            "fn": filters_one,
+            "seeds": filter_seeds,
+            "fixup": None,
+            "per_input_timeout": stream_timeout,
         },
     ]
 
