@@ -7,9 +7,10 @@ forward pass over the local headers, with the central directory read after the l
 member. Under `streaming=False` it SHALL raise `StreamNotSeekableError` at open, naming
 `streaming=True`. The library MUST NOT buffer, spool, or copy the source into seekable
 storage. The member data `extract_all` stages in the destination (`safe-extraction`) is
-extraction output, not a copy of the source. What the pass keeps SHALL be bounded: the directory and end records by the
-listing limits, and the member data it keeps (a password-confirmation prefix, a short
-member that may turn out to be a link) by fixed caps.
+extraction output, not a copy of the source. What the pass keeps SHALL be bounded: the
+directory and end records by the listing limits, and the member data it keeps (a
+password-confirmation prefix, a short member that may turn out to be a link) by fixed
+caps.
 
 Each member's data ends where its local header says, or, when bit 3 defers the sizes to
 a data descriptor, where its codec's end marker is (DEFLATE, Deflate64, bzip2,

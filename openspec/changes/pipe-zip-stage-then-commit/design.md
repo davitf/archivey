@@ -35,8 +35,10 @@ is a different thing from what this change proposes; see Decision 1.
 
 **Goals:**
 - A pipe ZIP is placed by the same per-member path as any other extraction. The filter,
-  the policy checks, the overwrite policy, collisions and `abort_on` each run once, on
-  final members.
+  the policy checks, the overwrite policy, collisions and `abort_on` all act on final
+  members.
+- A hostile or damaged archive is still refused early: a refusal on a member's name, or
+  a data failure, stops the run without decoding the rest of the archive.
 - Nothing the run cannot stand behind is ever in the destination: no link written as a
   file, no caller's entry moved aside.
 - Fewer DR-5a differences between a pipe and a file, and none added.
@@ -78,12 +80,24 @@ The pass writes each staged member's decoded data into one directory,
 is named by the member's result index. Nothing else is written into the destination
 before placement.
 
-This is extraction output, not a copy of the archive. ADR 0010 and the `format-zip` rule
-("MUST NOT buffer, spool, or copy the source into seekable storage") are about making a
-non-seekable source seekable behind the caller's back. Staged data is decoded, is counted
-by the bomb limits like any write, and lives where the extraction was going to put it.
-The `format-zip` delta states this so the two rules cannot be read as conflicting. This
-reading is the maintainer's to confirm (Open Questions).
+This is extraction output, not a copy of the archive. Three rules bear on that:
+
+- ADR 0010 and the `format-zip` rule ("MUST NOT buffer, spool, or copy the source into
+  seekable storage") are about making a non-seekable source seekable behind the
+  caller's back. Staged data is decoded member output, not the source.
+- `archive-reading`'s "Bounded implicit temporary storage" forbids temp storage
+  proportional to the archive "as an implicit side effect of open/read/validate/
+  password-confirm", and allows a format strategy that needs it only when declared in
+  that format's spec and bounded by `ArchiveyConfig.spool_limits`. Read as covering
+  staging, it asks for a `format-zip` declaration and a `spool_limits` budget over the
+  staged bytes. Read as not covering it, the operations it lists are reader operations,
+  extraction is a separate capability, and staged bytes are already charged to
+  `max_extracted_bytes`.
+
+This design takes the second reading: staged data is counted by the bomb limits like any
+write, and lives where the extraction was going to put it. The `format-zip` delta says
+so. The reading is the maintainer's to confirm (Open Questions); if the first is chosen,
+the change gains a `format-zip` declaration and a `spool_limits` clause.
 
 Inside `dest_root`, so placement is a rename on the same filesystem. The `.archivey-tmp-`
 prefix is the one `docs/extracting.md` already calls safe to delete, and a uuid4 name
@@ -95,9 +109,19 @@ which needs the directory.
 
 ### 2. What is staged
 
-The pass applies only the selection, as today: the provisional match of a `members=`
+The pass applies the selection, as today: the provisional match of a `members=`
 collection against every name a member can end with, or the predicate, which is told
 `member_state_final=False`. The filter does not run during the pass.
+
+The universal path-safety checks and the name policy do run during the pass, on the
+member as its local header names it, before anything is staged. They need only the
+name, which the local header gives. A member they refuse is not staged, and the refusal
+acts at once: `AbortOn.BLOCKED_MEMBER`, `AbortOn.NAME_SANITIZED` and `OnError.STOP` stop
+the run there, as they do from a file, without decoding the rest of the archive. Under
+`OnError.CONTINUE` the refusal waits for placement, where the checks run again on the
+directory's name. The two agree except for a crafted archive whose local header and
+directory store different names: the member then fails at placement, its data not
+staged (a DR-5a difference).
 
 For each member the selection may take:
 - A member with data (any `FILE`, including one that may turn out to be a link) is
@@ -106,11 +130,16 @@ For each member the selection may take:
 - A `DIRECTORY` stages nothing.
 
 A member's data failure (CRC, size, decode) is recorded against the member and its
-staged file discarded. The run does not stop on it until placement: the directory may
-not list the member, and an extraction from a file would then never read it. This
-removes the DR-5a case "a member whose data fails as the pass writes it stops an
-`OnError.STOP` run though the directory may then not list it". Listing damage that ends
-the walk still ends it, as today.
+staged file discarded. Under `OnError.STOP` the run stops on it at once, as today, so a
+damaged archive is not decoded to its end first. The directory may then not list the
+member, which an extraction from a file would never read: today's DR-5a difference
+stays. Listing damage that ends the walk still ends it, as today.
+
+`AbortOn.NAME_COLLISION` acts only at placement: a collision is between placed
+members, and nothing is placed during the pass.
+
+**Rejected:** running every check only at placement. A hostile first member would then be
+refused only after the whole archive had been decoded to disk.
 
 **Rejected:** running the filter during the pass to save staging what it drops. It needs
 the second filter call and the "filter saw the stored name" failure this change removes
@@ -161,17 +190,28 @@ belongs to one result index. A member whose rename fails is `FAILED` like any la
 **Bomb limits.**
 - A member's staged bytes count as decoded output when staged, and toward the archive-wide
   ratio, as today.
-- `max_entries` counts a member when it is staged. That bounds an archive of many tiny
-  members before placement.
+- `max_entries` counts a staged file when it is staged: it is an entry on disk. That
+  bounds an archive of many tiny members before placement. A member placed with no
+  staged data (a directory, a link, an empty file) counts when it is placed.
+- A member the filter skips was staged first, so it counts toward both caps while
+  staged. A run can therefore stop on members a filter would have dropped, where a file
+  read completes. The `safe-extraction` delta to "Enforce Maximum Entry Count" says so;
+  a caller who selects with `members=` stages only what the selection may take.
 - A staged member that is not placed (unselected at the end, superseded, failed) is
   refunded from the byte cap and the entry count, as `BombTracker.refund` does today for a
   take-back. It still counts toward the archive-wide ratio: its bytes were decoded.
 
-**Progress.**
-- Staging emits intra-member reports as the copy loop does today: the member, its bytes
-  so far, `members_done` unchanged. Bytes move while the pipe is read.
-- Placement emits each member's terminal report and advances `members_done`, so
-  `members_done` never counts a member the report does not hold. Today it can.
+**Progress.** Each member's reports stay together, so a per-member progress bar opens
+and completes in order:
+- Staging emits a member's intra-member reports and its terminal report, and advances
+  `members_done`, as today's pass does when it writes a member. `members_done` can
+  therefore count a member that is then not placed, as today.
+- `members_extracted` and `members_blocked` count placed outcomes. They stay 0 during
+  the pass, and placement makes one more report when it ends, with the final tallies.
+
+**Rejected:** terminal reports at placement. Every member's bar would open during the
+pass and complete only at the end, out of order, and a member the end selection drops
+would never complete.
 
 ### 6. Ending the run
 
@@ -209,16 +249,29 @@ helpers stay for TAR from a pipe.
   them, and a filter that drops most members still has them staged. → Counted toward
   `max_extracted_bytes` while staged; a caller who selects with `members=` rather than
   `filter=` stages only what the selection may take.
-- **[Members not done until the end]** A pipe extraction reports bytes during the pass
-  and member completions only at placement. → See Open Questions.
+- **[Outcome counts only at the end]** `members_extracted` and `members_blocked` stay 0
+  during the pass. The CLI reads them after a stop, so a run stopped during placement
+  reports no count of what it placed. → See Open Questions.
+- **[Everything staged before a late refusal]** Under `OnError.CONTINUE` without
+  `abort_on`, the policy refusals on final names and the collisions are known only at
+  placement. → The early checks of Decision 2 cover the cheap refusals; the rest is
+  bounded by the bomb limits.
+- **[Deleting the staging directory mid-run]** The docs call `.archivey-tmp-*` entries
+  safe to delete. For a pipe ZIP the staging directory holds a running extraction's only
+  copy of its data. → `docs/extracting.md` says "once no extraction is running" (task
+  5.2).
 - **[The per-member function]** The forward pass loop body becomes a function shared with
   placement. → The shared per-member failure handler (`_handling`) is the groundwork;
   the forward pass's tests are the regression net.
 
 ## Open Questions
 
-- **Does staged output satisfy ADR 0010 and the `format-zip` "no copy of the source"
-  rule?** Decision 1 argues it does. The maintainer rules.
-- **Is it acceptable that a pipe ZIP's `members_done` moves only at placement?** The CLI
-  progress bar would show bytes advancing and the member count jumping at the end.
-  Today both move during the pass.
+- **Is staged data extraction output, or implicit temporary storage?** Three rules bear
+  on it: ADR 0010, the `format-zip` rule against copying the source, and
+  `archive-reading`'s "Bounded implicit temporary storage". Decision 1 argues output.
+  The maintainer rules; the answer decides whether the change also owes a `format-zip`
+  declaration and a `spool_limits` budget.
+- **Is the progress order of Decision 5 acceptable?** Per-member reports while staging,
+  outcome tallies only in one report after placement. The `safe-extraction` delta to
+  "Progress Reporting via on_progress Callback" states it; the maintainer confirms or
+  picks another order.

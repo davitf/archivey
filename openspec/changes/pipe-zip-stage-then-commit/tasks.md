@@ -2,8 +2,11 @@
 
 ## 0. Before coding
 
-- [ ] 0.1 The maintainer rules on the two Open Questions in `design.md`: staged output and
-      ADR 0010, and `members_done` moving only at placement.
+- [ ] 0.1 The maintainer rules on the two Open Questions in `design.md`: whether staged
+      data is extraction output or implicit temporary storage, and the progress order.
+      If it is storage, add the `format-zip` declaration and the `spool_limits` clause
+      to the deltas; if output, add a sentence to the `archive-reading` delta saying
+      "Bounded implicit temporary storage" does not reach extraction output.
 - [ ] 0.2 `openspec validate --strict pipe-zip-stage-then-commit`.
 
 ## 1. Groundwork (no behaviour change)
@@ -21,10 +24,12 @@
       selection may take into `<dest_root>/.archivey-tmp-<uuid>/<index>` (Decision 2):
       no filter call, recorded-size check before decoding, bomb limits counted when
       staged.
-- [ ] 2.2 A member's data failure during staging is recorded and decided at placement,
-      not raised. A test: an unlisted local entry whose data fails does not stop an
-      `OnError.STOP` run.
-- [ ] 2.3 Remove the staging directory in the run's `finally`, opening up modes first; a
+- [ ] 2.2 The universal checks and the name policy run on the local header's name
+      before staging (Decision 2). A test: a first member `../../etc/passwd` under
+      `abort_on={BLOCKED_MEMBER}` raises before the second member is decoded.
+- [ ] 2.3 A data failure while staging stops an `OnError.STOP` run at once, and under
+      `OnError.CONTINUE` is decided at placement.
+- [ ] 2.4 Remove the staging directory in the run's `finally`, opening up modes first; a
       refused removal stays, with a warning (test with a read-only staged file on
       Windows, and an unremovable directory via a patched `rmdir`).
 
@@ -36,8 +41,9 @@
       (Decision 3).
 - [ ] 3.2 Refund from the byte cap and the entry count each staged member that is not
       placed; the archive-wide ratio keeps it (Decision 5).
-- [ ] 3.3 Progress: intra-member reports while staging, the terminal report and
-      `members_done` at placement (Decision 5).
+- [ ] 3.3 Progress: each member's reports while it is staged, and one report with the
+      final tallies after placement (Decision 5).
+- [ ] 3.4 `MEMBER_SELECTOR_UNMATCHED` is reported after the walk, before placement.
 
 ## 4. Delete the revision machinery
 
@@ -52,10 +58,12 @@
 - [ ] 5.1 Update `tests/` that pin today's pipe-ZIP behaviour to the delta specs: the
       stopped-run take-back, the caller's entries moved aside, the filter called twice,
       the `docs\r.txt` filter case.
-- [ ] 5.2 `docs/extracting.md`: the leftover note covers a `.archivey-tmp-*` directory,
-      and the pipe-ZIP section states what a stopped run leaves.
-- [ ] 5.3 `dev-docs/formats/zip.md` and `native-zip-reader/design.md`: point the
-      end-of-pass section at this change for the extraction side.
+- [ ] 5.2 `docs/extracting.md`: the leftover note covers a `.archivey-tmp-*` directory
+      and says the entries are safe to delete once no extraction is running; the
+      pipe-ZIP section states what a stopped run leaves.
+- [ ] 5.3 `dev-docs/formats/zip.md`, `native-zip-reader/design.md` and
+      `dev-docs/threat-model.md` (the temp-sibling write and the leftover residual):
+      point the end-of-pass description at this change for the extraction side.
 
 ## 6. Verify
 
@@ -63,3 +71,8 @@
       on `main` (`scripts/review_prep.py red-on-base`).
 - [ ] 6.2 `./scripts/check.sh`, `./scripts/test.sh` and `./scripts/test.sh --all-configs`.
 - [ ] 6.3 `openspec validate --strict pipe-zip-stage-then-commit`.
+- [ ] 6.4 Dry-run the archive: apply it on a scratch tree, read the **diff** of
+      `openspec/specs/` (not the modified count, which cannot tell an intended edit from
+      a deletion), then reset. Every delta here replaces a whole requirement block.
+- [ ] 6.5 `openspec archive pipe-zip-stage-then-commit` in the implementing PR, as its
+      last task.

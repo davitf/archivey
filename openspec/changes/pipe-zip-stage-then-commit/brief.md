@@ -6,8 +6,8 @@
 
 **What it does:** During the pass, each selected member's data goes into one private staging folder inside the destination. Once the directory is read, the members are placed by the same code every other extraction uses, each staged file landing by a rename.
 
-**Decided:** The staging folder uses the same temporary-name prefix the docs already call safe to delete. The filter runs once per member, at placement, so a filter that selects by a folder name only the directory gives now works from a pipe as from a file. A run that stops before the directory leaves nothing in the destination, where today it keeps the longer files. Bomb limits count staged bytes when they are written, and give back those of members that are not placed.
+**Decided:** The name safety checks still run during the pass, so a hostile or damaged archive is refused early, without decoding the rest of it. The filter runs once per member, at placement, so a filter that selects by a folder name only the directory gives now works from a pipe as from a file. A run that stops before the directory leaves nothing in the destination. Bomb limits count staged files when they are written, and give back those of members that are not placed.
 
-**Your call later:** Two questions. First, whether staged output squares with the rule against copying a pipe into seekable storage; the design argues it is output, not a copy of the source. Second, whether it is acceptable that the member count in progress reports moves only at placement, while the byte count still moves during the pass.
+**Your call later:** Two questions. First, whether the staged data is ordinary extraction output, or temporary storage that needs its own budget under the spool limits. Second, whether progress may report each member while it is staged, and the counts of extracted and blocked members only once, at the end.
 
-**Bottom line:** A simplification with one safety gain, ready to build once those two questions are answered; not urgent.
+**Bottom line:** A simplification that keeps today's early refusals, ready to build once those two questions are answered; not urgent.

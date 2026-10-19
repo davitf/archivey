@@ -27,12 +27,21 @@ extraction differs from a file extraction.
 - Once the central directory is read, the run places the members with the same per-member
   path a file extraction uses. Each member is read from its staged file, and a staged file
   lands by rename, so no data is copied twice. The filter, the policy checks, the
-  overwrite policy, collisions and `abort_on` each run once, on the final member.
+  overwrite policy, collisions and `abort_on` act on the final member.
+- During the pass, the path-safety checks and the name policy still run on each
+  member's local-header name, so `abort_on` and `OnError.STOP` refuse a hostile or
+  damaged archive without decoding the rest of it.
 - **BREAKING (pipe ZIP only):** a run that stops before the central directory is read
   leaves nothing of its own in the destination. Today the files longer than 4096 bytes
   stay, with no mode applied.
 - **BREAKING (pipe ZIP only):** the filter runs once per member, at placement. Today it
-  runs during the pass and again at the end.
+  runs during the pass and again at the end. A member the filter skips is staged first,
+  so it counts toward `max_entries` and `max_extracted_bytes` while staged.
+- **BREAKING (pipe ZIP only):** a `MEMBER_SELECTOR_UNMATCHED` report under a `RAISE`
+  disposition comes before any member is placed, as from a file. Today the members
+  already written stay.
+- **BREAKING (pipe ZIP only):** `members_extracted` and `members_blocked` in progress
+  reports stay 0 until placement ends.
 - A staged directory that cannot be removed is left as `.archivey-tmp-*`, which the docs
   already call safe to delete.
 - The caller's entries are never moved aside, and no file that might be a link is ever
@@ -46,11 +55,12 @@ None.
 
 ### Modified Capabilities
 
-- `safe-extraction`: the requirement "A ZIP extracted from a non-seekable source is
-  settled at the end of the pass" describes staging and placement in place of revision.
-  Its list of the places where the two reads MAY differ (DR-5a) gets shorter.
+- `safe-extraction`: "A ZIP extracted from a non-seekable source is settled at the end
+  of the pass" describes staging and placement in place of revision. "Abort-on-event
+  opt-in for extraction", "Enforce Maximum Entry Count" and "Progress Reporting via
+  on_progress Callback" say what changes for a pipe ZIP.
 - `archive-reading`: in "Collection form of MemberSelector", the filter is called once,
-  at placement. A filter that selects by a name only the directory gives (a DOS host's
+  at placement, and an unmatched entry is reported before placement. A filter that selects by a name only the directory gives (a DOS host's
   `docs\r.txt`) then extracts the member from a pipe as from a file; today the member
   fails.
 - `format-zip`: in "Read a non-seekable ZIP source in one forward pass", the row for a

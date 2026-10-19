@@ -23,7 +23,9 @@ has been offered to the selector:
 - `stream_members()` reports at the end of a pass that reached the last member. A pass
   that the caller stops early SHALL NOT report, because a later member could match.
 - `extract_all()` reports before it writes any member when the member list is available
-  without a scan, and otherwise at the end of the pass. Under a `RAISE` disposition the
+  without a scan, and otherwise at the end of the pass. A ZIP read from a non-seekable
+  source has its member list once its central directory has been read, before any
+  member is placed (`safe-extraction`), so it reports then, as the first case does. Under a `RAISE` disposition the
   first case refuses the call before the destination is created. In the second case
   the members already written stay on disk and `DiagnosticRaisedError` replaces the
   report.
@@ -64,4 +66,5 @@ the pass: it is called once per member, at placement, on the final member.
 | `extract_all(members=["docs/r.txt"])` on a ZIP from a pipe whose DOS-host entry stores `docs\r.txt` | `docs/r.txt` extracted, as from a file; `members=["docs\\r.txt"]` selects nothing, as from a file |
 | `extract_all(filter=...)` taking only names under `docs/`, the same archive from a pipe | `docs/r.txt` extracted, as from a file: the filter sees only the final name |
 | `extract_all(members=["a.txt", "typo.txt"])` on TAR with the code set to `RAISE` | `a.txt` written, then `DiagnosticRaisedError`; no report |
+| The same call on a ZIP from a pipe | `DiagnosticRaisedError` before any member is placed, as from a file; nothing of the run in the destination |
 | `extract_all(members=["typo.txt", "a.txt"])` on a listing that ends in damage after `a.txt`, code set to `RAISE` | `a.txt` written, then the listing's error; no `MEMBER_SELECTOR_UNMATCHED` |
