@@ -396,10 +396,6 @@ class _AlwaysStopResourceLimitError(ResourceLimitError):
     """
 
 
-# Backward-compatible alias used by older tests/imports.
-_AlwaysStopExtractionError = _AlwaysStopResourceLimitError
-
-
 class _CopyCounter:
     """Counts the chunks ``_copy_to_fileobj`` writes as a copy of bytes this run
     already wrote (``BombTracker.count_copy``), not as decoded output."""
@@ -571,10 +567,10 @@ class BombTracker:
         archive-wide ratio. The archive drives it: one that declares enough links to
         one member makes a copy per limit's worth of links, so a small archive could
         otherwise write far more than its size while staying under the byte cap, which
-        is the case the ratio exists for (maintainer ruling, 2026-10-07). A
-        cross-device copy does not: whether it happens depends on where the caller
-        extracts to, not on the archive. Neither counts toward the per-member ratio,
-        since a link member's compressed size says nothing about the copy's size.
+        is the case the ratio exists for. A cross-device copy does not: whether it
+        happens depends on where the caller extracts to, not on the archive. Neither
+        counts toward the per-member ratio, since a link member's compressed size says
+        nothing about the copy's size.
 
         A streaming pass that writes a member again from its own earlier copy, once
         the archive's directory changed the member (``_redo_revised_member``), counts
@@ -747,12 +743,8 @@ class _Orphan:
 
 @dataclass(frozen=True)
 class _Claim:
-    """A destination claimed by a member written this run.
-
-    The path alone was enough while a collision only had to be *detected*; recording the
-    claiming member's result index as well is what lets a later ``REPLACE`` collision
-    revise the earlier result to ``OVERWRITTEN`` instead of leaving two members both
-    reporting ``EXTRACTED`` at one path.
+    """A destination claimed by a member written this run, and the index of that
+    member's result, which a later ``REPLACE`` onto it revises to ``OVERWRITTEN``.
 
     ``physical`` is where the claimed file was when it was claimed, with every parent
     resolved. The key is taken from it, and a collision is routed to it. ``path`` can
@@ -775,10 +767,10 @@ class _RunState:
     dest: Path
     dest_root: Path
     tracker: BombTracker
-    # The reader being extracted from, for the one read ``_transform`` makes on it:
-    # an accepted link's target.
-    reader: BaseArchiveReader | None = None
-    forward_only: bool = False
+    reader: BaseArchiveReader
+    # The symlinks this run created and the paths each one's resolution depends on,
+    # so a later member that changes such a path gets them rechecked.
+    links: LinkWatch
     # Progress totals; see ``_run``.
     members_total: int | None = None
     total_estimate: int | None = None
@@ -866,9 +858,6 @@ class _RunState:
     # for (a selector or filter excluded them): member id -> whether the policy would
     # refuse it.
     refusals: dict[int, bool] = field(default_factory=dict)
-    # The symlinks this run created and the paths each one's resolution depends on,
-    # so a later member that changes such a path gets them rechecked.
-    links: LinkWatch | None = None
     # Where the platform has two kinds of symlink (``_DIRECTORY_LINKS``): each symlink
     # this run created -> the target it was created with and whether it was made a
     # directory link, so the end of the run can remake one whose target turned out
@@ -1120,10 +1109,9 @@ class ExtractionCoordinator:
         self._selector = selector
         self._filter = filter
         self._limits = limits if limits is not None else ExtractionLimits()
-        # Placeholders until ``run()`` builds the run's state, so the attribute is never
-        # None and helpers read it unguarded. A test that drives a helper directly
-        # installs its own ``_RunState``.
-        self._state = _RunState(Path(), Path(), BombTracker(None, None))
+        # Built by each ``run()``. A test that drives a helper directly installs its
+        # own.
+        self._state: _RunState
         # The state of the member being handled; each pass replaces it per member.
         self._current = _MemberState()
         # Set for the length of a dry run; ``None`` on a real run.
@@ -1256,7 +1244,6 @@ class ExtractionCoordinator:
             self._dry.rebase_os_error(exc)
 
     def _run(self, reader: BaseArchiveReader, dest: Path) -> list[ExtractionResult]:
-        forward_only = reader._streaming
         tracker = BombTracker(
             self._limits.max_extracted_bytes,
             self._limits.max_ratio,
@@ -1307,7 +1294,6 @@ class ExtractionCoordinator:
             dest=dest,
             dest_root=dest_root,
             reader=reader,
-            forward_only=forward_only,
             tracker=tracker,
             members_total=members_total,
             total_estimate=self._estimate_total_bytes(all_members),
@@ -1440,7 +1426,6 @@ class ExtractionCoordinator:
             presented_name: str | None = None
             rewrites: frozenset[NameRewrite] = frozenset()
             current = self._current = _MemberState()
-            link_error: ArchiveyError | None = None
             provisional = current.provisional = (
                 revises and not original.member_state_final
             )
@@ -1458,7 +1443,24 @@ class ExtractionCoordinator:
                 continue
             # What the member was when handled, if the walk can still change it.
             before = original.replace() if provisional else None
-            try:
+
+            def record(_error: object, failed: ExtractionResult) -> bool:
+                nonlocal recorded_index
+                if results and results[-1].member is failed.member:
+                    recorded_index = len(results) - 1
+                    self._set_result(recorded_index, failed)
+                else:
+                    recorded_index = self._append_result(failed)
+                return False
+
+            def cleanup() -> None:
+                self._close(stream)
+                if current.parked:
+                    self._drop_parked_copies(original.name, recorded_index)
+
+            with self._handling(
+                original, kind=original.type.value, record=record, cleanup=cleanup
+            ):
                 self._park_earlier_copies(
                     original.name, current_by_name.get(original.name)
                 )
@@ -1486,12 +1488,9 @@ class ExtractionCoordinator:
                     )
                     current_by_name[original.name] = result_index
                     if not original.is_anti:
-                        # Entry-count guard + ratio bookkeeping. Counted only once the
-                        # selector and user filter have accepted the member (and the
-                        # universal check inside _transform has passed), immediately before
-                        # writing begins — so selector-skipped, filter-skipped, and rejected
-                        # members create nothing on disk and do not count toward max_entries
-                        # (resolved 2026-07 decision).
+                        # Counted only now, once the selector, the filter and the
+                        # universal check have accepted the member: a member skipped or
+                        # rejected before this does not count toward max_entries.
                         tracker.start_member(original)
                         member_started = True
                         if self._on_progress is not None:
@@ -1513,38 +1512,6 @@ class ExtractionCoordinator:
                         original, transformed, stream, result_index
                     )
                     self._set_result(result_index, written)
-            except (_AlwaysStopResourceLimitError, DiagnosticRaisedError):
-                raise
-            except (ArchiveyError, OSError) as exc:
-                spelled_from = current.spelled_from
-                if isinstance(exc, ArchiveyError) and spelled_from is not None:
-                    _report_stored_spelling(
-                        exc, disk_spelled(spelled_from), spelled_from
-                    )
-                error, status = self._classify(exc, original.name)
-                result = ExtractionResult(
-                    original,
-                    None,
-                    status,
-                    error,
-                    requested_path=current.requested_path,
-                    collided_with=current.collided_with,
-                )
-                if results and results[-1].member is original:
-                    recorded_index = len(results) - 1
-                    self._set_result(recorded_index, result)
-                else:
-                    recorded_index = self._append_result(result)
-                self._stop_or_log(
-                    exc, error, status, kind=original.type.value, name=original.name
-                )
-            finally:
-                self._close(stream)
-                if current.parked:
-                    self._drop_parked_copies(original.name, recorded_index)
-                link_error = self._recheck_links()
-            if link_error is not None:
-                raise link_error
 
             if member_started and recorded_index is not None:
                 state.counted[recorded_index] = tracker.member_bytes
@@ -1602,9 +1569,6 @@ class ExtractionCoordinator:
         # excluded. Only populated for a seekable source; forward-only orphans already
         # failed at the link during the main pass.
         if state.orphans:
-            # Its own member state: none of the first pass's carries over, and it
-            # reports no intra-member progress.
-            self._current = _MemberState()
             self._resolve_orphans(reader)
         if listing_damage:
             raise listing_damage[0]
@@ -1695,6 +1659,16 @@ class ExtractionCoordinator:
             member_bytes = state.counted.pop(index)
             state.tracker.refund(0 if content_kept else member_bytes)
         state.orphans[:] = [o for o in state.orphans if o.result_index != index]
+
+    @contextlib.contextmanager
+    def _taking_back(self, index: int) -> Iterator[None]:
+        """Run a take-back of result ``index`` outside the handling of any member: it
+        gets its own member state, and the copies it parks are removed when it ends."""
+        self._current = _MemberState()
+        try:
+            yield
+        finally:
+            self._drop_parked_copies(self._state.results[index].member.name, None)
 
     def _open_parked_copy(self, path: Path) -> BinaryIO:
         """Open the parked copy at ``path`` to write its member again, from a temporary
@@ -1793,7 +1767,6 @@ class ExtractionCoordinator:
         """
         state = self._state
         reader = state.reader
-        assert reader is not None
         # ``state.revisable`` keeps the members not settled yet, so a run that stops
         # part way takes back what of theirs may be a link (``_run``).
         revisable = state.revisable
@@ -1862,7 +1835,6 @@ class ExtractionCoordinator:
         """
         state = self._state
         reader = state.reader
-        assert reader is not None
         failures: list[tuple[int, ArchiveyError]] = []
         for index in indices:
             result = state.results[index]
@@ -1876,12 +1848,8 @@ class ExtractionCoordinator:
                 and not refused_before_write
                 and not result.member.is_current
             ):
-                self._current = _MemberState()
-                try:
+                with self._taking_back(index):
                     self._supersede_written_copy(index)
-                finally:
-                    if self._current.parked:
-                        self._drop_parked_copies(result.member.name, None)
         failing = {id(member): error for member, error in reader._failed_at_end}
         for index in indices:
             result = state.results[index]
@@ -1943,12 +1911,8 @@ class ExtractionCoordinator:
         """Take back what result ``index`` wrote, and record it ``FAILED``."""
         state = self._state
         prior = state.results[index]
-        self._current = _MemberState()
-        try:
+        with self._taking_back(index):
             self._take_back_written(index)
-        finally:
-            if self._current.parked:
-                self._drop_parked_copies(prior.member.name, None)
         self._set_result(
             index,
             ExtractionResult(
@@ -1967,13 +1931,9 @@ class ExtractionCoordinator:
         folders created for it go too, once empty: random access never wrote it."""
         state = self._state
         path = state.results[index].path
-        self._current = _MemberState()
-        try:
+        with self._taking_back(index):
             self._take_back_written(index)
             self._hold_place_at(index)
-        finally:
-            if self._current.parked:
-                self._drop_parked_copies(state.results[index].member.name, None)
         # One whose own member the selection also drops is removed when its turn
         # comes, which is after everything inside it.
         self._remove_created_parents(path)
@@ -2283,8 +2243,29 @@ class ExtractionCoordinator:
         member_started = False
         presented_name: str | None = None
         rewrites: frozenset[NameRewrite] = frozenset()
-        link_error: ArchiveyError | None = None
-        try:
+
+        def record(error: ArchiveyError | OSError, failed: ExtractionResult) -> bool:
+            state.dropped.discard(index)
+            self._set_result(index, failed)
+            if (
+                failures is not None
+                and failed.status is ExtractionStatus.FAILED
+                and isinstance(error, ArchiveyError)
+            ):
+                failures.append((index, error))
+                return True
+            return False
+
+        def cleanup() -> None:
+            self._close(held)
+            if current.recopy_from is not None:
+                self._remove_recopy_source(current.recopy_from, member.name)
+            if current.parked:
+                self._drop_parked_copies(member.name, index)
+
+        with self._handling(
+            member, kind=member.type.value, record=record, cleanup=cleanup
+        ):
             # A BLOCKED result wrote nothing, and is released all the same: what it
             # was charged, if anything, is refunded rather than charged twice.
             self._take_back_written(index)
@@ -2331,49 +2312,11 @@ class ExtractionCoordinator:
                 self._set_result(
                     index, self._write_member(member, transformed, held, index)
                 )
-        except (_AlwaysStopResourceLimitError, DiagnosticRaisedError):
-            raise
-        except (ArchiveyError, OSError) as exc:
-            spelled_from = current.spelled_from
-            if isinstance(exc, ArchiveyError) and spelled_from is not None:
-                _report_stored_spelling(exc, disk_spelled(spelled_from), spelled_from)
-            error, status = self._classify(exc, member.name)
-            state.dropped.discard(index)
-            self._set_result(
-                index,
-                ExtractionResult(
-                    member,
-                    None,
-                    status,
-                    error,
-                    requested_path=current.requested_path,
-                    collided_with=current.collided_with,
-                ),
-            )
-            if (
-                failures is not None
-                and status is ExtractionStatus.FAILED
-                and isinstance(error, ArchiveyError)
-            ):
-                failures.append((index, error))
-            else:
-                self._stop_or_log(
-                    exc, error, status, kind=member.type.value, name=member.name
-                )
-        finally:
-            self._close(held)
-            if current.recopy_from is not None:
-                self._remove_recopy_source(current.recopy_from, member.name)
-            if current.parked:
-                self._drop_parked_copies(member.name, index)
-            link_error = self._recheck_links()
         if written and old_path is not None and old_path not in state.written_paths:
             # What an EXTRACTED result wrote is gone (a parked file only now): the
             # folders made for it alone go too, while empty. Random access makes
             # them only if the member is written there, and then they stay.
             self._remove_created_parents(old_path)
-        if link_error is not None:
-            raise link_error
         if member_started:
             state.counted[index] = state.tracker.member_bytes
         if presented_name is not None:
@@ -2408,16 +2351,13 @@ class ExtractionCoordinator:
 
         A hard link to a symlink is a second name for the symlink itself, which is what
         GNU tar creates. So the member is written as a symlink with the same target, read
-        from its own directory, and goes through the same checks as any symlink.
-        Following the chain instead looked the target up by member name, which fails
-        when the symlink's target passes through another symlinked directory. It runs
+        from its own directory, and goes through the same checks as any symlink. It runs
         after the caller's filter, which sees the HARDLINK the archive lists, and only
         when the filter kept it a HARDLINK.
         """
         if (
             original.type is not MemberType.HARDLINK
             or transformed.type is not MemberType.HARDLINK
-            or self._state.reader is None
         ):
             return transformed
         direct = self._hardlink_chain_end(self._state.reader, original)
@@ -2539,7 +2479,7 @@ class ExtractionCoordinator:
                 link_target=original.link_target,
             )
         reader = self._state.reader
-        if reader is not None and self._needs_target_read(original, transformed):
+        if self._needs_target_read(original, transformed):
             # A symlink whose target the format keeps in member data and nothing has
             # read yet (`read_link_targets=False`), or one whose read failed and was
             # reported as damaged, which leaves it unresolved: this read raises the
@@ -2615,35 +2555,25 @@ class ExtractionCoordinator:
         """Whether the member a HARDLINK gets its bytes from was refused, so the link
         is refused too.
 
-        A hard link's target string is a member name and never becomes a path, so it
-        gets no path check of its own (``check_universal``). What it can do is put a
-        refused member's content on disk under the link's name: the second pass
-        writes an unwritten source's bytes at the link's path. So a link is refused
-        when its source is, in both access modes and at every policy.
+        A hard link's target is a member name, never a path, so it gets no path check
+        of its own (``check_universal``); but the second pass can write a refused
+        source's bytes under the link's name. So a link is refused when its source is,
+        in both access modes and at every policy.
 
-        The source is ``link_target_member``, the end of the link chain (symlinks
-        included), which is the member ``_write_hardlink`` links against or the second
-        pass reads. A refused link in the middle of the chain does not refuse this
-        one: its name was the unsafe part, and this link does not use that name. The
-        chain ends at a SYMLINK only when that symlink has no target, and then
-        nothing is refused: the link copies no bytes, and ``_write_hardlink`` fails it
-        as a link to a non-file whatever happened to the symlink's own name. (A
-        symlink with a target is not a source: ``_as_written`` wrote the link as that
-        symlink.) Hard links point only backward, so this run has already reached the
-        source. When it recorded a result for it, the result decides: ``BLOCKED`` is
-        a refusal, and anything else passed the checks, under the name the caller's
-        filter gave it. A filter that renames a source to an unsafe name thus refuses
-        its links too, and one that rescues an unsafe source lets them through. A
-        source with no result was excluded by the selector or the filter. The
-        caller's filter is not run on it, since a selector-excluded member was never
-        meant to reach it; instead the policy's own steps run on the source as listed
-        (``_policy_refuses``). A refused source's links are refused; any other
-        excluded source is recovered by the second pass, or fails the link on a
-        forward-only stream (``_write_hardlink``).
+        The source is ``link_target_member``, the end of the link chain. A refused link
+        in the middle of the chain does not refuse this one, which does not use that
+        link's name. A chain that ends at a SYMLINK refuses nothing: that symlink has no
+        target (``_as_written`` wrote the link as any symlink that has one), the link
+        copies no bytes, and ``_write_hardlink`` fails it as a link to a non-file. Hard
+        links point only backward, so this run has already reached the source. When it
+        recorded a result for it, ``BLOCKED`` is a refusal and anything else is not: the
+        caller's filter decides through the name it gave the source. A source with no
+        result was left out by the selector or the filter, and the policy's own steps
+        run on it as listed (``_policy_refuses``), without the caller's filter.
         """
         state = self._state
         source = link.link_target_member
-        if state.reader is None or source is None or source._member_id is None:
+        if source is None or source._member_id is None:
             # No source: `_write_hardlink` fails the link as not found.
             return False
         if source.type is MemberType.SYMLINK:
@@ -2740,12 +2670,10 @@ class ExtractionCoordinator:
                 original, transformed, stream, dest_path, result_index
             )
         except (ArchiveyError, OSError):
-            # The write failed *after* clearing the destination to make room for it (only
-            # reachable on the non-atomic DIR/SYMLINK/HARDLINK paths). The earlier
-            # member's content is gone either way, so its result must stop advertising a
-            # live path — reporting EXTRACTED for bytes that no longer exist is exactly
-            # the defect this change exists to remove. This member's own FAILED result is
-            # recorded by the caller's handler.
+            # A write that failed after clearing the destination (only the non-atomic
+            # landings clear it first) has still removed the earlier member's content,
+            # so that member's result must stop reporting it EXTRACTED. This member's
+            # own result is recorded by the caller's handler.
             if self._current.removed_existing:
                 self._mark_overwritten(prior)
             raise
@@ -2874,14 +2802,12 @@ class ExtractionCoordinator:
             )
         if result.status is ExtractionStatus.EXTRACTED and result.path is not None:
             written_paths.add(result.path)
-            links = self._state.links
             if (
                 transformed.type == MemberType.SYMLINK
-                and links is not None
                 and transformed.link_target is not None
             ):
                 on_disk = self._link_target_on_disk(transformed.link_target)
-                links.track(result.path, on_disk, result_index)
+                self._state.links.track(result.path, on_disk, result_index)
                 if on_disk != transformed.link_target:
                     # An error names the target as stored, not with the separators
                     # or dry-run path written to disk.
@@ -2931,11 +2857,9 @@ class ExtractionCoordinator:
 
         ``collided_with`` is the prior path whenever a collision *event* occurred, which
         is the wider set: RENAME collides and then avoids the destination, so it reports
-        a path here while reporting no redirection. It is set under exactly the condition
-        the removed ``EXTRACTION_NAME_COLLISION`` diagnostic fired on — a claim held by
-        this run, outside TRUSTED — so the result carries the fact the diagnostic used to
-        carry. A pre-existing on-disk obstacle is not a collision event and reports
-        ``None``, as the diagnostic was also silent for it.
+        a path here while reporting no redirection. A collision event is a claim held by
+        this run, outside TRUSTED. A pre-existing on-disk obstacle is not one, and
+        reports ``None``.
 
         Directories are structural (parents recur, entries merge) and are never claimed
         in the map, so a directory member landing on a real directory merges into it.
@@ -3082,6 +3006,53 @@ class ExtractionCoordinator:
             if renamed is not None:
                 return renamed / requested.relative_to(ancestor)
         return requested
+
+    @contextlib.contextmanager
+    def _handling(
+        self,
+        member: ArchiveMember,
+        *,
+        kind: str,
+        record: Callable[[ArchiveyError | OSError, ExtractionResult], bool],
+        cleanup: Callable[[], None] | None = None,
+    ) -> Iterator[None]:
+        """Run the work on ``member`` in either pass, and deal with its failure.
+
+        A per-member failure (``ArchiveyError`` or ``OSError``) is named as listed,
+        typed (``_classify``) and handed to ``record`` with the result it gives
+        ``member``, for the caller to record. The run then stops on it or logs it
+        (``_stop_or_log``), unless ``record`` returns True: the caller stops on it
+        later. The always-stop errors pass through. Whatever the outcome, ``cleanup``
+        runs, and then the links the work may have moved are rechecked
+        (``_recheck_links``); an error from the recheck ends the run.
+        """
+        current = self._current
+        link_error: ArchiveyError | None = None
+        try:
+            yield
+        except (_AlwaysStopResourceLimitError, DiagnosticRaisedError):
+            raise
+        except (ArchiveyError, OSError) as exc:
+            spelled_from = current.spelled_from
+            if isinstance(exc, ArchiveyError) and spelled_from is not None:
+                _report_stored_spelling(exc, disk_spelled(spelled_from), spelled_from)
+            error, status = self._classify(exc, member.name)
+            failed = ExtractionResult(
+                member,
+                None,
+                status,
+                error,
+                requested_path=current.requested_path,
+                collided_with=current.collided_with,
+            )
+            if not record(error, failed):
+                self._stop_or_log(exc, error, status, kind=kind, name=member.name)
+        finally:
+            if cleanup is not None:
+                cleanup()
+            link_error = self._recheck_links()
+        if link_error is not None:
+            raise link_error
 
     def _stops_on_failure(self) -> bool:
         """Whether ``OnError`` halts on a member failure.
@@ -3276,11 +3247,11 @@ class ExtractionCoordinator:
         """The collision-map key of the entry at ``path``: where it physically is.
 
         The parent is resolved, so two members that reach one file by different names
-        collide: ``s/f`` through the archive's own ``s -> d`` is ``d/f``. Keying on the
-        name alone let both report ``EXTRACTED`` for one file. The final component is
-        not followed, as a member's own destination never is. A parent that does not
-        resolve inside the destination (it was checked when the member was accepted,
-        so only a later change can do that) falls back to the name as written.
+        collide: ``s/f`` through the archive's own ``s -> d`` is ``d/f``. The final
+        component is not followed, as a member's own destination never is. A parent
+        that does not resolve inside the destination (it was checked when the member
+        was accepted, so only a later change can do that) falls back to the name as
+        written.
         """
         rel = self._physical_rel(path)
         if rel is None:
@@ -3408,7 +3379,7 @@ class ExtractionCoordinator:
             # is already past that data, so the content is out of reach: fail the member
             # rather than write an empty file for one the archive carries in full.
             reader = state.reader
-            if reader is None or reader._streaming:
+            if reader._streaming:
                 raise ExtractionError(
                     f"{quoted(original.name)} is flagged as a link but its data is a "
                     "file's content, which a streaming pass cannot go back for",
@@ -3522,10 +3493,10 @@ class ExtractionCoordinator:
             # target this read could not produce. A data-stored target has been looked
             # for by now, either while listing or by `_transform` on request, so it is
             # out of reach: compressed, split across volumes, encrypted, or refused as
-            # too long. Reporting that as the status above would claim success while
-            # dropping a member the archive describes in full, so it stays the
-            # per-member failure it was before that status existed. The reason is the
-            # backend's to report: `BaseArchiveReader._emit_link_target_unavailable`.
+            # too long. The status above would claim success while dropping a member
+            # the archive describes in full, so this is a per-member failure. The
+            # reason is the backend's to report:
+            # `BaseArchiveReader._emit_link_target_unavailable`.
             raise LinkTargetNotFoundError(
                 "Symlink has no target",
                 reason=LinkTargetNotFoundReason.UNREADABLE,
@@ -3556,24 +3527,14 @@ class ExtractionCoordinator:
             raise self._already_exists(dest_path, transformed) from exc
         self._resolutions_changed()
 
-        # Re-validate the symlink target AFTER creating it, resolving through the real
-        # filesystem. check_universal already rejected an escaping target at
-        # planning time, but that check resolves the target lexically against the tree as it
-        # looked *then*. The authoritative question — where does this link actually point? —
-        # can only be answered against the filesystem as it is now, because an *earlier*
-        # extracted member may have planted a symlink on one of this target's path
-        # components that redirects it outside dest (a "chained symlink": e.g. member 1 is
-        # `sub -> /tmp/evil`, member 2 is `sub/link -> x`, so `sub/link` resolves to
-        # `/tmp/evil/x`). Path.resolve() follows those on-disk links, so it catches the
-        # escape the planning check cannot see. We can't do this "just before" creating the
-        # link because there is no link to resolve until it exists; and resolving the *bare
-        # target string* would only repeat check_universal. So: create, resolve, and unlink
-        # if it escaped. A link that cannot be resolved, a symlink loop included on
-        # every Python version, also counts as an escape (fail safe rather than crash).
-        # This is the third of the three defense-in-depth layers named in the
-        # `safe-extraction` spec ("Symlink Escape Re-Validated at Extraction Time");
-        # layers 1-2 are in check_universal. A *later* member can still change what
-        # this link resolves to; the caller records the link in ``links`` for that.
+        # Resolve the link now that it exists, through the real filesystem, and remove
+        # it if it escapes. check_universal checked the target against the tree as it
+        # was; an earlier member's symlink on the target's path can still lead out
+        # (`sub -> /tmp/evil`, then `sub/link -> x`). A link that cannot be resolved,
+        # a loop included, counts as an escape. This is the third layer of the
+        # `safe-extraction` spec's "Symlink Escape Re-Validated at Extraction Time".
+        # A later member can still change what this link resolves to; the caller
+        # records the link in ``links`` for that.
         problem = _symlink_problem(dest_path, on_disk, self._state.dest_root)
         if problem is not None:
             try:
@@ -3721,9 +3682,8 @@ class ExtractionCoordinator:
             # `link_target_member` is the end of the link chain, so anything but a
             # file here (a directory, a device) cannot share an inode. A hard link to
             # a symlink whose target is known never gets here: `_as_written` writes it
-            # as a symlink. Only a FILE source is recorded in `source_paths`. Without
-            # this check, the member went down the branches below for a source that
-            # was not written, and the error said the source was excluded.
+            # as a symlink. Only a FILE source is recorded in `source_paths`, so the
+            # branches below would report this source as excluded.
             reason = (
                 "a directory, and a hard link to a directory cannot be created"
                 if source.type is MemberType.DIRECTORY
@@ -3751,7 +3711,7 @@ class ExtractionCoordinator:
         # crafted/non-TAR-ordered archive) it simply appears later in archive order. The
         # second pass distinguishes the two: a source written later in this same pass is
         # just linked against; a truly excluded one is re-read and materialized.
-        if self._state.forward_only:
+        if self._state.reader._streaming:
             # Forward-only: the source's bytes already streamed past — unrecoverable. Per
             # spec this is a per-member ExtractionError handled by OnError.
             raise ExtractionError(
@@ -3805,32 +3765,26 @@ class ExtractionCoordinator:
         )
         for member, stream in reader.stream_members(needed_sources):
             group = orphans_by_source[member.member_id]
-            link_error: ArchiveyError | None = None
-            try:
-                self._materialize_orphan_source(member, stream, group)
-            except (_AlwaysStopResourceLimitError, DiagnosticRaisedError):
-                raise
-            except (ArchiveyError, OSError) as exc:
+            self._current = _MemberState()
+
+            def record(
+                error: ArchiveyError | OSError, failed: ExtractionResult
+            ) -> bool:
                 # One failed source, N failed links: the fan-out is recorded on the
                 # results themselves, so a caller can tell N separate failures from one
-                # failure seen N times without joining against a diagnostic. The second
-                # pass records FAILED, so only OnError can stop it.
-                error, status = self._classify(exc, member.name)
+                # failure seen N times without joining against a diagnostic.
                 # Nothing the second pass runs raises FilterRejectionError.
-                assert status is ExtractionStatus.FAILED
+                assert failed.status is ExtractionStatus.FAILED
                 self._record_failure_group(group, error)
-                self._stop_or_log(
-                    exc,
-                    error,
-                    status,
-                    kind="orphaned hardlink source",
-                    name=member.name,
-                )
-            finally:
-                self._close(stream)
-                link_error = self._recheck_links()
-            if link_error is not None:
-                raise link_error
+                return False
+
+            with self._handling(
+                member,
+                kind="orphaned hardlink source",
+                record=record,
+                cleanup=lambda: self._close(stream),
+            ):
+                self._materialize_orphan_source(member, stream, group)
             needed.discard(member.member_id)
             if not needed:
                 break  # every orphaned source is materialized; stop opening members
@@ -3986,23 +3940,26 @@ class ExtractionCoordinator:
         ``OnError``. A link can replace a symlink or a directory, so the symlinks it
         may have moved are rechecked after each one, whatever its outcome."""
         for orphan in group:
-            try:
-                self._link_orphan(orphan, source_id)
-            finally:
-                link_error = self._recheck_links()
-            if link_error is not None:
-                raise link_error
+            self._link_orphan(orphan, source_id)
 
     def _link_orphan(self, orphan: _Orphan, source_id: int) -> None:
-        """One link of ``_link_orphan_group``, which rechecks symlinks after it."""
-        try:
+        """One link of ``_link_orphan_group``."""
+        current = self._current = _MemberState(
+            requested_path=orphan.dest_path, spelled_from=orphan.spelled_from
+        )
+
+        def record(_error: object, failed: ExtractionResult) -> bool:
+            # Nothing the second pass runs raises FilterRejectionError.
+            assert failed.status is ExtractionStatus.FAILED
+            # A single link's failure, not a source fan-out: no group id.
+            self._revise_result(orphan.result_index, failed)
+            return False
+
+        with self._handling(orphan.original, kind="hardlink", record=record):
             resolved, prior, collided_with = self._resolve_collision(
                 orphan.original, orphan.transformed, orphan.dest_path
             )
-        except (ArchiveyError, OSError) as exc:
-            orphan.report_stored_spelling(exc)
-            raise
-        try:
+            current.collided_with = collided_with
             # Taken before ``_make_room``, as in ``_write_hardlink``. An earlier link
             # of the group that failed after its ``_make_room`` can have taken the
             # last path; ``_place_link`` then fails this link as well. No archive
@@ -4018,39 +3975,16 @@ class ExtractionCoordinator:
                 result = ExtractionResult(
                     orphan.original, resolved, ExtractionStatus.EXTRACTED, None
                 )
-        except (_AlwaysStopResourceLimitError, DiagnosticRaisedError):
-            raise
-        except (ArchiveyError, OSError) as exc:
-            orphan.report_stored_spelling(exc)
-            # FAILED, as for an orphaned source.
-            error, status = self._classify(exc, orphan.original.name)
-            # Nothing the second pass runs raises FilterRejectionError.
-            assert status is ExtractionStatus.FAILED
-            self._revise_result(
-                orphan.result_index,
-                ExtractionResult(
-                    orphan.original,
-                    None,
-                    ExtractionStatus.FAILED,
-                    error,
-                    requested_path=orphan.dest_path,
-                    collided_with=collided_with,
-                ),
+            result = self._settle_placement(
+                result,
+                requested=orphan.dest_path,
+                target=orphan.dest_path,
+                prior=prior,
+                collided_with=collided_with,
+                transformed=orphan.transformed,
+                result_index=orphan.result_index,
             )
-            # A single link's failure, not a source fan-out: no group id.
-            name = orphan.original.name
-            self._stop_or_log(exc, error, status, kind="hardlink", name=name)
-            return
-        result = self._settle_placement(
-            result,
-            requested=orphan.dest_path,
-            target=orphan.dest_path,
-            prior=prior,
-            collided_with=collided_with,
-            transformed=orphan.transformed,
-            result_index=orphan.result_index,
-        )
-        self._revise_result(orphan.result_index, result)
+            self._revise_result(orphan.result_index, result)
 
     @contextlib.contextmanager
     def _readonly_cleared(self, path: Path, *, ours: bool = False) -> Iterator[None]:
@@ -4139,8 +4073,7 @@ class ExtractionCoordinator:
     def _note_link_change(self, path: Path) -> None:
         """Report a symlink or directory at ``path`` replaced or removed this member."""
         self._resolutions_changed()
-        if self._state.links is not None:
-            self._state.links.note_change(path)
+        self._state.links.note_change(path)
 
     def _recheck_links(self) -> ArchiveyError | None:
         """Remove the links this run created that the member just handled made escape.
@@ -4155,7 +4088,7 @@ class ExtractionCoordinator:
         """
         state = self._state
         links = state.links
-        if links is None or not links.has_changes:
+        if not links.has_changes:
             return None
         dest_root = state.dest_root
         # The recheck asks a yes/no question; the reason is kept here, per link path,
@@ -4571,12 +4504,9 @@ class ExtractionCoordinator:
         callback. Pass ``None`` (the default) for the zero-cost path.
         """
         if stream is None:
-            # A FILE reaching the writer with no data stream is a backend bug, not a valid
-            # empty file (a zero-byte FILE still yields a real, empty stream). Silently
-            # writing an empty file here would mask that bug, so raise instead. Both FILE
-            # write paths (the main pass and the orphaned-source second pass) funnel through
-            # here, so this one guard covers them; it surfaces as a per-member failure via
-            # the coordinator's OnError handling, attributed to the member being written.
+            # A backend bug, not an empty file: a zero-byte FILE still has a stream.
+            # Both FILE write paths come through here, so this fails the member in
+            # either pass rather than writing an empty file.
             raise ExtractionError(
                 "FILE member has no data stream to extract (backend returned stream=None)"
             )
@@ -4721,8 +4651,9 @@ class ExtractionCoordinator:
         copy does not count (``_occupied``); the other landings removed it in
         ``_prepare_destination``. ``os.makedirs(exist_ok=True)`` never raises for an
         existing directory, so a ``FileExistsError`` there means a non-directory. So
-        anything a landing is refused over appeared after the check. Under the other policies a landing that fails this way is not
-        handled: its error goes out as it is."""
+        anything a landing is refused over appeared after the check. Under the other
+        policies a landing that fails this way is not handled: its error goes out as it
+        is."""
         if self._overwrite is not OverwritePolicy.ERROR:
             return False
         return self._occupied(dest) if atomic else os.path.lexists(long_path(dest))
@@ -4736,12 +4667,8 @@ class ExtractionCoordinator:
         file onto another of its own names (a hard link listed twice, or one REPLACE
         routes onto a link to the same file). ``dest`` then already names the right
         file, so only the temp name is left, and it is removed here. After a real
-        rename the temp name is gone and the unlink finds nothing.
-
-        On Windows the same call does not fail: the tests for this case
-        (``test_link_onto_a_name_of_the_same_file_leaves_no_temp``) pass there. Whether
-        Windows really renames or leaves the temp as POSIX does is not pinned; the
-        unlink below covers both.
+        rename the temp name is gone and the unlink finds nothing. The unlink covers
+        Windows either way.
 
         Any error from the unlink is ignored: ``os.replace`` has already put the member
         in place, and a temp name left behind is a stray the docs call safe to delete,

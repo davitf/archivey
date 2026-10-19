@@ -52,7 +52,6 @@ from archivey.internal.extraction import (
     _CHUNK,
     BombTracker,
     ExtractionCoordinator,
-    _AlwaysStopExtractionError,
     _AlwaysStopResourceLimitError,
 )
 from archivey.internal.filters import (
@@ -63,6 +62,7 @@ from archivey.internal.filters import (
     transform_standard,
     transform_strict,
 )
+from archivey.internal.link_watch import LinkWatch
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.types import ArchiveFormat, ArchiveInfo, ArchiveMember, MemberType
 from tests.conftest import case_sensitive
@@ -599,9 +599,6 @@ def test_entry_count_independent_of_bytes() -> None:
     t.start_member(_member("a"))
     with pytest.raises(_AlwaysStopResourceLimitError):
         t.start_member(_member("b"))  # trips on count, not bytes
-
-    # Alias still resolves for older imports.
-    assert _AlwaysStopExtractionError is _AlwaysStopResourceLimitError
 
 
 def test_bomb_tracker_member_bytes_mirrors_count() -> None:
@@ -4994,6 +4991,9 @@ def test_anti_delete_releases_the_collision_claim(tmp_path: Path) -> None:
         dest=dest,
         dest_root=dest.resolve(),
         tracker=BombTracker(None, None),
+        # An anti-item reads neither the reader nor the link watch.
+        reader=cast("BaseArchiveReader", SimpleNamespace()),
+        links=LinkWatch(dest.resolve(), None),
         written_paths=written_paths,
         collision_map=collision_map,
     )
@@ -5023,6 +5023,9 @@ def test_anti_no_op_leaves_an_unrelated_claim_alone(tmp_path: Path) -> None:
         dest=dest,
         dest_root=dest.resolve(),
         tracker=BombTracker(None, None),
+        # An anti-item reads neither the reader nor the link watch.
+        reader=cast("BaseArchiveReader", SimpleNamespace()),
+        links=LinkWatch(dest.resolve(), None),
         written_paths=set(),
         collision_map=collision_map,
     )
@@ -5057,6 +5060,9 @@ def test_anti_item_finds_a_case_variant_through_the_collision_map(
         dest=dest,
         dest_root=dest.resolve(),
         tracker=BombTracker(None, None),
+        # An anti-item reads neither the reader nor the link watch.
+        reader=cast("BaseArchiveReader", SimpleNamespace()),
+        links=LinkWatch(dest.resolve(), None),
         written_paths=written_paths,
         collision_map=collision_map,
     )
@@ -5092,6 +5098,9 @@ def test_anti_item_is_exact_under_trusted(tmp_path: Path) -> None:
         dest=dest,
         dest_root=dest.resolve(),
         tracker=BombTracker(None, None),
+        # An anti-item reads neither the reader nor the link watch.
+        reader=cast("BaseArchiveReader", SimpleNamespace()),
+        links=LinkWatch(dest.resolve(), None),
         written_paths=written_paths,
         collision_map=collision_map,
     )
@@ -5128,6 +5137,9 @@ def test_anti_item_prefers_the_exact_directory_it_names(tmp_path: Path) -> None:
         dest=dest,
         dest_root=dest.resolve(),
         tracker=BombTracker(None, None),
+        # An anti-item reads neither the reader nor the link watch.
+        reader=cast("BaseArchiveReader", SimpleNamespace()),
+        links=LinkWatch(dest.resolve(), None),
         written_paths=written_paths,
         collision_map=collision_map,
     )
