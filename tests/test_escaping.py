@@ -577,7 +577,9 @@ _CLI_PRINTERS = {"print", "_field", "_report_quietly"}
 # can, keyed ``module: expression``: attributes, calls into other modules, and ``str``
 # parameters, which the sweep cannot follow. Each is safe by type or escaped where it
 # was built; say which. An entry that no longer matches fails
-# ``test_cli_print_allowances_name_real_sites``.
+# ``test_cli_print_allowances_name_real_sites``. Keys are ``ast.unparse`` output, whose
+# quoting of an f-string with quotes inside its fields differs between Python versions,
+# so hoist such an f-string into a local rather than key on it.
 _CLI_PRINT_ALLOWED = {
     "common.py: stats.bytes_decompressed": "int counter",
     "common.py: str(stats.compressed_bytes_consumed)": "int counter",
@@ -605,8 +607,9 @@ _CLI_PRINT_ALLOWED = {
     "main.py: format_format_label(fmt)": "format label from the format registry",
     "main.py: avail.support.value": "enum value",
     "main.py: exc.code": "a SystemExit message raised by the CLI itself",
-    "main.py: '; '.join((f'{m.name} ({m.install_hint})' for m in avail.missing))": (
-        "dependency names and install hints from archivey"
+    "main.py: '; '.join(groups)": (
+        "dependency names and install hints from archivey, grouped by "
+        "_format_missing_components"
     ),
 }
 
