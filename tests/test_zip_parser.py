@@ -18,7 +18,11 @@ from pathlib import Path
 import pytest
 
 from archivey import open_archive
-from archivey.exceptions import CorruptionError, UnsupportedFeatureError
+from archivey.exceptions import (
+    CorruptionError,
+    TruncatedError,
+    UnsupportedFeatureError,
+)
 from archivey.internal.backends import zip_parser
 from archivey.internal.backends.zip_parser import (
     CENTRAL_HEADER_SIZE,
@@ -800,6 +804,21 @@ def test_the_end_record_past_the_window_is_found_after_the_directory() -> None:
     with open_archive(io.BytesIO(data)) as reader:
         (member,) = reader.members()
         assert reader.read(member) == b"hello"
+
+
+def test_a_zip64_record_size_past_the_file_is_truncation() -> None:
+    """A ZIP64 end-record size of 2**64-1 must not be used as a seek offset.
+
+    The end record sits past the search window, so the reader steps over the
+    directory. The fuzzer's input sought that size and raised OverflowError.
+    """
+    data = _zip({"a.txt": b"hello"})
+    eocd = data.rindex(b"PK\x05\x06")
+    huge = struct.pack("<4sQ", b"PK\x06\x06", (1 << 64) - 1)
+    body = data[:eocd] + huge + data[eocd:] + b"\x00" * (1 << 17)
+    with pytest.raises(TruncatedError, match="central directory"):
+        with open_archive(io.BytesIO(body)) as reader:
+            list(reader)
 
 
 def test_a_digital_signature_record_is_not_stepped_over() -> None:
