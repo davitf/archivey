@@ -49,6 +49,14 @@ Errors that aren't about the archive also pass through as themselves. A missing 
 catch `OSError` next to `ArchiveyError` if your program cares about both. Any other exception type
 from inside archivey is a bug, and we'd like to hear about it.
 
+??? note "Why not turn every error into an `ArchiveyError`?"
+    Archivey translates the errors it knows a library raises for damaged data, and lets any other
+    error through unchanged. A catch-all would let a single `except ArchiveyError` handle everything,
+    but it would hide the cases nobody has looked at yet. A library failing in a way we didn't know
+    about, or a bug in archivey itself, would look like a damaged archive. You might discard a good
+    file, and we would never hear about the problem. When the unknown error comes through as itself,
+    it gets noticed and reported, and we can then translate it properly.
+
 Exception messages are safe to print. Control characters from the archive, such as a member name
 built to move the terminal cursor, are escaped in the message. Attributes like `e.member_name` keep
 the raw value.
