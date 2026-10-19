@@ -153,9 +153,26 @@ def test_version_verbose_names_each_install_hint_once() -> None:
     ]
     from archivey.cli import main as main_mod
 
-    assert main_mod._group_by_install_hint(missing) == (
+    assert main_mod._format_missing_components(missing) == (
         f"pyppmd, brotli ({hint}); unrar (install RARLAB unrar)"
     )
+
+
+def test_version_verbose_never_repeats_an_install_hint(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Each printed ``— missing`` line names every install hint once.
+
+    Vacuous on a full install (no line is missing anything); real on the core-only
+    legs, where the recommended-extra packages must share one hint.
+    """
+    assert main(["--version", "-v"]) == EXIT_OK
+    for line in capsys.readouterr().out.splitlines():
+        if " — missing " not in line:
+            continue
+        groups = line.split(" — missing ", 1)[1].split("; ")
+        hints = [group[group.index(" (") + 2 : -1] for group in groups]
+        assert len(hints) == len(set(hints)), line
 
 
 def test_default_list_dispatch(

@@ -666,14 +666,13 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _group_by_install_hint(missing: Sequence[MissingComponent]) -> str:
-    """``"a, b (hint1); c (hint2)"``: one install hint per group, in first-seen order."""
+def _format_missing_components(missing: Sequence[MissingComponent]) -> str:
+    """``"a, b (hint1); c (hint2)"``: names grouped by install hint, first-seen order."""
     names_by_hint: dict[str, list[str]] = {}
     for component in missing:
         names_by_hint.setdefault(component.install_hint, []).append(component.name)
-    return "; ".join(
-        f"{', '.join(names)} ({hint})" for hint, names in names_by_hint.items()
-    )
+    groups = [f"{', '.join(names)} ({hint})" for hint, names in names_by_hint.items()]
+    return "; ".join(groups)
 
 
 def _print_version(*, verbose: bool, out: TextIO) -> None:
@@ -687,7 +686,7 @@ def _print_version(*, verbose: bool, out: TextIO) -> None:
         avail = format_availability(fmt)
         label = format_format_label(fmt)
         if avail.missing:
-            missing = _group_by_install_hint(avail.missing)
+            missing = _format_missing_components(avail.missing)
             print(f"  {label}: {avail.support.value} — missing {missing}", file=out)
         elif avail.support is FormatSupport.NONE:
             # A registered format with nothing missing is recognised and not
