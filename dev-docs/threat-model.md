@@ -270,8 +270,8 @@ bytes. The outcome is the same on every platform. ADR
   `max_extracted_bytes` and the archive-wide `max_ratio` (see
   [Extraction bombs](#extraction-bombs)).
 - On Windows each filesystem call the extraction code (`internal/extraction.py`,
-  `internal/link_watch.py`, `resolve_or_raise_on_loop`) makes under the destination or a
-  dry run's scratch copy takes a path of 200 characters or more in the extended `\\?\`
+  `internal/dry_run.py`, `internal/link_watch.py`, `resolve_or_raise_on_loop`) makes
+  under the destination or a dry run's scratch copy takes a path of 200 characters or more in the extended `\\?\`
   form (`internal/long_paths.py`), so a path past `MAX_PATH` is written without
   `LongPathsEnabled`. `test_filesystem_calls_take_the_long_path_form` holds the inventory
   of those calls. The CLI's own walks after a run (the hoist) take plain paths. The

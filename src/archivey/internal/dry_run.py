@@ -16,7 +16,7 @@ import tempfile
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePath
-from typing import BinaryIO
+from typing import BinaryIO, NamedTuple
 
 from archivey.internal.filters import resolve_or_raise_on_loop
 from archivey.internal.logs import extraction as logger
@@ -86,6 +86,17 @@ def remove_scratch(root: Path) -> None:
         logger.warning(
             "Could not remove dry-run scratch directory %r: %s", str(root), exc
         )
+
+
+class ScratchRecord(NamedTuple):
+    """What a dry run's pass left in the scratch copy of dest (``DryRun.record``)."""
+
+    # The entries directly under it: (name, whether a directory and not a symlink).
+    top_level: tuple[tuple[str, bool], ...] | None
+    # Every entry of the tree and every symlink with its target, by ``/``-separated
+    # path (``scratch_tree``); recorded only when ``top_level`` holds one entry.
+    entries: tuple[tuple[str, bool], ...] | None
+    links: tuple[tuple[str, str], ...] | None
 
 
 @dataclass
@@ -176,13 +187,7 @@ class DryRun:
             if isinstance(value, str):
                 setattr(exc, attr, str(self.shown(Path(plain(value)))))
 
-    def record(
-        self,
-    ) -> tuple[
-        tuple[tuple[str, bool], ...] | None,
-        tuple[tuple[str, bool], ...] | None,
-        tuple[tuple[str, str], ...] | None,
-    ]:
+    def record(self) -> ScratchRecord:
         """What the pass left in the scratch copy of dest, for ``ExtractionReport``:
         the entries directly under it, and, when there is exactly one, every entry and
         symlink of the tree (``scratch_tree``), which the CLI's hoist prediction walks.
@@ -200,8 +205,8 @@ class DryRun:
             if len(top) == 1:
                 tree = scratch_tree(self.scratch)
         if tree is None:
-            return top, None, None
-        return top, tree[0], tree[1]
+            return ScratchRecord(top, None, None)
+        return ScratchRecord(top, tree[0], tree[1])
 
     def check_creatable(self) -> None:
         """Raise what ``mkdir(parents=True)`` would raise for the absent ``shown_dest``,
@@ -251,9 +256,10 @@ def scratch_for(dest: Path) -> Iterator[DryRun]:
 
     The scratch copy is a directory named like dest, one level down in a private
     directory, so a relative link target that climbs out of dest by name
-    (``../out/x``) comes back in. It is resolved, so a path built from the resolved
-    root and one built from ``dest`` translate the same way (macOS's /var ->
-    /private/var).
+    (``../out/x``) comes back in. The private directory's path is resolved, so the
+    pass's paths translate the same way whether they are built from the resolved dest
+    (``ExtractionCoordinator._run``'s ``dest_root``) or from ``dest`` as given
+    (macOS's /var -> /private/var).
     """
     given = Path(os.path.abspath(dest))
     try:

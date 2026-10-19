@@ -92,9 +92,9 @@ investigation beyond what the claim rows already touched.
 - **Evidence:** C-50/`SUPERSEDED`; C-55 casefold → `readme (1)`; exact
   `photo.jpg`×2 → one `EXTRACTED`, one `SUPERSEDED`.
 
-### 9. Always-stop bomb errors are a private `ResourceLimitError` subclass
+### 9. Always-stop bomb errors are an internal `ResourceLimitError` subclass
 
-- **Problem:** Runtime raises `_AlwaysStopResourceLimitError` for global
+- **Problem:** Runtime raises `AlwaysStopResourceLimitError` for global
   guards; docs/specs say `ResourceLimitError`.
 - **Symptom:** `except ResourceLimitError` still works (subclass); isinstance
   demos that print the type look “wrong” next to the guide.

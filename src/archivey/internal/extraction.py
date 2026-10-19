@@ -720,9 +720,10 @@ class ExtractionCoordinator:
                 raise
             finally:
                 self._dry = None
-            self.dry_run_top_level, self.dry_run_entries, self.dry_run_links = (
-                dry.record()
-            )
+            record = dry.record()
+            self.dry_run_top_level = record.top_level
+            self.dry_run_entries = record.entries
+            self.dry_run_links = record.links
             return [dry.rebase_result(result) for result in results]
 
     @property

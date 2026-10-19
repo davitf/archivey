@@ -95,7 +95,7 @@ ZIP/TAR fixtures under `/tmp/c-verify*` plus `tests/fixtures/sevenzip/lz4.7z` fo
 - Everyday verification: **`[all]`**.
 - C-17: Windows-only junctions → `unverifiable (platform)` on this Linux session.
 - C-74 scrubbed `7z` from `PATH` to prove native extract; restored after.
-- C-24/C-63 always-stop limit errors surface as `_AlwaysStopResourceLimitError` (subclass of `ResourceLimitError`).
+- C-24/C-63 always-stop limit errors surface as `AlwaysStopResourceLimitError` (subclass of `ResourceLimitError`).
 
 ### Cross-cluster / process
 - **B-26 pattern on C-25:** guide+code strip sticky under `STANDARD`; `safe-extraction` metadata matrix says `STANDARD` strips setuid/setgid only (sticky preserved). Guide claim verified; spec drift harvested.
