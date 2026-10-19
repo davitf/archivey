@@ -605,8 +605,9 @@ _CLI_PRINT_ALLOWED = {
     "main.py: format_format_label(fmt)": "format label from the format registry",
     "main.py: avail.support.value": "enum value",
     "main.py: exc.code": "a SystemExit message raised by the CLI itself",
-    "main.py: '; '.join((f'{m.name} ({m.install_hint})' for m in avail.missing))": (
-        "dependency names and install hints from archivey"
+    "main.py: '; '.join((f\"{', '.join(names)} ({hint})\" for hint, names in names_by_hint.items()))": (
+        "dependency names and install hints from archivey, grouped by "
+        "_group_by_install_hint"
     ),
 }
 

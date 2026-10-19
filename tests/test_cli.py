@@ -20,6 +20,7 @@ from archivey import (
     ExtractionResult,
     ExtractionStatus,
     MemberPass,
+    MissingComponent,
     OverwritePolicy,
     open_archive,
 )
@@ -140,6 +141,21 @@ def test_version_verbose_lists_formats(capsys: pytest.CaptureFixture[str]) -> No
     assert "dmg: none — recognised, not readable" in out
     assert main(["-v", "--version"]) == EXIT_OK
     assert "formats:" in capsys.readouterr().out
+
+
+def test_version_verbose_names_each_install_hint_once() -> None:
+    """Missing packages that one command installs share one hint, in first-seen order."""
+    hint = "pip install archivey[recommended]"
+    missing = [
+        MissingComponent("pyppmd", hint, ("ppmd",)),
+        MissingComponent("unrar", "install RARLAB unrar", ("rar",)),
+        MissingComponent("brotli", hint, ("brotli",)),
+    ]
+    from archivey.cli import main as main_mod
+
+    assert main_mod._group_by_install_hint(missing) == (
+        f"pyppmd, brotli ({hint}); unrar (install RARLAB unrar)"
+    )
 
 
 def test_default_list_dispatch(
