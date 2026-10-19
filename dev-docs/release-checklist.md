@@ -9,7 +9,10 @@ public tag from the canonical `archivey` name. This page is the **every release*
 loop.
 
 Package version is the static `[project].version` in `pyproject.toml` (not derived
-from the git tag). `publish.yml` fails if the tag and packaged version disagree.
+from the git tag), repeated in `packages/archivey-cli/pyproject.toml` (the `archivey-cli`
+companion, published from the same tag) in both `version` and its `archivey[recommended]==`
+pin. `tests/test_cli_companion_package.py` fails if the two disagree, and `publish.yml`
+fails if the tag and either packaged version disagree.
 
 ---
 
@@ -190,7 +193,8 @@ Also:
 ## 6. Version bump and tag
 
 - [ ] Set `[project].version` in `pyproject.toml` to `X.Y.Z` (**drop** any
-      `.devN` suffix).
+      `.devN` suffix), and the same version in `packages/archivey-cli/pyproject.toml`
+      (`version` and the `archivey[recommended]==` pin).
 - [ ] Commit on a release PR: `CHANGELOG.md`, version bump, doc/number updates;
       merge to the default branch.
 - [ ] Tag and push (annotated preferred):
@@ -215,8 +219,8 @@ Also:
 ## 7. Post-release
 
 - [ ] Bump `[project].version` to the next `X.Y.(Z+1).dev0` (or minor/major
-      `.dev0`) on `main` so installs from the default branch stay distinguishable
-      from the tag.
+      `.dev0`) on `main`, in both pyproject files, so installs from the default
+      branch stay distinguishable from the tag.
 - [ ] Leave `[Unreleased]` ready for the next cycle.
 - [ ] If docs site is Pages-published, confirm the workflow ran on the tag /
       default branch as configured.
@@ -232,5 +236,5 @@ Also:
 | Structural bench | `uv run --no-sync python -m benchmarks.harness --mode structural --scale ci` |
 | Realistic wall + JSON | `uv run --no-sync python -m benchmarks.harness --mode full --scale realistic --warmup --json-out /tmp/wall.json --text-out /tmp/wall.md` |
 | Docs | `uv run --group docs mkdocs build --strict` |
-| Build only | `uv build` then inspect `dist/` |
-| Version source | `pyproject.toml` → `[project].version` |
+| Build only | `uv build` and `uv build packages/archivey-cli --out-dir dist` (both publish), then inspect `dist/` |
+| Version source | `pyproject.toml` → `[project].version` (copied in `packages/archivey-cli/pyproject.toml`) |

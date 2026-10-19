@@ -10,6 +10,12 @@ pip install "archivey[seekable]"     # faster seeking in large gzip, bzip2 and D
 pip install "archivey[all]"          # recommended and seekable together
 ```
 
+If you only want the `archivey` command, `uvx archivey-cli` runs it with everything
+`[recommended]` adds, without installing anything for good, and `pipx install archivey-cli`
+installs it. `archivey-cli` is a separate package that holds no code: it depends on
+`archivey[recommended]` at the same version. `uvx archivey` works too, but it runs the base
+package only, because an extra must be named to be installed.
+
 If you use a free-threaded Python build, [Free-threaded Python](#free-threaded-python) has the extra
 to use instead. There's no extra per format, because ZIP, 7z and TAR share their compression
 methods.
@@ -96,7 +102,8 @@ On a free-threaded build (3.13t and later), importing a compiled package that do
 free-threading support turns the GIL back on for the rest of the process. If you use `pip install
 "archivey[free-threaded]"`, you get only the optional packages that keep it off: ISO, LZ4 and
 Zstandard support, and CLI progress bars, plus AES decryption from 3.14t. On 3.13t, `[recommended]`
-doesn't install at all, because `cryptography` can't be installed there yet.
+doesn't install at all, because `cryptography` can't be installed there yet, and neither does
+`archivey-cli`, which depends on it. Use `[free-threaded]` there instead.
 
 Other optional packages can still be installed. Archivey imports each one only when a file needs it,
 so the GIL comes back the first time you read PPMd, Deflate64 or Brotli data. Free-threaded builds

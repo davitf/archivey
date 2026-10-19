@@ -4,6 +4,11 @@ The `archivey` command lists, checks and extracts archives, and prints members t
 comes with the base package. Progress bars need `tqdm`, which `[recommended]` installs; without it
 the command works the same, just without the bars.
 
+To run the command without setting up a project, use `uvx archivey-cli` (for example,
+`uvx archivey-cli extract photos.zip`), or `pipx install archivey-cli` to keep it. The
+`archivey-cli` package brings `[recommended]` with it, so the command reads every format that
+installs everywhere. [Install](install.md) has the details.
+
 ```bash
 archivey photos.zip                 # list the members (same as archivey list)
 archivey test photos.zip            # read every member and check its checksum

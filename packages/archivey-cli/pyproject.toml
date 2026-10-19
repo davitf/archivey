@@ -1,0 +1,57 @@
+# The `archivey` command with every optional package that installs everywhere, so
+# `uvx archivey-cli` (or `pipx install archivey-cli`) gets the full CLI in one name.
+# Python packaging has no default extras, so `uvx archivey` alone runs the core install.
+#
+# This distribution holds no code: it is metadata plus two console scripts that point at
+# the CLI inside `archivey`. Its version moves in lockstep with the root pyproject.toml,
+# and the dependency pins that same version; tests/test_cli_companion_package.py checks
+# both, and publish.yml builds and uploads it beside `archivey`.
+
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "archivey-cli"
+version = "0.2.0rc1"
+description = "The archivey command-line tool, with archivey's recommended optional packages"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [
+    { name = "Davi Figueiredo", email = "archivey@davitf.com" }
+]
+keywords = ["archive", "zip", "tar", "rar", "7z", "iso", "extract", "cli"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Topic :: System :: Archiving",
+    "Topic :: System :: Archiving :: Compression",
+]
+dependencies = [
+    "archivey[recommended]==0.2.0rc1",
+]
+
+[project.urls]
+Homepage = "https://davitf.github.io/archivey/"
+Documentation = "https://davitf.github.io/archivey/cli/"
+Source = "https://github.com/davitf/archivey"
+Changelog = "https://github.com/davitf/archivey/blob/main/CHANGELOG.md"
+Issues = "https://github.com/davitf/archivey/issues"
+
+# `archivey-cli` is there so `uvx archivey-cli` works: uvx runs the command named after
+# the package. `archivey` is the name people type after `pipx install archivey-cli`.
+[project.scripts]
+archivey = "archivey.cli.main:main"
+archivey-cli = "archivey.cli.main:main"
+
+# No packages of its own: the wheel carries only metadata and the entry points.
+[tool.hatch.build.targets.wheel]
+bypass-selection = true

@@ -328,6 +328,27 @@ remove the command entry points.
 | `tqdm` not installed | Command runs; progress bars suppressed |
 | `pip install archivey[recommended]` | Progress available when the CLI would show a bar |
 
+### Requirement: an archivey-cli companion distribution installs the CLI with [recommended]
+
+The repository SHALL ship a second distribution, `archivey-cli`, from
+`packages/archivey-cli/`. It SHALL contain no Python modules. Its only runtime
+dependency SHALL be `archivey[recommended]` pinned with `==` to its own version, which
+SHALL equal the root `archivey` version. It SHALL install two console scripts, `archivey`
+and `archivey-cli`, both pointing at the same entry point as the root `archivey` script.
+The publish workflow SHALL build and upload it from the same tag as `archivey`.
+
+Reason: Python packaging has no default extras, so `uvx archivey` runs the core install.
+`uvx` runs the command named after the package, hence the `archivey-cli` script.
+
+#### Scenario: companion package
+
+| Case | Expected |
+| --- | --- |
+| `uvx archivey-cli --version -v` | Runs the archivey CLI; formats that need `[recommended]` report full support |
+| `pipx install archivey-cli` then `archivey --version` | Command runs |
+| Root version bumped without the companion's version or pin | `tests/test_cli_companion_package.py` fails |
+| Tag `vX.Y.Z` where either built wheel has another version | `publish.yml` build job fails before upload |
+
 ### Requirement: Terminal-safe display helpers live in the public archivey.terminal module
 
 The package SHALL provide a public module, `archivey.terminal`, holding
