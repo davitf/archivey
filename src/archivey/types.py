@@ -878,7 +878,7 @@ class ArchiveMember:
     hashes: Mapping[HashAlgorithm, bytes] = field(default_factory=dict, compare=False)
     """Stored content digests keyed by :class:`HashAlgorithm` (values always ``bytes``).
 
-    CRC-32 is four big-endian bytes, so compare a CRC you computed with
+    CRC-32 is four big-endian bytes: a CRC you computed yourself compares as
     ``zlib.crc32(data).to_bytes(4, "big")``. Excluded from equality.
     """
 

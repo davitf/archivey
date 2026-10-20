@@ -4,7 +4,7 @@ from archivey.internal.hashing.combine import crc32_combine
 
 
 def crc32_digest(value: int) -> bytes:
-    """Encode a CRC-32 as four big-endian bytes for ``ArchiveMember.hashes``."""
+    """Encode a CRC-32 as four big-endian bytes for :attr:`~archivey.ArchiveMember.hashes`."""
     return (value & 0xFFFFFFFF).to_bytes(4, "big")
 
 

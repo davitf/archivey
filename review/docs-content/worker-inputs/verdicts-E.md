@@ -71,7 +71,7 @@ were executed with `uv run --no-sync`. `[TM]` → `left for TM`. E-71 copied unc
 | E-61 | verified | `format-single-file-compressors` Report member size… / `seekable-decompressor-streams` Unix-compress CLEAR…: nonzero leftover bits → `TruncatedError` on next `read()`; zero-leftover silent. Matches gotchas. |
 | E-62 | verified | Same: forward decode on non-seekable; CLEAR seek points when seekability declared. |
 | E-63 | verified | `compressed-streams` open_stream is forward-only unless seekability is requested. Spot-check: default `seekable() is False`; `seekable=True` → True. |
-| E-64 | verified | `archive-data-model` ArchiveMember hashes: `Mapping[HashAlgorithm, bytes]`; `crc32_digest` four big-endian bytes (`types.py`). Spot-check: ZIP CRC values are 4-byte `bytes`. |
+| E-64 | verified | `archive-data-model` ArchiveMember hashes: `Mapping[HashAlgorithm, bytes]`; CRC-32 four big-endian bytes (`types.py`; `crc32_digest` now internal, PR 896). Spot-check: ZIP CRC values are 4-byte `bytes`. |
 | E-65 | verified | `format-single-file-compressors` Surface stored… + `documentation` Document the stored-digest matrix: readable without decompress; not computed; full `read()` still verifies. |
 | E-66 | verified | Matrix rows match specs/tests: ZIP FILE/SYMLINK `crc32` (spot-check symlink+file); 7z FILE `crc32` (`format-7z` Decode folder coder chains); RAR5 crc32/blake2sp (`format-rar` Report RAR cost…); `.gz` single-member-seekable; `.lz` seekable (incl. multi combine); none row for bz2/xz/zlib/brotli/Z/TAR/directory. |
 | E-67 | verified | `[code]` `formats.md` `content_key` recipe ran on `/tmp/e-verify/backups.zip`: both files returned `("stored", "crc32", …)` via `HashAlgorithm` membership, `reader.open`, `is_file`/`is_current`. |
