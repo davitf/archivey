@@ -173,3 +173,14 @@ def test_workflow_sets_a_budget_for_every_atheris_target() -> None:
         if f"ARCHIVEY_FUZZ_BUDGET_{name.upper()}" not in text
     ]
     assert missing == []
+
+
+def test_soak_workflow_runs_every_accelerator_target() -> None:
+    text = (
+        Path(__file__).resolve().parents[1]
+        / ".github/workflows/accelerator-fuzz-soak.yml"
+    ).read_text(encoding="utf-8")
+    matrix = next(line for line in text.splitlines() if "target: [" in line)
+    accel = [name for name in TARGET_NAMES if name.endswith("_accel")]
+    assert accel
+    assert [name for name in accel if name not in matrix] == []
