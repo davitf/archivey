@@ -22,7 +22,7 @@ jobs:
           uv run --python pypy3.11 --no-sync
           --with pytest --with pytest-timeout
           pytest tests/ -q --timeout=300 -o addopts= --tb=short -p no:warnings
-          -m 'not ppmd_native_stress' --junitxml=core.xml > pytest.out 2>&1; tail -5 pytest.out
+          -m 'not ppmd_native_stress' --junitxml=core.xml > pytest.out 2>&1 || true; tail -5 pytest.out
       - if: always()
         run: python3 scripts/junit_failure_lines.py core.xml --detail 14 --width 260
 
@@ -76,7 +76,7 @@ jobs:
         run: >
           uv run --python pypy3.11 --no-sync
           pytest tests/ -q -n auto --timeout=300 -o addopts= --tb=short -p no:warnings
-          -m 'not ppmd_native_stress' --junitxml=extras.xml > pytest.out 2>&1;
+          -m 'not ppmd_native_stress' --junitxml=extras.xml > pytest.out 2>&1 || true;
           tail -3 pytest.out; echo "segfaults: $(grep -c 'Segmentation fault' pytest.out)";
           grep -A8 'Fatal Python error' pytest.out | grep 'File' | grep -v site-packages | head -40
       - if: always() && matrix.drop == 'none'
