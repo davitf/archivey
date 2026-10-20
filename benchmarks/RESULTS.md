@@ -75,6 +75,11 @@ label against `VISION.md`.
 | `rar_many_open_list` | 22.0 ms | 11.1 ms | 1.99× | above native parity (~1.25×) |
 | `rar_nonsolid_open_list` | 6.0 ms | 2.8 ms | 2.10× | above native parity (~1.25×) |
 
+The `targz_*` and `tarbz2_*` peer times are inflated: the peer opens `tarfile` in `r:`
+mode, where `getmembers()` reads to the end and each `extractfile()` seeks back, so the
+archive is decompressed twice. Against `tarfile` in one pass (`r|`), the accelerators-off
+cases take about the same time; the harness fix is tracked separately.
+
 Against the older tables below: the native ZIP reader replaced `zipfile`, and
 rapidgzip now runs in its own process (about 45 ms to start, `docs/security.md`), so
 forcing the gzip accelerator on at this corpus size is slower than the plain codec.

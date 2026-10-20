@@ -83,8 +83,10 @@ Measured on 2026-10-19 at commit `8c0de2e1` in one nightly run on a GitHub
 standard library's or reference reader's time; lower is better. The bands are the
 targets in [`VISION.md`](VISION.md); the full table is in `benchmarks/RESULTS.md`.
 
-- Single-stream gzip, and `.tar.gz` / `.tar.bz2` with accelerators off: 0.6–0.8×,
-  within the 1.3× band for reads.
+- Single-stream gzip: about 0.8× `gzip`, within the 1.3× band for reads. `.tar.gz` and
+  `.tar.bz2` with accelerators off take about the same time as `tarfile` reading in one
+  pass (`r|`, measured separately). The nightly shows 0.6–0.7× because its `tarfile`
+  peer opens in `r:` mode, which decompresses the archive twice.
 - Reading every member: ZIP about 1.8× `zipfile` (above 1.3×), plain TAR about 2.1×
   `tarfile`. Extracting a ZIP is about 2.6× `zipfile.extractall()`. Plain TAR reads
   and ZIP extraction are above even the 2× allowance for safety checks.
@@ -92,8 +94,8 @@ targets in [`VISION.md`](VISION.md); the full table is in `benchmarks/RESULTS.md
   for 64 members), above it. 7z is 1.5–2.3× `py7zr` and RAR 2–5.6× `rarfile`, against
   a parity target.
 - Accelerators turn on by default only when you ask to seek in a large file. Forced on
-  at this corpus size, the gzip one is slower than the plain codec (`.tar.gz` about
-  2.4× `tarfile`), and the bzip2 one is faster (`.tar.bz2` about 0.46× `tarfile`).
+  at this corpus size, the gzip one is about 3× slower than the plain codec, and the
+  bzip2 one is about 1.25× faster.
 
 ### Security
 
