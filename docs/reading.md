@@ -22,7 +22,7 @@ If your code needs to know whether an archive is solid, `archive.cost` tells you
 anything. Its `access_cost` is `AccessCost.SOLID` when reaching a member means decompressing others
 first, and `AccessCost.DIRECT` when a member can be reached directly. Its `listing_cost` says what
 listing the members takes. It's `ListingCost.INDEXED` when the archive keeps a list of its members,
-as ZIP and 7z do when read from a file. It's `ListingCost.REQUIRES_SCANNING` when listing means
+as ZIP and 7z do when read from a file. It's `ListingCost.REQUIRES_SCANNING` when listing requires
 jumping from one member's header to the next, as in a plain `.tar`, a RAR, or a ZIP read from a pipe.
 It's `ListingCost.REQUIRES_DECOMPRESSION` when the headers are inside compressed data, as in a
 `.tar.gz`. Its `stream_capability` is `StreamCapability.SEEKABLE` when the source you opened can
