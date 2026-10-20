@@ -18,8 +18,8 @@ for it, not "unexpected end", so archivey keeps ``CorruptionError`` there (DR-6)
 from __future__ import annotations
 
 import io
-import shutil
 import struct
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
@@ -137,26 +137,28 @@ def _mode_pipe(cut: Path, data: bytes, scratch: Path, pw: list[str] | None) -> b
         return _marker_missing(reader)
 
 
+def _fresh_dest(scratch: Path) -> Path:
+    """A new empty directory to extract into, one for each read.
+
+    A directory is not reused: an ISO with Rock Ridge extracts its files read-only
+    (mode 0o444), and on Windows ``shutil.rmtree`` cannot delete a read-only file, so
+    the next extraction into the same place found the earlier files there.
+    """
+    return Path(tempfile.mkdtemp(prefix="out", dir=scratch))
+
+
 def _mode_pipe_extract(
     cut: Path, data: bytes, scratch: Path, pw: list[str] | None
 ) -> bool:
-    dest = scratch / "out"
-    try:
-        with _open_pipe(cut, data, pw) as reader:
-            reader.extract_all(dest)
-            return _marker_missing(reader)
-    finally:
-        shutil.rmtree(dest, ignore_errors=True)
+    with _open_pipe(cut, data, pw) as reader:
+        reader.extract_all(_fresh_dest(scratch))
+        return _marker_missing(reader)
 
 
 def _mode_extract(cut: Path, data: bytes, scratch: Path, pw: list[str] | None) -> bool:
-    dest = scratch / "out"
-    try:
-        with open_archive(cut, password=pw) as reader:
-            reader.extract_all(dest)
-            return _marker_missing(reader)
-    finally:
-        shutil.rmtree(dest, ignore_errors=True)
+    with open_archive(cut, password=pw) as reader:
+        reader.extract_all(_fresh_dest(scratch))
+        return _marker_missing(reader)
 
 
 def _marker_missing(reader: ArchiveReader) -> bool:
