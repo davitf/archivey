@@ -3,7 +3,16 @@ on:
   push:
     branches: [claude/project-thread-upv4hd-pypy-memory-scratch]
 jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv python install pypy3.11
+      - run: uv run --python pypy3.11 --no-project python scratch/lzma_probe.py
+      - run: uv run --python 3.13 --no-project python scratch/lzma_probe.py
   extras:
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 50
     strategy:
