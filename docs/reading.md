@@ -49,7 +49,9 @@ used up even if you leave the loop early. Inside a `stream_members` loop, `open`
 you leave with `break` ends at once on CPython. One kept in a variable, or one an exception left,
 holds the archive until you close it, so use it in a `with` block when the loop can stop early:
 `with archive.stream_members() as members:` ends the pass at the end of the block, and `with
-iter(archive) as members:` does the same for a loop over members. With
+iter(archive) as members:` does the same for a loop over members. A pass or member stream that
+nothing refers to any more never blocks the next call, on any Python: when a call finds the archive
+held, archivey runs a garbage collection and tries once more before it raises. With
 [`concurrent_operations=True`](#several-members-at-once) they work, from any thread, on every format,
 and so does `extract_all`.
 Streams from the pass never seek.
