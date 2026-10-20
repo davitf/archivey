@@ -500,9 +500,11 @@ class DryRun:
         path leaves the scratch tree, or ends past a file or nothing. A file or a
         missing name on the way is kept as a name and taken off by a later ``..``, as
         the checks resolve the path (``Path.resolve``, and ``_match``'s ``extra``), so
-        the walk goes on from there. Above the scratch
-        root it can only come back in by dest's name (``../out/x``), as the scratch
-        root is the one entry there named like dest (``scratch_for``).
+        the walk goes on from there. A restart at the scratch root (an absolute link
+        target, after a link member's own directory) drops the kept names, as an
+        absolute path does. Above the scratch root it can only come back in by dest's
+        name (``../out/x``), as the scratch root is the one entry there named like
+        dest (``scratch_for``).
 
         With ``leaf``, ``parts`` is a member's own path: when it ends on a directory,
         one entry of it is copied in (``_bring_one``). A symlink on the way there is
@@ -518,13 +520,16 @@ class DryRun:
         while pending:
             part = pending.pop()
             ends_on_directory = False
+            if part == _FROM_ROOT:
+                current = self.scratch
+                kept = 0
+                continue
+            if part == _OUTSIDE:
+                return
             if kept:
                 kept += -1 if part == ".." else 1
                 continue
-            if part == _FROM_ROOT:
-                current = self.scratch
-                continue
-            if part == _OUTSIDE or (current == above and part != self.scratch.name):
+            if current == above and part != self.scratch.name:
                 return
             if part == "..":
                 current = current.parent

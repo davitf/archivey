@@ -16,6 +16,7 @@ import os
 import re
 import tarfile
 import tempfile
+import unicodedata
 import zipfile
 from collections.abc import Callable
 from pathlib import Path
@@ -676,6 +677,12 @@ _EXISTING_LINK_CASES: dict[
         {"real/sub/esc": ("sym", "../../../outside")},
         [("l", "sym", "g/../real/sub/esc")],
     ),
+    # A nested link member, whose directory is not on disk yet, with an absolute
+    # target that names dest and goes on through the caller's symlink out of it.
+    "nested-link-member-absolute-into-dest": (
+        {"x": ("sym", "../outside")},
+        [("a/l", "sym", "{dest}/x"), ("a/b/l", "sym", "{dest}/x")],
+    ),
     # The same, where the later member replaces a directory the run made.
     "link-member-escapes-after-a-later-member-replaces-a-directory": (
         {"real/esc": ("sym", "../../outside")},
@@ -698,7 +705,21 @@ def _run_existing_case(
     relative: bool = False,
     dest_name: str = "out",
 ) -> None:
-    blob = _tar(members)
+    def source() -> io.BytesIO:
+        # A "{dest}" in a link target names the run's own dest, as given, so each
+        # run builds its own archive. ``_both`` calls this in the run's directory.
+        dest = Path.cwd() / dest_name
+        return io.BytesIO(
+            _tar(
+                [
+                    (name, kind, extra.format(dest=dest))
+                    if isinstance(extra, str) and "{dest}" in extra
+                    else (name, kind, extra)
+                    for name, kind, extra in members
+                ]
+            )
+        )
+
     for policy in _POLICIES:
         work = tmp_path / policy.value
         (work / "tmp").mkdir(parents=True)
@@ -706,7 +727,7 @@ def _run_existing_case(
         if dest_name != "out":
             _spell_dest_ways(work)
         real, dry = _both(
-            lambda: io.BytesIO(blob),
+            source,
             work,
             relative=relative,
             dest_name=dest_name,
@@ -1026,7 +1047,8 @@ def test_numbered_name_held_under_another_normalization_is_copied_in(
     # RENAME of the composed name "á" finds the decomposed "á (1)" taken. The
     # dry run copies it in, under the name dest holds it by. Such a filesystem is
     # simulated: dest's lookups fold names as ``_fold`` does.
-    composed, decomposed = "á", "á"
+    composed = unicodedata.normalize("NFC", "á")
+    decomposed = unicodedata.normalize("NFD", "á")
     dest = tmp_path / "out"
     _put(dest, {f"{decomposed} (1)": b"mine"})
     real_lexists = os.path.lexists
