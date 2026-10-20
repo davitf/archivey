@@ -259,6 +259,39 @@ class ReadSizeRecorder(io.RawIOBase):
         return self._inner.tell()
 
 
+class QueuedChunks(io.RawIOBase):
+    """A forward-only raw that hands over at most one queued chunk per read, then EOF.
+
+    A sized read takes up to ``n`` bytes of the front chunk and leaves the rest
+    queued. A chunk of ``None`` is a stall that lasts, as on a non-blocking pipe
+    whose writer sends nothing more: every read from there on returns ``None``.
+    ``calls`` counts reads. The detection workspace and ``ArchiveSource`` tests share
+    this one copy so both mean the same thing by "one read" and "a stall".
+    """
+
+    def __init__(self, *chunks: bytes | None) -> None:
+        super().__init__()
+        self._chunks = list(chunks)
+        self.calls = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def read(self, n: int = -1, /) -> bytes | None:
+        self.calls += 1
+        if not self._chunks:
+            return b""
+        chunk = self._chunks[0]
+        if chunk is None:
+            return None
+        take = len(chunk) if n < 0 else min(n, len(chunk))
+        if take == len(chunk):
+            self._chunks.pop(0)
+        else:
+            self._chunks[0] = chunk[take:]
+        return chunk[:take]
+
+
 def lzma_alone_with_filter(data: bytes, lzma1: dict) -> bytes:
     """``lzma.compress(data, format=FORMAT_ALONE, filters=[lzma1])``, also on PyPy.
 
