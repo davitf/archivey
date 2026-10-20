@@ -662,6 +662,20 @@ _EXISTING_LINK_CASES: dict[
         {"real/esc": ("sym", "../../outside")},
         [("l", "sym", "a/esc"), ("a", "sym", "real")],
     ),
+    # A link member whose relative target passes a missing name and takes it off with
+    # a later "..": the checks resolve it to the caller's symlink out of dest.
+    "link-member-past-a-missing-name": (
+        {"real/esc": ("sym", "../../outside")},
+        [("l", "sym", "gone/../real/esc")],
+    ),
+    "link-member-past-two-missing-names": (
+        {"real/esc": ("sym", "../../outside")},
+        [("l", "sym", "x/y/../../real/esc")],
+    ),
+    "link-member-past-a-missing-name-deeper": (
+        {"real/sub/esc": ("sym", "../../../outside")},
+        [("l", "sym", "g/../real/sub/esc")],
+    ),
     # The same, where the later member replaces a directory the run made.
     "link-member-escapes-after-a-later-member-replaces-a-directory": (
         {"real/esc": ("sym", "../../outside")},
@@ -1003,6 +1017,34 @@ def test_dry_run_copies_only_what_the_pass_names(tmp_path: Path) -> None:
     # "sub" named as a directory brings one of its entries, so a REPLACE there
     # finds it not empty.
     assert seen == [[], ["f7"], ["f7", "sub", "sub/x"]]
+
+
+def test_numbered_name_held_under_another_normalization_is_copied_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # On a filesystem that compares names normalization-insensitively (APFS), a
+    # RENAME of the composed name "á" finds the decomposed "á (1)" taken. The
+    # dry run copies it in, under the name dest holds it by. Such a filesystem is
+    # simulated: dest's lookups fold names as ``_fold`` does.
+    composed, decomposed = "á", "á"
+    dest = tmp_path / "out"
+    _put(dest, {f"{decomposed} (1)": b"mine"})
+    real_lexists = os.path.lexists
+
+    def lexists(path) -> bool:
+        if real_lexists(path):
+            return True
+        path = Path(path)
+        if path.parent != dest:
+            return False
+        key = dry_run_module._fold(path.name)
+        return any(dry_run_module._fold(n) == key for n in os.listdir(dest))
+
+    with dry_run_module.scratch_for(dest) as dry:
+        monkeypatch.setattr(os.path, "lexists", lexists)
+        dry._bring(dry.scratch, composed)
+        monkeypatch.undo()
+        assert os.listdir(dry.scratch) == [f"{decomposed} (1)"]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX directory modes")

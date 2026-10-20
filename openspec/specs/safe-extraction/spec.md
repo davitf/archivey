@@ -1687,8 +1687,9 @@ cannot be written to. Whether it can be written to is a prediction made with
 and on Windows it is not made; so a refusal that comes from a process whose real and
 effective ids differ, from a change after the check, or on Windows, MAY appear only in a
 real extraction. File names in errors raised, recorded or logged SHALL be the ones a
-real extraction's errors give, spelled from `dest` as given or as `os.path.abspath`
-spells it, and never the scratch directory's, except in the warning that the scratch
+real extraction's errors give, spelled from `dest` as given, as `os.path.abspath`
+spells it, or resolved (a symlink loop already in `dest`), and never the scratch
+directory's, except in the warning that the scratch
 directory itself could not be removed. The scratch directory SHALL be removed before the
 call returns or raises, including when the archive stored modes that make its
 directories unwritable or its files read-only.

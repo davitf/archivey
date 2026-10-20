@@ -326,9 +326,10 @@ def check_universal(
     where it points there.
 
     ``show_os_error``, when given, points an ``OSError``'s file names at the paths the
-    caller sees, in place, before the error's text goes into a message. The
-    coordinator gives it: it removes the long-path prefix, and under a dry run it
-    names dest, not the scratch directory.
+    caller sees, in place, before the error's text goes into a message. It expects
+    the error's file names to be built from the ``dest`` given here, which the
+    coordinator has already resolved. The coordinator gives it: it removes the
+    long-path prefix, and under a dry run it names dest, not the scratch directory.
 
     Everything here meets one of two criteria. Either the *write itself* is dangerous
     or impossible — escaping the destination, a NUL the OS truncates on, a device

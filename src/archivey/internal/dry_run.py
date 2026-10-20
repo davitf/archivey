@@ -31,6 +31,7 @@ from archivey.internal.filters import (
 )
 from archivey.internal.logs import extraction as logger
 from archivey.internal.long_paths import long_path, plain
+from archivey.paths import numbered_name
 from archivey.types import ArchiveMember, ExtractionResult, MemberType
 
 # Prefix of the private scratch directory a dry run extracts into. Removed when the run
@@ -66,19 +67,6 @@ def _dir_copy_mode(mode: int) -> int:
 def _fold(name: str) -> str:
     """``name`` as a case-insensitive, normalizing filesystem compares it."""
     return unicodedata.normalize("NFC", name).casefold()
-
-
-def _numbered_as(candidate: str, name: str) -> str | None:
-    """``candidate``, a numbered name spelled from a name that folds to ``name``
-    (``_NUMBERED``), spelled from ``name`` itself instead. ``None`` when folding
-    changed the length, so the counter has no place in ``name``."""
-    found = _NUMBERED.fullmatch(candidate)
-    if found is None:
-        return None
-    head, tail = found.group(1), found.group(3)
-    if len(head) + len(tail) != len(name):
-        return None
-    return f"{name[: len(head)]} ({found.group(2)}){name[len(head) :]}"
 
 
 def _with_ancestors(into: set[str], rel: str) -> None:
@@ -509,7 +497,10 @@ class DryRun:
     def _walk(self, parts: tuple[str, ...], *, leaf: bool = False) -> None:
         """Follow ``parts`` from the scratch root as the OS resolves a path, copying in
         the entry of dest at each component first (``_bring``). It stops where the
-        path meets a file or nothing, or leaves the scratch tree. Above the scratch
+        path leaves the scratch tree, or ends past a file or nothing. A file or a
+        missing name on the way is kept as a name and taken off by a later ``..``, as
+        the checks resolve the path (``Path.resolve``, and ``_match``'s ``extra``), so
+        the walk goes on from there. Above the scratch
         root it can only come back in by dest's name (``../out/x``), as the scratch
         root is the one entry there named like dest (``scratch_for``).
 
@@ -522,9 +513,14 @@ class DryRun:
         above = self.scratch.parent
         ends_on_directory = False
         hops = 0
+        # The names kept past a file or a missing name, not yet taken off by "..".
+        kept = 0
         while pending:
             part = pending.pop()
             ends_on_directory = False
+            if kept:
+                kept += -1 if part == ".." else 1
+                continue
             if part == _FROM_ROOT:
                 current = self.scratch
                 continue
@@ -539,10 +535,14 @@ class DryRun:
             try:
                 st = os.lstat(long_path(path))
             except (OSError, ValueError):  # missing, or a name the OS does not take
-                return
+                kept = 1
+                continue
             if stat.S_ISDIR(st.st_mode):
                 current = path
                 ends_on_directory = True
+                continue
+            if not stat.S_ISLNK(st.st_mode):
+                kept = 1
                 continue
             hops += 1
             if not pending:
@@ -550,7 +550,7 @@ class DryRun:
                 # there, never a directory to find empty. A symlink on the way to
                 # the last component leaves the probe on (``a -> sub``, ``a/b``).
                 leaf = False
-            if not stat.S_ISLNK(st.st_mode) or hops > _MAX_LINK_HOPS:
+            if hops > _MAX_LINK_HOPS:
                 return
             try:
                 target = plain(os.readlink(long_path(path)))
@@ -573,20 +573,29 @@ class DryRun:
         listing = self._listing(directory)
         if listing is None:
             return
+        self._bring_held(directory, listing, name)
+        # A RENAME can try the numbered names also when dest does not hold ``name``:
+        # the member can collide with another member of the run. Each is spelled
+        # from ``name`` as RENAME spells it, file or directory, and looked for as
+        # ``name`` is.
+        counters = {
+            found.group(2)
+            for candidate in listing.numbered.get(_fold(name), ())
+            if (found := _NUMBERED.fullmatch(candidate)) is not None
+        }
+        for counter in sorted(counters, key=int):
+            for is_dir in (False, True):
+                spelled = numbered_name(name, int(counter), is_dir=is_dir)
+                self._bring_held(directory, listing, spelled)
+
+    def _bring_held(self, directory: Path, listing: _Listing, name: str) -> None:
+        """Copy in the entry of ``listing`` that the caller's filesystem finds by
+        ``name``, under the name dest holds it by, if there is one."""
         held = name if name in listing.present else listing.folded.get(_fold(name))
         if held is not None and (
             held == name or os.path.lexists(long_path(listing.source / name))
         ):
             self._copy_named(directory, listing, held)
-        # A RENAME can try these names also when dest does not hold ``name``: the
-        # member can collide with another member of the run.
-        for candidate in listing.numbered.get(_fold(name), ()):
-            spelled = _numbered_as(candidate, name)
-            if spelled == candidate or (
-                spelled is not None
-                and os.path.lexists(long_path(listing.source / spelled))
-            ):
-                self._copy_named(directory, listing, candidate)
 
     def _bring_one(self, directory: Path) -> None:
         """Copy in one entry of the directory of dest that ``directory`` stands for,

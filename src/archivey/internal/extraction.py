@@ -3484,7 +3484,9 @@ class ExtractionCoordinator:
         def escapes(path: Path, target: str) -> bool:
             if self._dry is not None:
                 # The link can now resolve through entries of dest that the scratch
-                # tree does not hold yet; a real run meets them in dest.
+                # tree does not hold yet; a real run meets them in dest. A copy made
+                # here needs no new recheck of other links: each link copies in all
+                # it resolves through here, before its own check.
                 self._dry.bring_in_link(path, target)
             problem = _symlink_problem(path, target, dest_root)
             if problem is not None:
