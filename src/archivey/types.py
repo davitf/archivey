@@ -1295,10 +1295,12 @@ class ExtractionPolicy(Enum):
 
     STRICT = "strict"
     """The default, for archives from anywhere. A name is rewritten to a spelling every
-    supported OS stores the same way, or refused when that is not possible. Absolute
-    names, names Windows cannot create, and names with characters that reorder how they
-    display are refused. Files keep their permissions without the setuid, setgid and
-    sticky bits and without write access for group and others."""
+    supported OS stores the same way, or refused when that is not possible: absolute
+    names, Windows reserved names such as ``CON``, names with ``:``, and names with
+    characters that reorder how they display are refused. Files keep their permissions
+    without the setuid, setgid and sticky bits and without write access for group and
+    others, and a file its owner cannot execute is executable by nobody. Directories
+    are ``rwxr-xr-x``, and owners are not applied."""
     STANDARD = "standard"
     """For archives you mostly trust, such as your own. As ``STRICT``, but trailing dots
     and spaces are kept, an absolute name is extracted inside the destination
@@ -1332,8 +1334,9 @@ class OverwritePolicy(Enum):
     not a failure, so :class:`OnError` does not apply."""
     REPLACE = "replace"
     """The existing entry is deleted, then the member is written, so it is never written
-    through a link that was there. An existing directory is replaced only if it is
-    empty; otherwise the member fails."""
+    through a link that was there. A directory member merges into an existing directory.
+    Any other member replaces an existing directory only if it is empty, and otherwise
+    fails."""
     RENAME = "rename"
     """The member is written next to it, with a number before the extension:
     ``a.txt`` becomes ``a (1).txt``."""
@@ -1535,9 +1538,9 @@ class ExtractionResult:
     Usually the same as ``path``. Under ``OverwritePolicy.RENAME`` the two differ when the
     member, or a directory it is in, was renamed (``dd/f`` written at ``dd (1)/f``).
     After a collision settled by ``SKIP`` or ``ERROR``, this is set and ``path`` is
-    ``None``. On an ``OVERWRITTEN`` result it keeps the path the member wrote to, which
-    is the ``path`` of the member that replaced it. ``None`` for a member refused or
-    failed before its destination was settled."""
+    ``None``. On an ``OVERWRITTEN`` result it keeps the path this member wrote to, which
+    a later member then took over (``collided_with`` says how to find it). ``None`` for
+    a member refused or failed before its destination was settled."""
 
     presented_name: str | None = None
     """The member's name before a safety rewrite changed it on disk, or ``None`` when

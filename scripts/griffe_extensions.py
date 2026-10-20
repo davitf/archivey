@@ -3,27 +3,33 @@
 Used by mkdocstrings (see ``mkdocs.yml``). Five small transforms:
 
 - ``PropertyFieldExtension`` — fold ``@property`` accessors into the class's
-  parameters/fields table (marked *(computed property)*) instead of giving each one its
+  parameters/fields list (marked *(computed property)*) instead of giving each one its
   own section.
 - ``RenameParametersSectionForDataclasses`` — title a dataclass's parameter list
   "Fields:" rather than "Parameters:".
 - ``FieldDocsAndDefaults`` — give each dataclass field its own docstring and a readable
   default, where griffe_fieldz shows the ``default_factory``'s docstring (``dict()``'s,
   for a field with ``default_factory=dict``) and a ``repr()`` such as
-  ``<AcceleratorMode.AUTO: 'auto'>`` or ``<class 'dict'>``.
+  ``<AcceleratorMode.AUTO: 'auto'>`` or ``<class 'dict'>``. It also marks a
+  dataclass's fields to be listed only once, in that list.
 - ``EnumMembersSection`` — render enum members as a "Members:" list of name, value and
   description (the built-in Griffe sections show a type, which is wrong for enums). Also
-  handles ``ArchiveFormat``, whose named ``ClassVar`` instances behave like enum members.
+  handles ``ArchiveFormat``, whose named ``ClassVar[ArchiveFormat]`` instances behave
+  like enum members.
 - ``SphinxRolesToAutorefs`` — turn the Sphinx roles the docstrings use
   (``:class:`~archivey.ArchiveMember```) into links, instead of leaking them as text.
+  Once every role has resolved, it also drops the fields ``FieldDocsAndDefaults``
+  marked, so that they get no section of their own.
 """
 
 from __future__ import annotations
 
 import contextlib
 import html
+import importlib
 import re
 from collections.abc import Iterator
+from enum import Enum
 from typing import Any
 
 from griffe import (
@@ -34,7 +40,6 @@ from griffe import (
     DocstringParameter,
     DocstringSection,
     DocstringSectionParameters,
-    ExprName,
     Extension,
     Module,
     NameResolutionError,
@@ -107,11 +112,44 @@ ENUM_BASES = {"Enum", "IntEnum", "StrEnum", "Flag", "IntFlag"}
 
 def _is_enum_class(cls: Class) -> bool:
     # Any base canonical path matching Python enums.
-    if any(getattr(b, "canonical_name", None) in ENUM_BASES for b in cls.bases or ()):
-        return True
+    return any(
+        getattr(b, "canonical_name", None) in ENUM_BASES for b in cls.bases or ()
+    )
 
-    flag = cls.members.get("__enum_like__")
-    return isinstance(flag, Attribute) and flag.value in (True, "True")
+
+def _named_instances(cls: Class) -> list[dict[str, Any]]:
+    # ArchiveFormat declares its named formats as ``ZIP: ClassVar[ArchiveFormat]`` and
+    # assigns them below the class body, which griffe does not read, so the values come
+    # from the imported class.
+    names = [
+        name
+        for name, m in cls.members.items()
+        if isinstance(m, Attribute)
+        and m.value is None
+        # griffe drops the ClassVar and labels the attribute instead.
+        and m.has_labels("class-attribute")
+        and str(m.annotation) == cls.name
+    ]
+    if not names:
+        return []
+    runtime = getattr(importlib.import_module(cls.module.path), cls.name)
+    values = {name: list(vars(getattr(runtime, name)).values()) for name in names}
+    # Only instances made of enum values (ArchiveFormat) read well as a members list;
+    # DiagnosticPolicy.STRICT holds frozensets and stays an attribute.
+    if not all(isinstance(v, Enum) for vs in values.values() for v in vs):
+        return []
+    rows = []
+    for name in names:
+        fields = ", ".join(f"{type(v).__name__}.{v.name}" for v in values[name])
+        member = cls.members.pop(name)
+        rows.append(
+            {
+                "name": name,
+                "value": fields,
+                "doc": member.docstring.value if member.docstring else "",
+            }
+        )
+    return rows
 
 
 # griffe_fieldz takes a default's repr(): ``<AcceleratorMode.AUTO: 'auto'>`` for an enum
@@ -170,18 +208,15 @@ class EnumMembersSection(Extension):
         self, node: Any, cls: Class, agent: Any, **kwargs: Any
     ) -> None:
         if not _is_enum_class(cls):
+            rows = _named_instances(cls)
+            if rows:
+                cls.extra.setdefault("enum_members", {"rows": rows})
             return
-        rows: list[dict[str, Any]] = []
+        rows = []
         for name, m in list(cls.members.items()):
             if m.kind.value == "attribute" and not name.startswith("_"):
                 assert isinstance(m, Attribute)
-                # The second condition handles ArchiveFormat, which is not an enum class
-                # but has ClassVar instances that act like enum values. The rendering is
-                # imperfect (values come through empty) but better than nothing.
-                if (m.value is not None and m.annotation is None) or (
-                    isinstance(m.annotation, ExprName)
-                    and m.annotation.canonical_path == cls.canonical_path
-                ):
+                if m.value is not None and m.annotation is None:
                     rows.append(
                         {
                             "name": name,

@@ -635,8 +635,9 @@ class ArchiveyConfig:
 
     It gives seekable member streams over those codecs. Under ``AUTO`` it is used only
     when the compressed input is known to be at least
-    ``RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE`` bytes and the decompressed size can be
-    verified, so a truncated stream cannot be swallowed silently.
+    ``RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE`` bytes (or its size is unknown) and the
+    decompressed size can be verified, so a truncated stream cannot be swallowed
+    silently.
 
     rapidgzip runs in a child Python process, one per open stream, because it aborts the
     process on a stream that ends early; that costs about 45 ms per stream to start and

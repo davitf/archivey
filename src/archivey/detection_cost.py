@@ -48,31 +48,15 @@ class TierSkip:
     """A tier that detection did not run, with the reason."""
 
     tier: str
+    """The tier's name."""
+
     reason: TierSkipReason
+    """Why it did not run."""
 
 
 @dataclass(frozen=True)
 class DetectionBudget:
     """Upper bounds on what detection may spend.
-
-    ``max_far_bytes`` is separate from ``max_prefix_bytes`` because a far fixed-offset
-    signature (ISO ``CD001`` at 32 769) needs a ~32 KiB window that a 4 KiB near budget
-    would otherwise forbid.
-
-    ``max_decode_input`` is one allowance for the whole call, shared by the content
-    probes, the Brotli chain decode, their completion check and the inner-TAR probe.
-    ``max_decode_output`` bounds the inner-TAR probe only. A content probe's output is
-    bounded by the codec's own drain: 4 KiB, 64 KiB with the whole source in hand, and
-    the sample length (up to 1 MiB) for the Brotli chain decode. It is deliberately not
-    charged: the chain decode's output is mostly a copy of input already charged to
-    ``max_decode_input``.
-    ``completion_window_bytes`` is the largest source a content-probe hit is re-checked
-    against in full (see ``format-detection``); ``0`` turns the check off.
-
-    ``max_scan_bytes`` bounds where the SFX scan looks for a magic. A candidate found
-    there is judged on its whole header, which may extend past the window by up to
-    132 KiB or ``max_scan_bytes``, whichever is smaller; a header that does not fit is
-    rejected, and ``sfx_scan`` recorded as cut short.
 
     Content-probe header reads at an offset are not a budget field: the Brotli chain walk
     caps them itself, at ``CHAIN_MAX_LINKS`` (8) header reads of 24 bytes. The Brotli
@@ -81,11 +65,35 @@ class DetectionBudget:
     """
 
     max_prefix_bytes: int
+    """Bytes detection may read from the start of the source."""
+
     max_far_bytes: int
+    """Bytes the far-magic tier may read, for a signature at a fixed offset past the
+    prefix. Separate from ``max_prefix_bytes`` because ISO's ``CD001`` at 32 769 needs
+    a window of about 32 KiB that a 4 KiB prefix budget would forbid."""
+
     max_scan_bytes: int
+    """How far into the source the scan for an archive behind a prefix (an SFX stub)
+    looks for a signature. A candidate found there is judged on its whole header, which
+    may extend past the window by up to 132 KiB or ``max_scan_bytes``, whichever is
+    smaller; a header that does not fit is rejected, and ``sfx_scan`` recorded as cut
+    short."""
+
     max_decode_input: int
+    """Compressed bytes decoding may consume, one allowance for the whole call, shared
+    by the content probes, the Brotli chain decode, their completion check and the
+    inner-TAR probe."""
+
     max_decode_output: int
+    """Decoded bytes the inner-TAR probe may produce. A content probe's output is
+    bounded by the codec's own drain instead: 4 KiB, 64 KiB with the whole source in
+    hand, and the sample length (up to 1 MiB) for the Brotli chain decode. That output
+    is not charged, as it is mostly a copy of input already charged to
+    ``max_decode_input``."""
+
     completion_window_bytes: int
+    """The largest source a content-probe hit is re-checked against in full; ``0``
+    turns the check off."""
 
     def __post_init__(self) -> None:
         # Every field is a non-negative int; there is no ``None`` to mean "off".
@@ -126,8 +134,14 @@ class DetectionCostReceipt:
     """Bytes the far-magic tier peeked. Bounded by ``max_far_bytes``."""
 
     scanned_bytes: int = 0
+    """Bytes the scan for an archive behind a prefix looked through. Bounded by
+    ``max_scan_bytes``."""
+
     decode_input: int = 0
+    """Compressed bytes decoded. Bounded by ``max_decode_input``."""
+
     decode_output: int = 0
+    """Decoded bytes the inner-TAR probe produced. Bounded by ``max_decode_output``."""
     passes: int = 1
     """Detection passes this receipt sums, each run under the full budget.
 

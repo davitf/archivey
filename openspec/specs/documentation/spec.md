@@ -38,10 +38,12 @@ list`), so that no section scrolls sideways on a phone. Dataclass fields MUST re
 a "Fields" list using `griffe-fieldz` plus the section-title extension, once each: the
 list item carries the field's anchor (`archivey.ArchiveMember.size`), and the field gets
 no separate attribute section. A field's description MUST come from its own attribute
-docstring, never from its `default_factory`'s docstring, and an enum or factory default
-MUST read as source (`AcceleratorMode.AUTO`, `dict()`), not as its `repr()`. Enum
-members MUST render as a "Members" list of name, value and description via a Griffe
-extension and custom template, not the built-in enum "Type" column. `@property`
+docstring, never from its `default_factory`'s docstring, and an enum default or a class
+used as `default_factory` MUST read as source (`AcceleratorMode.AUTO`, `dict()`), not
+as `<AcceleratorMode.AUTO: 'auto'>` or `<class 'dict'>`. Enum members MUST render as a
+"Members" list of name, value and description via a Griffe extension and custom
+template, not the built-in enum "Type" column; so do `ArchiveFormat`'s named
+`ClassVar[ArchiveFormat]` instances, with their `(container, stream)` pair as value. `@property`
 accessors SHALL fold into the owning class's field list.
 
 #### Scenario: API-object rendering matrix

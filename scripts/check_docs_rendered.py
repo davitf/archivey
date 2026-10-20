@@ -57,7 +57,7 @@ UNRESOLVED_OK = {
     "archivey.config.RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE",
     "archivey.exceptions.exception_detail",
     "archivey.exceptions.raw_message_of",
-    # Members the page shows in a table or not at all, so they get no heading anchor.
+    # Members the page shows in a list or not at all, so they get no heading anchor.
     "archivey.ArchiveFormat.DIRECTORY",
     "archivey.ArchiveyError.__str__",
     "archivey.DecoderLimits.UNLIMITED",
@@ -71,8 +71,8 @@ UNRESOLVED_OK = {
     "ascii",
     "io.UnsupportedOperation",
     "repr",
-    # ArchiveMember properties: folded into the class's table (PropertyFieldExtension),
-    # so they are no longer members to resolve against, and have no anchor anyway.
+    # ArchiveMember properties: folded into the class's field list
+    # (PropertyFieldExtension), so a bare name no longer resolves against the class.
     "is_junction",
     "is_reparse_point",
 }
