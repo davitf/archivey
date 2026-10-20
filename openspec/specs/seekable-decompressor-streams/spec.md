@@ -57,7 +57,7 @@ it, because every backward seek restarts decryption from the member's start.
 | Declared-seekable DEFLATE-family stream, `use_rapidgzip=ON`, size below threshold | rapidgzip still selected (threshold ignored) |
 | Declared-seekable bzip2 under `AUTO`, known size < `INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE` | rapidgzip not selected; stdlib backend used |
 | Declared-seekable bzip2, `use_indexed_bzip2=ON`, size below that threshold | rapidgzip still selected (threshold ignored) |
-| Declared-seekable gzip without accelerator, caller seeks backward | Seek re-decompresses from start and warns/names `[seekable]` accelerator |
+| Declared-seekable gzip without accelerator, caller seeks backward | Seek re-decompresses from the nearest member or BGZF block start before the target, else from the start, and warns/names `[seekable]` accelerator |
 
 ### Requirement: XZ and lzip use format-native indexes
 
@@ -76,7 +76,7 @@ uncompressed offset.
 | Seekable lzip source opens | Trailer scan locates block boundaries |
 | Seek within lzip | Only required block range is decompressed |
 
-### Requirement: Gzip and bzip2 random access use rapidgzip only
+### Requirement: rapidgzip is the only gzip and bzip2 accelerator
 
 The system SHALL use `rapidgzip` as the only optional accelerator library for
 both gzip and bzip2: gzip through `rapidgzip.RapidgzipFile`, bzip2 through
@@ -87,8 +87,8 @@ rapidgzip-bundled decoder.
 
 When rapidgzip is unavailable or disabled, gzip and bzip2 SHALL use stdlib
 decoders; backward seek is serviced by re-decompressing from the start, or for gzip
-from the nearest member start it knows (next requirement), and MUST not degrade
-silently.
+from the nearest member or BGZF block start it knows (§"gzip member starts are seek
+points", §"BGZF members are walked without decoding"), and MUST not degrade silently.
 
 The system MUST NOT run any rapidgzip decoder in the caller's process. The bzip2 decoder
 SHALL run in a child process with the same rules as the DEFLATE family's (next
@@ -404,6 +404,8 @@ SHALL be reported the same way.
 | No index at all | the origin | yes, once progress passes the threshold |
 | Single-block xz / one-member lzip / `.Z` with no CLEAR codes | the origin | yes, same as above |
 | Multi-block xz, multi-member lzip | the containing block | only when the progress since that block passes the threshold |
+| Multi-frame zstd; multi-member gzip or BGZF on the stdlib engine | the containing frame, member or block | as above |
+| One-frame zstd, zstd ZIP member (`single_stream`), one-member gzip on the stdlib engine | the origin | yes, once progress passes the threshold |
 | Accelerated gzip/bzip2, dense index | the containing block | as above |
 | Accelerated gzip/bzip2, sparse index | up to a block back | yes, once past the threshold |
 | Any codec, less progress discarded than the threshold | — | no |
@@ -417,7 +419,9 @@ brotli, lz4) reporting.
 The event SHALL live on the stream operation and cumulative owning-reader
 aggregate, never on `CostReceipt` or `ArchiveInfo`. Gzip/bzip2/deflate/zlib context names the
 `[seekable]` accelerator when a rapidgzip path was eligible; brotli, lz4, and zstd record no
-accelerator. Stdlib zstd SHALL rewind in place like other index-less codecs. When a
+accelerator. A zstd stream SHALL rewind in place: from the nearest frame start it knows
+(§"zstd frame starts are seek points"), or from the start when it has one frame or is a
+container member that is one frame (`single_stream`). When a
 deflate/zlib stream falls back to stdlib `zlib` (accelerator absent, `OFF`, or below the
 `AUTO` threshold), its rewind SHALL name the `[seekable]` accelerator, consistent with the
 gzip fallback.
@@ -439,7 +443,8 @@ first. See `diagnostics` for the general rule.
 | Rewind within one block of a multi-block `.xz` | No occurrence |
 | Rewind of fewer than `REWIND_REDECODE_WARN_BYTES` on any codec | No occurrence, unless `min_redecode_bytes` meets the threshold |
 | Rewind across a sparse gap in an engaged `rapidgzip` index | One occurrence naming the accelerator |
-| zstd stream rewinds via stdlib backend | Re-decompresses from start in place; one occurrence when above the threshold |
+| One-frame zstd stream rewinds | Re-decompresses from start in place; one occurrence when above the threshold |
+| Multi-frame zstd stream rewinds within one frame | Resumes at that frame's start; no occurrence unless the progress since that frame passes the threshold |
 | Stdlib-fallback zlib/deflate stream rewinds | One occurrence naming the `[seekable]` accelerator |
 | Stream with no seek-point table (stdlib LZMA Alone, brotli, lz4) | Resume point is the origin; one occurrence once progress passes the threshold |
 | `STORED` member seeks backward | No occurrence, at any distance |
