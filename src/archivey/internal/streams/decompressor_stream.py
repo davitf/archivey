@@ -458,6 +458,27 @@ MAX_SEEK_POINTS = 1 << 18
 SEEK_TABLE_THINNED = "SeekTableThinned"
 
 
+def emit_index_thinned(
+    collector: DiagnosticCollector | None,
+    codec_name: str,
+    scan: str,
+    *,
+    units: str = "entries",
+) -> None:
+    """Report that an index scan kept a spaced subset of its ``units``."""
+    resolve_collector(collector).emit(
+        code=DiagnosticCode.SEEK_INDEX_DEGRADED,
+        message=(
+            f"{codec_name} index has more than {MAX_SEEK_POINTS} {units}; kept a "
+            "spaced subset, so seeks may decode further"
+        ),
+        context=SeekIndexContext(
+            codec=codec_name, scan=scan, error_type=SEEK_TABLE_THINNED
+        ),
+        logger=logger,
+    )
+
+
 @dataclass(frozen=True)
 class IndexReport:
     """One diagnostic an index scan emitted, kept to be emitted again later.
@@ -641,17 +662,7 @@ def build_index_backwards(
         )
         return [], None
     if thinned:
-        resolve_collector(collector).emit(
-            code=DiagnosticCode.SEEK_INDEX_DEGRADED,
-            message=(
-                f"{codec_name} index has more than {MAX_SEEK_POINTS} entries; kept a "
-                "spaced subset, so seeks may decode further"
-            ),
-            context=SeekIndexContext(
-                codec=codec_name, scan=scan, error_type=SEEK_TABLE_THINNED
-            ),
-            logger=logger,
-        )
+        emit_index_thinned(collector, codec_name, scan)
     points = [
         to_point(b)
         for b in bounds

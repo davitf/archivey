@@ -125,6 +125,7 @@ def _stdlib_gzip(source: CodecSource, config: StreamConfig) -> BinaryIO:
         collector=config.collector,
         report_trailing_data=config.report_trailing_data,
         natives=natives_for(config.process_isolation),
+        index=config.seekable,
     )
 
 

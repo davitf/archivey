@@ -348,6 +348,58 @@ def make_multiblock_xz(data: bytes, block_size: int) -> bytes:
     return result.stdout
 
 
+def seekable_zstd_table(
+    frames: list[tuple[int, int]], *, checksums: bool = False, descriptor: int = 0
+) -> bytes:
+    """The skippable frame that ends a Seekable Zstandard file, for ``frames``.
+
+    ``frames`` holds ``(compressed_size, decompressed_size)`` per frame. ``checksums``
+    writes 12-byte entries (with a zero checksum) and sets the descriptor's flag;
+    ``descriptor`` adds bits to it.
+    """
+    entry = struct.Struct("<III" if checksums else "<II")
+    body = b"".join(entry.pack(c, d, *([0] if checksums else [])) for c, d in frames)
+    flags = descriptor | (0x80 if checksums else 0)
+    body += struct.pack("<IBI", len(frames), flags, 0x8F92EAB1)
+    return struct.pack("<II", 0x184D2A5E, len(body)) + body
+
+
+def make_seekable_zstd(parts: list[bytes], *, checksums: bool = False) -> bytes:
+    """A Seekable Zstandard file: one frame per part, then the seek table."""
+    from tests.conftest import zstd_backend
+
+    zstd = zstd_backend()
+    frames = [zstd.compress(part) for part in parts]
+    table = seekable_zstd_table(
+        [(len(f), len(p)) for f, p in zip(frames, parts, strict=True)],
+        checksums=checksums,
+    )
+    return b"".join(frames) + table
+
+
+def make_bgzf_block(data: bytes, *, extra_before: bytes = b"") -> bytes:
+    """One BGZF member holding ``data`` (SAM spec §4.1), as ``bgzip`` writes it.
+
+    ``extra_before`` is raw extra-field subfields put before the ``BC`` one.
+    """
+    compressor = zlib.compressobj(6, zlib.DEFLATED, -15)
+    body = compressor.compress(data) + compressor.flush()
+    xlen = len(extra_before) + 6
+    size = 12 + xlen + len(body) + 8
+    header = b"\x1f\x8b\x08\x04" + b"\x00" * 4 + b"\x00\xff" + struct.pack("<H", xlen)
+    extra = extra_before + b"BC" + struct.pack("<HH", 2, size - 1)
+    return header + extra + body + struct.pack("<II", zlib.crc32(data), len(data))
+
+
+# The empty member that ends every BGZF file, byte for byte as the spec gives it.
+BGZF_EOF = bytes.fromhex("1f8b08040000000000ff0600424302001b0003000000000000000000")
+
+
+def make_bgzf(parts: list[bytes], *, eof: bool = True) -> bytes:
+    """A BGZF file: one member per part, then the end-of-file marker."""
+    return b"".join(make_bgzf_block(p) for p in parts) + (BGZF_EOF if eof else b"")
+
+
 def make_unix_compress(data: bytes) -> bytes:
     """LZW-compress ``data`` into a standard unix-compress (`.Z`) stream.
 

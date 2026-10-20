@@ -13,6 +13,7 @@ from archivey.internal.streams.codecs.base import (
     GZIP_WBITS,
     RAW_DEFLATE_WBITS,
 )
+from archivey.internal.streams.codecs.bgzf_index import build_bgzf_index
 from archivey.internal.streams.codecs.deflate_resume import (
     DeflateResume,
     DeflateResumeDecoder,
@@ -114,10 +115,36 @@ class GzipDecoder(BaseDecoder):
 
     Mid-member ``max_length`` remainder stays in ``decompressobj.unconsumed_tail``
     (same as :class:`ZlibDecoder`); ``_retained`` is only for post-member bytes.
+
+    With ``index`` (declared seek demand), every member after the first that has output
+    is a seek point, recorded when the decode reaches it, and :meth:`build_index` walks
+    a BGZF file's members without decoding (:mod:`.bgzf_index`). ``start`` is the point
+    this decoder resumes from.
     """
 
-    def __init__(self, *, natives: Natives = IN_PROCESS) -> None:
+    def __init__(
+        self,
+        *,
+        index: bool = False,
+        collector: DiagnosticCollector | None = None,
+        start: SeekPoint | None = None,
+        natives: Natives = IN_PROCESS,
+    ) -> None:
         self._natives = natives
+        self._index = index
+        self._collector = collector
+        # Source offset just past every byte fed, and output offset just past every
+        # byte produced: the bytes a feed holds are always the last ones fed. Every
+        # reassignment of ``data`` in ``feed`` must keep it a suffix: ``_retained`` or
+        # ``unconsumed_tail`` plus the chunk, ``_resolve_between`` dropping padding
+        # from the front, and ``unused_data`` at a member's end (zlib leaves the same
+        # bytes in ``unconsumed_tail`` there). One that broke it would give seek
+        # points the wrong source offset, which serves wrong bytes rather than raising.
+        self._fed_end = start.compressed_offset if start is not None else 0
+        self._produced = start.decompressed_offset if start is not None else 0
+        # The current member's start, recorded once the member has output: an empty
+        # member (BGZF's end marker) shares its offset with whatever follows.
+        self._pending_point: SeekPoint | None = None
         self._decomp = natives.zlib_decompressobj(GZIP_WBITS)
         # Post-member bytes not yet resolved (NUL padding / next magic / junk).
         # Never store unconsumed_tail here — that lives on the decompressobj.
@@ -137,7 +164,12 @@ class GzipDecoder(BaseDecoder):
                 truncated=truncated_message("gzip"),
                 natives=self._natives,
             )
-        return GzipDecoder(natives=self._natives)
+        return GzipDecoder(
+            index=self._index,
+            collector=self._collector,
+            start=point,
+            natives=self._natives,
+        )
 
     def _arm_trailing_junk(self, data: bytes) -> None:
         """End the data at ``data``: bytes after a member that start no further member.
@@ -184,10 +216,12 @@ class GzipDecoder(BaseDecoder):
             self._retained = b""
         else:
             data = self._decomp.unconsumed_tail + chunk
+        self._fed_end += len(chunk)
 
         # Output pieces, joined once at the end: one ``decompress`` call is the common
         # case, and ``b"".join`` hands a lone piece back without copying it.
         output: list[bytes] = []
+        points: list[SeekPoint] = []
         produced_total = 0
         while True:
             if self._pending_error is not None or self._finished:
@@ -204,6 +238,11 @@ class GzipDecoder(BaseDecoder):
                 if self._retained or not data:
                     # Partial magic retained, or only NULs/empty — need more input.
                     break
+                if self._index:
+                    # ``data`` starts a further member.
+                    self._pending_point = SeekPoint(
+                        self._produced + produced_total, self._fed_end - len(data)
+                    )
                 continue
 
             if not data:
@@ -218,6 +257,9 @@ class GzipDecoder(BaseDecoder):
             # on its own). A failed CRC-32/ISIZE check is a _StreamChecksumError.
             produced = _inflate(self._decomp, data, limit, gzip_error)
             if produced:
+                if self._pending_point is not None:
+                    points.append(self._pending_point)
+                    self._pending_point = None
                 output.append(produced)
                 produced_total += len(produced)
 
@@ -233,7 +275,8 @@ class GzipDecoder(BaseDecoder):
                 continue
             break
 
-        return DecodeOut(b"".join(output))
+        self._produced += produced_total
+        return DecodeOut(b"".join(output), points)
 
     def flush(self) -> DecodeOut:
         if self._finished:
@@ -275,6 +318,14 @@ class GzipDecoder(BaseDecoder):
             return False
         return True
 
+    def build_index(
+        self, inner: BinaryIO, last_known: SeekPoint
+    ) -> tuple[list[SeekPoint], int | None]:
+        del last_known  # the walk always starts at the first member
+        if not self._index:
+            return [], None
+        return build_bgzf_index(inner, self._collector)
+
 
 def ZlibDecompressorStream(
     path: str | os.PathLike[str] | BinaryIO,
@@ -301,12 +352,19 @@ def GzipDecompressorStream(
     *,
     collector: DiagnosticCollector | None = None,
     report_trailing_data: bool = False,
+    index: bool = False,
     natives: Natives = IN_PROCESS,
 ) -> DecompressorStream:
-    """Inflate a gzip stream with multi-member chaining (forward-only; O(n) rewind)."""
+    """Inflate a gzip stream with multi-member chaining.
+
+    A backward seek decodes from the start, unless ``index`` (declared seek demand)
+    makes member starts and a BGZF file's members seek points (:class:`GzipDecoder`).
+    """
     return DecompressorStream(
         path,
-        make_decoder=lambda _p, _i: GzipDecoder(natives=natives),
+        make_decoder=lambda point, _i: GzipDecoder(
+            index=index, collector=collector, start=point, natives=natives
+        ),
         collector=collector,
         codec_name="gzip",
         report_trailing_data=report_trailing_data,

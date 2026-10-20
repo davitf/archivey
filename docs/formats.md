@@ -40,7 +40,8 @@ images](https://github.com/davitf/archivey/blob/main/dev-docs/formats/dmg.md) an
   source required.
 - **`.zst` / `.tar.zst`:** in core on Python 3.14 and later; else `[recommended]`
   (`backports.zstd`). Listing: one member; the `.tar` form as `.tar.gz`. Random member access:
-  rewind seek unless indexed later.
+  seek by frame with `seekable_members=True`; a one-frame file rewinds. Reads the Seekable
+  Zstandard seek table.
 - **`.lz4` / `.tar.lz4`:** `[recommended]`. Listing: one member; the `.tar` form as `.tar.gz`.
   Random member access: rewind seek.
 - **`.br`:** `[recommended]`. Listing: one member. Random member access: rewind seek. No magic;
