@@ -7,6 +7,11 @@ complete list readable from there. A count per message comes last.
 
 Usage: python scripts/junit_failure_lines.py REPORT.xml [--width N] [--detail N]
 
+Each line names the test by its pytest node id (``tests/test_x.py::TestThing::test_y``),
+which pastes back into a pytest command. That needs the ``file`` attribute, which pytest
+writes only with ``-o junit_family=xunit1``; without it the dotted class name is printed.
+A line cut to ``--width`` ends in "…".
+
 ``--detail N`` also prints the last N lines of each failure's traceback, for a run made
 with ``--tb=short`` or longer.
 """
@@ -27,6 +32,34 @@ def _first_line(text: str) -> str:
     return ""
 
 
+def _node_id(case: ET.Element) -> str:
+    classname = case.get("classname", "")
+    name = case.get("name", "")
+    path = case.get("file")
+    if not path:
+        return f"{classname}::{name}"
+    # classname is the module's dotted path, then any class: keep only the class.
+    module = path.removesuffix(".py").replace("/", ".")
+    inner = classname.removeprefix(module).lstrip(".")
+    return "::".join(part for part in (path, inner, name) if part)
+
+
+def _cut(line: str, width: int) -> str:
+    return line if len(line) <= width else line[: width - 1] + "…"
+
+
+def _count_key(message: str) -> str:
+    """``message`` with what varies per parameter replaced, to group failures on.
+
+    Quoted values (often a test id or a path) and standalone numbers go; digits inside
+    a word stay, so ``bzip2``, ``o.7z`` and ``\\x14`` still read as themselves. The cut
+    to 120 characters keeps each counts row on one line of the log.
+    """
+    message = re.sub(r"'[^']*'", "'…'", message)
+    message = re.sub(r'"[^"]*"', '"…"', message)
+    return _cut(re.sub(r"\b\d+\b", "N", message), 120)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("report")
@@ -36,7 +69,7 @@ def main(argv: list[str] | None = None) -> int:
 
     root = ET.parse(args.report).getroot()
     counts: collections.Counter[str] = collections.Counter()
-    totals = collections.Counter()
+    totals: collections.Counter[str] = collections.Counter()
     for case in root.iter("testcase"):
         totals["tests"] += 1
         for kind in ("failure", "error"):
@@ -45,13 +78,11 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             totals[kind] += 1
             message = _first_line(node.get("message") or node.text or "")
-            name = f"{case.get('classname', '')}::{case.get('name', '')}"
-            print(f"{kind.upper()} {name} - {message}"[: args.width])
+            print(_cut(f"{kind.upper()} {_node_id(case)} - {message}", args.width))
             if args.detail and node.text:
                 for line in node.text.splitlines()[-args.detail :]:
-                    print(f"    {line}"[: args.width])
-            # Numbers and quoted values vary per parameter; group on the rest.
-            counts[re.sub(r"\d+", "N", message)[:120]] += 1
+                    print(_cut(f"    {line}", args.width))
+            counts[_count_key(message)] += 1
         if case.find("skipped") is not None:
             totals["skipped"] += 1
 
