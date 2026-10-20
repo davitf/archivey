@@ -186,7 +186,9 @@ def _start_error(reason: str) -> RapidgzipChildStartError:
 def rapidgzip_child_unavailable_reason() -> str | None:
     """Why no Python child process can be started to run the worker script, or ``None``
     when one can (see :func:`~archivey.internal.streams.child_process.unavailable_reason`).
-    Under PyPy, where rapidgzip misreads valid streams, there is always a reason.
+    Under PyPy, where rapidgzip misreads valid streams, there is always a reason. There
+    ``deps.rapidgzip`` already reads as absent, so this arm is the backstop for a
+    ``deps.rapidgzip`` that reads as present.
     """
     pypy_reason = deps.unused_reason("rapidgzip")
     if pypy_reason:
