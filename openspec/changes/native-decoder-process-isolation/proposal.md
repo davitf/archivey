@@ -52,7 +52,7 @@ and a third, fourth or eighth isolated codec would copy it again.
 - Public: one enum, one config field. Default behaviour changes for PPMd only: every
   member decodes in a child, so where no child process can start, a PPMd member raises
   `ResourceLimitError` naming `process_isolation=NONE` as the way to read it.
-- Code: new `codecs/decoder_worker.py`, `streams/decoder_child.py`, `codecs/isolated.py`;
+- Code: new `codecs/decoder_worker.py`, `codecs/decoder_child.py`, `codecs/isolated.py`;
   `ppmd_worker.py` removed; `ppmd_child.py`, `rapidgzip_child.py`, `rapidgzip_worker.py`
   slimmed; every native decoder construction site takes its library from one selector.
 - Docs: security page section on isolation and the CLI time-limit recipe.

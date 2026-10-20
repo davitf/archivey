@@ -112,8 +112,13 @@ class _Process:
         # Decoders this child finished and was given back from.
         self.served = 0
 
+    def owned(self) -> bool:
+        """Whether this process started the child: a process created by ``fork``
+        inherits the pipes, and must not write to them or reap the child."""
+        return self.pid == os.getpid()
+
     def alive(self) -> bool:
-        return self.pid == os.getpid() and self.proc.poll() is None
+        return self.owned() and self.proc.poll() is None
 
     def send(self, tag: int, arg: int, *parts: bytes) -> None:
         stdin = self.proc.stdin
@@ -144,7 +149,7 @@ class _Process:
         return tag, arg, state, output
 
     def end(self, *, kill: bool = False) -> None:
-        if self.pid == os.getpid():
+        if self.owned():
             reap(self.proc, kill=kill)
 
 
@@ -172,6 +177,8 @@ class _Pool:
             process.end()
 
     def give_back(self, process: _Process) -> None:
+        if not process.owned():
+            return  # the parent's child, inherited through ``fork``: leave it alone
         process.served += 1
         if process.served >= MAX_DECODERS_PER_CHILD:
             process.end()
@@ -286,6 +293,8 @@ class DecoderChild:
     ``args`` and ``kwargs`` are the constructor's, sent with ``marshal``. ``known``
     maps the exception types the decoder raises to the types rebuilt here. ``reuse``
     lets the child serve another decoder after this one, if it ends cleanly.
+    ``setting`` names the ``process_isolation`` value that put this decoder in a child,
+    for the error raised when a fresh child is needed part-way and none can start.
 
     A child that served earlier decoders may carry damage one of them left without
     crashing, so its crash or error is not blamed on this decoder at once: the decoder
@@ -314,8 +323,10 @@ class DecoderChild:
         *,
         known: dict[tuple[str, str], type[Exception]] | None = None,
         reuse: bool = True,
+        setting: str = "NATIVE_DECODERS",
     ) -> None:
         self._codec = codec
+        self._setting = setting
         message: tuple[Any, ...] = (codec, args, kwargs or {})
         self._open_message = marshal.dumps(message)
         self._known = known or {}
@@ -397,6 +408,11 @@ class DecoderChild:
         process = self._lease.process
         if process is None:
             raise ArchiveyUsageError("the decoder is closed")
+        if not process.owned():
+            raise ArchiveyUsageError(
+                f"this decoder's {self.describe} belongs to the process this one was "
+                "forked from; open the member again in this process"
+            )
         return process
 
     def _exchange(
@@ -427,6 +443,13 @@ class DecoderChild:
     def _request(self, tag: int, arg: int, *parts: bytes) -> bytes:
         """Send one request and return its output, re-running in a fresh child a crash
         or error from a reused one (see the class docstring)."""
+        if (
+            self._log is not None
+            and self._log_size + sum(len(part) for part in parts) > REPLAY_LIMIT
+        ):
+            # Past the record's bound: move before sending, so the reused child never
+            # gets a request the fresh one would have to run again.
+            self._move_to_fresh_child()
         try:
             reply, state, output = self._exchange(tag, arg, parts)
         except _Died as died:
@@ -442,8 +465,6 @@ class DecoderChild:
         if self._log is not None:
             self._log.append((tag, arg, parts, zlib.crc32(output)))
             self._log_size += sum(len(part) for part in parts)
-            if self._log_size > REPLAY_LIMIT:
-                self._move_to_fresh_child()
         return output
 
     def _move_to_fresh_child(self) -> None:
@@ -451,10 +472,20 @@ class DecoderChild:
         log, self._log, self._log_size = self._log, None, 0
         assert log is not None
         try:
-            self._replace_process()
-            self._open()
-        except _Died as died:
-            raise self._death_from(died) from None
+            try:
+                self._replace_process()
+                self._open()
+            except _Died as died:
+                raise self._death_from(died) from None
+        except Exception as exc:
+            # Translated as when the decoder was opened: the same environment failure
+            # must not reach the caller as a different error because it came later.
+            self._lease.reusable = False
+            self._lease.release()
+            self._death = self._fresh_child_error(exc)
+            if self._death is exc:
+                raise
+            raise self._death from exc
         for tag, arg, parts, crc in log:
             if zlib.crc32(self._request(tag, arg, *parts)) != crc:
                 self._lease.reusable = False
@@ -467,6 +498,13 @@ class DecoderChild:
     def _rerun_fresh(self, tag: int, arg: int, parts: tuple[bytes, ...]) -> bytes:
         self._move_to_fresh_child()
         return self._request(tag, arg, *parts)
+
+    def _fresh_child_error(self, exc: Exception) -> Exception:
+        """The error for a fresh child that could not be started and opened part-way
+        through a member. PPMd overrides this for a model it cannot allocate."""
+        if isinstance(exc, DecoderChildStartError):
+            return isolation_error(str(exc), self._setting)
+        return exc
 
     def _death_from(self, died: _Died) -> Exception:
         """Record and return the error for a child that went away."""

@@ -57,7 +57,9 @@ re-run: when the fresh child's output for those requests differs, the call SHALL
 `ReadError`, which is not a verdict on the data. A PPMd read abandoned before the
 member's end SHALL retire its child, since closing it sends the one-symbol decode. Idle
 children SHALL be ended when the interpreter exits, MUST NOT outlive it, and a process
-created by `fork` MUST NOT use its parent's idle children.
+created by `fork` MUST NOT use its parent's children: idle ones are dropped, closing an
+inherited decoder leaves the parent's child alone, and a call on one SHALL raise
+`ArchiveyUsageError`.
 
 #### Scenario: child per decoder and reuse
 

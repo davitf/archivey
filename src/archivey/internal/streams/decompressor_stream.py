@@ -1533,15 +1533,20 @@ def release_decoder_children(holder: object, depth: int = 3) -> None:
             release_decoder_children(value, depth - 1)
 
 
+# How many wrappers ``retire_decoder_children`` looks through; a member stream has a
+# handful, so this only stops a cycle.
+_MAX_WRAPPERS = 16
+
+
 def retire_decoder_children(stream: object) -> None:
-    """Tell the decoder under ``stream`` that its member failed a check (see
-    :meth:`BaseDecoder.spoil_child`), looking through the wrappers' ``_inner``."""
-    for _ in range(16):
+    """Tell every decoder under ``stream`` that its member failed a check (see
+    :meth:`BaseDecoder.spoil_child`), looking through the wrappers' ``_inner`` (or a
+    slice's ``_stream``): a 7z coder chain stacks one decoder on another."""
+    for _ in range(_MAX_WRAPPERS):
         if isinstance(stream, DecompressorStream):
             spoil = getattr(stream._decoder, "spoil_child", None)
             if spoil is not None:
                 spoil()
-            return
-        stream = getattr(stream, "_inner", None)
+        stream = getattr(stream, "_inner", None) or getattr(stream, "_stream", None)
         if stream is None:
             return

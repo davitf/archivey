@@ -6,8 +6,8 @@ the next ``decode`` starts a new worker on a model that has finished. From Pytho
 state cannot be told apart from a valid stream that is waiting for more input, because
 ``eof`` also rises (and never clears) on a valid stream whose compressed bytes happen to
 end in zeros at a chunk boundary. The one-symbol decode ``PpmdDecoder`` sends at close
-to stop a worker that may be parked reaches the same state on a member that ended early
-(reports/ppmd-in-process-crash-2026-10-20.md). So every PPMd member decodes in a child
+to stop a worker that may be parked reaches the same state on a member that ended early.
+So every PPMd member decodes in a child
 process unless ``process_isolation`` is ``NONE``.
 
 :func:`open_ppmd_child` returns a :class:`ChildPpmdDecoder`, which has the surface of
@@ -20,6 +20,7 @@ cleanly: ``PpmdDecoder`` calls ``spoil`` otherwise.
 
 from __future__ import annotations
 
+from archivey.exceptions import ResourceLimitError
 from archivey.internal.streams.child_process import describe_exit
 from archivey.internal.streams.codecs.decoder_child import (
     DecoderChild,
@@ -56,9 +57,19 @@ def _allocation_error(mem_size: int, detail: str) -> PpmdChildAllocationError:
 class _PpmdChild(DecoderChild):
     describe = "PPMd decoder process"
 
-    def __init__(self, codec: str, args: tuple[object, ...], *, mem_size: int) -> None:
+    def __init__(
+        self, codec: str, args: tuple[object, ...], *, mem_size: int, setting: str
+    ) -> None:
         self._mem_size = mem_size
-        super().__init__(codec, args, known=PPMD_ERRORS)
+        super().__init__(codec, args, known=PPMD_ERRORS, setting=setting)
+
+    def _fresh_child_error(self, exc: Exception) -> Exception:
+        if isinstance(exc, MemoryError):
+            exc = _allocation_error(self._mem_size, str(exc) or "MemoryError")
+        if isinstance(exc, PpmdChildAllocationError):
+            # The words ``PpmdDecoder`` uses when the first child cannot allocate it.
+            return ResourceLimitError(f"Decoder limit reached: {exc}")
+        return super()._fresh_child_error(exc)
 
     def _death_error(self, returncode: int | None) -> Exception:
         if self._building:
@@ -73,9 +84,16 @@ def ppmd_child_unavailable_reason() -> str | None:
 
 
 def open_ppmd_child(
-    *, variant: int, order: int, mem_size: int, restore_method: int = 0
+    *,
+    variant: int,
+    order: int,
+    mem_size: int,
+    restore_method: int = 0,
+    setting: str = "KNOWN_CRASHES",
 ) -> ChildPpmdDecoder:
-    """A pyppmd decoder in a child process (taken from the pool).
+    """A pyppmd decoder in a child process (taken from the pool). ``setting`` is the
+    ``process_isolation`` value, named in the error when a fresh child is needed
+    part-way through the member and none can start.
 
     Raises ``DecoderChildStartError`` when no child starts or it cannot import pyppmd,
     and :class:`PpmdChildAllocationError` when it dies or raises ``MemoryError``
@@ -86,7 +104,7 @@ def open_ppmd_child(
     else:
         codec, args = "ppmd7", (order, mem_size)
     try:
-        child = _PpmdChild(codec, args, mem_size=mem_size)
+        child = _PpmdChild(codec, args, mem_size=mem_size, setting=setting)
     except MemoryError as exc:
         raise _allocation_error(mem_size, str(exc) or "MemoryError") from exc
     return ChildPpmdDecoder(child)

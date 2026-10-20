@@ -21,11 +21,13 @@ import subprocess
 import sys
 import textwrap
 import time
+import zlib
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
+from archivey import open_archive
 from archivey.config import DecoderLimits, ProcessIsolation
 from archivey.exceptions import (
     ArchiveyUsageError,
@@ -53,10 +55,11 @@ from archivey.internal.streams.codecs.decoder_child import (
 from archivey.internal.streams.codecs.decoder_worker import CALL
 from archivey.internal.streams.codecs.isolated import PPMD_ERRORS, ChildPpmdDecoder
 from archivey.internal.streams.codecs.ppmd_child import (
+    PpmdChildAllocationError,
     open_ppmd_child,
     ppmd_child_unavailable_reason,
 )
-from tests.conftest import requires
+from tests.conftest import requires, requires_binary, run_7z
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.test_ppmd_raw_streams import (
     _MEM,
@@ -766,3 +769,78 @@ def test_every_error_the_child_reports_translates_as_it_would_in_process() -> No
             ).__class__
             is cls
         )
+
+
+def _ppmd_archive_with_crc(tmp_path: Path, archive_type: str, *, wrong: bool) -> Path:
+    """A one-member PPMd archive written by ``7z``, its stored CRC flipped when
+    ``wrong``: the decode ends cleanly, and only the digest check above it fails."""
+    data = b"clean member with a stored crc\n" * 2000
+    (tmp_path / "member.txt").write_bytes(data)
+    archive = tmp_path / f"out.{archive_type}"
+    method = "-mm=PPMd" if archive_type == "zip" else "-m0=PPMd"
+    switches = [] if archive_type == "zip" else ["-mhc=off"]
+    result = run_7z(
+        ["a", f"-t{archive_type}", method, *switches, str(archive), "member.txt"],
+        cwd=tmp_path,
+    )
+    if result.returncode != 0:
+        pytest.skip(f"7z cannot write PPMd {archive_type}")
+    if wrong:
+        crc = struct.pack("<I", zlib.crc32(data))
+        raw = archive.read_bytes()
+        assert crc in raw
+        raw = bytearray(raw.replace(crc, struct.pack("<I", zlib.crc32(data) ^ 1)))
+        if archive_type == "7z":
+            # Re-seal the header: its own CRC, then the start header's over that.
+            offset, size = struct.unpack_from("<QQ", raw, 12)
+            header = raw[32 + offset : 32 + offset + size]
+            struct.pack_into("<I", raw, 28, zlib.crc32(header))
+            struct.pack_into("<I", raw, 8, zlib.crc32(raw[12:32]))
+        archive.write_bytes(raw)
+    return archive
+
+
+@requires_binary("7z")
+@pytest.mark.parametrize("archive_type", ["zip", "7z"])
+@pytest.mark.parametrize("wrong", [False, True], ids=["crc-ok", "crc-wrong"])
+def test_a_member_whose_crc_does_not_match_retires_its_child(
+    tmp_path: Path, archive_type: str, wrong: bool
+) -> None:
+    """The mismatch is raised by the member stream, above the decoder, after a decode
+    that ended cleanly; the child must still not serve another member."""
+    archive = _ppmd_archive_with_crc(tmp_path, archive_type, wrong=wrong)
+    POOL.close_idle()
+    with open_archive(archive) as ar:
+        (member,) = ar.members()
+        if wrong:
+            with raises_corruption_not_truncation():
+                ar.read(member)
+        else:
+            ar.read(member)
+    assert POOL.idle_count() == (0 if wrong else 1)
+
+
+def test_a_model_a_fresh_child_cannot_allocate_part_way_is_a_limit_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The move to a fresh child part-way through a member builds the model again;
+    if that child cannot allocate it, the caller gets the ``ResourceLimitError`` the
+    same failure gives when the member opens, not a bare internal error."""
+    packed = _encode_ppmd7(b"hello child " * 50)
+    first = open_ppmd_child(variant=7, order=_ORDER, mem_size=_MEM)
+    assert first.decode(packed, 600) == b"hello child " * 50
+    first.close()
+    child = open_ppmd_child(variant=7, order=_ORDER, mem_size=_MEM)
+    inner = child._child
+    assert inner.served_before
+
+    def cannot_allocate() -> None:
+        raise PpmdChildAllocationError("fake: the model does not fit")
+
+    monkeypatch.setattr(decoder_child, "REPLAY_LIMIT", 0)
+    monkeypatch.setattr(inner, "_open", cannot_allocate)
+    try:
+        with pytest.raises(ResourceLimitError, match="Decoder limit reached"):
+            child.decode(packed, 600)
+    finally:
+        child.close()

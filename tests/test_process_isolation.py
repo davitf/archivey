@@ -163,3 +163,32 @@ def test_a_ppmd_member_pyppmd_cannot_take_in_pieces_reads_under_every_value(
         pytest.skip("7z cannot write PPMd")
     for isolation in ProcessIsolation:
         assert _contents(archive, isolation) == {"repeats.bin": block * 8}, isolation
+
+
+_SINGLE_FILE = [
+    pytest.param(entry, key, id=key)
+    for entry in CORPUS
+    if entry.id == "single-file"
+    for key in entry.formats
+]
+
+
+@pytest.mark.parametrize(("entry", "key"), _SINGLE_FILE)
+def test_closing_a_member_stream_gives_its_child_back_at_once(
+    entry, key, tmp_path: Path
+) -> None:
+    """``close`` hands the child back while the stream object is still referenced,
+    for every stream codec: a decoder that keeps its native object where
+    ``release_decoder_children`` does not look fails here, rather than waiting for
+    the garbage collector without a sound."""
+    skip_unless_runnable(entry, key)
+    path = corpus_archive_path(entry, key, tmp_path)
+    config = ArchiveyConfig(process_isolation=ProcessIsolation.NATIVE_DECODERS)
+    with open_archive(path, config=config) as ar:
+        (member,) = (m for m in ar.members() if m.type is MemberType.FILE)
+        stream = ar.open(member)
+        stream.read(10)
+        POOL.close_idle()
+        stream.close()
+        assert POOL.idle_count() == 1, key
+        del stream

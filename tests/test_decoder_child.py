@@ -274,3 +274,91 @@ def test_threads_get_children_of_their_own() -> None:
     finally:
         a.close()
         b.close()
+
+
+def _reused_zlib_child() -> DecoderChild:
+    first = DecoderChild("zlib")
+    first.call("decompress", zlib.compress(b"a"))
+    first.close()
+    child = DecoderChild("zlib")
+    assert child.served_before
+    return child
+
+
+def test_a_request_past_the_replay_limit_goes_only_to_a_fresh_child(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A request that would take the record past ``REPLAY_LIMIT`` moves first, so it
+    is decoded once, never in the reused child and then again in the fresh one."""
+    monkeypatch.setattr(decoder_child, "REPLAY_LIMIT", 1000)
+    child = _reused_zlib_child()
+    reused = child._lease.process
+    sent: list[tuple[object, int]] = []
+    send = decoder_child._Process.send
+
+    def recording(self: decoder_child._Process, tag: int, arg: int, *parts: bytes):
+        sent.append((self, tag))
+        return send(self, tag, arg, *parts)
+
+    monkeypatch.setattr(decoder_child._Process, "send", recording)
+    data = os.urandom(5000)
+    try:
+        assert child.call("decompress", zlib.compress(data)) == data
+        assert not child.served_before
+        calls = [process for process, tag in sent if tag == decoder_child.CALL]
+        assert calls == [child._lease.process]
+        assert reused not in calls
+    finally:
+        child.close()
+
+
+def test_no_fresh_child_part_way_is_the_open_time_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fresh child that cannot start when the decoder moves part-way raises what
+    the same failure raises at open: ``ResourceLimitError`` naming the setting."""
+    monkeypatch.setattr(decoder_child, "REPLAY_LIMIT", 1000)
+    child = _reused_zlib_child()
+
+    def refuse() -> decoder_child._Process:
+        raise decoder_child.start_error("fake: no process available")
+
+    monkeypatch.setattr(decoder_child, "_Process", refuse)
+    try:
+        for _ in range(2):  # and again on the next call
+            with pytest.raises(ResourceLimitError, match="process_isolation"):
+                child.call("decompress", zlib.compress(os.urandom(5000)))
+    finally:
+        child.close()
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="needs os.fork")
+def test_a_forked_process_leaves_its_parents_leased_child_alone() -> None:
+    """A process created by ``fork`` that inherits an open decoder neither closes its
+    parent's decoder by dropping it nor writes to the parent's pipe by using it."""
+    data = os.urandom(20_000)
+    packed = zlib.compress(data)
+    decomp = ISOLATED.zlib_decompressobj()
+    try:
+        first = decomp.decompress(packed[:1000])
+        read_fd, write_fd = os.pipe()
+        pid = os.fork()
+        if pid == 0:  # pragma: no cover - runs in the forked process
+            status = b"?"
+            try:
+                try:
+                    decomp.decompress(packed[1000:2000])
+                    status = b"read"
+                except Exception as exc:  # noqa: BLE001 - reported to the parent
+                    status = type(exc).__name__.encode()
+                decomp.close()
+            finally:
+                os.write(write_fd, status)
+                os._exit(0)
+        os.close(write_fd)
+        os.waitpid(pid, 0)
+        assert os.read(read_fd, 100) == b"ArchiveyUsageError"
+        os.close(read_fd)
+        assert first + decomp.decompress(packed[1000:]) == data
+    finally:
+        decomp.close()

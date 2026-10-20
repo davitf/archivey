@@ -234,9 +234,9 @@ class PpmdDecoder(BaseDecoder):
         # none can start, unless ``isolation`` is ``NONE``.
         self._isolation = isolation
         self._in_child = isolation is not ProcessIsolation.NONE
-        # ``DecoderLimits.max_ppmd_in_process_input``, read under ``NONE`` only: past
-        # it, pyppmd is fed in pieces in-process. ``None``: held whole whenever the
-        # size is known.
+        # ``DecoderLimits.max_ppmd_in_process_input``: a member up to it is handed to
+        # pyppmd whole, one past it in pieces, under every ``isolation`` (which decides
+        # only where the decode runs). ``None``: held whole whenever the size is known.
         self._in_process_max_input = in_process_max_input
         # Compressed input held back from pyppmd until the whole member is here, or
         # compressed EOF, or ``in_process_max_input`` is passed, in-process; until the
@@ -286,6 +286,7 @@ class PpmdDecoder(BaseDecoder):
                 order=self._order,
                 mem_size=self._mem_size,
                 restore_method=self._restore_method,
+                setting=self._isolation.name,
             )
             return
         import pyppmd
@@ -511,7 +512,9 @@ class PpmdDecoder(BaseDecoder):
             ):
                 # Whole when the member fits under the limit, in pieces past it. A
                 # child gets the same: pyppmd fed in pieces can stop at a false end
-                # on valid data, so whole is the path that is known to work.
+                # on valid data, so whole is the path that is known to work. Both
+                # tests lead to the same hand-over, so their order does not matter;
+                # where the member decodes is ``isolation``'s alone.
                 chunk = self._release_now()
             else:
                 return DecodeOut(b"")

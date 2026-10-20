@@ -54,8 +54,10 @@ sometimes hits the next member rather than the faulty one (raised by davi on
 child records the requests it sent, re-runs them in a fresh child when the reused one
 crashes or reports an error, and goes on there; only the fresh child's verdict counts.
 The decoders are deterministic, so replaying the same calls reaches the same state. The
-record is capped at 1 MiB of input: past it the decoder moves to a fresh child at once,
-which costs one start and one re-decode of that much, and is then blamed directly. A
+record is capped at 1 MiB of input: a request that would take it past that moves the
+decoder to a fresh child before it is sent, which costs one start and one re-decode of
+at most 1 MiB, and the decoder is then blamed directly. A single large request (a PPMd
+member handed over whole) therefore goes only to the fresh child. A
 child serves at most 64 decoders, which bounds how long silent damage can live.
 
 The re-run also covers a member whose output has already reached the caller. The record
@@ -66,7 +68,9 @@ fresh child. When it does not, the caller already holds wrong bytes that no late
 can take back, so the call raises `ReadError` saying the member must be read again; the
 data is not blamed, since neither child found it bad. Silent damage that yields wrong
 output and then neither crashes nor errors is caught by the member's check value, like
-any corruption; the PPMd child is not reused after a mismatch.
+any corruption; the PPMd child is not reused after a mismatch. The member stream
+raises that mismatch above the decoder, so it tells every decoder under it
+(`retire_decoder_children`) before the error leaves.
 
 A PPMd read the caller abandons before the member's end also retires the child: closing
 it sends the quiesce NUL, which is one of the states above. So a password confirmation
@@ -85,7 +89,8 @@ default has proven. Members past the limit keep that bug, as they do on main (tr
 internally).
 
 Idle children are ended at interpreter exit (`atexit`). `os.register_at_fork` empties the
-pool in a forked child, which must not talk on its parent's pipes. The leak oracle in
+pool in a forked child, which must not talk on its parent's pipes; a decoder it
+inherited neither sends `CLOSE` when dropped nor sends a request (`ArchiveyUsageError`). The leak oracle in
 the tests empties the pool before it counts live children.
 
 ### The generic worker
