@@ -523,13 +523,14 @@ yielded.
   Everything else needs RARLAB `unrar` or `rar` **6.0 or later** on `PATH` (not `unrar-free` or
   `7z`). `unrar` is preferred when both exist. By default, when neither is found, archivey uses
   `unar` 1.10 or later if it is installed; see the next item. `unrar` gets passwords as bare `-p`
-  with the secret on stdin (not in argv). `unrar` reads that password as one line and drops
-  anything after a line break or a NUL character, so a password containing either raises
-  `UnsupportedFeatureError` instead of being cut short. Archivey passes a password to
-  `unrar` or `unar` only when the read needs it: the member is encrypted, the headers are,
-  or an encrypted member comes before it in a solid archive. A stored, encrypted member split across volumes, and any member encrypted
-  with the RAR 2.0 cipher (archives from RAR 2.0 to 2.8), still need `unrar` or `unar`: each part of
-  a split member has its own encryption record, and archivey does not implement the old cipher.
+  with the secret on stdin (not in argv). `unrar` reads that password as one line and drops anything
+  after a line break or a NUL character, so a password containing either raises
+  `UnsupportedFeatureError` instead of being cut short. Archivey passes a password to `unrar` or
+  `unar` only when the read needs it: the member is encrypted, the headers are, or an encrypted
+  member comes before it in a solid archive. A stored, encrypted member split across volumes, and
+  any member encrypted with the RAR 2.0 cipher (archives from RAR 2.0 to 2.8), still need `unrar` or
+  `unar`: each part of a split member has its own encryption record, and archivey does not implement
+  the old cipher.
   `format_availability()` reports RAR as `PARTIAL`, with `unrar` in `missing`, when no RARLAB
   `unrar` or `rar` 6.0 or later is found, even when a `unar` archivey accepts is installed. Install:
   [Getting unrar](install.md#getting-unrar).
