@@ -346,33 +346,34 @@ def test_reap_pid_is_noop_without_wnohang(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_allow_resource_leaks_reaps_without_failing(tmp_path: Path) -> None:
-    """The marker skips the fail, not the reap (F1)."""
-    pidfile = tmp_path / "leaked.pid"
+    """The marker skips the fail, not the reap (F1).
+
+    The probe holds the ``Popen`` and asks it, not the bare pid: on Windows
+    ``os.kill(pid, 0)`` is TerminateProcess, and once the oracle drops the last
+    handle the pid is free for reuse, so the probe could kill an unrelated
+    process and report it alive.
+    """
     proc = _run_isolated(
         tmp_path,
-        f"""
-import os
-from pathlib import Path
-
+        """
 import pytest
 
-_PIDFILE = Path({str(pidfile)!r})
+_CHILDREN: list[subprocess.Popen[bytes]] = []
 
 @pytest.mark.allow_resource_leaks
 def test_marked_leak() -> None:
     child = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(60)"],
     )
-    _PIDFILE.write_text(str(child.pid), encoding="utf-8")
+    _CHILDREN.append(child)
 
 def test_following_sees_child_reaped() -> None:
-    pid = int(_PIDFILE.read_text(encoding="utf-8"))
-    try:
-        os.kill(pid, 0)
-        alive = True
-    except OSError:
-        alive = False
-    assert not alive, f"pid {{pid}} still alive after marked test"
+    (child,) = _CHILDREN
+    alive = child.poll() is None
+    if alive:
+        child.kill()
+        child.wait()
+    assert not alive, f"pid {child.pid} still alive after marked test"
 """,
     )
     assert proc.returncode == 0, _output(proc)
