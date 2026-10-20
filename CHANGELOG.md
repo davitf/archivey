@@ -71,6 +71,22 @@ and each change will be listed here. No major changes are expected.
 - Tested on Python 3.11 to 3.14 on Linux, macOS and Windows, plus free-threaded 3.13t on
   Linux.
 
+### Performance
+
+Measured in one nightly run on a GitHub `ubuntu-latest` runner (4 vCPUs, Python 3.11),
+archivey time over the standard library or reference reader's time; lower is better.
+0.2.0 misses the 1.3× target in [`VISION.md`](VISION.md) on most archive paths:
+
+- Single-stream gzip and bzip2, and `.tar.gz` / `.tar.bz2` with accelerators off:
+  0.5–0.8×, as fast as the standard library or faster.
+- Reading every member: ZIP about 1.8× `zipfile`, plain TAR about 2× `tarfile`.
+  Extracting a ZIP is about 2.6× `zipfile.extractall()`.
+- Listing: TAR about 1.5×, ZIP about 7× (1.4 ms against 0.2 ms for 64 members), 7z
+  1.5–2.3× `py7zr`, RAR 2–5.6× `rarfile`.
+- The rapidgzip accelerator only turns on by default when you ask to seek in a large
+  file. Forced on for these small test files, it is slower than the plain codec: a
+  `.tar.gz` takes about 2.4× `tarfile`'s time.
+
 ### Removed
 
 - `crc32_digest`, public in 0.2.0rc1. To compare a CRC-32 from `member.hashes` with
