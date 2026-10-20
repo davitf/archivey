@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import sys
 from types import ModuleType
 
 from archivey.internal import logs
@@ -101,8 +102,13 @@ class LazyOptional:
 
 
 zstd = _optional_zstd()
-lz4_frame = _optional("lz4.frame")
-lz4_block = _optional("lz4.block")
+# python-lz4 crashes PyPy: its frame decoder segfaults on an ordinary frame (seen with
+# PyPy 3.11), and the crash surfaces later at unrelated places. Under PyPy archivey reads
+# as if lz4 were absent, and the error says why (UNUSABLE_UNDER_PYPY_NOTE).
+UNDER_PYPY = sys.implementation.name == "pypy"
+UNUSABLE_UNDER_PYPY_NOTE = "archivey does not use it under PyPy, which it crashes."
+lz4_frame = None if UNDER_PYPY else _optional("lz4.frame")
+lz4_block = None if UNDER_PYPY else _optional("lz4.block")
 brotli = LazyOptional("brotli")
 pyppmd = LazyOptional("pyppmd")
 inflate64 = LazyOptional("inflate64")

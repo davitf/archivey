@@ -2863,6 +2863,14 @@ def test_absent_codec_backend_hint_is_installable(
     _assert_hint_is_installable(str(ei.value))
 
 
+def test_lz4_under_pypy_says_why_it_is_unused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Under PyPy lz4 counts as absent even when installed, and the error says why."""
+    monkeypatch.setattr(codecs_module.deps, "UNDER_PYPY", True)
+    monkeypatch.setattr(codecs_module.deps, "lz4_frame", None)
+    with pytest.raises(PackageNotInstalledError, match="does not use it under PyPy"):
+        open_codec_stream(Codec.LZ4, io.BytesIO(b""))
+
+
 def test_absent_crypto_hint_is_installable(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(crypto, "_crypto_available", lambda: False)
     with pytest.raises(PackageNotInstalledError) as ei:

@@ -59,7 +59,10 @@ class Lz4Codec(StreamCodec):
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
         if deps.lz4_frame is None or deps.lz4_block is None:
-            raise self._missing("lz4 streams")
+            raise self._missing(
+                "lz4 streams",
+                note=deps.UNUSABLE_UNDER_PYPY_NOTE if deps.UNDER_PYPY else "",
+            )
         # A rewind re-decompresses from the start (the outer ArchiveStream warns on a
         # rewind — see rewind_warning).
         lz4_frame, lz4_block = deps.lz4_frame, deps.lz4_block
