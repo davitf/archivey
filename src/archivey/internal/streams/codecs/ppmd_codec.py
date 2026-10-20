@@ -68,7 +68,10 @@ def _check_ppmd7_properties(order: int, mem_size: int) -> None:
 class PpmdCodec(StreamCodec):
     codec = Codec.PPMD
     requirement = MissingComponent(
-        "pyppmd", "pip install archivey[recommended]", ("ppmd",)
+        "pyppmd",
+        "pip install archivey[recommended]",
+        ("ppmd",),
+        reason=deps.unused_reason("pyppmd"),
     )
 
     def _backend_present(self) -> bool:

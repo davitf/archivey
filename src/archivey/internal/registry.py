@@ -404,9 +404,7 @@ class BackendRegistry:
             unread_message = self.unread_format_message(fmt)
             if unread_message is not None:
                 raise UnsupportedFeatureError(unread_message, source_format=fmt)
-            hints = "; ".join(
-                f"{m.name} ({m.install_hint})" for m in availability.missing
-            )
+            hints = "; ".join(f"{m.name} ({m.advice})" for m in availability.missing)
             raise PackageNotInstalledError(
                 f"Format {fmt.display_name} is not available: missing {hints}",
                 source_format=fmt,

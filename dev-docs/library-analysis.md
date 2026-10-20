@@ -45,7 +45,7 @@ Two recurring notes:
 
 | Codec | Chosen backend | Availability | Efficient seek | Corruption | Truncation |
 |-------|----------------|--------------|----------------|------------|------------|
-| gzip | gzip-window `DecompressorStream` (+ `rapidgzip` for random access) | core (`[seekable]` for accel) | via `rapidgzip` | yes (CRC) | yes¹ |
+| gzip | gzip-window `DecompressorStream` (+ `rapidgzip` for random access) | core (`[seekable]` for accel) | via `rapidgzip`; natively per member and per BGZF block | yes (CRC) | yes¹ |
 | bzip2 | stdlib `bz2` (+ `rapidgzip.IndexedBzip2File`) | core (`[seekable]` for accel) | via `rapidgzip` | yes (block CRC) | yes |
 | xz | native `xz_decoder.py` over stdlib `lzma` | core | **yes** (block index) | yes (CRC) | yes |
 | lzip | native `lzip_decoder.py` over stdlib `lzma` | core | **yes** (trailer scan) | yes (CRC) | yes |
@@ -53,7 +53,7 @@ Two recurring notes:
 | Delta, BCJ x86/ARM/ARMT/PPC/SPARC/IA64 | stdlib `lzma` raw filters throughout | core | n/a (filter stage) | yes | yes |
 | BCJ ARM64 (7z) | archivey's own decoder (pure Python; stdlib `lzma` refuses filter id 10) | core | n/a (filter stage) | yes | yes |
 | raw Deflate / zlib | stdlib `zlib` | core | no (rewind) | yes | yes |
-| zstd | **stdlib `compression.zstd` (3.14+) / `backports.zstd` (<3.14)** | `[recommended]` on <3.14; core on 3.14+ | no (rewind) | yes (frame checksum) | **yes** |
+| zstd | **stdlib `compression.zstd` (3.14+) / `backports.zstd` (<3.14)** | `[recommended]` on <3.14; core on 3.14+ | per frame (frame starts, seek table) | yes (frame checksum) | **yes** |
 | lz4 | `lz4` | `[recommended]` | no (rewind) | yes | yes |
 | brotli | `brotli` | `[recommended]` | no (rewind) | yes | partial² |
 | unix-compress (`.Z`) | native `unix_compress_decoder.py` (LZW) | core | **yes** (CLEAR seek points) | yes | best-effort³ |
@@ -151,11 +151,14 @@ Pythons only; `_ZstdReopenStream` has been removed. `pyzstd` was previously pinn
 generates zstd fixtures with `backports.zstd`; only the (since-retired) frozen `tests/_dev_oracle`
 referenced `pyzstd`, and it guards for its absence).
 
-### Seekable zstd (efficient random access) — none for now
+### Seekable zstd (efficient random access) — native frame points
 
-Decision: **no efficient zstd seeking yet** — a backward seek re-decompresses from the start and
-warns, the same as brotli/lz4/zlib (`seekable-decompressor-streams`, "index-less codecs warn on a
-rewinding seek"). The candidates were:
+Decision: **zstd seeks natively at frame granularity**, with no dependency. On declared seek
+demand every frame start is a resume point, recorded as a forward read reaches it, and a file
+in the *Seekable Zstd* format has its seek table read for all of them at once
+(`codecs/zstd_seek_table.py`, [`formats/zstd-lz4.md`](formats/zstd-lz4.md) §2.3). A
+single-frame `.zst`, the common case, still rewinds from the start and warns. The libraries
+considered first:
 
 - **`indexed_zstd`** — gives O(1) seeking over arbitrary `.zst` via `libzstd-seek`, but **only at
   frame granularity** (its jump table maps frame boundaries; a seek into a frame decodes forward
@@ -167,8 +170,7 @@ rewinding seek"). The candidates were:
   `DecompressorStream` already provides for xz and lzip — so a small **native zstd
   frame-index reader** reusing that infrastructure would likely give the same seeking with no
   heavy dependency and no macOS risk. The note is no help for the common **single-frame** `.zst`
-  either way (one frame → one seek point). This is in `IDEAS.md` (Performance), framed as
-  "evaluate native frame-index reuse before depending on `indexed_zstd`".
+  either way (one frame → one seek point). The native reader is what shipped.
 - **`pyzstd.SeekableZstdFile`** — rejected as a general answer: it reads only the *Seekable Zstd*
   container (a seek table stored in a trailing skippable frame), **not** arbitrary `.zst`, so it
   cannot give random access to ordinary zstd streams or `.tar.zst`.

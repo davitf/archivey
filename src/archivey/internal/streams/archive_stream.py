@@ -83,8 +83,10 @@ class RewindWarning:
 
     ``codec_name`` names the format. When an ``accelerator`` package (the ``[seekable]``
     extra) can provide indexed random access, the report names it. ``suggest_install`` is
-    True when that package is absent (tell the user to install it) and False when it is
-    present.
+    True when that package is absent and installing it would help (tell the user to
+    install it). ``unused_reason`` is set instead when archivey does not use the package
+    on this interpreter (``deps.unused_reason``), and the report gives that reason. With
+    neither, the package is present and the report says its index had no closer point.
 
     ``min_redecode_bytes`` is a cost floor the predicate maxes against. Use it when the
     carrier re-decodes bytes the member stream's own ``tell()`` does not contain (a
@@ -96,6 +98,7 @@ class RewindWarning:
     accelerator: str | None = None
     suggest_install: bool = True
     min_redecode_bytes: int = 0
+    unused_reason: str = ""
 
 
 def _noop_stamp(_exc: ArchiveyError) -> None:
@@ -746,6 +749,11 @@ class ArchiveStream(ReadOnlyIOStream):
             )
         if warning.accelerator is None:
             return f"{cost}. {where}"
+        if warning.unused_reason:
+            return (
+                f"{cost}. {where} The '{warning.accelerator}' accelerator is not "
+                f"available: {warning.unused_reason}."
+            )
         if warning.suggest_install:
             return (
                 f"{cost}. {where} Install the 'seekable' extra ({warning.accelerator}) "
