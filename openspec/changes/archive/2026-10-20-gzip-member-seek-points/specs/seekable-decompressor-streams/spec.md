@@ -19,10 +19,10 @@ points.
 
 A forward seek past the known points, a `SEEK_END`, or a size query SHALL walk a BGZF
 file's members from the start, reading the file once front to back and inflating
-nothing: each member's `BC` extra subfield gives its size and its ISIZE its output. The walk SHALL stop quietly at the first member without one, keeping
-the points before it; the size is known only when it reaches the end of the file. The
-sizes are trusted like the xz and lzip indexes (threat-model O17). A `.gzi` file is not
-read.
+nothing: each member's `BC` extra subfield gives its size and its ISIZE its output. The
+walk SHALL stop quietly at the first member without one, keeping the points before it;
+the size is known only when it reaches the end of the file. The sizes are trusted like
+the xz and lzip indexes (threat-model O17). A `.gzi` file is not read.
 
 #### Scenario: BGZF walk matrix
 
