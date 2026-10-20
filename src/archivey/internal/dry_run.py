@@ -440,6 +440,9 @@ class DryRun:
             return
         if member.type is MemberType.HARDLINK:
             # ``_source_refused`` checks the source re-rooted, as a policy writes it.
+            # When the target is another link, the source it checks is the end of
+            # the chain, which ``_policy_refuses`` brings in through
+            # ``_check_universal`` as it checks it.
             self._walk(PurePath(strip_absolute_root(target.rstrip("/"))).parts)
         elif member.type is MemberType.SYMLINK:
             on_disk = self._link_parts(self.target_on_disk(target))

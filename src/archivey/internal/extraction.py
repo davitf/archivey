@@ -2147,16 +2147,15 @@ class ExtractionCoordinator:
         policy, as ``_transform`` runs them. Only a ``FilterRejectionError`` is a
         refusal; a member whose parent cannot be resolved has failed, not been refused.
         ``member`` is the end of a link chain and not a link itself, which
-        ``_as_written`` never rewrites, so this skips that step."""
+        ``_as_written`` never rewrites, so this skips that step. The check goes
+        through ``_check_universal``, so a dry run copies in what dest holds along
+        the very name it checks, which a link's own target does not name when the
+        link names another link."""
         candidate = member
         if self._policy is not ExtractionPolicy.STRICT:
             candidate = reroot_absolute(candidate)
         try:
-            check_universal(
-                disk_spelled(candidate),
-                self._state.dest_root,
-                link_target_on_disk=self._on_disk,
-            )
+            self._check_universal(candidate, self._state.dest_root)
             apply_name_policy(candidate, self._policy)
         except FilterRejectionError:
             return True

@@ -802,6 +802,37 @@ def test_hardlink_to_an_absolute_source_meets_dest_alike(tmp_path: Path) -> None
     assert dry[0][1] is ExtractionStatus.BLOCKED
 
 
+@pytest.mark.parametrize("on_error", [OnError.CONTINUE, OnError.STOP])
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+def test_chained_hardlink_source_meets_dest_alike(
+    streaming: bool, on_error: OnError, tmp_path: Path
+) -> None:
+    # "outer" names "mid", which names "escaped/f": the policy checks the end of
+    # the chain, through the caller's "escaped", which leaves dest.
+    blob = _tar(
+        [
+            ("escaped/f", "file", b"data"),
+            ("mid", "hard", "escaped/f"),
+            ("outer", "hard", "mid"),
+        ]
+    )
+    for policy in _POLICIES:
+        work = tmp_path / policy.value
+        (work / "tmp").mkdir(parents=True)
+        tempfile.tempdir = str(work / "tmp")
+        real, dry = _both(
+            lambda: io.BytesIO(blob),
+            work,
+            populate=lambda dest: _put(dest, {"escaped": ("sym", "../..")}),
+            members=["outer"],
+            policy=policy,
+            on_error=on_error,
+            open_kwargs={"streaming": streaming},
+        )
+        assert dry == real, policy
+        assert real[0][1] is ExtractionStatus.BLOCKED, policy
+
+
 def test_matching_an_absolute_target_is_linear_in_its_depth(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
