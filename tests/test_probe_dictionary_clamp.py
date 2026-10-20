@@ -31,7 +31,12 @@ from archivey.internal.streams.codecs.lzma_codec import LzmaAloneCodec
 from archivey.internal.streams.codecs.xz_decoder import _decode_xz_head
 from archivey.types import ContainerFormat, StreamFormat
 from tests.conftest import requires_zstd, zstd_backend
-from tests.streams_util import make_lzip_member, make_multiblock_xz, xz_cli_available
+from tests.streams_util import (
+    lzma_alone_with_filter,
+    make_lzip_member,
+    make_multiblock_xz,
+    xz_cli_available,
+)
 
 _FOUR_GIB_MINUS_ONE = 0xFFFFFFFF
 # Bytes 1..4 of the OLE signature D0CF11E0A1B11AE1, read as an Alone header.
@@ -127,10 +132,8 @@ def test_clamped_alone_decode_is_byte_identical() -> None:
     """A clamped dictionary decodes the bounded read exactly: matches reach back far."""
     block = bytes(range(256)) * 512  # 128 KiB, repeated at a 128 KiB distance
     data = block + bytes(4096) + block
-    written = lzma.compress(
-        data,
-        format=lzma.FORMAT_ALONE,
-        filters=[{"id": lzma.FILTER_LZMA1, "dict_size": 1 << 20}],
+    written = lzma_alone_with_filter(
+        data, {"id": lzma.FILTER_LZMA1, "dict_size": 1 << 20}
     )
     bound = 64 * 1024 + 4096 + 1
     config = dataclasses.replace(DEFAULT_STREAM_CONFIG, probe_read_bound=bound)

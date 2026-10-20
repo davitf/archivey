@@ -5,7 +5,10 @@ assertion message, which can run to dozens of lines per failure, and the GitHub 
 returns only the last few thousand lines of a job log. One line per failure keeps the
 complete list readable from there. A count per message comes last.
 
-Usage: python scripts/junit_failure_lines.py REPORT.xml [--width N]
+Usage: python scripts/junit_failure_lines.py REPORT.xml [--width N] [--detail N]
+
+``--detail N`` also prints the last N lines of each failure's traceback, for a run made
+with ``--tb=short`` or longer.
 """
 
 from __future__ import annotations
@@ -28,6 +31,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("report")
     parser.add_argument("--width", type=int, default=220)
+    parser.add_argument("--detail", type=int, default=0)
     args = parser.parse_args(argv)
 
     root = ET.parse(args.report).getroot()
@@ -43,6 +47,9 @@ def main(argv: list[str] | None = None) -> int:
             message = _first_line(node.get("message") or node.text or "")
             name = f"{case.get('classname', '')}::{case.get('name', '')}"
             print(f"{kind.upper()} {name} - {message}"[: args.width])
+            if args.detail and node.text:
+                for line in node.text.splitlines()[-args.detail :]:
+                    print(f"    {line}"[: args.width])
             # Numbers and quoted values vary per parameter; group on the rest.
             counts[re.sub(r"\d+", "N", message)[:120]] += 1
         if case.find("skipped") is not None:
