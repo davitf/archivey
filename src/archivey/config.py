@@ -25,28 +25,22 @@ from archivey.types import ArchiveMember
 
 
 class AcceleratorMode(Enum):
-    """Tri-state control for an optional random-access accelerator backend.
-
-    - ``ON``  — always use the accelerator (raise ``PackageNotInstalledError`` if its
-      package is absent: the caller asked for it explicitly).
-    - ``OFF`` — never use it; the stream stays sequential-only.
-    - ``AUTO`` — use it only when seekability was declared
-      (``seekable_members=True`` on ``open_archive``, ``seekable=True`` on
-      ``open_stream``, or internal seek demand). Without declared seek demand, AUTO
-      leaves the cheaper sequential backend in place (no index/accelerator work). When
-      AUTO would enable the accelerator but its package is absent, fall back to
-      sequential silently (it is an enhancement, not a requirement). For the
-      ``rapidgzip`` DEFLATE-family path, AUTO also requires the known compressed
-      input size to reach :data:`RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE` (see
-      :meth:`enabled_for`) **and** a verifiable decompressed size
-      (``StreamConfig.expected_decompressed_size``, or gzip ISIZE) so truncation
-      cannot be silently short-read. For ``use_indexed_bzip2``, AUTO requires the known
-      compressed input size to reach :data:`INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE`.
-    """
+    """Whether to use an optional accelerator that gives seekable streams over a codec."""
 
     AUTO = "auto"
+    """Use it only when seekable streams were asked for (``seekable_members=True`` on
+    ``open_archive``, ``seekable=True`` on ``open_stream``), its package is installed,
+    and the compressed input is known to be large enough to pay for it:
+    :data:`RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE` for gzip, zlib and raw deflate, and
+    :data:`INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE` for bzip2. An input of unknown size
+    counts as large enough. For gzip, zlib and raw deflate the decompressed size must
+    also be known, so that a truncated stream cannot be read short without an error.
+    Otherwise the standard library decodes the stream."""
     ON = "on"
+    """Always use it. Raises :class:`~archivey.PackageNotInstalledError` when its
+    package is not installed."""
     OFF = "off"
+    """Never use it. The standard library decodes the stream."""
 
     def enabled_for(
         self,
@@ -89,47 +83,50 @@ class RarDecompressor(Enum):
     directly; a stored, encrypted member in one part is decrypted by archivey (AES, RAR
     2.9 and later) when ``cryptography`` is installed, and by the program otherwise.
 
-    - ``UNRAR`` — RARLAB ``unrar`` 6.0 or later (or the RARLAB ``rar`` writer). It
-      reads every RAR archive, including encrypted ones.
-    - ``UNAR`` — ``unar`` 1.10 or later, from The Unarchiver's XADMaster library. It is
-      free software and ``brew install unar`` installs it on macOS. It is **not** a full
-      substitute: archivey refuses, before ``unar`` runs, every read that ``unar`` is
-      known to get wrong. A password is passed on ``unar``'s command line, where other
-      local users can see it while it runs. See ``docs/formats.md``.
-    - ``AUTO`` — ``unrar`` when a usable one is on ``PATH``, otherwise ``unar``. The
-      choice is made once per opened archive, when it is opened, and holds for every
-      read of it: a read that ``unar`` refuses is not retried with ``unrar``. One
-      exception goes the other way: a member whose name ``unrar`` cannot be given, or
-      whose glob name also matches earlier members
-      (``rar_allow_glob_member_concatenation``), is read with ``unar`` when an
-      accepted one is installed, because ``unar`` selects members by index. That
-      applies only to a read that needs no password, from a file with nothing
-      before the RAR (so ``unar`` gets no password and no copy), and to a
-      member ``unar`` reads correctly; otherwise the ``unrar`` refusal stands. With
-      neither installed, a read raises ``PackageNotInstalledError`` naming ``unrar``.
-      This is the default. On a machine with ``unar`` and no RARLAB program, it means
-      a password is passed on ``unar``'s command line; select ``UNRAR`` to rule that out.
-    - ``NONE`` — no program at all, for a caller who does not want ``unrar`` or ``unar``
-      run on its archives. Opening and listing work as with the others, and so does
-      reading a stored (uncompressed) member that is not encrypted, also when it is
-      split across volumes or sits in a solid archive, and one that is encrypted, in
-      one part, with ``cryptography`` installed. A compressed member, an encrypted one
-      split across volumes, or a split one with a volume missing, raises
-      ``UnsupportedFeatureError`` before anything runs. A stored, encrypted member in
-      one part raises ``PackageNotInstalledError`` naming ``cryptography`` when that
-      package is missing. A compressed RAR 1.5-4 comment is ``None``. The
-      ``format_availability()`` query takes no config and still runs the ``unrar``
-      identification probe; pass it ``check_programs=False`` to avoid that.
-
     With ``UNRAR`` or ``UNAR``, archivey never changes from one program to the other.
-    Selecting ``UNAR`` when ``unar`` is not installed raises
-    ``PackageNotInstalledError``, even when ``unrar`` is available.
     """
 
     UNRAR = "unrar"
+    """RARLAB ``unrar`` 6.0 or later (or the RARLAB ``rar`` writer). It reads every RAR
+    archive, including encrypted ones."""
     UNAR = "unar"
+    """``unar`` 1.10 or later, from The Unarchiver's XADMaster library. It is free
+    software, and ``brew install unar`` installs it on macOS.
+
+    It is not a full substitute: archivey refuses, before ``unar`` runs, every read that
+    ``unar`` is known to get wrong. A password is passed on ``unar``'s command line,
+    where other local users can see it while it runs. Selecting ``UNAR`` when ``unar``
+    is not installed raises :class:`~archivey.PackageNotInstalledError`, even when
+    ``unrar`` is available."""
     AUTO = "auto"
+    """The default: ``unrar`` when a usable one is on ``PATH``, otherwise ``unar``.
+
+    The choice is made once per opened archive, when it is opened, and holds for every
+    read of it: a read that ``unar`` refuses is not retried with ``unrar``. One exception
+    goes the other way: a member whose name ``unrar`` cannot be given, or whose glob name
+    also matches earlier members (``rar_allow_glob_member_concatenation``), is read with
+    ``unar`` when an accepted one is installed, because ``unar`` selects members by
+    index. That applies only to a read that needs no password, from a file with nothing
+    before the RAR (so ``unar`` gets no password and no copy), and to a member ``unar``
+    reads correctly; otherwise the ``unrar`` refusal stands.
+
+    With neither installed, a read raises :class:`~archivey.PackageNotInstalledError`
+    naming ``unrar``. On a machine with ``unar`` and no RARLAB program, a password is
+    passed on ``unar``'s command line; select ``UNRAR`` to rule that out."""
     NONE = "none"
+    """No program at all, for a caller who does not want ``unrar`` or ``unar`` run on
+    its archives.
+
+    Opening and listing work as with the others, and so does reading a stored
+    (uncompressed) member that is not encrypted, also when it is split across volumes or
+    sits in a solid archive, and one that is encrypted, in one part, with
+    ``cryptography`` installed. A compressed member, an encrypted one split across
+    volumes, or a split one with a volume missing, raises
+    :class:`~archivey.UnsupportedFeatureError` before anything runs. A stored, encrypted
+    member in one part raises :class:`~archivey.PackageNotInstalledError` naming
+    ``cryptography`` when that package is missing. A compressed RAR 1.5-4 comment is
+    ``None``. The ``format_availability()`` query takes no config and still runs the
+    ``unrar`` identification probe; pass it ``check_programs=False`` to avoid that."""
 
 
 # Minimum known compressed input size (bytes) before ``use_rapidgzip`` AUTO selects
@@ -427,134 +424,130 @@ class DecoderLimits:
     pyppmd 1.3.1 dies on ``double free or corruption`` and takes the
     interpreter with it, so no ``try``/``except`` around the decode can contain
     it.
-
-    (The ``Attributes:`` block below is the older form; new fields in this module get
-    an attribute docstring after the assignment, as :class:`ArchiveyConfig` has.)
-
-    Attributes:
-        max_decoder_memory: Largest archive-declared working set a single
-            decoder may allocate. The default is 2 GiB. A 7z folder runs all its
-            decoders at once (the stages of a coder chain, and a BCJ2 folder's
-            ``main``, ``call`` and ``jump`` branches), so when it has more than
-            one, their LZMA dictionaries, PPMd memory sizes and zstd windows
-            count together against it. A zstd window counts as the first frame
-            declares it, when the zstd coder reads a packed stream directly.
-
-            That number is a policy choice, not a limit of the format, so here
-            is what it was chosen against. Measured on 7-Zip 23.01, a writer
-            declares whatever ``-m0=PPMd:mem=…`` asked for, reduced for a small
-            member to 16× its size rounded up to a power of two (floor 64 KiB).
-            Its presets never ask for much: plain ``-m0=PPMd`` declares 16 MiB
-            and ``-mx9`` 256 MiB, whatever the input. Reaching 2 GiB therefore
-            takes an explicit ``mem=2g``, which cannot go above it at any member
-            size; only ``mem=3g`` and ``mem=4g`` do. The field itself is
-            32 bits, so a header may declare just under 4 GiB — and a 153-byte
-            archive may declare it, which is the case the cap is really for,
-            since asking costs an attacker nothing and it is read before any
-            member data is.
-
-            2 GiB is the last round value below that 32-bit ceiling, matching
-            :attr:`ExtractionLimits.max_extracted_bytes`. It admits every
-            archive 7-Zip's own presets write, by a factor of eight, and admits
-            a deliberate ``mem=2g`` as well; it refuses the top of the field.
-            Reading archives written with ``mem=3g`` or above means raising it
-            or passing :attr:`UNLIMITED`.
-
-            The LZMA dictionary sits further under it. xz Utils refuses to
-            write a dictionary over 1.5 GiB, and its ``-9`` preset writes
-            64 MiB whatever the input. 7-Zip 23.01 shrinks the dictionary it
-            declares to about the member's size (4 KiB for a 25-byte member,
-            7 MiB for 6.7 MB, 96 MiB for 100 MB, all asked for with
-            ``-md=1536m``), so declaring more than 2 GiB takes a member over
-            2 GiB *and* an explicit ``-md`` above 2g. lzip's field cannot say
-            more than 512 MiB. The same number serves both codecs because it
-            answers the same question, and xz and ``.lzma`` are checked through
-            liblzma's own memory limit, which also counts about 64 KiB of the
-            decoder's overhead; a 128 KiB allowance keeps a dictionary exactly
-            at the cap readable there as on every other path.
-
-            What the default is *not* is a promise about the machine. The cap
-            bounds what an archive may ask for; whether an allocation succeeds
-            is a property of the host, and the two are independent. A process
-            with less headroom than the cap — a container under a memory limit,
-            a small VM — gets nothing from the default: a declaration below
-            2 GiB passes the guard, and the allocation that follows is the one
-            that fails, which is the unsurvivable case described above. Such a
-            process should set the cap under its own headroom, anchored on the
-            limit it runs with rather than on anything 7-Zip writes. Code that
-            opens files it did not choose — an upload endpoint, a mail scanner —
-            wants the same move for a different reason: 256 MiB still takes
-            everything the PPMd and LZMA presets produce.
-        max_key_derivation_rounds: Total rounds of password-to-key derivation one
-            open archive may run. The default is ``2**25``.
-
-            RAR5 and 7z let the archive choose how expensive a key is to derive:
-            RAR5's ``kdf_count`` asks for ``2**kdf_count`` PBKDF2-HMAC-SHA256
-            rounds, 7z's ``NumCyclesPower`` for ``2**cycles`` SHA-256 rounds, each
-            up to ``2**24`` (a few seconds). Each derivation is capped already;
-            this caps the sum. RAR5 salts each encryption record and 7z each
-            folder, so an archive can make every member cost a fresh derivation,
-            and a candidate password list multiplies that again. The work runs
-            inside ``hashlib`` with the GIL released and cannot be interrupted,
-            so what the caller sees is a process that stops responding.
-
-            Rounds are counted as the archive declares them, per derivation that
-            actually runs. A key the reader already derived for the same
-            password and salt comes from its cache and costs nothing, and real
-            writers reuse one salt across an archive (rar 7.00 writes one per
-            archiving run, 7-Zip 23.01 writes none), so an ordinary archive
-            spends one or two derivations whatever its size. Every candidate
-            password that is tried counts, right or wrong. The RAR3 scheme,
-            whose cost is fixed at ``2**18`` SHA-1 rounds, counts at that
-            number; ZIP AES (a fixed 1000 rounds) is not counted.
-
-            ``2**25`` is two derivations at the ``2**24`` maximum, about ten
-            seconds of hashing; 64 at 7-Zip's ``2**19``; 1024 at rar's
-            ``2**15``. Exceeding it raises
-            :class:`~archivey.exceptions.ResourceLimitError` before the
-            derivation that would cross it starts. Code that opens archives it
-            did not choose may want ``2**24``, one maximum-cost derivation.
-        max_ppmd_in_process_input: Largest PPMd member, in compressed bytes, decoded
-            inside this process. The default is 16 MiB.
-
-            pyppmd, the PPMd decoder, crashes the whole process when asked to keep
-            decoding after a corrupt stream has ended early, and random bytes (a
-            wrong password, a crafted member) reach that state. A decoder fed in
-            pieces cannot tell it apart from a valid stream waiting for input, so
-            archivey holds a member's compressed input and hands it over whole,
-            after which nothing more is asked of pyppmd. That costs memory: the
-            held input, and about as much again while pyppmd copies it. A member
-            larger than this field is decoded in a child Python process instead,
-            where a crash (a fault signal such as SIGSEGV) becomes
-            :class:`~archivey.exceptions.CorruptionError`; it still holds this
-            much before handing over. A child killed by SIGKILL (most often the
-            out-of-memory killer), or one that dies allocating the member's model
-            under a memory cap, raises
-            :class:`~archivey.exceptions.ResourceLimitError` instead. So does
-            such a member where no child process can be started (a frozen
-            application, an interpreter that does not know its own path, a spawn
-            the operating system refuses, or a child that cannot import pyppmd).
-            A child ended any other way (SIGTERM, a plain exit status) raises
-            :class:`~archivey.exceptions.ReadError`: not a verdict on the data.
-
-            16 MiB keeps the in-process peak near 32 MiB. At pyppmd's 2 to 8 MB/s
-            a member that size takes seconds to decode, so the child's start-up
-            (about 75 ms) is small beside the members it applies to, and so is
-            moving the data: the pipe carries about 450 MB/s, compressed input in
-            and decoded output back. A password check reads at most 1 MiB of a
-            member, so it always runs in-process. ``None`` decodes every member
-            in-process and never starts a child process, at a memory cost that
-            grows with the member.
-
-            A ZIP member read from a stream that cannot seek, its sizes stored
-            after its data, has no size to hold it to: it is fed to pyppmd in
-            pieces, always in a child process, whatever its size. With ``None``
-            such a member raises :class:`~archivey.exceptions.ResourceLimitError`.
     """
 
     max_decoder_memory: int | None = 2 * 2**30
+    """Largest archive-declared working set a single decoder may allocate. 2 GiB.
+
+    A 7z folder runs all its decoders at once (the stages of a coder chain, and a BCJ2
+    folder's ``main``, ``call`` and ``jump`` branches), so when it has more than one,
+    their LZMA dictionaries, PPMd memory sizes and zstd windows count together against
+    it. A zstd window counts as the first frame declares it, when the zstd coder reads a
+    packed stream directly.
+
+    That number is a policy choice, not a limit of the format, so here
+    is what it was chosen against. Measured on 7-Zip 23.01, a writer
+    declares whatever ``-m0=PPMd:mem=…`` asked for, reduced for a small
+    member to 16× its size rounded up to a power of two (floor 64 KiB).
+    Its presets never ask for much: plain ``-m0=PPMd`` declares 16 MiB
+    and ``-mx9`` 256 MiB, whatever the input. Reaching 2 GiB therefore
+    takes an explicit ``mem=2g``, which cannot go above it at any member
+    size; only ``mem=3g`` and ``mem=4g`` do. The field itself is
+    32 bits, so a header may declare just under 4 GiB — and a 153-byte
+    archive may declare it, which is the case the cap is really for,
+    since asking costs an attacker nothing and it is read before any
+    member data is.
+
+    2 GiB is the last round value below that 32-bit ceiling, matching
+    :attr:`ExtractionLimits.max_extracted_bytes`. It admits every
+    archive 7-Zip's own presets write, by a factor of eight, and admits
+    a deliberate ``mem=2g`` as well; it refuses the top of the field.
+    Reading archives written with ``mem=3g`` or above means raising it
+    or passing :attr:`UNLIMITED`.
+
+    The LZMA dictionary sits further under it. xz Utils refuses to
+    write a dictionary over 1.5 GiB, and its ``-9`` preset writes
+    64 MiB whatever the input. 7-Zip 23.01 shrinks the dictionary it
+    declares to about the member's size (4 KiB for a 25-byte member,
+    7 MiB for 6.7 MB, 96 MiB for 100 MB, all asked for with
+    ``-md=1536m``), so declaring more than 2 GiB takes a member over
+    2 GiB *and* an explicit ``-md`` above 2g. lzip's field cannot say
+    more than 512 MiB. The same number serves both codecs because it
+    answers the same question, and xz and ``.lzma`` are checked through
+    liblzma's own memory limit, which also counts about 64 KiB of the
+    decoder's overhead; a 128 KiB allowance keeps a dictionary exactly
+    at the cap readable there as on every other path.
+
+    What the default is *not* is a promise about the machine. The cap
+    bounds what an archive may ask for; whether an allocation succeeds
+    is a property of the host, and the two are independent. A process
+    with less headroom than the cap — a container under a memory limit,
+    a small VM — gets nothing from the default: a declaration below
+    2 GiB passes the guard, and the allocation that follows is the one
+    that fails, which is the unsurvivable case described above. Such a
+    process should set the cap under its own headroom, anchored on the
+    limit it runs with rather than on anything 7-Zip writes. Code that
+    opens files it did not choose — an upload endpoint, a mail scanner —
+    wants the same move for a different reason: 256 MiB still takes
+    everything the PPMd and LZMA presets produce."""
+
     max_key_derivation_rounds: int | None = 2**25
+    """Total rounds of password-to-key derivation one open archive may run.
+    ``2**25``.
+
+    RAR5 and 7z let the archive choose how expensive a key is to derive:
+    RAR5's ``kdf_count`` asks for ``2**kdf_count`` PBKDF2-HMAC-SHA256
+    rounds, 7z's ``NumCyclesPower`` for ``2**cycles`` SHA-256 rounds, each
+    up to ``2**24`` (a few seconds). Each derivation is capped already;
+    this caps the sum. RAR5 salts each encryption record and 7z each
+    folder, so an archive can make every member cost a fresh derivation,
+    and a candidate password list multiplies that again. The work runs
+    inside ``hashlib`` with the GIL released and cannot be interrupted,
+    so what the caller sees is a process that stops responding.
+
+    Rounds are counted as the archive declares them, per derivation that
+    actually runs. A key the reader already derived for the same
+    password and salt comes from its cache and costs nothing, and real
+    writers reuse one salt across an archive (rar 7.00 writes one per
+    archiving run, 7-Zip 23.01 writes none), so an ordinary archive
+    spends one or two derivations whatever its size. Every candidate
+    password that is tried counts, right or wrong. The RAR3 scheme,
+    whose cost is fixed at ``2**18`` SHA-1 rounds, counts at that
+    number; ZIP AES (a fixed 1000 rounds) is not counted.
+
+    ``2**25`` is two derivations at the ``2**24`` maximum, about ten
+    seconds of hashing; 64 at 7-Zip's ``2**19``; 1024 at rar's
+    ``2**15``. Exceeding it raises
+    :class:`~archivey.exceptions.ResourceLimitError` before the
+    derivation that would cross it starts. Code that opens archives it
+    did not choose may want ``2**24``, one maximum-cost derivation."""
+
     max_ppmd_in_process_input: int | None = 16 * 2**20
+    """Largest PPMd member, in compressed bytes, decoded inside this process. 16 MiB.
+
+    pyppmd, the PPMd decoder, crashes the whole process when asked to keep
+    decoding after a corrupt stream has ended early, and random bytes (a
+    wrong password, a crafted member) reach that state. A decoder fed in
+    pieces cannot tell it apart from a valid stream waiting for input, so
+    archivey holds a member's compressed input and hands it over whole,
+    after which nothing more is asked of pyppmd. That costs memory: the
+    held input, and about as much again while pyppmd copies it. A member
+    larger than this field is decoded in a child Python process instead,
+    where a crash (a fault signal such as SIGSEGV) becomes
+    :class:`~archivey.exceptions.CorruptionError`; it still holds this
+    much before handing over. A child killed by SIGKILL (most often the
+    out-of-memory killer), or one that dies allocating the member's model
+    under a memory cap, raises
+    :class:`~archivey.exceptions.ResourceLimitError` instead. So does
+    such a member where no child process can be started (a frozen
+    application, an interpreter that does not know its own path, a spawn
+    the operating system refuses, or a child that cannot import pyppmd).
+    A child ended any other way (SIGTERM, a plain exit status) raises
+    :class:`~archivey.exceptions.ReadError`: not a verdict on the data.
+
+    16 MiB keeps the in-process peak near 32 MiB. At pyppmd's 2 to 8 MB/s
+    a member that size takes seconds to decode, so the child's start-up
+    (about 75 ms) is small beside the members it applies to, and so is
+    moving the data: the pipe carries about 450 MB/s, compressed input in
+    and decoded output back. A password check reads at most 1 MiB of a
+    member, so it always runs in-process. ``None`` decodes every member
+    in-process and never starts a child process, at a memory cost that
+    grows with the member.
+
+    A ZIP member read from a stream that cannot seek, its sizes stored
+    after its data, has no size to hold it to: it is fed to pyppmd in
+    pieces, always in a child process, whatever its size. With ``None``
+    such a member raises :class:`~archivey.exceptions.ResourceLimitError`."""
 
     UNLIMITED: ClassVar[DecoderLimits]
 
