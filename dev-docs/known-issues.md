@@ -427,3 +427,42 @@ A new `readinto` that keeps a view passes every other check.
 **Upstream.** Not filed; both are documented PyPy behaviour rather than bugs.
 
 **Evidence.** The PyPy trial job in `.github/workflows/ci.yml`; the tests named above.
+
+## PyPy: native decoder memory (open, by design upstream)
+
+**Symptom.** Under PyPy 3.11, after the suite has run for a while, every `subprocess` call
+in a worker fails with `OSError: [Errno 12] Cannot allocate memory` from `_fork_exec`,
+while the worker's RSS is only a few GB. A PyPy decoder from `lzma` (cffi), `bz2`,
+`backports.zstd` or `brotli` frees its native buffers only when a major collection takes
+it, and their size is invisible to the GC, so that collection comes late. A run that drops
+thousands of decoders keeps their dictionaries allocated, glibc grows its heap to hold
+them, and `gc.collect()` frees them without shrinking the heap. With heuristic overcommit,
+`fork` refuses once the private writable mappings outgrow RAM plus swap.
+
+**What archivey does.** `internal/streams/native_memory.py`. Each decoder `Natives` builds
+in-process reports its likely size with `__pypy__.add_memory_pressure`, as PyPy's own
+`LZMACompressor` does:
+
+- liblzma: the filter chain's dictionary, else 8 MiB, capped by `memlimit`;
+- zstd: 8 MiB, capped by `window_log_max`;
+- bzip2: 3.5 MiB;
+- brotli: 4 MiB.
+
+A decoder's `close` also ends its liblzma decoders with `ffi.release` and cancels their
+pressure, because only the stream declares the real dictionary (up to 4 GiB uncapped).
+Pinned by `tests/test_decoder_memory_pressure.py`.
+
+**What remains.** A zstd frame can reserve up to `window_log_max` (2 GiB under the default
+`max_decoder_memory`) and nothing frees it before a collection, nor a brotli window over
+4 MiB: neither library can free its state early under PyPy, and reporting the cap would
+force a major collection per decoder. A caller who drops streams unclosed relies on the
+estimates alone. The PyPy CI job is allowed to fail, so nothing gates any of this.
+
+**Upstream.** Not filed; PyPy documents that native memory needs
+`add_memory_pressure` from whoever allocates it.
+
+**Evidence.** PR #927. On main, the PyPy job's extras step had 163 failures and
+53 errors, 154 of them ENOMEM, with one worker's `[heap]` mapping at 74 GB. With the fix
+it had 35 failures, 12 errors and no ENOMEM. On the runner, 800 dropped default-preset xz
+decoders hold 9 MB on CPython and 6.4 GB on PyPy; with 8 MiB of pressure each, the PyPy
+heap stays at 82 MB. The xdist worker count and `PYPY_GC_MAX` are not the cause.

@@ -1,0 +1,178 @@
+"""In-process native decoders tell PyPy's GC what they hold outside its heap, and a
+decoder's close ends its liblzma decoders at once (``native_memory``).
+
+Without that, PyPy keeps every dropped decoder's buffers until a major collection
+that the GC heap's own growth never calls for, and ``fork`` (``subprocess``) then fails
+with ``ENOMEM`` against the grown process heap.
+"""
+
+from __future__ import annotations
+
+import lzma
+import random
+import sys
+from pathlib import Path
+
+import pytest
+
+from archivey import MemberType, open_archive
+from archivey.internal.streams import decompressor_stream, native_memory
+from archivey.internal.streams.codecs import deps, isolated
+from archivey.internal.streams.codecs.isolated import IN_PROCESS
+from archivey.internal.streams.decompressor_stream import release_decoder_children
+from tests.conftest import requires_binary, run_7z
+from tests.streams_util import make_lzip_member
+
+_TYPICAL = 8 << 20
+
+
+@pytest.mark.parametrize(
+    ("memlimit", "filters", "expected"),
+    [
+        (None, None, _TYPICAL),
+        (1 << 20, None, 1 << 20),
+        (None, [{"id": lzma.FILTER_LZMA2, "dict_size": 1 << 30}], 1 << 30),
+        (None, [{"id": lzma.FILTER_X86}, {"id": lzma.FILTER_LZMA2}], _TYPICAL),
+        (None, [{"id": lzma.FILTER_LZMA1, "dict_size": 1 << 16}], 1 << 16),
+        (None, [{"id": lzma.FILTER_DELTA}], _TYPICAL),
+    ],
+)
+def test_the_lzma_estimate_is_the_dictionary_capped_by_memlimit(
+    memlimit: int | None, filters: list[dict[str, int]] | None, expected: int
+) -> None:
+    assert isolated._lzma_decoder_memory(memlimit, filters) == expected
+
+
+def test_each_in_process_decoder_reports_its_memory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    noted: list[int] = []
+    monkeypatch.setattr(
+        isolated, "note_native_memory", lambda decoder, n: noted.append(n)
+    )
+    IN_PROCESS.lzma_decompressor(format=lzma.FORMAT_XZ)
+    IN_PROCESS.lzma_decompressor(
+        format=lzma.FORMAT_RAW,
+        filters=[{"id": lzma.FILTER_LZMA2, "dict_size": 1 << 24}],
+    )
+    IN_PROCESS.bz2_decompressor()
+    expected = [_TYPICAL, 1 << 24, 3600 << 10]
+    if deps.zstd is not None:
+        IN_PROCESS.zstd_decompressor()
+        log_max = deps.zstd.DecompressionParameter.window_log_max
+        IN_PROCESS.zstd_decompressor({log_max: 20})
+        IN_PROCESS.zstd_decompressor({log_max: 31})
+        expected += [_TYPICAL, 1 << 20, _TYPICAL]
+    if IN_PROCESS.package_available(deps.brotli):
+        IN_PROCESS.brotli_decompressor()
+        expected.append(4 << 20)
+    assert noted == expected
+
+
+class _Holder:
+    def __init__(self) -> None:
+        self.decoder = lzma.LZMADecompressor()
+
+
+def test_close_ends_an_in_process_lzma_decoder_only_on_pypy() -> None:
+    data = lzma.compress(b"x" * 100)
+    holder = _Holder()
+    holder.decoder.decompress(data[:20])
+    release_decoder_children(holder)
+    release_decoder_children(holder)  # a second close does nothing more
+    if deps.UNDER_PYPY:
+        with pytest.raises(lzma.LZMAError):
+            holder.decoder.decompress(data[20:])
+    else:
+        assert holder.decoder.decompress(data[20:]) == b"x" * 100
+
+
+def _payload() -> bytes:
+    return random.Random(5).randbytes(1 << 17) * 4
+
+
+def _single_file(tmp_path: Path, kind: str) -> Path:
+    data = _payload()
+    if kind == "xz":
+        written = lzma.compress(data, format=lzma.FORMAT_XZ)
+    elif kind == "lzma":
+        written = lzma.compress(data, format=lzma.FORMAT_ALONE)
+    else:
+        written = make_lzip_member(data)
+    path = tmp_path / f"a.bin.{'lz' if kind == 'lzip' else kind}"
+    path.write_bytes(written)
+    return path
+
+
+def _by_7z(tmp_path: Path, kind: str) -> Path:
+    (tmp_path / "a.bin").write_bytes(_payload())
+    flags = {
+        "7z-lzma2": ["-t7z", "-m0=LZMA2"],
+        "7z-bcj-lzma": ["-t7z", "-m0=BCJ", "-m1=LZMA"],
+        "zip-lzma": ["-tzip", "-mm=LZMA"],
+    }[kind]
+    archive = tmp_path / f"a.{kind.split('-')[0]}"
+    run_7z(["a", *flags, str(archive), "a.bin"], cwd=tmp_path, check=True)
+    return archive
+
+
+def _ended_at_close(path: Path, monkeypatch: pytest.MonkeyPatch) -> list[object]:
+    """The liblzma decoders ``close`` ends while a member stream is half read."""
+    ended: list[object] = []
+    recording = False
+
+    def record(decoder: object) -> None:
+        if recording:
+            ended.append(decoder)
+
+    monkeypatch.setattr(decompressor_stream, "end_lzma_decoder", record)
+    with open_archive(path) as ar:
+        (member,) = (m for m in ar.members() if m.type is MemberType.FILE)
+        stream = ar.open(member)
+        assert stream.read(10) == _payload()[:10]
+        recording = True
+        stream.close()
+    return ended
+
+
+@pytest.mark.parametrize("kind", ["xz", "lzma", "lzip"])
+def test_closing_a_member_ends_its_liblzma_decoder(
+    kind: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``release_decoder_children`` finds the decompressor wherever an lzma-family
+    decoder keeps it. On CPython ending one is a no-op, so the walk is checked here
+    by recording what it reaches."""
+    ended = _ended_at_close(_single_file(tmp_path, kind), monkeypatch)
+    assert any(type(d) is lzma.LZMADecompressor for d in ended), kind
+
+
+@requires_binary("7z")
+@pytest.mark.parametrize("kind", ["7z-lzma2", "7z-bcj-lzma", "zip-lzma"])
+def test_closing_an_archive_member_ends_its_liblzma_decoder(
+    kind: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ended = _ended_at_close(_by_7z(tmp_path, kind), monkeypatch)
+    assert any(type(d) is lzma.LZMADecompressor for d in ended), kind
+
+
+def _private_writable_mib() -> int:
+    total = 0
+    for line in Path("/proc/self/maps").read_text().splitlines():
+        span, perms = line.split()[:2]
+        if "w" in perms and perms.endswith("p"):
+            lo, hi = (int(x, 16) for x in span.split("-"))
+            total += hi - lo
+    return total >> 20
+
+
+@pytest.mark.skipif(
+    not native_memory.UNDER_PYPY or not sys.platform.startswith("linux"),
+    reason="PyPy's deferred freeing of native buffers, measured through /proc",
+)
+def test_dropped_xz_decoders_do_not_pile_up_on_pypy() -> None:
+    """800 default-preset decoders hold 6.4 GiB if nothing frees them between drops."""
+    data = lzma.compress(b"x" * 100)
+    before = _private_writable_mib()
+    for _ in range(800):
+        IN_PROCESS.lzma_decompressor(format=lzma.FORMAT_XZ).decompress(data)
+    assert _private_writable_mib() - before < 2048

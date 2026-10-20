@@ -137,5 +137,7 @@ block it. One you still refer to does: unless you opened the archive with
 is already open, and an unfinished `stream_members` pass makes the archive's other calls raise. A
 RAR member read through `unrar` also keeps its `unrar` process running until the collection, and
 so does a decoder's child process where one is in use
-([Decoders in a child process](security.md#decoders-in-a-child-process)).
+([Decoders in a child process](security.md#decoders-in-a-child-process)). Closing an XZ or LZMA
+stream also frees its decoder's dictionary at once. Dropped unclosed, the dictionary, as large as
+the data declares, stays allocated until that collection.
 [Reading once](reading.md#reading-once) shows the `with` form for a pass.
