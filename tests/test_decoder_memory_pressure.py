@@ -1,6 +1,7 @@
-"""In-process liblzma and zstd decoders tell PyPy's GC what they hold outside its heap.
+"""In-process native decoders tell PyPy's GC what they hold outside its heap, and a
+decoder's close ends its liblzma decoders at once on PyPy.
 
-Without it, PyPy keeps every dropped decoder's dictionary until a major collection
+Without that, PyPy keeps every dropped decoder's buffers until a major collection
 that the GC heap's own growth never calls for, and ``fork`` (``subprocess``) then fails
 with ``ENOMEM`` against the grown process heap.
 """
@@ -15,6 +16,7 @@ import pytest
 
 from archivey.internal.streams.codecs import deps, isolated
 from archivey.internal.streams.codecs.isolated import IN_PROCESS
+from archivey.internal.streams.decompressor_stream import release_decoder_children
 
 _TYPICAL = 8 << 20
 
@@ -46,11 +48,29 @@ def test_each_in_process_decoder_reports_its_memory(
         format=lzma.FORMAT_RAW,
         filters=[{"id": lzma.FILTER_LZMA2, "dict_size": 1 << 24}],
     )
-    expected = [_TYPICAL, 1 << 24]
+    IN_PROCESS.bz2_decompressor()
+    expected = [_TYPICAL, 1 << 24, 3600 << 10]
     if deps.zstd is not None:
         IN_PROCESS.zstd_decompressor()
         expected.append(_TYPICAL)
     assert noted == expected
+
+
+class _Holder:
+    def __init__(self) -> None:
+        self.decoder = lzma.LZMADecompressor()
+
+
+def test_close_ends_an_in_process_lzma_decoder_only_on_pypy() -> None:
+    data = lzma.compress(b"x" * 100)
+    holder = _Holder()
+    holder.decoder.decompress(data[:20])
+    release_decoder_children(holder)
+    if deps.UNDER_PYPY:
+        with pytest.raises(lzma.LZMAError):
+            holder.decoder.decompress(data[20:])
+    else:
+        assert holder.decoder.decompress(data[20:]) == b"x" * 100
 
 
 def _private_writable_mib() -> int:
