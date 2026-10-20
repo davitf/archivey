@@ -26,11 +26,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from archivey.internal.streams.codecs import deps
-from archivey.internal.streams.codecs.isolated import (
-    IN_PROCESS,
-    Natives,
-    release_decoder,
-)
+from archivey.internal.streams.codecs.isolated import IN_PROCESS, Natives
 
 if TYPE_CHECKING:
     from archivey.internal.streams.codecs.framed_decoder import _OneStreamDecompressor
@@ -157,17 +153,10 @@ class Lz4Decompressor:
     ``lz4.frame``, so a file that is not LZ4 fails with that library's own error.
     """
 
-    # The frame decoder it picks may live in a child process: ``release_decoder``
-    # gives that child back through :meth:`close`.
-    holds_decoder_child = True
-
     def __init__(self, natives: Natives = IN_PROCESS) -> None:
         self._natives = natives
         self._head = b""
         self._inner: _OneStreamDecompressor | None = None
-
-    def close(self) -> None:
-        release_decoder(self._inner)
 
     def _pick(self, data: bytes) -> bytes:
         """Choose the decompressor once ``data`` tells; return what it should be fed."""

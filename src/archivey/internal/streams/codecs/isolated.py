@@ -15,6 +15,7 @@ translate alongside the real ones.
 
 from __future__ import annotations
 
+import io
 import lzma
 import zlib
 from collections.abc import Mapping
@@ -104,7 +105,7 @@ def _lz4_errors() -> dict[tuple[str, str], type[Exception]]:
 class _ChildProxy:
     """The common part of every proxy: the child and its close."""
 
-    # What ``release_decoder_children`` (decompressor_stream.py) looks for.
+    # What ``release_decoder`` looks for.
     holds_decoder_child = True
 
     def __init__(self, child: DecoderChild) -> None:
@@ -202,18 +203,30 @@ class _HoldsChild(Protocol):
     def close(self) -> None: ...
 
 
-def release_decoder(decoder: object) -> None:
-    """Give back now the child process of a decoder that :class:`Natives` built, when
-    it has one (``holds_decoder_child``: a proxy, or a wrapper that closes the proxy it
-    holds); a no-op for an in-process decoder or ``None``.
+_CODECS_PACKAGE = "archivey.internal.streams.codecs."
 
-    Call it before a decoder is dropped or replaced (the next gzip member, xz stream
-    or zstd frame). Otherwise the child stays leased until the collector frees the
-    proxy: at once on CPython, but on PyPy only at a later collection, and until then
-    every new decoder starts a process of its own.
+
+def release_decoder(decoder: object, depth: int = 3) -> None:
+    """Give back now the child process of a decoder that :class:`Natives` built, when
+    it has one; a no-op for an in-process decoder or ``None``.
+
+    The child proxy may be ``decoder`` itself (``holds_decoder_child``) or sit in an
+    attribute of a codec-layer wrapper (the clamped Alone header, the lz4 picker), so
+    this looks through those attributes a few levels down. Call it before a decoder
+    is dropped or replaced (the next gzip member, xz stream or zstd frame). Otherwise
+    the child stays leased until the collector frees the proxy: at once on CPython,
+    but on PyPy only at a later collection, and until then every new decoder starts a
+    process of its own.
     """
     if getattr(type(decoder), "holds_decoder_child", False):
         cast("_HoldsChild", decoder).close()
+    elif (
+        depth > 0
+        and type(decoder).__module__.startswith(_CODECS_PACKAGE)
+        and not isinstance(decoder, io.IOBase)
+    ):
+        for value in list(getattr(decoder, "__dict__", {}).values()):
+            release_decoder(value, depth - 1)
 
 
 class Natives:

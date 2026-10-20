@@ -10,8 +10,10 @@ cannot write (Deflate64, PPMd, BCJ filters).
 from __future__ import annotations
 
 import gzip
+import io
 import random
 import warnings
+from collections.abc import Callable, Iterator
 from dataclasses import replace
 from pathlib import Path
 
@@ -205,6 +207,12 @@ def _multi_unit_sources() -> list[tuple[str, bytes]]:
         ("gz", b"".join(gzip.compress(p) for p in parts)),
         ("bz2", b"".join(bz2.compress(p) for p in parts)),
         ("xz", b"".join(lzma.compress(p) for p in parts)),
+        # ``.lzma`` has no magic, so its own probe reads it first, through a wrapper
+        # that clamps each stream's dictionary and holds the proxy one level down.
+        (
+            "lzma",
+            b"".join(lzma.compress(p, format=lzma.FORMAT_ALONE) for p in parts),
+        ),
     ]
     if deps.zstd is not None:
         sources.append(("zst", b"".join(deps.zstd.compress(p) for p in parts)))
@@ -216,36 +224,69 @@ def _multi_unit_sources() -> list[tuple[str, bytes]]:
 _UNITS = 12
 
 
-@pytest.mark.parametrize(
-    ("suffix", "data"),
-    [pytest.param(s, d, id=s) for s, d in _multi_unit_sources()],
-)
-def test_a_replaced_decoder_gives_its_child_back_without_the_collector(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, suffix: str, data: bytes
-) -> None:
-    # PyPy frees a dropped decoder only at a later collection. Keeping every decoder
-    # alive stands in for that: a decoder that relies on being freed holds its child,
-    # and each later member, stream or frame starts a process of its own.
+@pytest.fixture
+def kept_decoder_children(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[Callable[[], None]]:
+    """Keep every decoder child alive; the call checks that at most one is leased.
+
+    PyPy frees a dropped decoder only at a later collection. Keeping every decoder
+    alive stands in for that: a decoder that relies on being freed holds its child,
+    and each later member, stream, frame or block starts a process of its own.
+    """
     from archivey.internal.streams.codecs import decoder_child
 
     kept: list[decoder_child.DecoderChild] = []
     built = decoder_child.DecoderChild.__init__
 
     def keep(self: decoder_child.DecoderChild, *args: object, **kwargs: object) -> None:
-        built(self, *args, **kwargs)  # type: ignore[arg-type]
+        built(self, *args, **kwargs)  # type: ignore[arg-type]  # forwards the real args
         kept.append(self)
 
+    def check() -> None:
+        leased = [c for c in kept if c._lease.process is not None]
+        assert len(leased) <= 1, f"{len(leased)} decoders still hold a child"
+
     monkeypatch.setattr(decoder_child.DecoderChild, "__init__", keep)
-    path = tmp_path / f"units.{suffix}"
-    path.write_bytes(data)
-    config = ArchiveyConfig(process_isolation=ProcessIsolation.NATIVE_DECODERS)
     try:
-        with open_archive(path, config=config) as ar:
-            for _, stream in ar.stream_members():
-                assert stream is not None
-                assert len(stream.read()) == 3000 * _UNITS
-                leased = [c for c in kept if c._lease.process is not None]
-                assert len(leased) <= 1, f"{len(leased)} decoders still hold a child"
+        yield check
     finally:
         for child in kept:
             child.close()
+
+
+@pytest.mark.parametrize(
+    ("suffix", "data"),
+    [pytest.param(s, d, id=s) for s, d in _multi_unit_sources()],
+)
+def test_a_replaced_decoder_gives_its_child_back_without_the_collector(
+    tmp_path: Path,
+    kept_decoder_children: Callable[[], None],
+    suffix: str,
+    data: bytes,
+) -> None:
+    path = tmp_path / f"units.{suffix}"
+    path.write_bytes(data)
+    config = ArchiveyConfig(process_isolation=ProcessIsolation.NATIVE_DECODERS)
+    with open_archive(path, config=config) as ar:
+        kept_decoder_children()
+        for _, stream in ar.stream_members():
+            assert stream is not None
+            assert len(stream.read()) == 3000 * _UNITS
+            kept_decoder_children()
+
+
+def test_a_zisofs_block_decoder_gives_its_child_back_without_the_collector(
+    kept_decoder_children: Callable[[], None],
+) -> None:
+    # Each zisofs block gets a decoder of its own, used once and dropped. Three other
+    # sites drop a local decoder the same way and are not reached here: the zlib
+    # Adler-32 confirmation, the xz probe head and the deflate resume check. Each
+    # builds one decoder per call, so a leak there holds one child, not one per unit.
+    pytest.importorskip("pycdlib")
+    from tests.test_iso import _ZISOFS_PLAIN, _zisofs_image
+
+    config = ArchiveyConfig(process_isolation=ProcessIsolation.NATIVE_DECODERS)
+    with open_archive(io.BytesIO(_zisofs_image(_ZISOFS_PLAIN)), config=config) as ar:
+        assert ar.read("zzz") == _ZISOFS_PLAIN
+        kept_decoder_children()
