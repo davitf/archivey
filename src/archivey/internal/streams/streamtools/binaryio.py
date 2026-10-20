@@ -213,15 +213,18 @@ def readinto_via_read(src: ReadableStream, b: WriteableBuffer) -> int:
     today (ZIP, streaming TAR): slicers clamp the request before it
     reaches this helper.
     """
-    mv = memoryview(b).cast("B")
-    data = src.read(len(mv))
-    if len(data) > len(mv):
-        raise ValueError(
-            f"read({len(mv)}) returned {len(data)} bytes; the excess is already consumed "
-            "and cannot be delivered without losing it"
-        )
-    mv[: len(data)] = data
-    return len(data)
+    # The views are released on return: until then the caller cannot resize ``b``
+    # (``RawIOBase.read`` does), and PyPy releases an unreleased one only at a
+    # collection.
+    with memoryview(b) as outer, outer.cast("B") as mv:
+        data = src.read(len(mv))
+        if len(data) > len(mv):
+            raise ValueError(
+                f"read({len(mv)}) returned {len(data)} bytes; the excess is already "
+                "consumed and cannot be delivered without losing it"
+            )
+        mv[: len(data)] = data
+        return len(data)
 
 
 def read_exact(stream: ReadableStream, n: int) -> bytes:
