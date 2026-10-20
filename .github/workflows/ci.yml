@@ -612,8 +612,10 @@ jobs:
   # Dependencies come one at a time rather than through `--extra all`, because several
   # native packages have no PyPy wheel and one failed build would hide what does install;
   # the "Install what installs" step writes the outcome per package to the job summary.
-  # The test steps print one line per failure and no tracebacks (--tb=no) so the whole
-  # result fits in the part of the log the GitHub API returns.
+  # The test steps print no tracebacks (--tb=no) and write a JUnit report (xunit1, which
+  # keeps each test's file for its node id); the step after each prints one line per
+  # failure from it (scripts/junit_failure_lines.py), so the whole result fits in the
+  # part of the log the GitHub API returns.
   pypy:
     name: ${{ matrix.python }} (trial, allowed to fail)
     runs-on: ubuntu-latest
@@ -650,8 +652,12 @@ jobs:
         run: >
           uv run --python ${{ matrix.python }} --no-sync
           --with pytest --with pytest-timeout --with pytest-xdist
-          pytest tests/ -q -n auto --timeout=300 -o addopts= -rfE --tb=no -p no:warnings
-          -m 'not ppmd_native_stress'
+          pytest tests/ -q -n auto --timeout=300 -o addopts= --tb=no -p no:warnings
+          -m 'not ppmd_native_stress' --junitxml=pypy-core.xml -o junit_family=xunit1
+      - name: Failures (core-only), one line each
+        if: always()
+        continue-on-error: true
+        run: python3 scripts/junit_failure_lines.py pypy-core.xml
       - name: Install what installs (runtime extras, then test-only packages)
         run: |
           {
@@ -678,8 +684,12 @@ jobs:
           PYTHONFAULTHANDLER: "1"
         run: >
           uv run --python ${{ matrix.python }} --no-sync
-          pytest tests/ -q -n auto --timeout=300 -o addopts= -rfE --tb=no -p no:warnings
-          -m 'not ppmd_native_stress'
+          pytest tests/ -q -n auto --timeout=300 -o addopts= --tb=no -p no:warnings
+          -m 'not ppmd_native_stress' --junitxml=pypy-extras.xml -o junit_family=xunit1
+      - name: Failures (with what installed), one line each
+        if: always()
+        continue-on-error: true
+        run: python3 scripts/junit_failure_lines.py pypy-extras.xml
 
   # Blocking gate = **structural only** (seek baselines + solid decode-once).
   # Wall-time ratios are noisy on shared runners; they run separately, non-blocking,
