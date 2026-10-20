@@ -229,7 +229,10 @@ for every source.
 **Symptom.** pyppmd 1.3.x corrupts the heap (SIGSEGV or SIGABRT on Linux,
 `STATUS_HEAP_CORRUPTION` 0xC0000374 on Windows) when a decode asks for more output than the
 stream holds: `max_length=-1`, a sized request about 64 KiB or more past the true
-remaining output, or a `decode` after `eof`. Valgrind pins the first bad write as a
+remaining output, or a `decode` after `eof`. A sized over-request leaves the worker
+waiting for input once it runs past what the range coder's tail lookahead can satisfy,
+and freeing the decoder in that state is the crash (bare pyppmd, decoder freed without a
+quiesce: +64 and +4096 over, 0/20; +65536 over, 13/20). Valgrind pins the first bad write as a
 use-after-free of pyppmd's own output buffer at `ThreadDecoder.c:134`. Random input (a
 wrong 7z AES key, a hostile archive) reaches a second route: a model that ended early and
 is fed more input segfaults in `Ppmd7_DecodeSymbol`, on 1.2.0 as well. PPMd8 behaves the
@@ -244,20 +247,43 @@ crash affects 1.2.0 and 1.3.x.
 the exact remaining `unpack_size` and never passes `-1`; refuses unsized PPMd7 at
 construction; decodes unsized PPMd8 in bounded 64 KiB requests; injects at most one capped
 NUL at the end; stops at a spent payload; and hands pyppmd the whole member in one
-`decode`, so a short return is the end. The one exception is a ZIP member read from a
-stream that cannot seek, whose sizes follow its data: its input runs on into the rest of
-the archive, so it is fed in pieces and always decoded in a child process
-(`ResourceLimitError` when `max_ppmd_in_process_input` is `None`). Members over
-`DecoderLimits.max_ppmd_in_process_input` (16 MiB by default) decode in a child process
-(`ppmd_child.py`), where a crash becomes `CorruptionError` (`ResourceLimitError` for
-SIGKILL or a refused `mem_size`, `ReadError` for other deaths). Pinned by
+`decode`, so a short return is the end. Two exceptions are fed in pieces: members over
+`DecoderLimits.max_ppmd_in_process_input` (16 MiB by default), and a ZIP member read from
+a stream that cannot seek, whose sizes follow its data, so its input runs on into the rest
+of the archive. Fed in pieces, pyppmd 1.3.1 can return short at a false `eof` with input
+unread, which reads as a spent payload: a valid member then raises `TruncatedError` a few
+KiB short (tracked internally). Every PPMd member decodes in a child process unless
+`process_isolation` is `NONE` (`ppmd_child.py`), because the quiesce NUL can crash pyppmd
+on small members too; a crash becomes `CorruptionError` (`ResourceLimitError` for SIGKILL
+or a refused `mem_size`, `ReadError` for other deaths). A child is reused only after a
+member that ended cleanly. Pinned by
 `tests/test_ppmd_crash_isolation.py` and `tests/test_ppmd_raw_streams.py`; the
 non-blocking PPMd native stress workflow watches for regressions.
 
-**What remains.** A crafted 7z or ZIP header that inflates `unpack_size` 64 KiB or more
-past the member's true content puts the one in-process decode call into the crashing class
-(for members under the in-process limit). Archivey cannot detect the lie before decoding;
-the CRC check catches the garbage output after the fact. Only an upstream fix closes it.
+**What remains.** No crash is confirmed on the in-process path; the defect is upstream,
+so the path rests on archivey's call discipline, not on a fixed decoder. A header that
+overstates `unpack_size` measured clean: crafted 7z (PPMd7) and ZIP (PPMd8, with and
+without an end mark) members overstated by 64 KiB, 1 MiB and 15 MiB, read through
+`open_archive` with `read()` and with 64 KiB reads, across text, zero-run, mixed and
+random payloads, gave 0 crashes in 860 fresh children and 0 valgrind errors on 12 such
+shapes. On those members the worker blocked on input a few hundred to a few thousand
+symbols past the true end, and the spent-payload stop and quiesce then held. Two
+candidates remain:
+
+1. The teardown NUL on a member that ended early. When a sized decode returns short at
+   `eof` with all input fed, `_quiesce_worker` still sends `decode(b"\0", 1)`, up to
+   `_PPMD_QUIESCE_MAX_CALLS` times, because pyppmd reports the same flags whether its
+   worker waits for input (the NUL is needed, K.5) or its model has ended (the NUL is a
+   decode after the end, the K.4 route). archivey sends it on 183 of 200 hostile 7z
+   members; in isolation it measured 0 crashes in 100 children
+   (`--mode spent-quiesce-nul`, K.4).
+2. A sized pack declared complete but corrupt can fill toward `unpack_size` through
+   empty drains (the exit-after-green entry below, item 2).
+
+The same NULs sent after a `decode` that raised `ValueError` do crash pyppmd (59 of 100
+children for PPMd8, 5 of 100 for PPMd7, `--mode nul-after-error`), but archivey never
+makes that call: after the error pyppmd reports `eof`, and `_quiesce_worker` returns
+without decoding (0 calls after 370 errors, K.4).
 
 **Upstream.** Not filed. The ready-to-file report, its reproduction scripts and the
 verification checklist for a fixed release are
@@ -297,6 +323,39 @@ scenarios with it. Adversarial unfinished-decoder tests run in subprocess childr
 **Evidence.** [`ppmd-exit-after-green-exploration.md`](investigations/ppmd-exit-after-green-exploration.md);
 [`ppmd-native-investigation-results.md`](investigations/ppmd-native-investigation-results.md)
 §D, §I and §K.5.
+
+## PyPy: rapidgzip, python-lz4 and pyppmd misbehave (open)
+
+**Symptom.** Under PyPy 3.11 (the allowed-to-fail `pypy3.11` CI job). The versions below
+are what that job resolved on 2026-10-20, not floors: rapidgzip 0.16.0, lz4 4.4.5, pyppmd
+1.3.1. The job's install step prints the versions each run resolves, so check a newer run
+before assuming a later release still fails.
+
+- rapidgzip refuses valid gzip streams ("Failed to detect a valid file format"), reads a
+  bzip2 stream as empty, and aborts the process when it reads a Python file object.
+- python-lz4's frame decoder segfaults on an ordinary frame, and the crash surfaces later
+  at unrelated places in the suite.
+- pyppmd runs its cffi build, which ends a valid PPMd member early: the decoder relies on
+  how the C extension reports the end of data (`ppmd_decoder.py`), and the cffi build
+  reports it sooner, so the read returns data cut short.
+
+**What archivey does.** It treats all three as absent under PyPy, whether installed or not
+(`deps.unused_reason` in `internal/streams/codecs/deps.py`; `rapidgzip_child` refuses to
+start the child). `MissingComponent.reason` carries why, and every report of a missing
+package (the `PackageNotInstalledError` of a read, `format_availability()`, the registry's
+refusal and `archivey --version -v`) shows it in place of the install advice. LZ4 and PPMd
+data cannot be read there; `AUTO` decodes gzip, zlib, deflate and bzip2 with the standard
+library, and `ON` raises. The tests treat the three as not installed under PyPy
+(`UNUSED_UNDER_PYPY` in `tests/conftest.py`).
+
+**What remains.** PPMd reads under PyPy need either a pure-Python PPMd decoder or a
+workaround for how pyppmd's cffi build reports the end. LZ4 needs a python-lz4 that runs
+under PyPy. rapidgzip needs upstream support for PyPy.
+
+**Upstream.** Not filed with rapidgzip, python-lz4 or pyppmd.
+
+**Evidence.** The `pypy3.11` job logs in CI; PyPy is not a supported interpreter
+([`docs/install.md`](../docs/install.md) §Python versions and platforms).
 
 ## Intermittent Linux full-suite heap corruption (`[all]` / Hypothesis late crash)
 
@@ -340,3 +399,24 @@ rapidgzip.
 
 **Evidence.** [`linux-heap-corruption-soak.md`](investigations/linux-heap-corruption-soak.md):
 the CI step split, the soak and A/B recipes, and the recorded red runs.
+
+## PyPy: buffer views and non-blocking `readinto` (open, by design upstream)
+
+**Symptom.** Two PyPy 3.11 behaviours that CPython does not share. A `memoryview` that
+goes out of scope is released only at a garbage collection, so a caller that resizes the
+buffer it handed to `readinto` (`RawIOBase.read` does) gets `BufferError: Existing exports
+of data: object cannot be re-sized`. And a non-blocking buffered reader with nothing ready
+answers `readinto` with 0, the same as at the end, where CPython answers `None`.
+
+**What archivey does.** Every `readinto` releases its views before it returns, a rule in
+`try_readinto`'s docstring and in CONTRIBUTING.md §Coding standards. `ArchiveSource`, the
+one wrapper over a caller's stream, asks a 0 again with `read` (`_readinto_or_stall` in
+`internal/source.py`), so a stall raises `BlockingIOError` instead of passing for the end.
+Pinned by the zero-answering doubles in `tests/test_archive_source.py`.
+
+**What remains.** Nothing gates either rule on PyPy: the PyPy CI job is allowed to fail.
+A new `readinto` that keeps a view passes every other check.
+
+**Upstream.** Not filed; both are documented PyPy behaviour rather than bugs.
+
+**Evidence.** The PyPy trial job in `.github/workflows/ci.yml`; the tests named above.

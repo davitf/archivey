@@ -65,7 +65,10 @@ from archivey.internal.diagnostics_collector import (
 )
 from archivey.internal.hashing.blake2sp import Blake2sp
 from archivey.internal.logs import integrity as logger
-from archivey.internal.streams.decompressor_stream import _COMPRESSED_READ_SIZE_MAX
+from archivey.internal.streams.decompressor_stream import (
+    _COMPRESSED_READ_SIZE_MAX,
+    retire_decoder_children,
+)
 from archivey.internal.streams.resume import (
     ask_resume_offset,
     ask_seek_resume_offset,
@@ -901,6 +904,11 @@ def build_member_verifier(
 
     ``fill_size`` with a ``member`` and no ``expected_size`` is something to do: the
     verifier sets ``member.size`` when a read that skipped no byte reaches the end.
+
+    Building the verifier emits only ``DIGEST_UNVERIFIABLE``, once for each entry of
+    ``expected`` that has no hasher. A lazy ``ArchiveStream`` that builds its own
+    verifier relies on that: it enters its diagnostic scope for the build only when
+    ``expected`` is non-empty.
     """
     hashes = expected if expected is not None else {}
     fills = fill_size and member is not None and expected_size is None
@@ -964,7 +972,11 @@ class VerifyingStream(ReadOnlyIOStream):
             raise
 
     def read(self, n: int | None = -1, /) -> bytes:
-        return self._verifier.read(self._inner, n)
+        try:
+            return self._verifier.read(self._inner, n)
+        except CorruptionError:
+            retire_decoder_children(self._inner)
+            raise
 
     def seekable(self) -> bool:
         return is_seekable(self._inner)

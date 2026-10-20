@@ -6,15 +6,18 @@ archivey runs it in a child process that runs this file, and an abort costs the
 member and not the caller. Its bzip2 decoder (``IndexedBzip2File``) runs here too, as
 a precaution: it has not been seen to abort, but it comes from the same library.
 
-This file is run as a script (``python -P rapidgzip_worker.py [bzip2]``): with the
-``bzip2`` argument it opens the source with ``rapidgzip.IndexedBzip2File``, and
-otherwise with ``rapidgzip.open``. It imports nothing
-from ``archivey``: importing any ``archivey`` module imports the whole package, which
-costs start-up time on every member. It depends on the standard library and
-``rapidgzip`` only.
+The child runs the shared decoder worker (``python -P decoder_worker.py rapidgzip
+[bzip2]``), which loads this file by path and calls :func:`run`: with the ``bzip2``
+argument it opens the source with ``rapidgzip.IndexedBzip2File``, and otherwise with
+``rapidgzip.open``. It imports nothing from ``archivey``: importing any ``archivey``
+module imports the whole package, which costs start-up time on every member. It
+depends on the standard library, ``rapidgzip``, and ``decoder_worker`` for the frame,
+the error payload and the start-up steps it shares with the other decoders.
 
-Protocol. Every frame in both directions is ``<BqI>`` (tag, argument, payload size)
-and then the payload. All integers are little-endian.
+Protocol. Every frame in both directions is ``decoder_worker.FRAME`` (tag, argument,
+payload size) and then the payload. All integers are little-endian. The messages are
+rapidgzip's own: it reads its source through the parent and answers index queries, so
+it does not fit the generic worker's one-call-one-reply decoder protocol.
 
 Parent to child:
 
@@ -41,8 +44,7 @@ Parent to child:
 Child to parent:
 
 - ``OK`` (argument: a position or offset; payload: decoded bytes for ``READ``) or
-  ``ERR`` (payload: ``"<type name>\\n<errno or empty>\\n<message>"`` in UTF-8), one per
-  request.
+  ``ERR`` (payload: ``decoder_worker.error_payload``), one per request.
 - ``SRC_READ`` (argument: size), ``SRC_SEEK`` (argument: offset; payload: ``whence``),
   ``SRC_TELL``: rapidgzip reading the parent's stream. They can arrive before the reply
   to any request, since rapidgzip's own threads read ahead in the background.
@@ -62,17 +64,22 @@ import importlib
 import io
 import os
 import queue
-import signal
 import struct
 import sys
 import threading
 import time
 from collections.abc import Callable
-from typing import IO, Any
+from typing import Any
 
-FRAME = struct.Struct("<BqI")
-# The range of FRAME's integer argument, its signed 64-bit ``q``.
-ARG_MIN, ARG_MAX = -(1 << 63), (1 << 63) - 1
+if __package__:
+    from archivey.internal.streams.codecs import decoder_worker as shared
+else:
+    # Loaded by path from ``decoder_worker.py``, which is ``__main__`` in the child.
+    shared = sys.modules["__main__"]
+
+FRAME = shared.FRAME
+ARG_MIN, ARG_MAX = shared.ARG_MIN, shared.ARG_MAX
+read_exact_or_none = shared.read_exact_or_none
 
 OPEN, READ, SEEK, RESUME, POINTS, TELL_COMPRESSED, OFFSETS = 1, 2, 3, 4, 5, 6, 7
 POINTS_REPLY = struct.Struct("<qqqq")
@@ -81,7 +88,7 @@ OFFSETS_AVAILABLE, OFFSETS_COMPLETE = 0, 1
 # The command-line argument that selects the bzip2 decoder.
 BZIP2_ARG = "bzip2"
 SRC_DATA, SRC_VALUE, SRC_FAIL = 10, 11, 12
-OK, ERR = 1, 2
+OK, ERR = shared.OK, shared.ERR
 SRC_READ, SRC_SEEK, SRC_TELL = 10, 11, 12
 
 OPEN_PATH, OPEN_STREAM = 0, 1
@@ -95,19 +102,6 @@ MEMORY_LIMIT_EXIT = 86
 _MEMORY_POLL_INTERVAL = 0.001
 
 _EOF = (0, 0, b"")
-
-
-def read_exact_or_none(stream: IO[bytes], size: int) -> bytes | None:
-    """``size`` bytes from ``stream``, or ``None`` if it ends first. Both ends of the
-    pipe read frames with it; ``rapidgzip_child`` imports it."""
-    parts: list[bytes] = []
-    while size:
-        chunk = stream.read(size)
-        if not chunk:
-            return None
-        parts.append(chunk)
-        size -= len(chunk)
-    return b"".join(parts)
 
 
 class _Channel:
@@ -191,12 +185,14 @@ class _ParentSource(io.RawIOBase):
         return True
 
     def readinto(self, buf: Any) -> int:
-        view = memoryview(buf).cast("B")
-        answer, _, data = self._ask(SRC_READ, len(view))
-        if answer != SRC_DATA:
-            return 0
-        view[: len(data)] = data
-        return len(data)
+        # Views released on return (the rule in binaryio.try_readinto): the caller
+        # may resize or free ``buf`` next.
+        with memoryview(buf) as outer, outer.cast("B") as view:
+            answer, _, data = self._ask(SRC_READ, len(view))
+            if answer != SRC_DATA:
+                return 0
+            view[: len(data)] = data
+            return len(data)
 
     def seek(self, offset: int, whence: int = 0) -> int:
         answer, value, _ = self._ask(SRC_SEEK, offset, bytes([whence]))
@@ -205,20 +201,6 @@ class _ParentSource(io.RawIOBase):
     def tell(self) -> int:
         answer, value, _ = self._ask(SRC_TELL)
         return value if answer == SRC_VALUE else 0
-
-
-def _error_payload(exc: BaseException) -> bytes:
-    name = type(exc).__name__
-    message = str(exc)
-    if isinstance(exc, UnicodeDecodeError) and isinstance(exc.object, bytes):
-        # rapidgzip quotes an input byte in some messages ("... magic string 'BZh' ...
-        # with \xf2 ..."). When that byte is not UTF-8, the message fails to decode on
-        # its way to Python, and this error holds the message's bytes. The message is
-        # rapidgzip's error, so it is reported as one, readable.
-        name, message = "RuntimeError", exc.object.decode("utf-8", "replace")
-    errno = getattr(exc, "errno", None)
-    text = f"{name}\n{'' if errno is None else errno}\n{message}"
-    return text.encode("utf-8", "replace")
 
 
 def _offsets_payload(offsets: Any) -> bytes:
@@ -275,45 +257,13 @@ def _serve(channel: _Channel, stream: Any, ceiling: int | None) -> None:
                 )
                 ok = channel.send(OK, len(offsets), _offsets_payload(offsets))
             else:
-                ok = channel.send(ERR, 0, _error_payload(ValueError(f"bad tag {tag}")))
+                ok = channel.send(
+                    ERR, 0, shared.error_payload(ValueError(f"bad tag {tag}"))
+                )
         except Exception as exc:  # noqa: BLE001 - reported to the parent, which raises
-            ok = channel.send(ERR, 0, _error_payload(exc))
+            ok = channel.send(ERR, 0, shared.error_payload(exc))
         if not ok:
             return
-
-
-def disable_core_dumps() -> None:
-    """Ask the system not to write a core dump when this process aborts.
-
-    rapidgzip aborts this process on every stream that ends early (the reason it runs
-    here), so a core is expected and useless. It is also large: with every core
-    decoding, the address space is several GB, and the kernel writes all of it.
-    ``RLIMIT_CORE`` of 0 stops a core file, but not a core piped to a crash handler
-    (``core_pattern`` starting with ``|``: apport, systemd-coredump), which the kernel
-    feeds whatever the limit. Until the handler has read it, this process stays alive
-    with its pipes open, and the parent waits: measured, 2 to 4 s per abort with a
-    handler that only drains the pipe, and longer with one that compresses or stores
-    it. Linux skips the dump entirely for a process that is not dumpable.
-    ``ppmd_worker.py`` has a copy, since neither worker can import the other;
-    ``tests/test_worker_scripts.py`` keeps the two the same.
-
-    Best effort: anything missing (no ``resource`` on Windows, a Python built without
-    ``ctypes``, no ``prctl``) is skipped.
-    """
-    try:
-        import resource
-
-        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-    except (ImportError, ValueError, OSError):
-        pass
-    if sys.platform.startswith("linux"):
-        try:
-            import ctypes
-
-            pr_set_dumpable = 4
-            ctypes.CDLL(None).prctl(pr_set_dumpable, 0, 0, 0, 0)
-        except (ImportError, OSError, AttributeError):
-            pass
 
 
 def _peak_memory() -> int | None:
@@ -464,12 +414,10 @@ def watch_memory(limit: int) -> int | None:
     return ceiling
 
 
-def main() -> None:
-    disable_core_dumps()
-    # A terminal's Ctrl-C signals the whole foreground process group, this child too.
-    # The parent decides what an interrupt means; here it would kill the process with
-    # rapidgzip's threads running, which aborts it and reads as a decoder crash.
-    signal.signal(signal.SIGINT, signal.SIG_IGN)
+def _main(argv: list[str]) -> None:
+    # ``decoder_worker.prepare_child`` has run: no core dumps, and Ctrl-C ignored (it
+    # would kill the process with rapidgzip's threads running, which aborts it and
+    # reads as a decoder crash).
     channel = _Channel()
     tag, kind, payload = channel.requests.get()
     if tag != OPEN:
@@ -485,7 +433,7 @@ def main() -> None:
         # AUTO open in the parent decodes the caller's source with the stdlib. That
         # needs the source where the caller left it, so nothing may read it before the
         # import succeeds (``_ParentSource`` reads only when rapidgzip asks).
-        if sys.argv[1:] == [BZIP2_ARG]:
+        if argv == [BZIP2_ARG]:
             opener = getattr(rapidgzip, "IndexedBzip2File", None)
             if opener is None:
                 raise ImportError("this rapidgzip has no IndexedBzip2File")
@@ -496,7 +444,7 @@ def main() -> None:
         )
         stream = opener(source, parallelization=0)
     except Exception as exc:  # noqa: BLE001 - reported to the parent, which raises
-        channel.send(ERR, 0, _error_payload(exc))
+        channel.send(ERR, 0, shared.error_payload(exc))
         return
     try:
         # Started after the open, so the limit counts what the decode holds and not the
@@ -513,12 +461,15 @@ def main() -> None:
             pass
 
 
-if __name__ == "__main__":
-    # Skip interpreter finalization, even after an exception: the pump thread may still
-    # be blocked on stdin, and a rapidgzip thread still running aborts the process.
+def run(argv: list[str]) -> None:
+    """Serve one rapidgzip stream (``argv``: ``[]`` or ``["bzip2"]``), then exit.
+
+    Skips interpreter finalization, even after an exception: the pump thread may still
+    be blocked on stdin, and a rapidgzip thread still running aborts the process.
+    """
     status = 0
     try:
-        main()
+        _main(argv)
     except BaseException as exc:  # noqa: BLE001 - reported on stderr; the exit must run
         status = 1
         sys.excepthook(type(exc), exc, exc.__traceback__)

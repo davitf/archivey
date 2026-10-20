@@ -142,13 +142,13 @@ Each idea carries a status:
   an off-grid size could be reported as a wrong password. Measure what real writers emit
   first.
 - **Salvage mode.** *Needs design.* Backups are full of truncated and corrupt archives.
-  Reads already return the readable prefix and then raise, but nothing resyncs past
-  damage. A salvage mode would walk ZIP local headers when the central directory is gone,
-  resync a TAR stream on the next valid header, and return every recoverable member with
-  its error.
-- **Keep iterating past a damaged member.** *Needs design.* Once `stream_members()` raises,
-  the generator is finished. Yielding per-member errors where the format allows would let
-  `archivey test` report every bad member. Narrower than salvage.
+  Reads already return the readable prefix and then raise, and a member's data error
+  already leaves `stream_members()` running wherever the next member is reachable (ZIP,
+  7z, RAR, ISO, plain TAR; `archive-reading` spec). What is left is damage to the
+  archive's structure, which ends the pass: nothing resyncs past it. A salvage mode would
+  walk ZIP local headers when the central directory is gone or a pipe's local-header walk
+  loses its place, resync a TAR or compressed TAR stream on the next valid header, and
+  return every recoverable member with its error.
 
 ## Performance
 
@@ -162,12 +162,11 @@ Each idea carries a status:
   members could share a process and be split by size, as the solid path already does.
   This needs a measured threshold and a spec change, because `format-rar` forbids
   multiple member paths per call today.
-- **Seekable zstd through a native frame index.** *Open idea.* zstd has no random access
-  today. A frame index built from frame headers would give frame-granularity seeks with
-  the infrastructure that already serves xz and lzip, and with no new dependency.
-  `indexed_zstd` gives the same granularity with a heavy C++ dependency. It helps only
-  multi-frame files, so measure how common they are first
-  ([`library-analysis.md`](library-analysis.md) §zstd).
+- **zstd frame index from frame headers.** *Open idea.* zstd seeks from frame starts a
+  forward read has reached, and from the seekable format's seek table. A multi-frame file
+  with no table (`pzstd`) could have its frames found by walking frame and block headers,
+  without decoding. It helps only multi-frame files, so measure how common they are first
+  ([`formats/zstd-lz4.md`](formats/zstd-lz4.md) §7).
 - **Lazy `ArchiveMember` derivation.** *Needs design.* The one known lever for faster ZIP
   open-and-list (`benchmarks/RESULTS.md`), and for the per-member memory that
   `max_members` has to account for (about 1 KB per 7z member).

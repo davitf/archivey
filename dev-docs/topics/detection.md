@@ -466,6 +466,19 @@ A backward seek puts the handle back. It does not re-read the prefix:
 | Member stream (`ArchiveStream`): bare, under a buffer, through `open_archive`, or one volume of a list | Reads forward from the caller's position and restores it, like any seekable stream | No tail, including the `koly` block (`trailer` is recorded as `CAPABILITY_UNAVAILABLE` when the source is 512 bytes or more), and probe reads at an offset grow the prefix (§4.2): a seek would re-decode. `seek_is_expensive` in `internal/source.py` looks through pass-through layers, an `ArchiveSource` keeps the answer for the stream it borrows, and a joined set answers for its volumes |
 | Directory | Nothing | Nothing to do |
 
+A non-seekable source is read for what has arrived, not to fill the window, and the near
+step stops once no later byte can change its answer: every signature ahead of the match in
+table order has either all of its bytes in hand or a byte that already differs
+(`_near_magic_settled`). So a ZIP or a gzip stream of a few KiB sent down a pipe whose
+writer keeps it open is detected without waiting for the writer to close. The inner-TAR
+probe decodes what has arrived the same way. Three cases still wait for 4 KiB or the end of
+the source, because the answer can depend on bytes not yet sent: a match whose
+earlier-listed signatures are not settled yet (TAR's `ustar` ends at offset 262, so any
+source shorter than that), a bzip2 or xz hit (the trailer step needs the source length,
+§2.4), and every source with no near match (the later steps read the whole window, and a
+short window is how they learn the length). The inner-TAR probe also waits while it has
+fewer than 512 decoded bytes, since another gzip member could follow.
+
 Detection never spools a pipe to a temporary file. The one temporary copy the library makes
 is RAR's, for `unrar`, bounded by `SpoolLimits` and made after detection.
 
@@ -484,6 +497,7 @@ is RAR's, for `unrar`, bounded by `SpoolLimits` and made after detection.
 | A 7z SFX with data after the archive reads the whole 2 MiB window to detect | **archivey** | By choice (§2.2) |
 | A source of 32 774 bytes or more that matches nothing near pays the far peek | **archivey** | The price of running far magic before the probes (§2.3) |
 | `detect_format` on a raw pipe leaves the caller without the bytes it read | **archivey** | By design: `open_archive` and `open_stream` keep them (§4.3) |
+| A `.tar.gz` shorter than its backend's read-ahead (an 8 KiB walk buffer over a 64 KiB decoder feed), sent down a pipe the writer keeps open, holds `open_archive` until the writer closes it | **archivey** | Detection answers at once (§4.3); the backend's first-header read at open waits, with `format=` too. A plain TAR opens at once: its walk buffer fills from what has arrived (`ArchiveSource.arrived_view`). Its listing still waits at the end, where the trailing-data scan reads past the trailer ([`formats/tar.md`](../formats/tar.md) §2.2) |
 | A polyglot opens as whichever format comes first | **archivey** | The tie rule (§3.1); pass `format=` |
 | A bzip2- or xz-compressed `.dmg` read from a pipe or as a member stream detects as `BZ2` / `XZ`, with `trailer` in `unavailable_tiers` | **archivey** | Its `koly` block is at the end, and those sources are not seeked there (§2.4, §4.3) |
 
@@ -545,6 +559,7 @@ is RAR's, for `unrar`, bounded by `SpoolLimits` and made after detection.
 | The detection receipt is not merged into the reader's cost (§4.1) | `::test_detection_receipt_is_not_merged_into_archive_cost` |
 | One forward pass over the prefix. Gzip, ZIP and ISO fetch each byte once and seek backward only to restore the handle. A seekable bzip2 or xz file also reads the 512-byte trailer, then fetches those bytes again when a later tier reads the file (§4.2) | `tests/test_detection_workspace.py::test_seekable_detection_has_zero_backward_seeks`, `::test_seekable_bzip2_rereads_the_trailer_bytes`, `::test_seekable_koly_image_reads_the_trailer_once`, `::test_growing_prefix_fetches_each_byte_once`, `::test_seekable_stream_restored_on_error_path`, `tests/test_udif.py::test_detection_restores_the_stream_position` |
 | A zlib, bzip2 or xz first block with a `koly` trailer is the disk image (§2.4) | `tests/test_udif.py` |
+| A short archive on a pipe the writer keeps open is detected without waiting for the close, and with the answer the whole source gives (§4.3) | `tests/test_pipe_held_open.py` |
 | Detection leaves a non-seekable stream readable by the backend (§4.3) | `tests/test_detection.py::test_peekable_stream_not_consumed` |
 | A directory is decided without reading, with the zero receipt (§2.7) | `::test_detect_format_reports_directory_for_a_directory_path`, `::test_detect_format_directory_carries_a_zero_receipt` |
 | A short 7z hit costs up to the scan window (§2.2) | `tests/test_sfx.py::test_short_7z_hit_scan_cost_is_bounded_by_the_window` |

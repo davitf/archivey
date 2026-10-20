@@ -20,21 +20,36 @@ images](https://github.com/davitf/archivey/blob/main/dev-docs/formats/dmg.md) an
 
 ## Quick matrix
 
-| Format | Core? | Extra / tool | Listing | Random member access | Notes |
-| --- | --- | --- | --- | --- | --- |
-| ZIP | yes | — | indexed (central directory); from a pipe, scan headers | direct | A pipe needs `streaming=True` |
-| TAR | yes | — | scan headers | direct on uncompressed seekable TAR | Compressed TAR is solid for random opens |
-| `.tar.gz` / `.bz2` / `.xz` | yes | — | needs decompression | solid | Prefer `stream_members()` |
-| Directory | yes | — | indexed | direct | Same stream-capability defaults as archives |
-| Single-file gz/bz2/xz | yes | — | one member | seek with `seekable_members=True` | See single-file section |
-| 7z | yes (common codecs) | `[recommended]` for PPMd, Deflate64, Brotli, LZ4, AES, and zstd before Python 3.14 | indexed | solid folders | Native reader; BCJ2 in pure Python |
-| RAR | yes (metadata) | **`unrar` or `rar` binary for compressed data**; `[recommended]` for header crypto and stored encrypted members | native metadata | solid when solid | No write |
-| ISO | no | `[recommended]` (`pycdlib`) | indexed | direct | Seekable source required |
-| `.zst` / `.tar.zst` | 3.14+ core; else `[recommended]` | `[recommended]` → `backports.zstd` | one member; the `.tar` form as `.tar.gz` | rewind seek unless indexed later | |
-| `.lz4` / `.tar.lz4` | no | `[recommended]` | one member; the `.tar` form as `.tar.gz` | rewind seek | |
-| `.br` | no | `[recommended]` | one member | rewind seek | No magic; detected by name |
-| `.lz` / `.lzma` / `.zz` | yes | — | one member | seek with `seekable_members=True` | `.lzma` and `.zz` detected by name |
-| `.Z` / `.tar.Z` | yes | — | one member; the `.tar` form as `.tar.gz` | CLEAR seek points when seekable | Best-effort truncation (nonzero leftover bits) |
+- **ZIP:** in core. Listing: indexed (central directory); from a pipe, scan headers. Random member
+  access: direct. A pipe needs `streaming=True`.
+- **TAR:** in core. Listing: scan headers. Random member access: direct on uncompressed seekable
+  TAR. Compressed TAR is solid for random opens.
+- **`.tar.gz` / `.bz2` / `.xz`:** in core. Listing: needs decompression. Random member access:
+  solid. Prefer `stream_members()`.
+- **Directory:** in core. Listing: indexed. Random member access: direct. Same stream-capability
+  defaults as archives.
+- **Single-file gz/bz2/xz:** in core. Listing: one member. Random member access: seek with
+  `seekable_members=True`. See the [single-file section](#single-file-compressors).
+- **7z:** in core for the common codecs; `[recommended]` for PPMd, Deflate64, Brotli, LZ4, AES, and
+  zstd before Python 3.14. Listing: indexed. Random member access: solid folders. Native reader;
+  BCJ2 in pure Python.
+- **RAR:** metadata in core; **`unrar` or `rar` binary for compressed data**; `[recommended]` for
+  header crypto and stored encrypted members. Listing: native metadata. Random member access: solid
+  when solid. No write.
+- **ISO:** `[recommended]` (`pycdlib`). Listing: indexed. Random member access: direct. Seekable
+  source required.
+- **`.zst` / `.tar.zst`:** in core on Python 3.14 and later; else `[recommended]`
+  (`backports.zstd`). Listing: one member; the `.tar` form as `.tar.gz`. Random member access:
+  seek by frame with `seekable_members=True`; a one-frame file rewinds. Reads the Seekable
+  Zstandard seek table.
+- **`.lz4` / `.tar.lz4`:** `[recommended]`. Listing: one member; the `.tar` form as `.tar.gz`.
+  Random member access: rewind seek.
+- **`.br`:** `[recommended]`. Listing: one member. Random member access: rewind seek. No magic;
+  detected by name.
+- **`.lz` / `.lzma` / `.zz`:** in core. Listing: one member. Random member access: seek with
+  `seekable_members=True`. `.lzma` and `.zz` detected by name.
+- **`.Z` / `.tar.Z`:** in core. Listing: one member; the `.tar` form as `.tar.gz`. Random member
+  access: CLEAR seek points when seekable. Best-effort truncation (nonzero leftover bits).
 
 **RAR member data needs RARLAB `unrar` or `rar` 6.0 or later on `PATH`, or `unar`.** No pip extra
 can supply either. Listing and metadata work without them, and so does reading a stored member. A
@@ -139,16 +154,16 @@ yielded.
   from its data descriptor once the pass gets past its data. Until the pass reaches the directory, a
   member's ``mode``, ``create_system``, ``comment``, ``uid`` and ``gid`` are ``None`` and a symlink
   is a ``FILE``; then every member is updated in place, and ``member_state_final`` turns ``True``.
-  Extraction writes each member as it arrives and, at the end of the pass, applies modes and owners,
-  makes the links (after running your ``filter`` again on them) and removes what a member the
-  directory types ``OTHER`` wrote, so the files on disk match a read from a file. A member the
-  directory does not list (an appended update, a planted entry) is still yielded by the pass when it
-  is met. When the pass reaches the directory, it is dropped from the listing and reported as
-  ``ARCHIVE_UNLISTED_DATA``, and extraction does not keep it.
+  Extraction keeps each member's data in a private ``.archivey-tmp-`` folder inside the
+  destination and puts the members in place only once the pass has read the directory, calling
+  your ``filter`` once on each member as the directory describes it, so the files on disk match a
+  read from a file. A member the directory does not list (an appended update, a planted entry) is
+  still yielded by the pass when it is met. When the pass reaches the directory, it is dropped from
+  the listing and reported as ``ARCHIVE_UNLISTED_DATA``, and extraction does not keep it.
 - What a pipe cannot read: a member whose sizes come after its data (bit 3) under LZMA
   without an end marker raises ``UnsupportedFeatureError``, as no end can be found; a
-  bit-3 PPMd member is decoded in a child process, so
-  ``DecoderLimits(max_ppmd_in_process_input=None)`` refuses it. With several candidate
+  bit-3 PPMd member is fed to the decoder in pieces, since its size isn't known in
+  advance. With several candidate
   passwords, a member is confirmed on its first 1 MiB, and when more than one candidate
   is still possible after that, the first one is used.
 - Where a pipe and a file differ, on archives no writer produces or damaged ones: a
@@ -157,7 +172,9 @@ yielded.
   reaches the directory, where a read from a file reads it. Two same-named members whose
   directory order reverses their file order list and stream from a pipe as from a file,
   but extraction from a pipe raises `CorruptionError` for that name, where extraction
-  from a file writes the copy the directory lists last.
+  from a file writes the copy the directory lists last. A member whose local header's
+  name the safety checks refuse fails extraction from a pipe even when the directory, or
+  your `filter`, gives it a safe name, since its data was not kept.
 - The pass reads the pipe to its end before it reads the directory, so it ends, and the
   members are final, only when the sender closes the pipe. A sender that keeps the pipe
   open after the ZIP keeps the pass waiting after the last member.

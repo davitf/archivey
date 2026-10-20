@@ -5,13 +5,17 @@ from __future__ import annotations
 import os
 from typing import BinaryIO, NoReturn, Protocol
 
-from archivey.config import DecoderLimits
+from archivey.config import DecoderLimits, ProcessIsolation
 from archivey.exceptions import CorruptionError, ResourceLimitError, TruncatedError
 from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.streams.codecs.decoder_child import (
+    DecoderChildStartError,
+    isolation_error,
+)
+from archivey.internal.streams.codecs.isolated import ChildPpmdDecoder
 from archivey.internal.streams.codecs.ppmd_child import (
     PpmdChildAllocationError,
-    PpmdChildDecoder,
-    PpmdChildStartError,
+    open_ppmd_child,
     ppmd_child_unavailable_reason,
 )
 from archivey.internal.streams.decompressor_stream import (
@@ -22,12 +26,13 @@ from archivey.internal.streams.decompressor_stream import (
 )
 
 # Per-call output request for PPMd8 decodes without a declared size; 64 KiB matches
-# the stream layer's read chunk. NOTE: a bound is NOT what makes decoding safe — on
-# pyppmd 1.3.x any request exceeding the stream's true remaining output by ≳64 KiB
-# corrupts the heap even without -1 (measured: +64/+4096 over → 0/20 crashes,
-# +65536 over → 13/20). PPMd8 is safe here because its end mark stops the native
-# worker on valid data before any over-decode; PPMd7 has no end mark, which is why
-# PpmdDecoder refuses to decode it without ``unpack_size`` at all.
+# the stream layer's read chunk. The bound avoids pyppmd's ``-1`` path. On pyppmd
+# 1.3.x a request past the stream's true output leaves the worker waiting for input
+# once it runs past what the range coder's tail lookahead can satisfy, and freeing
+# the decoder in that state corrupts the heap (bare pyppmd, no quiesce: +64/+4096
+# over → 0/20 crashes, +65536 over → 13/20); ``_quiesce_worker`` is what prevents
+# that. PPMd8's end mark stops the worker on valid data; PPMd7 has none, which is
+# why PpmdDecoder refuses to decode it without ``unpack_size``.
 _PPMD_UNSIZED_DECODE_CHUNK = 65536
 
 # Per-call ceiling for extra-NUL recovery and post-NUL empty drains. A single
@@ -56,10 +61,12 @@ _PPMD_MAX_REQUEST = (1 << 31) - 1
 # How PPMd avoids pyppmd's crash on corrupt input: pyppmd segfaults when asked to
 # decode after a corrupt stream has ended early, and a caller feeding it in pieces
 # cannot tell that state from a valid stream waiting for input (see ``ppmd_child``).
-# Handed the whole member at once, any short return is the end, and nothing further
-# is asked of it. ``PpmdDecoder`` therefore holds compressed input until it has the
-# whole member, or compressed EOF, or ``DecoderLimits.max_ppmd_in_process_input``;
-# past that the member goes to a child process, where a crash costs the member only.
+# Every member therefore decodes in a child process, where a crash costs the member
+# only, unless ``process_isolation`` is ``NONE``. There, handed the whole member at
+# once, a short return is the end and little more is asked of pyppmd, so
+# ``PpmdDecoder`` holds compressed input until it has the whole member, or compressed
+# EOF, or ``DecoderLimits.max_ppmd_in_process_input``; past that it is fed in pieces,
+# a risk ``NONE`` accepts.
 
 _DEFAULT_IN_PROCESS_MAX_INPUT = DecoderLimits().max_ppmd_in_process_input
 
@@ -78,16 +85,6 @@ _PPMD7_EMPTY_STREAM = b"\x00" * 5
 # (a truncated member, or a password check's capped input): the stream drains the rest
 # through further calls rather than taking it all from ``flush``.
 _PPMD_FLUSH_DRAIN_CHUNK = 65536
-
-
-_INPUT_RUNS_ON_IN_PROCESS = (
-    "max_ppmd_in_process_input=None rules out the child process this PPMd member "
-    "needs. Its size is not known until it has been read (a ZIP member read from a stream that cannot "
-    "seek), so pyppmd is fed it in pieces, which can crash the process on corrupt "
-    "input; it is decoded only in a child process, and None rules that out. Set "
-    "DecoderLimits.max_ppmd_in_process_input to a size, or read the archive from a "
-    "seekable source."
-)
 
 
 def _request_size(max_length: int) -> int:
@@ -122,13 +119,17 @@ class PpmdDecoder(BaseDecoder):
 
     ``unpack_size`` (the 7z folder / ZIP member size) is passed through as
     ``max_length`` on every ``decode`` call, matching py7zr's
-    ``PpmdDecompressor.decompress(..., max_length)``. This is load-bearing on pyppmd
-    1.3.x: the native worker thread decodes as many symbols as the request allows, and
-    running it materially past the true end of stream corrupts the heap (Linux
-    ``malloc`` abort/SIGSEGV, Windows ``STATUS_HEAP_CORRUPTION``) — measured for
-    ``-1`` and for sized requests ≳64 KiB beyond the real payload alike. Requesting
-    exactly the remaining output is the safe contract; see
-    ``dev-docs/known-issues.md`` and ``dev-docs/investigations/pyppmd-upstream-report.md``.
+    ``PpmdDecompressor.decompress(..., max_length)``. On pyppmd 1.3.x a request past
+    the true end of stream leaves the native worker thread waiting for input once it
+    runs past what the range coder's tail lookahead can satisfy (measured: +64 and
+    +4096 over did not, +65536 over did), and freeing the decoder in that state
+    corrupts the heap (Linux ``malloc`` abort/SIGSEGV, Windows
+    ``STATUS_HEAP_CORRUPTION``); ``-1`` also runs it on a desynchronised model.
+    Requesting exactly the remaining output keeps a valid member out of that state. A
+    container that overstates ``unpack_size`` cannot be detected before decoding;
+    there the spent-payload stop (:meth:`_note_decoded`) and :meth:`_quiesce_worker`
+    hold (crafted members overstated by 64 KiB, 1 MiB and 15 MiB measured clean); see
+    ``dev-docs/known-issues.md``.
 
     Because PPMd7 has no end mark, there is no safe request size without knowing the
     payload length — so ``unpack_size`` is **required** for variant 7 (the 7z header
@@ -159,10 +160,8 @@ class PpmdDecoder(BaseDecoder):
     ``input_runs_on`` (PPMd8 without ``unpack_size`` only) says the input does not
     end where the stream does: a ZIP member read from a pipe, whose sizes come after
     its data, is followed by the rest of the archive. Holding input until the source
-    ends would hold the rest of the archive, so pyppmd is fed in pieces instead, and
-    that is only safe in a child process: the first input goes to one, and with
-    ``in_process_max_input=None``, which rules children out, the member is refused
-    (``ResourceLimitError``). The stream ends at the end mark, and a byte after it is
+    ends would hold the rest of the archive, so pyppmd is fed in pieces, in-process
+    too under ``ProcessIsolation.NONE``. The stream ends at the end mark, and a byte after it is
     :attr:`input_after_end`, so the ``refuse_input_after_end`` stream it requires stops
     there.
 
@@ -186,6 +185,7 @@ class PpmdDecoder(BaseDecoder):
         in_process_max_input: int | None = _DEFAULT_IN_PROCESS_MAX_INPUT,
         refuse_input_after_end: bool = False,
         input_runs_on: bool = False,
+        isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
     ) -> None:
         if input_runs_on and (
             variant != 8 or unpack_size is not None or not refuse_input_after_end
@@ -230,20 +230,24 @@ class PpmdDecoder(BaseDecoder):
         # nothing on the decode path calls the native decoder. Teardown still does:
         # ``_quiesce_worker`` sends its bounded NUL in exactly this state.
         self._exhausted = False
-        # ``DecoderLimits.max_ppmd_in_process_input``: past it, a child process, or
-        # ``ResourceLimitError`` where none can start. ``None``: always in-process,
-        # except an ``input_runs_on`` member, which it refuses.
+        # Every member decodes in a child process, or ``ResourceLimitError`` where
+        # none can start, unless ``isolation`` is ``NONE``.
+        self._isolation = isolation
+        self._in_child = isolation is not ProcessIsolation.NONE
+        # ``DecoderLimits.max_ppmd_in_process_input``: a member up to it is handed to
+        # pyppmd whole, one past it in pieces, under every ``isolation`` (which decides
+        # only where the decode runs). ``None``: held whole whenever the size is known.
         self._in_process_max_input = in_process_max_input
         # Compressed input held back from pyppmd until the whole member is here, or
-        # compressed EOF, or ``in_process_max_input`` is passed (then it goes to a
-        # child process). ``None`` once handed over: from then on ``_decomp`` exists
-        # and the rest of this class works as a plain chunked decoder.
+        # compressed EOF, or ``in_process_max_input`` is passed, in-process; until the
+        # first input in a child. ``None`` once handed over: from then on ``_decomp``
+        # exists and the rest of this class works as a plain chunked decoder.
         self._held: bytearray | None = bytearray()
         # Set by ``flush`` when it hands the held input over: the stream keeps pulling
         # output through ``feed(b"")`` until this decoder has none left
         # (``drains_after_flush``), then calls ``flush`` again.
         self._draining = False
-        # Set when a member past ``in_process_max_input`` was refused: every later
+        # Set when a member was refused (no child process could start): every later
         # ``feed`` and ``flush`` raises ``ResourceLimitError`` again, since there is
         # no decoder to go on with.
         self._refusal: str | None = None
@@ -259,6 +263,8 @@ class PpmdDecoder(BaseDecoder):
         # Set when the end check's one-symbol probe left the worker waiting for input
         # (a PPMd8 stream with no end mark), so ``_quiesce_worker`` must still run.
         self._probe_parked = False
+        # Set by ``spoil_child``: a check above this decoder failed.
+        self._spoiled = False
 
     def _open_native(self, *, in_child: bool) -> None:
         """Create the decoder ``_decomp``, in this process or in a child one.
@@ -275,11 +281,12 @@ class PpmdDecoder(BaseDecoder):
         if self._decomp is not None:  # a test double installed before first use
             return
         if in_child:
-            self._decomp = PpmdChildDecoder(
+            self._decomp = open_ppmd_child(
                 variant=self._variant,
                 order=self._order,
                 mem_size=self._mem_size,
                 restore_method=self._restore_method,
+                setting=self._isolation.name,
             )
             return
         import pyppmd
@@ -311,6 +318,7 @@ class PpmdDecoder(BaseDecoder):
             in_process_max_input=self._in_process_max_input,
             refuse_input_after_end=self._refuse_input_after_end,
             input_runs_on=self._input_runs_on,
+            isolation=self._isolation,
         )
 
     @property
@@ -459,34 +467,29 @@ class PpmdDecoder(BaseDecoder):
         if self._refusal is not None:
             raise ResourceLimitError(self._refusal)
 
-    def _release_to_child(self, limit: int) -> bytes:
-        if self._input_runs_on:
-            reason = (
-                "This PPMd member's size is not known until it has been read (a ZIP "
-                "member read from a stream that cannot seek), so it can only be "
-                "decoded in a child process (pyppmd fed in pieces can crash the "
-                "process on corrupt input), and none can be started. Read the "
-                "archive from a seekable source, where its size is known first."
-            )
-        else:
-            reason = (
-                f"Decoder limit reached: max_ppmd_in_process_input={limit}. This "
-                "PPMd member is larger, and no child process can be started to "
-                "decode it (pyppmd can crash the process on corrupt input past "
-                "this size). Raise DecoderLimits.max_ppmd_in_process_input to "
-                "decode it in-process."
-            )
+    def _release_to_child(self) -> bytes:
+        reason = (
+            "This PPMd member can only be decoded in a child process (pyppmd can crash "
+            "the process on corrupt input), and none can be started"
+        )
+        setting = self._isolation.name
         unavailable = ppmd_child_unavailable_reason()
         if unavailable is not None:
-            self._refuse(f"{reason} ({unavailable})")
+            self._refuse(str(isolation_error(f"{reason} ({unavailable})", setting)))
         try:
             return self._release_held(in_child=True)
-        except PpmdChildStartError as exc:
-            self._refuse(f"{reason} ({exc})", exc)
+        except DecoderChildStartError as exc:
+            self._refuse(str(isolation_error(f"{reason} ({exc})", setting)), exc)
         except PpmdChildAllocationError as exc:
             # The child started, so the advice above does not apply: in-process, the
             # same allocation would abort this process.
             self._refuse(f"Decoder limit reached: {exc}", exc)
+
+    def _release_now(self) -> bytes:
+        """Hand the held input over where this member decodes."""
+        if self._in_child:
+            return self._release_to_child()
+        return self._release_held(in_child=False)
 
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
         self._check_refusal()
@@ -499,19 +502,20 @@ class PpmdDecoder(BaseDecoder):
         if self._held is not None:
             self._held += chunk
             limit = self._in_process_max_input
-            # The limit is checked first: a member past it goes to a child even when
-            # its whole pack arrived in this one feed. How much one feed carries is up
-            # to the caller's read size, which must not decide where a member decodes.
             if self._input_runs_on:
+                # No size to hold it to: fed in pieces from the first input.
                 if not self._held:
                     return DecodeOut(b"")
-                if limit is None:
-                    self._refuse(_INPUT_RUNS_ON_IN_PROCESS)
-                chunk = self._release_to_child(limit)
-            elif limit is not None and len(self._held) > limit:
-                chunk = self._release_to_child(limit)
-            elif self._pack_complete() is True:
-                chunk = self._release_held(in_child=False)
+                chunk = self._release_now()
+            elif (limit is not None and len(self._held) > limit) or (
+                self._pack_complete() is True
+            ):
+                # Whole when the member fits under the limit, in pieces past it. A
+                # child gets the same: pyppmd fed in pieces can stop at a false end
+                # on valid data, so whole is the path that is known to work. Both
+                # tests lead to the same hand-over, so their order does not matter;
+                # where the member decodes is ``isolation``'s alone.
+                chunk = self._release_now()
             else:
                 return DecodeOut(b"")
         if self._at_declared_size():
@@ -656,9 +660,9 @@ class PpmdDecoder(BaseDecoder):
             # Compressed EOF with input still held: a member shorter than its pack
             # (truncated, or a password check's capped read), or one with no declared
             # pack size. Everything that will ever arrive is here, so hand it over
-            # whole, in this process, and take the first chunk of output; the stream
-            # drains the rest through ``feed(b"")`` and then calls ``flush`` again.
-            data = self._release_held(in_child=False)
+            # whole and take the first chunk of output; the stream drains the rest
+            # through ``feed(b"")`` and then calls ``flush`` again.
+            data = self._release_now()
             limit = self._max_length()
             limit = (
                 _PPMD_FLUSH_DRAIN_CHUNK
@@ -767,7 +771,12 @@ class PpmdDecoder(BaseDecoder):
                 # parked on empty input, so neither flag can be trusted and the NUL
                 # is sent anyway. Measured on an overstated ``unpack_size``: without
                 # it valgrind shows the Free-time invalid write and a later decoder
-                # in the same process can start from corrupted state.
+                # in the same process can start from corrupted state. The cost: when
+                # the short return was the model's end rather than a wait for input,
+                # this NUL is a decode after the end. It measured clean in isolation
+                # and stays a candidate residual (``dev-docs/known-issues.md``). After
+                # a ``ValueError`` pyppmd reports ``eof``, so the check above returns
+                # without decoding, which matters: a NUL there does crash pyppmd.
                 if not self._exhausted and (
                     decomp.eof or not getattr(decomp, "needs_input", False)
                 ):
@@ -781,10 +790,30 @@ class PpmdDecoder(BaseDecoder):
         except Exception:  # noqa: BLE001 - teardown hygiene; never raise from close()/__del__
             pass
 
+    def spoil_child(self) -> None:
+        self._spoiled = True
+
+    def _ended_cleanly(self) -> bool:
+        """Whether the member decoded to its end with nothing left wrong: the one state
+        a child may serve another member from. Anything else may have left pyppmd's
+        memory corrupt without a crash, and ``_quiesce_worker`` may still send its NUL
+        after the model ended."""
+        return (
+            self.finished
+            and not self._spoiled
+            and not self._exhausted
+            and not self._probe_parked
+            and self._pending_error is None
+            and self._refusal is None
+            and not self._input_after_end
+        )
+
     def close(self) -> None:
-        self._quiesce_worker()
         decomp = getattr(self, "_decomp", None)
-        if isinstance(decomp, PpmdChildDecoder):
+        if isinstance(decomp, ChildPpmdDecoder) and not self._ended_cleanly():
+            decomp.spoil()
+        self._quiesce_worker()
+        if isinstance(decomp, ChildPpmdDecoder):
             decomp.close()
 
     def __del__(self) -> None:
@@ -807,6 +836,7 @@ def PpmdDecompressorStream(
     refuse_input_after_end: bool = False,
     input_runs_on: bool = False,
     collector: DiagnosticCollector | None = None,
+    isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
 ) -> DecompressorStream:
     """Decode a PPMd stream (forward-only).
 
@@ -829,6 +859,7 @@ def PpmdDecompressorStream(
             in_process_max_input=in_process_max_input,
             refuse_input_after_end=refuse_input_after_end,
             input_runs_on=input_runs_on,
+            isolation=isolation,
         ),
         collector=collector,
         codec_name="ppmd",

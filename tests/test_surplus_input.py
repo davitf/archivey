@@ -33,7 +33,13 @@ import archivey
 from archivey.config import AcceleratorMode, ArchiveyConfig, DecoderLimits
 from archivey.exceptions import ArchiveyError, CorruptionError, TruncatedError
 from archivey.internal.backends import sevenzip_parser
-from tests.conftest import requires, requires_binary, requires_zstd, zstd_backend
+from tests.conftest import (
+    importorskip,
+    requires,
+    requires_binary,
+    requires_zstd,
+    zstd_backend,
+)
 from tests.test_audit2_zip import _build_zip, _Entry, _raw_deflate
 from tests.test_audit_sevenzip import (
     _LZMA,
@@ -410,7 +416,7 @@ def _ppmd7_coder_stream(payload: bytes) -> tuple[bytes, bytes]:
 def sz_ppmd(
     request: pytest.FixtureRequest, tmp_path: Path, payload: bytes
 ) -> tuple[bytes, bytes]:
-    pytest.importorskip("pyppmd")
+    importorskip("pyppmd")
     if request.param == "pyppmd":
         return _ppmd7_coder_stream(payload)
     return _7z_coder_stream(_7zip(tmp_path, payload, "-t7z", "-mhc=off", "-m0=PPMd"))

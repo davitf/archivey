@@ -37,6 +37,11 @@ from typing import BinaryIO
 
 from archivey.exceptions import TruncatedError
 from archivey.internal.streams.codecs.base import RAW_DEFLATE_WBITS
+from archivey.internal.streams.codecs.isolated import (
+    IN_PROCESS,
+    Natives,
+    ZlibDecompressor,
+)
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
     DecodeOut,
@@ -137,13 +142,15 @@ def _prefix(bit: int) -> tuple[bytes, int]:
     return data, low
 
 
-def _resume_decompressor(resume: DeflateResume) -> zlib._Decompress:
+def _resume_decompressor(
+    resume: DeflateResume, natives: Natives = IN_PROCESS
+) -> ZlibDecompressor:
     """A raw DEFLATE decompressor with ``resume``'s window, after checking the point."""
     if not 0 <= resume.bit < 8 or len(resume.window) > WINDOW_SIZE:
         raise ValueError(f"not a DEFLATE resume point: {resume!r}")
     if resume.window:
-        return zlib.decompressobj(RAW_DEFLATE_WBITS, zdict=resume.window)
-    return zlib.decompressobj(RAW_DEFLATE_WBITS)
+        return natives.zlib_decompressobj(RAW_DEFLATE_WBITS, zdict=resume.window)
+    return natives.zlib_decompressobj(RAW_DEFLATE_WBITS)
 
 
 def _splice(bit: int, chunk: bytes) -> bytes:
@@ -172,8 +179,9 @@ class DeflateResumeDecoder(BaseDecoder):
         *,
         corruption: Callable[[zlib.error], Exception],
         truncated: str,
+        natives: Natives = IN_PROCESS,
     ) -> None:
-        self._decomp = _resume_decompressor(resume)
+        self._decomp = _resume_decompressor(resume, natives)
         self._base = base
         self._corruption = corruption
         self._truncated = truncated
@@ -221,6 +229,7 @@ def stream_end(
     cap: int,
     *,
     check_input_after: bool = False,
+    natives: Natives = IN_PROCESS,
 ) -> tuple[int | None, bool]:
     """The decompressed offset where the raw DEFLATE stream in ``source`` ends, and
     whether input follows it.
@@ -239,12 +248,12 @@ def stream_end(
     stream's first end: a resume point can lie in a further stream that rapidgzip read
     on into.
     """
-    produced, bit, decomp = 0, 0, zlib.decompressobj(RAW_DEFLATE_WBITS)
+    produced, bit, decomp = 0, 0, natives.zlib_decompressobj(RAW_DEFLATE_WBITS)
     if point is not None:
         resume = point.state
         # RapidgzipChildStream.resume_point gives only such points.
         assert isinstance(resume, DeflateResume) and point.decompressed_offset <= cap
-        decomp = _resume_decompressor(resume)
+        decomp = _resume_decompressor(resume, natives)
         produced, bit = point.decompressed_offset, resume.bit
         source.seek(point.compressed_offset)
     else:
@@ -257,7 +266,17 @@ def stream_end(
             if not data:
                 data = source.read(1 << 16)
                 if not data:
-                    return None, False
+                    # zlib can still hold output an earlier ``max_length`` cut kept
+                    # back, the final block's included: drain it, then let ``eof``
+                    # decide whether the stream was cut. No ``flush`` fallback: on a
+                    # binding that holds more back, ``None`` costs a second decode
+                    # (the caller switches to the standard library), not a wrong
+                    # verdict.
+                    held = len(decomp.decompress(b"", 1 << 20))
+                    if not held and not decomp.eof:
+                        return None, False
+                    produced += held
+                    continue
                 data, bit = _splice(bit, data), 0
             produced += len(decomp.decompress(data, 1 << 20))
             data = decomp.unconsumed_tail

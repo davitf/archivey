@@ -679,9 +679,12 @@ any spelling that reaches it (through a directory symlink the archive created, u
 policy, or a case variant on a case-insensitive filesystem, under `STRICT` and `STANDARD`),
 that member's result SHALL be revised to `OVERWRITTEN`. Under `TRUSTED` the coordinator keys
 on the exact path and defers to the local OS (see the O2 collision requirement), so a case
-variant there is not recognized and the earlier result is not revised. Its `collided_with` stays `None`: DIRECTORY members are not claimed in the
-collision map, so this revises a result and is not a collision event, and
-`AbortOn.NAME_COLLISION` does not fire.
+variant there is not recognized and the earlier result is not revised. Outside
+`TRUSTED`, the replacing member collided with that directory (see the O2 collision
+requirement), so its `collided_with` names it and `AbortOn.NAME_COLLISION` fires before
+the directory is removed. Under `TRUSTED` there is no collision event: `collided_with`
+stays `None` and the abort does not fire, while the earlier result is still revised when
+the replacing member spells the directory's path exactly.
 
 A DIRECTORY member whose destination is a directory that was there before the run (the
 destination root, for a `./` member, when the call did not create it, or any directory
@@ -740,7 +743,7 @@ name-safety requirement.
 | Existing symlink under `REPLACE` | Symlink entry itself is replaced; bytes never follow the old link |
 | `REPLACE` fails mid-stream | Existing file remains unchanged; temp is discarded |
 | `REPLACE` clears a this-run destination and then fails | The earlier member is revised to `OVERWRITTEN`; no result claims `EXTRACTED` at the emptied path |
-| `REPLACE` removes an empty directory this run wrote | The directory member is revised to `OVERWRITTEN`, with `collided_with=None`; no collision abort |
+| `REPLACE` removes an empty directory this run wrote | The directory member is revised to `OVERWRITTEN`; outside `TRUSTED` the replacing member's `collided_with` names the directory, and under `TRUSTED` it is `None` |
 | Dangling symlink under `ERROR` or `SKIP` | Treated as existing; no write-through to target |
 | `foo/x` with no `foo/` entry, the caller's file at `foo`, under `ERROR` | `foo/x` `FAILED` with `ExtractionError` ("Destination already exists"); the file is kept |
 | The same under `SKIP` | `foo/x` `NOT_OVERWRITTEN`; the file is kept |
@@ -904,6 +907,14 @@ intra-member reports they exclude the in-flight member); other statuses advance
 `members_done` without incrementing either. Predicate selectors evaluated against
 an upfront index MUST be pure functions of the member.
 
+For a ZIP read from a non-seekable source ("A ZIP extracted from a non-seekable source
+is settled at the end of the pass"), a member's reports SHALL be made while its data is
+staged, its intra-member reports and terminal report together, so `members_done` counts
+the members staged and can count one that is then not placed. `members_extracted` and
+`members_blocked` count placed outcomes: they stay 0 during the pass, and placement
+SHALL make one more report when it ends, naming the last member it handled, with the
+final tallies.
+
 For a FILE member with a streamed body, the callback MAY be invoked **more than
 once** as bytes are written: intra-member reports carry `member` = the current
 member, `members_done` = the number of members fully completed *before* this one,
@@ -929,6 +940,7 @@ frequency is bounded by the extraction copy chunk size; when `on_progress` is
 | Free list + selector | Totals cover selected members only; filter skips/failures still advance `members_done` |
 | Terminal report after `EXTRACTED` / `BLOCKED` | `members_extracted` / `members_blocked` match completed outcome tallies |
 | `on_progress is None` | No callback; no extra per-chunk work beyond byte counting |
+| ZIP from a pipe, three members, the directory drops the second | Each member's reports made in order while staged; one more report after placement with the final tallies |
 
 ### Requirement: Per-ArchiveMember ExtractionResult with Status
 
@@ -1091,6 +1103,7 @@ are the per-result outcome.
 | Case | `collided_with` |
 | --- | --- |
 | Blocked by a member of this run (`SKIP` / `ERROR` / `REPLACE` / `RENAME`) | the prior member's written path |
+| A non-directory member blocked by a directory this run wrote, or created as a parent of an earlier member | that directory's path |
 | Blocked by an entry already on disk before extraction | `None` |
 | No collision at all | `None` |
 | Any collision under `ExtractionPolicy.TRUSTED` | `None` (no collision event) |
@@ -1171,48 +1184,74 @@ unexpected programming exceptions are always-stop and are not swallowed.
 
 A ZIP read from a non-seekable source (`streaming=True`) gives each member's type, mode,
 host and comment, and the order that decides `is_current`, only in its central
-directory, after the last member. `extract_all` SHALL write each member as its local
-header describes it, then, at the end of the pass, settle every member the directory
-changes so that the files on disk match the extraction of the same archive from a
-file:
+directory, after the last member. During the pass, `extract_all` SHALL write the data of
+each member the selection may take into one staging directory, named `.archivey-tmp-`
+and a random suffix, directly under the destination root, and SHALL write nothing else
+into the destination. Once the directory has been read, it SHALL place the members in
+listing order, as the extraction of the same archive from a file places them, each read
+from its staged data:
 
-- A member whose type the directory changes SHALL go through the caller's `filter` and
-  the policy's checks again, on the updated member, before its link is made. A refusal
-  removes the file written for it and is recorded as for any refused member, so a
-  symlink that escapes the destination is refused from a pipe as from a file. Links
-  are made only after the last member has been written.
+- The selection, the caller's `filter`, the policy's checks, the overwrite policy, name
+  collisions and `abort_on` SHALL each act on the member as the directory describes
+  it, when the member is placed. A symlink that escapes the destination is therefore
+  refused from a pipe as from a file, and nothing is written through a link before
+  every member is known.
+- During the pass, the universal path-safety checks and the name policy SHALL also run
+  on each member as its local header names it, before its data is staged. A member
+  they refuse SHALL NOT be staged, and `AbortOn.BLOCKED_MEMBER` and
+  `AbortOn.NAME_SANITIZED` SHALL act on that refusal at once, as on a refusal at
+  placement. A refusal blocks the member, so under `OnError.STOP` alone the run goes
+  on, as at placement. A member's data failure while it is staged SHALL stop an
+  `OnError.STOP` run at once. So a hostile archive is refused under `abort_on`, and a
+  damaged one under `OnError.STOP`, without decoding the rest of it.
 - Five things are known only once the directory has been read, and each SHALL fail
   the member it names, under "Error Policy (OnError)" above: a size or CRC from a
   data descriptor that differs from the central entry; a local header whose CRC, sizes
   or encryption flag the central entry contradicts; two same-name members whose
   directory order reverses their file order (the current one fails, the other becomes
   `SUPERSEDED`); a directory entry with no local entry; and a local header and
-  directory entry that store different names. The member's result SHALL become the
-  one the extraction from a file gives it, or `FAILED` with `CorruptionError` where
-  that result needs bytes the stream has passed; the overwrite policy decides first.
-  An entry this run wrote stays only where the member whose result names it is
-  `EXTRACTED`; any other is removed. Under `OnError.STOP` the first such failure
-  SHALL raise `CorruptionError` at the end of the pass, after those revisions.
-- A local entry no directory entry points to SHALL be removed from disk and reported
+  directory entry that store different names. The member's result SHALL be the one
+  the extraction from a file gives it, or `FAILED` with `CorruptionError` where that
+  result needs bytes the pass did not stage; the overwrite policy decides first. Under
+  `OnError.STOP` the first such failure SHALL raise `CorruptionError` when placement
+  reaches it.
+- A local entry no directory entry points to SHALL NOT be placed, and SHALL be reported
   as `ARCHIVE_UNLISTED_DATA`.
+- A run that stops before placement begins SHALL leave nothing it wrote in the
+  destination. One that stops during placement SHALL keep the members already placed,
+  as an extraction from a file keeps the members before its stop. The staging directory
+  SHALL be removed when the run ends, whatever the outcome; one the filesystem refuses
+  to remove stays, with a warning.
+- The bomb limits SHALL count staged data as decoded output, and each staged file
+  toward `max_entries`, when it is staged: a staged file is an entry on disk. A staged
+  member that is not placed SHALL stop counting toward `max_extracted_bytes` and
+  `max_entries`, and SHALL still count toward the archive-wide ratio. Placing a staged
+  member adds nothing to any count; a member placed with no staged data (a directory, a
+  link, an empty file) SHALL count toward `max_entries` when it is placed.
 
 Where the two reads MAY differ (DR-5a, shapes only crafted archives have): the
 descriptor mismatch and the reversed pair fail a member the extraction from a file
-writes; a member whose data fails as the pass writes it stops an `OnError.STOP` run
-though the directory may then not list it; `abort_on` fires before a member is
-written, which can be before the end of the pass decides it is not selected; and the
-bomb limits count what the pass writes while it is on disk, so a member it takes back
-can still stop a run under `max_entries` or `max_extracted_bytes`.
+writes; a refusal on the local header's name, or a data failure, can stop a run for a
+member the directory then does not select or does not list; a member refused on the
+local header's name and accepted on the directory's fails, its data not staged; so
+does a member whose local name ends in a backslash, which the pass takes for a folder,
+when the directory makes it a file with data; and the bomb limits count what the pass
+stages, so a member staged and then not placed can still stop a run under
+`max_entries` or `max_extracted_bytes`, a member the filter skips included.
 
 #### Scenario: ZIP from a pipe, settled at the end of the pass
 
 | Case | Expected |
 | --- | --- |
-| The directory types a member written as a file as a symlink to `../../etc/passwd` | The filter and policy run again; the member is refused and its file removed, as from a file |
+| The directory types a member staged as a file as a symlink to `../../etc/passwd` | Refused when placed, as from a file; nothing of it reaches the destination |
 | Two same-name members `M1`, `M2` in file order, the directory makes `M1` current, `OnError.CONTINUE` | `M1` `FAILED` with `CorruptionError`, `M2` `SUPERSEDED`; the path is empty |
-| A STORED bit-3 member whose data embeds a descriptor for a prefix of itself | `FAILED` with `CorruptionError`; its entry removed; under `OnError.STOP` raised at the end of the pass |
+| A STORED bit-3 member whose data embeds a descriptor for a prefix of itself | `FAILED` with `CorruptionError`; nothing placed for it; under `OnError.STOP` raised when placement reaches it |
 | A directory entry with no local entry, selected | A `FAILED` result is added for it |
-| A local entry the directory does not list | Removed from disk; `ARCHIVE_UNLISTED_DATA` |
+| A local entry the directory does not list | Not placed; `ARCHIVE_UNLISTED_DATA` |
+| The run stops before the directory is read (`abort_on`, `on_error="stop"`, a limit) | The destination holds nothing the run wrote; the caller's entries are as they were |
+| First member `../../etc/passwd`, `abort_on={BLOCKED_MEMBER}` | `FilterRejectionError` at that member, before any later member is decoded |
+| `overwrite="replace"` over a caller's file, for a member the selection drops once the directory is read | The caller's file is untouched |
+| The staging directory cannot be removed at the end of the run | It stays, named `.archivey-tmp-…`, with a warning |
 
 ### Requirement: A listing that ends in damage extracts its prefix, then raises
 
@@ -1320,7 +1359,11 @@ guard. The counter protects against inode/per-directory/syscall bombs made of ma
 tiny entries and is independent of byte and ratio limits.
 
 Only members that will create disk entries SHALL count: selector exclusions, user
-filter skips, and members dropped before writing do not increment the counter.
+filter skips, and members dropped before writing do not increment the counter. The
+exception is a ZIP read from a pipe, whose pass stages a file for each member the
+selection may take before the filter runs ("A ZIP extracted from a non-seekable source
+is settled at the end of the pass"): each staged file counts while it is on disk, and
+stops counting if its member is not placed.
 Every written FILE, DIR, SYMLINK, and HARDLINK counts. This is a global resource
 guard and halts even under `OnError.CONTINUE`. The same limit separately bounds the
 symlink rechecks of "Symlink Escape Re-Validated at Extraction Time".
@@ -1426,7 +1469,16 @@ into one already there. The coordinator looks a DIRECTORY member up in the map w
 destination holds a non-directory entry. If a member of this run claimed that entry, the
 DIRECTORY member collides with it under every `OverwritePolicy`, as a file member
 would: `collided_with`, `AbortOn.NAME_COLLISION` and the `REPLACE` revision of the
-earlier member to `OVERWRITTEN` all apply. On a case-sensitive filesystem a file `Foo` and a
+earlier member to `OVERWRITTEN` all apply. The same holds the other way: a non-directory
+member whose destination is a directory this run wrote, or created as the parent of an
+earlier member (`x/f` and then `x`), collides with that directory under every
+`OverwritePolicy`. `collided_with` names the directory (the directory member's `path`
+when one wrote it), `AbortOn.NAME_COLLISION` fires, and the policy then meets the
+directory where it is: `ERROR` fails the member, `SKIP` records `NOT_OVERWRITTEN`,
+`REPLACE` removes it only when it is empty, and `RENAME` writes the member under a
+derived name. A directory that was there before the run is not a collision event, even
+when a DIRECTORY member of this run merged into it. On a
+case-sensitive filesystem a file `Foo` and a
 directory `foo/` do not share an entry, so they do not collide. `REPLACE`
 SHALL NOT silently merge distinct members on case-insensitive filesystems: the earlier
 member's result SHALL be revised to `ExtractionStatus.OVERWRITTEN` so the merge is
@@ -1563,12 +1615,13 @@ independent of `OnError` and of `DiagnosticPolicy` — a blocked member aborts u
 either `OnError` value when `BLOCKED_MEMBER` is set, and never aborts when it is not.
 
 Output written for **earlier** members SHALL remain on disk, matching `OnError.STOP`:
-abort stops the run, it does not roll it back. The exception is a ZIP read from a pipe,
-whose pass stops before the central directory says which members are links: it removes
-the files it wrote that could still be links (`format-zip`, "Read a non-seekable ZIP
-source in one forward pass"). For a collision abort this means the
+abort stops the run, it does not roll it back. For a collision abort this means the
 first member's bytes are typically still present at the contested path, since that
-member completed normally before the collision was detected.
+member completed normally before the collision was detected. A ZIP read from a pipe
+places its members only once the central directory has been read ("A ZIP extracted
+from a non-seekable source is settled at the end of the pass"): an abort during its
+pass leaves nothing in the destination, and an abort during placement keeps the members
+placed before it, in listing order, as above.
 
 Because no report is returned, an abort SHALL have no observable result-side effect:
 in particular the earlier member is not revised to `OVERWRITTEN` anywhere the caller
@@ -1592,6 +1645,7 @@ expresses "raise on the first failure".
 | Trailing-dot name under `STRICT`, `abort_on={NAME_SANITIZED}` | `NameRewrittenError` at that member; no report |
 | Collision under `TRUSTED`, `abort_on={NAME_COLLISION}` | No collision event, so no abort |
 | `abort_on={BLOCKED_MEMBER}` with `OnError.STOP` and a corrupt member | Failure still raises via `OnError`; abort applies only to blocks |
+| ZIP from a pipe, `abort_on={NAME_COLLISION}`, two members colliding | `NameCollisionError` when the second is placed; the first stays placed |
 
 ### Requirement: Dry-run extraction
 

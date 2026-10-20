@@ -67,30 +67,49 @@ class MemberStreams(Flag):
 
 
 class ContainerFormat(StrEnum):
+    """The archive format that holds the members, the first half of an
+    :class:`~archivey.ArchiveFormat`."""
+
     ZIP = "zip"
     TAR = "tar"
     RAR = "rar"
     SEVEN_Z = "7z"
     ISO = "iso"
-    # Recognised so an open can refuse the image by name. Nothing reads it.
+    """An ISO 9660 disc image."""
     DMG = "dmg"
+    """An Apple disk image. archivey recognises one so that opening it can refuse it by
+    name, but cannot read it."""
     DIRECTORY = "directory"
+    """A folder on disk, read as if it were an archive."""
     RAW_STREAM = "raw_stream"
+    """No container: a single compressed file, such as a ``.gz``. The
+    :class:`~archivey.StreamFormat` says which compressor."""
     UNKNOWN = "unknown"
+    """What detection reports when no format matches. Passing a format with this
+    container to ``open_archive()`` or ``open_stream()`` raises
+    :class:`~archivey.ArchiveyUsageError`."""
 
 
 class StreamFormat(StrEnum):
+    """The compression around the whole container, the second half of an
+    :class:`~archivey.ArchiveFormat`. Each value is the format's file extension."""
+
     UNCOMPRESSED = "uncompressed"
+    """No compression around the container. ZIP, 7z, RAR, ISO and a plain TAR use this;
+    their members can still be compressed inside."""
     GZIP = "gz"
     BZIP2 = "bz2"
     XZ = "xz"
     ZSTD = "zst"
     LZ4 = "lz4"
     LZIP = "lz"
-    LZMA_ALONE = "lzma"  # legacy LZMA Alone file format (not raw FORMAT_RAW)
+    LZMA_ALONE = "lzma"
+    """The legacy ``.lzma`` file format, also called LZMA Alone."""
     ZLIB = "zz"
     BROTLI = "br"
+    """Brotli has no signature, so archivey detects it by the file name."""
     UNIX_COMPRESS = "Z"
+    """The Unix ``compress`` format."""
 
 
 @dataclass(frozen=True)
@@ -110,7 +129,11 @@ class ArchiveFormat:
     """
 
     container: ContainerFormat
+    """The archive format, such as ``ZIP`` or ``TAR``."""
+
     stream: StreamFormat
+    """The compression around the archive, such as ``GZIP`` for a ``.tar.gz``, or
+    ``UNCOMPRESSED``."""
 
     def __post_init__(self) -> None:
         # Converted, not only checked: both enums are ``StrEnum``, so a member is a
@@ -259,13 +282,27 @@ class MissingComponent:
     registry ↔ codecs import cycle.
     """
 
-    name: str  # e.g. "pycdlib", "brotli", "unrar"
-    # A package's install line, e.g. "pip install archivey[recommended]"; for an
-    # external program (``unrar``), the whole refusal a read would raise.
+    name: str
+    """The package or program, such as ``"pycdlib"``, ``"brotli"`` or ``"unrar"``."""
+
     install_hint: str
-    unlocks: tuple[
-        str, ...
-    ] = ()  # member-codecs/capabilities it enables, e.g. ("ppmd",)
+    """For a package, the command that installs it, such as
+    ``"pip install archivey[recommended]"``. For a program such as ``unrar``, the whole
+    message a read raises without it."""
+
+    unlocks: tuple[str, ...] = ()
+    """The codecs or features it enables, such as ``("ppmd",)``."""
+
+    reason: str = ""
+    """Why archivey does not use the package on this interpreter, where installing it
+    would not help, such as ``"archivey does not use lz4 under PyPy, where its frame
+    decoder crashes the interpreter"``. Empty when installing it is the fix."""
+
+    @property
+    def advice(self) -> str:
+        """What a report of this component says to do: ``reason`` when set, otherwise
+        ``install_hint``."""
+        return self.reason or self.install_hint
 
     def message(self, purpose: str, *, note: str = "") -> str:
         """Text for the ``PackageNotInstalledError`` raised when this component is absent.
@@ -279,19 +316,29 @@ class MissingComponent:
         ``note`` appends a sentence for cases where the bare hint would mislead (e.g.
         a backport that is pointless on a Python version shipping the module).
 
+        When ``reason`` is set it replaces the install advice, which would not help.
+
         For package entries only: a program entry's ``install_hint`` is already a
         complete message.
         """
-        text = f"The {self.name!r} package is required for {purpose} ({self.install_hint})."
+        if self.reason:
+            text = f"The {self.name!r} package is required for {purpose}, but {self.reason}."
+        else:
+            text = f"The {self.name!r} package is required for {purpose} ({self.install_hint})."
         return f"{text} {note}" if note else text
 
 
 class FormatSupport(Enum):
-    """Tri-state readability of a known format (see ``backend-registry``)."""
+    """How much of a known format this installation can read."""
 
-    FULL = "full"  # backend usable AND every optional codec/tool it can use is present
-    PARTIAL = "partial"  # opens & lists; common members decode; some optional codec or tool missing
-    NONE = "none"  # backend (or a single-codec format's sole codec) is unavailable
+    FULL = "full"
+    """The format can be read, with every optional codec and program it can use."""
+    PARTIAL = "partial"
+    """Archives open and list, and members in the common methods read, but an optional
+    codec or program is missing."""
+    NONE = "none"
+    """The format cannot be read: its reader is missing, or for a single-file format,
+    its only codec."""
 
 
 @dataclass(frozen=True)
@@ -299,8 +346,15 @@ class FormatAvailability:
     """The support level of a format plus the components needed to raise it."""
 
     format: ArchiveFormat
+    """The format this answer is about."""
+
     support: FormatSupport
-    missing: tuple[MissingComponent, ...] = ()  # empty when FULL
+    """How much of the format can be read."""
+
+    missing: tuple[MissingComponent, ...] = ()
+    """What to install to read more of the format. Empty when ``support`` is
+    ``FULL``."""
+
     required_source: StreamCapability = StreamCapability.SEEKABLE
     """The weakest source shape this format can be read from.
 
@@ -343,21 +397,23 @@ class TrailerSignature(NamedTuple):
 
 
 class MemberType(Enum):
-    """Kind of archive entry.
-
-    ``ANTI`` is a deletion/tombstone (solid 7z incremental updates), not a payload
-    file — ``is_file`` is false and extraction skips it. ``OTHER`` covers device
-    nodes, FIFOs, sockets, etc. that store no data, and is always rejected by safe
-    extraction. A special-mode entry that does carry data is a ``FILE`` with
-    ``extra["special_file_type"]`` saying what the archive called it (DR-25).
-    """
+    """Kind of archive entry."""
 
     FILE = "file"
+    """A regular file. A device, FIFO or socket entry that carries data is a ``FILE``
+    too, with ``extra["special_file_type"]`` saying what the archive called it."""
     DIRECTORY = "directory"
     SYMLINK = "symlink"
+    """A symbolic link. ``link_target`` holds the target as stored."""
     HARDLINK = "hardlink"
+    """A hard link to another member, whose data it shares. ``link_target`` names that
+    member, and ``link_target_member`` is the member when the archive has it."""
     OTHER = "other"
+    """An entry with no data that is not a file, directory or link, such as a device,
+    FIFO or socket. Extraction refuses it under every policy."""
     ANTI = "anti"
+    """A deletion marker from a 7z incremental update, saying that a file was removed.
+    It is not a file (``is_file`` is false), and extraction skips it."""
 
 
 # ``StrEnum`` because the member is a ``str``: ``str()`` and f-strings return the
@@ -368,17 +424,19 @@ class HashAlgorithm(StrEnum):
     """Digest algorithms that may appear as keys in :attr:`ArchiveMember.hashes`."""
 
     CRC32 = "crc32"
+    """CRC-32, as four big-endian bytes."""
     BLAKE2SP = "blake2sp"
+    """BLAKE2sp, 32 bytes. Only RAR5 stores it."""
 
 
 class CompressionAlgorithm(Enum):
-    """A compression/filter codec. Extensible: codecs Archivey does not recognize
-    map to ``UNKNOWN`` rather than raising, so callers should treat the set as
-    open-ended. ``ContainerFormat.RAR`` and ``CompressionAlgorithm.RAR`` are
-    homonyms (container vs codec), not a new name like ``RAR_COMPRESSION``.
+    """A compression method or filter in a member's :class:`CompressionMethod` chain.
+
+    Later versions may add members, so treat the set as open-ended.
     """
 
     STORED = "stored"
+    """No compression."""
     DEFLATE = "deflate"
     DEFLATE64 = "deflate64"
     BZIP2 = "bzip2"
@@ -388,11 +446,19 @@ class CompressionAlgorithm(Enum):
     LZ4 = "lz4"
     BROTLI = "brotli"
     PPMD = "ppmd"
-    BCJ = "bcj"  # x86 executable filter
+    BCJ = "bcj"
+    """A filter that makes x86 executable code compress better. It does not compress
+    by itself."""
     BCJ2 = "bcj2"
+    """7z's variant of ``BCJ``, which splits the code into four streams."""
     DELTA = "delta"
+    """A filter that stores the difference between bytes a fixed distance apart. It
+    does not compress by itself."""
     RAR = "rar"
-    UNKNOWN = "unknown"  # unrecognized codec ID
+    """RAR's own compression, any version. Not the same as ``ContainerFormat.RAR``,
+    which is the archive format."""
+    UNKNOWN = "unknown"
+    """A method archivey does not recognise. Listing still works."""
 
 
 @dataclass(frozen=True)
@@ -405,14 +471,34 @@ class CompressionMethod:
     """
 
     algo: CompressionAlgorithm
-    # RAR's M1-M5 method-byte offset (0 = stored, 5 = best). RAR is the only
-    # backend that fills this in; ZIP, 7z and TAR leave it None.
+    """The method or filter."""
+
     level: int | None = None
-    properties: bytes | None = None  # raw codec properties blob, if any
+    """RAR only: the compression level, from 1 (fastest) to 5 (best), as ``rar -m1``
+    to ``-m5`` set it. A stored RAR member is ``STORED`` with no level, and other
+    formats leave it ``None``."""
+
+    properties: bytes | None = None
+    """7z only: the coder's properties as stored, such as LZMA's dictionary size.
+    Other formats leave it ``None``."""
 
 
 class CreateSystem(Enum):
-    """OS that created the archive entry (mirrors ZIP create_system values)."""
+    """The operating system that wrote a member, in :attr:`ArchiveMember.create_system`.
+
+    The values are ZIP's "version made by" host numbers. Other formats map their own
+    host field onto them:
+
+    - ZIP: any of these values, and ``UNKNOWN`` for a number not listed here. A pass
+      over a pipe leaves it ``None`` until it reaches the central directory.
+    - RAR 1.5 to 4: ``FAT`` (MS-DOS), ``OS2_HPFS``, ``WINDOWS_NTFS``, ``UNIX``,
+      ``MACINTOSH`` or ``BEOS``; ``UNKNOWN`` for any other host byte.
+    - RAR5: ``WINDOWS_NTFS`` or ``UNIX``.
+    - 7z records no host. archivey reports ``UNIX`` when the member stores a Unix mode,
+      and ``WINDOWS_NTFS`` otherwise.
+    - TAR, ISO, a directory and a single-file format such as ``.gz`` leave
+      ``create_system`` as ``None``.
+    """
 
     FAT = 0
     AMIGA = 1
@@ -868,7 +954,9 @@ class ArchiveMember:
     """Per-member comment, if the format records one."""
 
     create_system: CreateSystem | None = None
-    """The OS that created the entry (drives mode/attribute interpretation)."""
+    """The operating system that wrote the entry. For ZIP and RAR it decides how the
+    stored mode and attributes are read. ``None`` for formats that do not record one;
+    see :class:`CreateSystem` for what each format sets."""
 
     windows_attrs: int | None = None
     """Raw Windows file-attribute bitmask, if recorded."""
@@ -1198,48 +1286,47 @@ MemberSelectorArg = (
 )
 # ``MemberFilter`` — a per-member sanitize/rename hook run after the policy transform and
 # before the safety checks, so it sees unsafe members too and can rename them; the
-# safety checks run on what it returns. Returns a ``.replace()``d copy, or ``None`` to
-# skip the member. ``archivey.sanitize_names`` is a ready-made one.
+# safety checks run on what it returns. From a ZIP read from a pipe the checks also run
+# on each member's local-header name before its data is staged, so a member they refuse
+# there fails whatever name the filter gives it. Returns a ``.replace()``d copy, or
+# ``None`` to skip the member. ``archivey.sanitize_names`` is a ready-made one.
 MemberFilter = Callable[[ArchiveMember], "ArchiveMember | None"]
 
 
 class ExtractionPolicy(Enum):
     """How much of an archive member to trust when writing it to the destination.
 
-    The universal path/symlink/special-file safety checks are enforced under **all**
-    policies (see ``safe-extraction``). Beyond those, the policy governs two dimensions:
-    the permission/ownership transform applied before a member is written, and the
-    cross-platform name safety keyed off it — collision determinism (O2), reserved/mangled
-    name rejection (O3/O4), portable-name normalization (O7), and rejection of
-    **deceptive** names (bidi overrides). ``STRICT`` is portable-by-default; ``TRUSTED``
-    defers to the local OS (faithful bytes, no name rejection or rewrite). See
-    ``dev-docs/decisions/0013-cross-platform-name-safety-policies.md``.
-
-    Absolute names: ``STRICT`` refuses them; ``STANDARD`` and ``TRUSTED`` drop the root
-    and extract inside the destination (``/etc/x`` → ``etc/x``), as tar and unzip do.
-
-    What ``TRUSTED`` does **not** relax: anything where the write itself is unsafe — a
-    name that escapes the destination, carries a NUL, or names a device node — and
-    anything whose outcome would differ by OS. A symlink target with a Windows drive
-    letter or UNC root (``C:/Windows``, ``//server/share``) is refused on every OS,
-    because Windows refuses it, so a Windows symlink to a drive path does not round-trip
-    at any policy. A hardlink target is not a path: it names an earlier member, and the
-    link is refused when the member it gets its bytes from is. A link to the member
-    ``C:/x`` extracts under ``STANDARD`` and ``TRUSTED``, which re-root that member, and
-    a link to the member ``C:x`` extracts at no policy. Those are universal. It *does*
-    extract a name built to display as something else (``evil<U+202E>gnp.exe``), which
-    ``STRICT``/``STANDARD`` refuse with ``FilterRejectionError``: such a member lands
-    inside the destination under exactly its stored bytes, so the risk is to a human
-    reading the directory afterwards, not to the filesystem. Choosing ``TRUSTED``
-    accepts that, which is what makes faithful round-tripping possible. See
-    ``dev-docs/decisions/0017-bidi-override-rejection-is-policy-keyed.md``.
+    The policy decides how names and permissions are written. Some checks hold under
+    every policy, because the write itself would be unsafe or would differ by OS: a name
+    or link that leads outside the destination, a name with a NUL, a device node, and a
+    symlink target with a Windows drive letter or UNC root (``C:/Windows``,
+    ``//server/share``), which Windows refuses and so is refused on every OS. A hardlink
+    is refused when the member it takes its data from is.
     """
 
-    STRICT = "strict"  # default; untrusted archives
-    STANDARD = "standard"  # moderate trust; e.g. your own older archives
-    TRUSTED = (
-        "trusted"  # apply stored mode (and uid/gid as root); path safety still enforced
-    )
+    # Design records: dev-docs/decisions/0013-cross-platform-name-safety-policies.md and
+    # 0017-bidi-override-rejection-is-policy-keyed.md.
+
+    STRICT = "strict"
+    """The default, for archives from anywhere. A name is rewritten to a spelling every
+    supported OS stores the same way, or refused when that is not possible: absolute
+    names, Windows reserved names such as ``CON``, names with ``:``, and names with
+    characters that reorder how they display are refused. Files keep their permissions
+    without the setuid, setgid and sticky bits and without write access for group and
+    others, and a file its owner cannot execute is executable by nobody. Directories
+    are ``rwxr-xr-x``, and owners are not applied."""
+    STANDARD = "standard"
+    """For archives you mostly trust, such as your own. As ``STRICT``, but trailing dots
+    and spaces are kept, an absolute name is extracted inside the destination
+    (``/etc/x`` as ``etc/x``, as tar and unzip do), and permissions are kept as stored
+    without the setuid, setgid and sticky bits."""
+    TRUSTED = "trusted"
+    """For archives you trust, to reproduce them faithfully. Names are written as
+    stored, except that an absolute name is extracted inside the destination.
+    Permissions are kept as stored, and owners too when running as root. A name built to
+    display as something else is extracted, where the other policies refuse it: it lands
+    inside the destination under its stored bytes, so the risk is to a person reading
+    the directory, not to the file system."""
 
 
 # The string spellings of ``ExtractionPolicy``, so a type checker flags a bad one at the
@@ -1251,20 +1338,22 @@ ExtractionPolicyStr = Literal["strict", "standard", "trusted"]
 
 
 class OverwritePolicy(Enum):
-    """What to do when a destination entry already exists where a member would be written.
+    """What to do when a destination entry already exists where a member would be written."""
 
-    ``ERROR`` raises an ``ExtractionError`` for the member, which is then a per-member
-    failure governed by the ``OnError`` policy — ``OnError.STOP`` re-raises and halts,
-    ``OnError.CONTINUE`` records a ``FAILED`` ``ExtractionResult`` and proceeds. ``SKIP``
-    is not an error: it records a ``NOT_OVERWRITTEN`` result regardless of ``OnError``.
-    """
-
-    ERROR = "error"  # existing entry -> ExtractionError (then handled per OnError)
-    SKIP = "skip"  # silently skip existing entries (records NOT_OVERWRITTEN)
-    REPLACE = (
-        "replace"  # unlink the existing entry, then create fresh (never write-through)
-    )
-    RENAME = "rename"  # write a colliding entry under a derived "name (N)" spelling
+    ERROR = "error"
+    """The default. The member fails with :class:`~archivey.ExtractionError`, and
+    :class:`OnError` decides whether extraction goes on."""
+    SKIP = "skip"
+    """The existing entry stays, and the member's result is ``NOT_OVERWRITTEN``. This is
+    not a failure, so :class:`OnError` does not apply."""
+    REPLACE = "replace"
+    """The existing entry is deleted, then the member is written, so it is never written
+    through a link that was there. A directory member merges into an existing directory.
+    Any other member replaces an existing directory only if it is empty, and otherwise
+    fails."""
+    RENAME = "rename"
+    """The member is written next to it, with a number before the extension:
+    ``a.txt`` becomes ``a (1).txt``."""
 
 
 # The string spellings of ``OverwritePolicy``, so a type checker flags a bad one at the
@@ -1278,16 +1367,17 @@ OverwritePolicyStr = Literal["error", "skip", "replace", "rename"]
 class OnError(Enum):
     """What to do when an individual member cannot be extracted.
 
-    Governs per-member *failures* only (corrupt/truncated/undecodable data,
-    write ``OSError``, overwrite ``ERROR``, etc.). A policy ``BLOCKED`` outcome
-    (``FilterRejectionError`` from a universal path-safety check or a policy
-    filter) is always recorded and continued, under either value. Aborting the
-    whole extraction on the first unsafe member is ``AbortOn.BLOCKED_MEMBER``,
-    an independent opt-in that applies under either ``OnError`` value.
+    It covers failures only: damaged data, a write error, an existing entry under
+    ``OverwritePolicy.ERROR``. A member refused by a safety check is recorded as
+    ``BLOCKED`` and extraction goes on under either value; ``AbortOn.BLOCKED_MEMBER``
+    stops on one instead.
     """
 
-    STOP = "stop"  # default: raise the first member failure and halt
-    CONTINUE = "continue"  # record the failure, clean up, proceed to the next member
+    STOP = "stop"
+    """The default. The first failure raises, and extraction stops there."""
+    CONTINUE = "continue"
+    """The failure is recorded in the report as ``FAILED``, its partial output is
+    removed, and extraction goes on with the next member."""
 
 
 # The string spellings of ``OnError``, so a type checker flags a bad one at the
@@ -1305,34 +1395,33 @@ class AbortOn(StrEnum):
     default). Independent of :class:`OnError` and of ``DiagnosticPolicy``: an event named
     here aborts whatever those are set to, and one not named here never aborts.
 
-    Abort is immediate — the triggering member's partial output is removed, no later
-    member is processed, and **no** ``ExtractionReport`` is returned. Output already
-    written for earlier members stays on disk, matching ``OnError.STOP``: an abort stops
-    the run, it does not roll it back. The exception is a ZIP read from a pipe, whose
-    pass stops before the central directory says which members are links: it removes
-    the files it wrote that could still be links (see "A ZIP from a pipe" in the
-    extraction guide).
+    The abort is immediate. The triggering member's partial output is removed, no later
+    member is processed, and no ``ExtractionReport`` is returned. Output already written
+    for earlier members stays on disk, as with ``OnError.STOP``: an abort stops the run,
+    it does not roll it back. The exception is a ZIP read from a pipe, whose pass stops
+    before the central directory says which members are links: it removes the files it
+    wrote that could still be links (see "A ZIP from a pipe" in the extraction guide).
 
-    There is deliberately no member for extraction *failures*: ``OnError.STOP`` already
-    means "raise on the first failure".
+    There is no member for extraction failures, because ``OnError.STOP`` already raises
+    on the first one.
     """
 
-    # A member blocked by a universal path-safety check or a policy filter. Re-raises the
-    # underlying FilterRejectionError, matching OnError.STOP's propagate-the-original.
     BLOCKED_MEMBER = "blocked_member"
-    # A second member resolving to an already-written collision key (non-TRUSTED only).
-    # Fires on EVERY such collision, whatever OverwritePolicy resolution follows —
-    # replaced, skipped, errored or renamed. The trigger is the collision, not its
-    # outcome. Raises NameCollisionError.
+    """A member is refused by a safety check or by the policy. Raises the
+    :class:`~archivey.FilterRejectionError` that refused it."""
     NAME_COLLISION = "name_collision"
-    # A name rewritten to its portable spelling, or an absolute name re-rooted inside
-    # the destination (STANDARD / TRUSTED). A narrow escape hatch for callers who
-    # refuse any on-disk name differing from the archive's — mirroring tools, forensic
-    # extracts, byte-fidelity checks — and NOT part of ordinary strict extraction: no
-    # preset or policy level implies it. To *audit* rewrites read
-    # ``ExtractionResult.presented_name``; set this only to make them fatal. Raises
-    # NameRewrittenError.
+    """Two members of the archive would be written to the same path. Raises
+    :class:`~archivey.NameCollisionError` before ``overwrite`` is applied, so even
+    with ``OverwritePolicy.RENAME`` the second member is not written. Not checked under
+    ``ExtractionPolicy.TRUSTED``."""
     NAME_SANITIZED = "name_sanitized"
+    """A name is rewritten to its portable spelling, or an absolute name is extracted
+    inside the destination. Raises :class:`~archivey.NameRewrittenError`. Under
+    ``ExtractionPolicy.STRICT`` an absolute name is refused instead, so
+    ``BLOCKED_MEMBER`` is the one that catches it. No policy implies this: it is for
+    callers who refuse any name on disk that differs from the archive's, such as
+    mirroring tools. To list rewrites without stopping, read
+    ``ExtractionResult.rewrites``."""
 
 
 # The string spellings of ``AbortOn``, so a type checker flags a bad one at the
@@ -1356,25 +1445,26 @@ class ExtractionStatus(StrEnum):
     """The outcome recorded for a single member in its :class:`ExtractionResult`."""
 
     EXTRACTED = "extracted"
-    NOT_OVERWRITTEN = "not_overwritten"  # existing dest left under OverwritePolicy.SKIP
-    SUPERSEDED = "superseded"  # non-current entry (a later same-name entry overwrites)
-    # Written, then its destination was replaced by a LATER member under
-    # OverwritePolicy.REPLACE. Revised retroactively when the collision is detected, so
-    # a case-insensitive merge is visible in ``results`` instead of two members both
-    # reporting EXTRACTED at one path. Completes the family: NOT_OVERWRITTEN kept an
-    # existing destination and never wrote; SUPERSEDED never wrote; OVERWRITTEN wrote
-    # and lost the destination afterwards.
+    """Written to ``path``."""
+    NOT_OVERWRITTEN = "not_overwritten"
+    """Not written, because an entry was already at the destination and ``overwrite``
+    is ``OverwritePolicy.SKIP``."""
+    SUPERSEDED = "superseded"
+    """Not written, because a later member with the same name replaces it."""
     OVERWRITTEN = "overwritten"
-    BLOCKED = "blocked"  # blocked by a safety filter (universal or policy check)
-    FAILED = "failed"  # error while extracting (corrupt data, ratio bomb, write error)
-    # The archive describes a member it does not carry enough information to write: a
-    # symlink whose target it never recorded. Not an error, so — like NOT_OVERWRITTEN —
-    # it is recorded and the run continues regardless of OnError. The member is not a
-    # failure of this extraction: nothing went wrong here, the writer left something
-    # out, and that loss is reported through the diagnostics channel
-    # (SYMLINK_TARGET_UNAVAILABLE, an archive-integrity code, so a strict
-    # DiagnosticPolicy still refuses such an archive outright).
+    """Written, then replaced by a later member under ``OverwritePolicy.REPLACE``. The
+    result changes to this when the later member arrives, so two members never both
+    report ``EXTRACTED`` at one path, as when two names differ only in case."""
+    BLOCKED = "blocked"
+    """Refused by a safety check or by the policy."""
+    FAILED = "failed"
+    """Extraction failed: damaged data, a limit such as the expansion ratio, or a write
+    error."""
     LINK_TARGET_UNAVAILABLE = "link_target_unavailable"
+    """A symlink whose target the archive never recorded, so it cannot be written. Not a
+    failure: extraction goes on whatever ``on_error`` says. The archive is reported with
+    the ``SYMLINK_TARGET_UNAVAILABLE`` diagnostic, which ``DiagnosticPolicy.STRICT``
+    raises."""
 
 
 class NameRewrite(StrEnum):
@@ -1410,77 +1500,103 @@ class ExtractionProgress:
     """
 
     member: ArchiveMember
-    bytes_written: int  # cumulative bytes written across the whole call so far
-    total_bytes_estimated: int | None  # None if the archive carries no size info
+    """The member being extracted."""
+
+    bytes_written: int
+    """Bytes written so far in the whole call."""
+
+    total_bytes_estimated: int | None
+    """An estimate of the bytes the whole call writes, or ``None`` if the archive
+    records no sizes."""
+
     members_done: int
-    members_total: int | None  # None when the count would require a full scan
-    member_bytes_written: int  # output bytes written for the current member so far
-    # Completed-outcome tallies so far (exclude the in-flight member on intra-member
-    # reports). ``members_done`` still counts every processed member; these split
-    # successful writes from policy blocks for stop-path reporting.
+    """Members processed so far, whatever their outcome."""
+
+    members_total: int | None
+    """Members the call processes, or ``None`` when counting them would need a scan of
+    the whole archive."""
+
+    member_bytes_written: int
+    """Bytes written so far for the current member."""
+
     members_extracted: int
+    """Members written so far. Like ``members_blocked``, it leaves out a member still in
+    progress."""
+
     members_blocked: int
+    """Members refused so far by a safety check or by the policy."""
 
 
 @dataclass(frozen=True)
 class ExtractionResult:
-    """One entry per member processed, returned from ``extract_all()``.
-
-    Frozen outcome structure (``path`` / ``status`` / ``error`` cannot be replaced after
-    construction). ``member`` still refers to the live mutable :class:`ArchiveMember`
-    whose late-bound metadata may be filled in place.
-    """
+    """One entry per member processed, returned from ``extract_all()``."""
 
     member: ArchiveMember
-    path: Path | None  # the written path, or None if the member was not written
+    """The member this result is about. It is the reader's own member, so fields that
+    are filled in late may still change; treat it as read-only."""
+
+    path: Path | None
+    """Where the member was written, or ``None`` if it was not."""
+
     status: ExtractionStatus
-    # Populated for FAILED/BLOCKED when the run continues past that member (including
-    # STOP + policy block). An OSError when the failure is a filesystem read/write
-    # error on this member (not translated to an ArchiveyError).
+    """What happened to the member."""
+
     error: ArchiveyError | OSError | None = None
-    # The destination the coordinator intended before overwrite/rename resolution. For an
-    # ordinary write it equals ``path``; under ``OverwritePolicy.RENAME`` a collided member
-    # is written to a derived name, so ``requested_path != path and status == EXTRACTED``
-    # marks the rename, of the member itself or of a directory it lies inside (``dd/f``
-    # written at ``dd (1)/f``); a collision resolved by SKIP/ERROR sets
-    # ``requested_path`` with ``path=None``. ``None`` for members that never reached
-    # destination resolution. On an OVERWRITTEN result it retains the destination the
-    # member did write to, so a caller can join the pair to the replacing member's
-    # ``path``.
+    """Why the member failed or was blocked, when extraction went on past it. An
+    ``OSError`` for a file system error on this member, otherwise an
+    :class:`~archivey.ArchiveyError`."""
+
     requested_path: Path | None = None
-    # The member's full relative name BEFORE a safety rewrite that reached disk, or
-    # ``None`` when none did. The safety rewrites are the portable-name rewrite (O3
-    # trailing dot/space strip, O7 percent-escape) and the absolute-name re-root
-    # (``/etc/x`` -> ``etc/x``); after a re-root this is the stored name. Otherwise it
-    # is distinct from ``member.name`` (the archive's spelling) and from ``path`` (the
-    # final on-disk spelling): a caller ``filter`` rename followed by a portable rewrite
-    # produces three spellings, and only this field records the middle one.
+    """Where the member was to be written before ``overwrite`` settled a collision.
+
+    Usually the same as ``path``. Under ``OverwritePolicy.RENAME`` the two differ when the
+    member, or a directory it is in, was renamed (``dd/f`` written at ``dd (1)/f``).
+    After a collision settled by ``SKIP`` or ``ERROR``, this is set and ``path`` is
+    ``None``. On an ``OVERWRITTEN`` result it keeps the path this member wrote to, which
+    a later member then took over. That later member's ``collided_with`` equals this
+    path, whether this member wrote a file or a directory (outside
+    ``ExtractionPolicy.TRUSTED``), so join the two through ``collided_with``: the later
+    member's own ``path`` can differ from this one in case on a case-insensitive file
+    system, or in spelling through a symlink of the archive's. ``None`` for a member
+    refused or failed before its destination was settled."""
+
     presented_name: str | None = None
-    # Which safety rewrites produced ``presented_name``: empty exactly when
-    # ``presented_name`` is ``None``. A re-root followed by a portable rewrite records
-    # both, and ``presented_name`` is then the stored name.
+    """The member's name before a safety rewrite changed it on disk, or ``None`` when
+    none did; ``rewrites`` says which ones ran.
+
+    After a re-root this is the stored name. When a ``filter`` renamed the member, it is
+    the filter's name, which neither ``member.name`` (the archive's spelling) nor
+    ``path`` (the final one) shows."""
+
     rewrites: frozenset[NameRewrite] = frozenset()
-    # Set together, and only when one failed hardlink source causes N FAILED link results:
-    # those N results share one group id and carry ``failure_group_size=N``. The id is
-    # opaque — compare for equality to join a group; do not rely on ordering, format, or
-    # cross-run stability.
+    """The safety rewrites that changed the name. Empty exactly when ``presented_name``
+    is ``None``."""
+
     failure_group_id: str | None = None
+    """Set when one failed hardlink source makes several link results fail: those
+    results share this id. Compare ids for equality only; their format and order mean
+    nothing, and they differ between runs."""
+
     failure_group_size: int | None = None
-    # The already-written destination this member collided with, or ``None`` when nothing
-    # this run held the name. Set for every resolution — SKIP, ERROR, RENAME and a
-    # REPLACE merge alike — so "was this a collision, and with what?" is answered by the
-    # result itself rather than reconstructed by re-deriving collision keys across the
-    # report. Only a collision with a member of THIS run is recorded: an obstacle that was
-    # already on disk before extraction started leaves this ``None`` (the destination is
-    # still in ``requested_path``). Join to the blocking member by plain path equality
-    # against another result's ``path`` — or its ``requested_path`` when that member was
-    # itself later revised to ``OVERWRITTEN`` and no longer holds a live path.
+    """How many results share ``failure_group_id``."""
+
     collided_with: Path | None = None
-    # Set on a DIRECTORY result whose destination was a directory that was there before
-    # the run (the destination root for a ``./`` member, or any directory the caller
-    # already had): that directory keeps its own mode and times, and this is the mode it
-    # kept, when the member asked for a different one. The member's mode is compared as
-    # the platform stores it, so on Windows only the read-only attribute counts.
-    # ``None`` otherwise. A ``None`` on such a directory does not mean the member's
-    # metadata was applied: its times were still left alone.
+    """The destination an earlier member of this run wrote, which this member collided
+    with, whatever ``overwrite`` then did. ``None`` when no member of this run held the
+    name: an entry already on disk before the run started is not counted, and stays in
+    ``requested_path``. The member it collided with is the result whose ``path`` equals
+    this, or whose ``requested_path`` does once that result is ``OVERWRITTEN``.
+
+    A directory this run created on disk, from a ``DIRECTORY`` member or as the parent
+    of an earlier member, holds its name too: a file landing on it records the
+    directory's path. A directory that was only created as a parent has no result of its
+    own. A directory that was already in ``dest`` is not counted, even when a
+    ``DIRECTORY`` member of this run merged into it and reports it."""
+
     kept_mode: int | None = None
+    """On a ``DIRECTORY`` result whose directory existed before the run, such as the
+    destination itself for a ``./`` member: the mode that directory kept, when the member
+    asked for another one. On Windows only the read-only attribute is compared.
+
+    ``None`` otherwise. Such a directory keeps its times too, so ``None`` does not mean
+    the member's times were applied."""

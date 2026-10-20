@@ -53,7 +53,7 @@ _FIXTURE_PASSWORDS: dict[str, tuple[str, ...]] = {
 _PasswordArg = str | list[str] | None
 
 # Where the two reads may differ, by test id. ``"error"``: the same results but for
-# the error type, the files on disk the same. A link the pass wrote as a file keeps
+# the error type, the files on disk the same. A link the pass staged as a file keeps
 # the error its data read gave (no password, ``EncryptionError``); from a file the
 # link is refused for its missing target (``LinkTargetNotFoundError``).
 _DIFFERS: dict[str, str] = {

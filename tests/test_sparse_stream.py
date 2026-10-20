@@ -275,7 +275,10 @@ class _Flaky(io.RawIOBase):
         self._calls += 1
         if self._calls == self._fail_on:
             raise OSError("transient")
-        return self._data.readinto(memoryview(b)[:2])
+        # Views released on return: RawIOBase.read resizes ``b`` after this, and
+        # PyPy frees an unreleased view only at a later collection.
+        with memoryview(b) as view, view[:2] as part:
+            return self._data.readinto(part)
 
 
 def test_a_skip_that_raises_keeps_the_inner_position() -> None:

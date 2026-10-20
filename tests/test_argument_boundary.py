@@ -686,6 +686,7 @@ _NOT_SWEPT: dict[tuple[str, str], str] = {
     ),
     ("ArchiveyConfig", "use_rapidgzip"): "coerced by enum_args, in __post_init__",
     ("ArchiveyConfig", "rar_decompressor"): "coerced by enum_args, in __post_init__",
+    ("ArchiveyConfig", "process_isolation"): "coerced by enum_args, in __post_init__",
     (
         "ArchiveyConfig",
         "use_indexed_bzip2",

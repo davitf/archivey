@@ -39,6 +39,7 @@ from archivey.cli.exit_codes import EXIT_OK, EXIT_POLICY
 from archivey.cli.main import main
 from archivey.internal import dry_run as dry_run_module
 from archivey.terminal import display_path
+from tests.conftest import CPYTHON
 from tests.create_adversarial import adversarial_archives
 from tests.extract_util import lock_directories_at_once, open_and_extract
 from tests.sample_archives import CORPUS, corpus_archive_path, skip_unless_runnable
@@ -98,6 +99,12 @@ def _normalize(text: str, dest: Path, cwd: Path) -> str:
         text = text.replace(spelling, "<cwd>")
     if not dest.is_absolute():
         text = re.sub(rf"(?<=['\"]){re.escape(str(dest))}(?=['\"/\\])", "<rel>", text)
+    # The real run's OSError comes from the OS call, which gets a Path; the dry run's
+    # comes from archivey's own raise, which passes str(dest). PyPy keeps the Path in
+    # the message (CPython stores a str either way), so only there do the spellings
+    # differ. Elsewhere this stays off, so a Path in an archivey message still shows.
+    if not CPYTHON:
+        text = re.sub(r"\b(?:Posix|Windows)Path\(('[^']*')\)", r"\1", text)
     # The staging file's random suffix is the one thing two runs never share.
     return _TMP_NAME.sub(".archivey-tmp-*", text)
 
@@ -311,6 +318,15 @@ _FILESYSTEM_CASES = {
         ("a", "file", b"two"),
         ("d", "file", 0),
         ("d/f", "file", 0),
+    ],
+    # A file landing on a directory this run made, which holds a member: REPLACE
+    # fails it with an error that names the directory under ``dest``.
+    "file-over-run-directory": [
+        ("x/f", "file", 0),
+        ("y", "dir", None),
+        ("y/f", "file", 0),
+        ("x", "file", 0),
+        ("y", "file", 0),
     ],
 }
 

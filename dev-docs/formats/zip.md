@@ -551,8 +551,8 @@ passed by the same scan on its stored bytes. The scan starts at the bytes the wa
 of what the decode read (`_CODEC_RETAIN`, 4 MiB) and counts the ones before them into
 the size it matches, so the descriptor is found unless the decode read more than that
 past the data's end; then the scan runs to the end of the stream and the pass ends with
-its error. A bit-3 PPMd member is always decoded in a child process
-(`max_ppmd_in_process_input=None` refuses it with `ResourceLimitError`). Several
+its error. A bit-3 PPMd member is fed to pyppmd in pieces, in a child process unless
+`process_isolation` is `NONE`. Several
 password candidates are confirmed on the first 1 MiB, kept and replayed (§2.3).
 
 **What the pass yields, and what changes at the end.** Each member is yielded with what
@@ -583,8 +583,8 @@ is bounded on its own (`ZipForwardReader._hold`): the pass holds at most
 link target is a path and shorter than most files. At the directory it keeps only the
 links' data. A link whose data was dropped is listed without its target and reports
 `SYMLINK_TARGET_UNAVAILABLE` with `reason="target_data_dropped"`, naming
-`max_metadata_bytes`; the rest of the listing stands, and `extract_all` takes back the
-file it wrote for the link and fails that member alone.
+`max_metadata_bytes`; the rest of the listing stands, and `extract_all` does not place
+the link and fails that member alone.
 
 **Bytes after a member that are no local header.** The walk stops at the first bytes
 after a member that are not a local header and keeps the rest of the stream, as after
@@ -607,35 +607,35 @@ end of the pass, with the parse error as the reason. A stub with no local header
 scan's 2 MiB window, ending within it on an end record, is read the same way, so an
 empty archive, or one whose members are gone, behind a stub opens as from a file.
 
-**Extraction** writes each member as it arrives and settles at the end of the pass
-(`ExtractionCoordinator._settle_revised_members`): modes and owners applied, a member the
-directory makes a symlink turned into a link after the `filter` and policy run again on
-it, what a member the directory makes `OTHER` wrote removed, a renamed member moved, and
-the selection made again on what each member became (`design.md`, "The selection is made
-again"). A caller's entry the pass replaces is moved aside and put back unless the member
-still lands there. A run that stops before the end of the pass settles a member never
-learns whether it is a link, so it takes back each such file whose data could be a
-link's (`_take_back_possible_links`): 4096 bytes or less (`MAX_LINK_TARGET_BYTES`), or data
-that starts with a Windows symlink or junction reparse tag. A longer file stays, with
-no mode applied; as a link its target would be over the cap, which no read gives.
+**Extraction** stages, then places (`ExtractionCoordinator._stage_then_place`; the
+`pipe-zip-stage-then-commit` change has the design). During the pass each member the
+selection may take has its data written to one `.archivey-tmp-<random>` directory under
+the destination, after the universal checks and the name policy pass on its local
+header's name. Once the directory is read, the members are placed in listing order by the
+same per-member code a file read uses: the selection made for good, the `filter` once,
+the policy checks, the overwrite policy and collisions on the final member, and each staged
+file landing by a rename. A run that stops before placement leaves nothing of its own in
+the destination, so no link is ever written as a file holding its target.
 
 **Failures found at the end of the pass** (`_failed_at_end`,
-`_settle_failures_at_end`): a data descriptor the directory contradicts, a local header
+`_placement_data`): a data descriptor the directory contradicts, a local header
 whose CRC, sizes or encryption flag the directory contradicts (not a central CRC-32 of
 0 over data against a local value, §5), a same-name pair whose directory order reverses the
 file order, and a directory entry with no local entry. Each fails its member
 (`CorruptionError`; the reversed pair only updates the members in `stream_members()`),
-and extraction removes what it wrote for it. A directory entry pointing at a local
+and extraction does not place it. A directory entry pointing at a local
 header an earlier entry took ends the pass with `CorruptionError`. Two headers storing
 different names fail nothing: the member takes the directory's name, and a file or link
 reports `MEMBER_LOCAL_NAME_DIFFERS` as a file read does when it opens the member (§5);
-extraction moves what it wrote.
+extraction places it under the directory's name.
 
 **Where the pass and a file read differ**, each pinned in
 `tests/test_zip_pipe_parity.py` (`_DIFFERS`) or the tests named in §8. The first four
-are shapes only crafted archives have (DR-5a); the rest come from damage, from the
-directory's refusals the file read is to drop, or, for the last one only, from the bound
-the pass puts on the data it keeps for link targets, which an ordinary archive can reach:
+are shapes only crafted archives have (DR-5a). The next five come from staging the
+members before the directory is read, and DR-5a names each of them. The rest come from
+damage, from the directory's refusals the file read is to drop, or, for the last one
+only, from the bound the pass puts on the data it keeps for link targets, which an
+ordinary archive can reach:
 
 - A data descriptor that understates a STORED member, or a bit-3 codec member the pass
   reads past, and the reversed same-name pair, fail a member the file read writes.
@@ -648,15 +648,25 @@ the pass puts on the data it keeps for link targets, which an ordinary archive c
   holds is refused (`CorruptionError`); the file read takes the sizes from the directory
   and reads the member
   (`test_zip_local_walk.py::test_an_unheld_local_size_reads_by_file`).
-- Under `on_error="stop"`, a member whose data fails as the pass writes it stops the run,
-  though the directory may then not list it. `abort_on` fires before the end of the pass
-  decides a member's selection, and the bomb limits count what the pass wrote until it
-  is taken back.
-- A run stopped before the end of the pass settled its members (`abort_on`,
-  `on_error="stop"`, a limit, a `STRICT` refusal at the directory) leaves less than the
-  file read: the files it wrote for them that could be links are taken back
-  (§"Extraction" above), where the file read keeps every member it wrote before the
-  stop, links made. The longer files that stay have no mode applied.
+- Under `on_error="stop"`, a member whose data fails as the pass stages it stops the
+  run, though the directory may then not list or select it. A refusal of the local
+  header's name by the universal checks or the name policy stops the run the same way
+  only under `abort_on` (`blocked_member` for a refusal, `name_sanitized` for a
+  rewrite). `on_error="stop"` alone does not stop on it: the refusal blocks the member,
+  as a refusal at placement does, and the run goes on, as from a file.
+- A member refused on its local header's name and accepted on the directory's (a
+  crafted pair of names, or a `filter` that renames an unsafe name such as
+  `../evil.txt`) fails at placement, its data not staged, where the file read writes it.
+- A member whose local name ends in a backslash is a folder to the pass, which stages no
+  data for it. When the directory names a host that makes it a file with data (`d\`
+  from a Unix host), it fails at placement (`ExtractionError`), where the file read
+  writes it.
+- The bomb limits count what the pass stages while it is staged, so a member staged and
+  then not placed, a member the `filter` drops included, can still stop a run under
+  `max_entries` or `max_extracted_bytes` that the file read completes.
+- A run stopped before placement (`abort_on`, `on_error="stop"`, a limit, a `STRICT`
+  refusal at the directory) leaves nothing of its own in the destination, where the
+  file read keeps every member it wrote before the stop, links made.
 - A bit-3 codec member whose data is damaged can fail with another error than from a
   file (`TruncatedError` where the file read says `DataAfterEndError`, for one): the
   file read knows its stored size, and the pass finds its end by the scan for its
@@ -681,7 +691,7 @@ the pass puts on the data it keeps for link targets, which an ordinary archive c
   `UnsupportedFeatureError`, a codec one `CorruptionError`. A file read knows its size
   and reads every member. After a sized member the same bytes are read past
   (§"Bytes after a member that are no local header").
-- A link member the pass wrote as a file keeps the error its data read gave: under no
+- A link member the pass staged as a file keeps the error its data read gave: under no
   password an encrypted link fails with `EncryptionError`, where the file read reports
   `LinkTargetNotFoundError`.
 - A damaged directory lists the directory's entries before the damage and the local
@@ -1122,7 +1132,7 @@ ours.
 | A ZIP with a digital signature record (`PK\x05\x05`, APPNOTE 4.3.13) between its directory and its end record is refused with `CorruptionError` ("Bad magic number") | **archivey** | The end record's directory size and offset do not count the record, so its bytes shift where the directory is taken to start, the way prepended data does. stdlib `zipfile` refuses it the same way, and a read from a pipe matches the file read. Few writers produce the record; reading past it is not planned |
 | A prefixed ZIP behind bytes that look like neither an executable nor a script is not detected, though it opens with `format=ZIP` | **archivey** | The tail probe is designed and unshipped (§2.1) |
 | An LZMA member 7-Zip wrote with `-mm=LZMA:lc=8` (any `lc + lp` over 4) raises `UnsupportedFeatureError`, though 7-Zip reads it | **library** | The member is valid: the format allows `lc + lp` up to 12 and 7-Zip decodes it. liblzma, which stdlib `lzma` wraps, decodes `lc + lp` up to 4 only (`LZMA_LCLP_MAX`) and fails the rest with `LZMAError: Internal error`. Left unsupported by maintainer decision, 2026-10-08 (§6). 7z members behave the same ([`7z.md`](7z.md) §5) |
-| A member whose local header stores another name, or a real CRC-32 where the directory stores 0, reads with `MEMBER_LOCAL_NAME_DIFFERS` (which `STRICT` refuses) or `MEMBER_LOCAL_CRC_USED` (which `STRICT` reads); one whose two headers both understate its size is refused with `CorruptionError` | **archivey** | Found in real archives (a backup-drive scan, [§3.3-3.5](../investigations/2026-10-backup-scan.md)). `unzip` reads all three. The name case is another code page, or `\` against `/`; the directory's name is used, so the local one decides nothing. The CRC case is every Adobe AIR package's `META-INF/AIR/hash`; the data is checked against the local value. The size case is refused because the declared size is the bound that stops decoding (DR-9a). A file read sees the name only when it opens the member's data, and only a file or link reports it: extraction reads no directory's data, so neither read reports a directory's. A file read reads the local header of a zero-CRC file or link (not AE-2, whose HMAC checks it) when it lists it, one positioned read per such member; a directory's zero CRC keeps no digest from either read (`DIGEST_UNVERIFIABLE`). From a pipe, the pass reports both at the directory; under `STRICT` only the name case raises there, after every member was written, so extraction takes back the files that could be links (§2.2.2); the CRC case is recorded |
+| A member whose local header stores another name, or a real CRC-32 where the directory stores 0, reads with `MEMBER_LOCAL_NAME_DIFFERS` (which `STRICT` refuses) or `MEMBER_LOCAL_CRC_USED` (which `STRICT` reads); one whose two headers both understate its size is refused with `CorruptionError` | **archivey** | Found in real archives (a backup-drive scan, [§3.3-3.5](../investigations/2026-10-backup-scan.md)). `unzip` reads all three. The name case is another code page, or `\` against `/`; the directory's name is used, so the local one decides nothing. The CRC case is every Adobe AIR package's `META-INF/AIR/hash`; the data is checked against the local value. The size case is refused because the declared size is the bound that stops decoding (DR-9a). A file read sees the name only when it opens the member's data, and only a file or link reports it: extraction reads no directory's data, so neither read reports a directory's. A file read reads the local header of a zero-CRC file or link (not AE-2, whose HMAC checks it) when it lists it, one positioned read per such member; a directory's zero CRC keeps no digest from either read (`DIGEST_UNVERIFIABLE`). From a pipe, the pass reports both at the directory; under `STRICT` only the name case raises there, after every member was staged and before any is placed, so nothing of the run is in the destination; the CRC case is recorded |
 
 ## 6. Decisions
 
@@ -1155,7 +1165,7 @@ ours.
 | Owner ids read as unzip 6.00 reads the four fields | DR-6, the format's official tool. Measured with `unzip -X` 6.00 (the Ubuntu 24.04 package) as root on crafted local headers, 36 field orders, "none" meaning the file stayed owned by root: each `0x7875` or `0x7855` decides afresh (the last one wins, a damaged or unknown-version one leaves none, a `0x7855` after a `0x7875` is ignored, a PKWARE field before either is discarded); `0x000d` and `0x5855` count only with neither present, the last one with ids winning and a short one changing nothing; new Unix ids of 1 or 3 bytes leave the file root-owned. The madler/unzip source keeps PKWARE ids under a later short `0x7855` or `0x7875`; the released 6.00 does not, and 6.00 is what users run. The difference is one mask in `ef_scan_for_izux`: 6.00 (Debian's 6.0-28 source) has `flags &= 0x0ff`, which clears `EB_UX2_VALID` (`1 << 8`), where the mirror has `flags &= ~0x0ff`. For 3-byte ids 6.00 does not decline: `read_ux3_value` has no case for 3, returns true without writing, and unzip chowns to an uninitialised `z_uidgid`, which happened to read 0. Archivey reports `id_size` instead; do not "fix" it into a chown to 0. A damaged deciding field is reported as `MEMBER_HEADER_RECORD_SKIPPED`, the Unicode Path rule below; an unknown version is silent, as for that field | A fixed ranking where the highest field present decides (wrong for half the orders); falling through to the next readable field; dropping damage silently |
 | Times from the PKWARE (`0x000d`) and Info-ZIP old (`0x5855`) Unix fields read as unzip 6.00 reads them: an Extended Timestamp with data anywhere wins, a `0x7855` or `0x7875` before the field hides it, the last field long enough for both times wins, and they sit above NTFS `0x000A` (2026-10-15) | DR-6, the format's official tool, and macOS `ditto` and Archive Utility write only `0x5855`, so without it a macOS archive lists naive local DOS times (Maccy.app.zip 8 hours off). Measured with `unzip -qo` 6.00 (Debian 6.0-28, the Ubuntu 24.04 package) on crafted local headers in eleven field orders, by the extracted file's `st_mtime` and `st_atime`; `tests/test_zip_extra_fields.py::test_unix_field_times_match_unzip` repeats it where `unzip` is installed. unzip on Unix does not read NTFS times at all, so a blob with both gives the Unix field's | A fixed ranking by tag, which gets the `0x7855`/`0x7875`-before case wrong; NTFS above the Unix fields, which no Unix tool does |
 | Keep the central extra fields no value was taken from as `extra["zip.extra_fields"]`, `{tag: data}`, first copy per tag (davi, 2026-10-15, in the thread on common ZIP extras) | Archivey reads every field the surveyed archives carry, so most members keep nothing, and a caller with a vendor field still gets it. A field archivey knows but took nothing from stays in, so a caller sees what was ignored. A tag leaves the dict when a later version reads it; davi accepted that, to be weighed case by case and noted in the changelog. Reopen if callers need the local header's fields | The raw central blob for every member (+4-5% listing memory for fields archivey already reads); parsed `(tag, data)` pairs for every field (+12-23%); not exposing extras |
-| A forward pass yields no owner; the directory's is applied at the end of the pass, as the mode is | Extraction applies an owner as it writes each member, and a `chown` cannot be taken back when the directory gives another owner or none (a `0x7855` the local header alone carries, or any field a writer leaves out of the directory). Waiting for the directory holds the file read's owner on disk under `TRUSTED` as root by construction, not by trusting which fields a writer copies | Yielding the local header's ids and replacing them at the end of the pass; reading only the tags a directory usually also carries (`0x7875`, `0x000d`), which rests on what writers do |
+| A forward pass yields no owner; the directory's is applied when the member is placed, as the mode is | Extraction places a pipe ZIP's members only once the directory is read; an owner from the local header would be one the file read never applies, when the directory gives another owner or none (a `0x7855` the local header alone carries, or any field a writer leaves out of the directory). Waiting for the directory holds the file read's owner on disk under `TRUSTED` as root by construction, not by trusting which fields a writer copies | Yielding the local header's ids and replacing them at the end of the pass; reading only the tags a directory usually also carries (`0x7875`, `0x000d`), which rests on what writers do |
 | A malformed Unicode Path field drops the field, not the archive, on every Python version | The RAR5 extra-record ruling ([`rar.md`](rar.md) §6): an optional record that cannot be parsed costs that record, reported as `MEMBER_HEADER_RECORD_SKIPPED`, and the name it would have given is absent, so the header's bytes name the member. Stdlib 3.12+ refused the archive over two of the shapes and warned outside the diagnostics system over the third, while 3.11 and 7-Zip open it; the native parser reads the field itself, so every version agrees | Keeping stdlib's refusal on 3.12+; silencing the warning with `warnings.catch_warnings`, which changes process-wide state and is not thread-safe; dropping the field silently |
 | An unknown size past 4 GiB in a macOS ZIP is `None` with `extra["size_mod_2_32"]`, filled in after a verified full read (davi, 2026-10-15, project thread: option A; the extra's name is his proposal) | Nothing reported is wrong, and the unknowns are limited to deflated members over about 4.16 MB compressed in Mac archives; the fingerprint keeps other writers' sizes as stored. Smaller members, most of a typical archive, keep exact sizes | Decoding such members while listing (exact sizes, but listing an archive of videos reads all of it); listing the stored remainder with a diagnostic (a wrong number) |
 | Size corrections report a new code, `MEMBER_SIZE_WRAPPED` with `SizeWrapContext` (davi, 2026-10-16, project thread decision card) | Sizes and offsets are different facts with different fields; one code per fact keeps each context simple to match on | Reusing `ARCHIVE_OFFSET_WRAPPED` with optional size fields on its context; no diagnostic, leaving `size=None` and the extra key as the only trace |

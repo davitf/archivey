@@ -370,6 +370,11 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
   ADR 0007), before the pass ends. Each such member has `member_state_final` false
   until then (question D), so a caller sees the gap on the member before reading
   anything (DR-8).
+- *The extraction side of the four bullets that follow is replaced by the
+  `pipe-zip-stage-then-commit` change:* extraction now stages each member's data in a
+  private directory under the destination during the pass and places the members only
+  once the directory is read, so nothing below is written, revised, moved aside or taken
+  back in the destination. The reader side stands as written.
 - Extraction writes each member as it arrives, then at the end of the pass applies modes,
   turns a member the directory types as a symlink into a link (its target is the data
   just written, at most the link-target cap), and removes what it wrote for a member the

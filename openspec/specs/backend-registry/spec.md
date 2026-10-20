@@ -196,6 +196,10 @@ class MissingComponent:
     name: str
     install_hint: str
     unlocks: tuple[str, ...]
+    reason: str = ""
+
+    @property
+    def advice(self) -> str: ...
 
 @dataclass(frozen=True)
 class FormatAvailability:
@@ -229,7 +233,10 @@ Support SHALL be computed across the format backend and codecs/tools:
   `unar` does not make RAR FULL, because it reads fewer archives than `unrar`. The
   public `format_availability()` finds out by running each candidate once to read its
   banner (cached per binary, as for a member read), and the `unrar` entry's
-  `install_hint` is the refusal that probe gives a member read. `open_archive` and
+  `install_hint` is the refusal that probe gives a member read. `reason` is set when the
+  package may be installed but archivey does not use it on the running interpreter, and
+  `advice` is `reason` when set, otherwise `install_hint`; every report of a missing
+  component prints `advice`. `open_archive` and
   `list_supported_formats()` do not run it: a missing tool never makes a format NONE,
   so they need no answer about tools. The answer does not depend on `ArchiveyConfig`:
   `format_availability()` takes no config. `check_programs=False` runs no program and

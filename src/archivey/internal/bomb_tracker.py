@@ -22,19 +22,6 @@ class AlwaysStopResourceLimitError(ResourceLimitError):
     """
 
 
-class CopyCounter:
-    """Counts the chunks ``ExtractionCoordinator._copy_to_fileobj`` writes as a copy of
-    bytes this run already wrote (``BombTracker.count_copy``), not as decoded output."""
-
-    __slots__ = ("_tracker",)
-
-    def __init__(self, tracker: BombTracker) -> None:
-        self._tracker = tracker
-
-    def count(self, chunk_bytes: int) -> None:
-        self._tracker.count_copy(chunk_bytes, at_link_limit=False)
-
-
 class BombTracker:
     """Cumulative byte / per-member ratio / archive-wide ratio / entry-count guards.
 
@@ -78,7 +65,7 @@ class BombTracker:
         self._link_limit_copied_bytes = 0
         self._member_bytes = 0  # output bytes for the current member
         self._member: ArchiveMember | None = None
-        # Output of members a streaming pass wrote and then took back as superseded (see
+        # Output of members a streaming pass wrote and then did not keep (see
         # ``refund``). Subtracted for the byte cap only.
         self._refunded_bytes = 0
 
@@ -104,20 +91,24 @@ class BombTracker:
                 f"(would write entry {self._entry_count})"
             )
 
-    def refund(self, member_bytes: int) -> None:
-        """Stop counting one member that a streaming pass took back as superseded.
+    def refund(self, member_bytes: int, *, entry: bool = True) -> None:
+        """Stop counting one member that a streaming pass wrote and then did not keep.
 
-        Random access never writes a shadowed duplicate, so it never counts one
-        (``safe-extraction``: no bomb-limit counting for the skip). A streaming pass
-        wrote it before it could know, and its entry is gone from the destination once
-        the later copy replaces it, so the entry count stops counting it. Its bytes are
-        gone too unless a hardlink made to it still holds them, so the caller passes
-        ``member_bytes`` as 0 in that case and the byte cap keeps them. The archive-wide
-        ratio counts them either way: those bytes were decoded, and a name repeated many
-        times must not decode for free. ``total_bytes``, which progress reports, is not
-        reduced: it counts what was written.
+        Two passes do this. A streaming pass takes back a member as superseded: random
+        access never writes a shadowed duplicate, so it never counts one
+        (``safe-extraction``: no bomb-limit counting for the skip). A pass that stages
+        its members (a ZIP from a pipe) removes the staged data of a member it does
+        not place. Either way the entry is gone from the destination, so the entry
+        count stops counting it, unless the member still has one (``entry=False``: a
+        link placed without its staged data). Its bytes are gone too unless a hardlink
+        made to it still holds them, so the caller passes ``member_bytes`` as 0 in that
+        case and the byte cap keeps them. The archive-wide ratio counts them either
+        way: those bytes were decoded, and a name repeated many times must not decode
+        for free. ``total_bytes``, which progress reports, is not reduced: it counts
+        what was written.
         """
-        self._entry_count -= 1
+        if entry:
+            self._entry_count -= 1
         self._refunded_bytes += member_bytes
 
     def check_recorded_size(self) -> None:
@@ -197,11 +188,6 @@ class BombTracker:
         happens depends on where the caller extracts to, not on the archive. Neither
         counts toward the per-member ratio, since a link member's compressed size says
         nothing about the copy's size.
-
-        A streaming pass that writes a member again from its own earlier copy, once
-        the archive's directory changed the member
-        (``ExtractionCoordinator._redo_revised_member``), counts it here too: nothing
-        is decoded a second time.
         """
         self._check_cumulative_bytes(chunk_bytes)
         self._copied_bytes += chunk_bytes
