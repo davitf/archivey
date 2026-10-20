@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import BinaryIO, Protocol
 
 from archivey.exceptions import TruncatedError
@@ -58,6 +59,21 @@ def stream_magic(*alternatives: tuple[bytes | range, ...]) -> StreamStart:
             for alternative in alternatives
         )
     )
+
+
+@dataclass(frozen=True)
+class StreamIndex:
+    """How a codec's further streams become seek points (zstd frames).
+
+    Every stream after the first starts with a fresh decompressor, so its start is a
+    point a seek can resume from. ``resumes_at`` is given the bytes that start such a
+    stream and says whether to record its start (zstd: not a skippable frame, which
+    holds no output). ``build`` reads a whole-file index without decoding (the zstd
+    seek table), as :meth:`Decoder.build_index` does.
+    """
+
+    resumes_at: Callable[[bytes], bool]
+    build: Callable[[BinaryIO, SeekPoint], tuple[list[SeekPoint], int | None]]
 
 
 class MagicStart:
@@ -122,6 +138,8 @@ class FramedDecoder(BaseDecoder):
     magic too: the first non-zero byte after them is where the trailing bytes start.
     One exception: a run of zeros shorter than the magic is judged with the bytes after
     it as the start of a damaged stream, since the damaged byte can be a zero.
+    With an ``index`` (:class:`StreamIndex`), each further stream's start is a seek
+    point, and ``start`` is the point this decoder resumes from.
     Each codec's own tool stops at zeros between streams too: ``bzip2``, ``zstd``,
     ``lz4`` and ``xz --format=lzma``, and 7-Zip for bzip2 and LZMA Alone. ``zstd``,
     ``lz4`` and ``xz --format=lzma`` also refuse zeros at the end of the file, which
@@ -144,9 +162,25 @@ class FramedDecoder(BaseDecoder):
         *,
         magic: StreamStart,
         zero_padding: bool = True,
+        index: StreamIndex | None = None,
+        start: SeekPoint | None = None,
     ) -> None:
         self._new = new_decompressor
         self._magic = magic
+        self._index = index
+        # Source offset just past every byte fed, and output offset just past every
+        # byte produced: the bytes a feed holds are always the last ones fed, so a
+        # further stream's start is at ``_fed_end`` minus what is left of them. Every
+        # reassignment of ``data`` in ``feed`` must keep it a suffix: ``_held`` plus
+        # the chunk, ``_next_stream`` dropping zeros from the front, and
+        # ``unused_data`` at a stream's end. One that broke it would give seek points
+        # the wrong source offset, which serves wrong bytes rather than raising.
+        self._fed_end = start.compressed_offset if start is not None else 0
+        self._produced = start.decompressed_offset if start is not None else 0
+        # The current stream's start, recorded once the stream has output: a stream
+        # with none shares its offset with the next one, and the point is the next's,
+        # as in an index that lists both.
+        self._pending_point: SeekPoint | None = None
         # The magic-based codecs only (not LZMA Alone): they also judge a short run of
         # zeros as the start of a damaged magic.
         self._magic_start = magic if isinstance(magic, MagicStart) else None
@@ -172,6 +206,8 @@ class FramedDecoder(BaseDecoder):
             self._new,
             magic=self._magic,
             zero_padding=self._zero_padding,
+            index=self._index,
+            start=point,
         )
 
     def _next_stream(self, data: bytes) -> bytes:
@@ -242,7 +278,9 @@ class FramedDecoder(BaseDecoder):
         self._held = b""
         self._need_more = False
         self._fed = self._fed or bool(data)
+        self._fed_end += len(chunk)
         output = bytearray()
+        points: list[SeekPoint] = []
         while True:
             if max_length >= 0 and len(output) >= max_length:
                 self._held = data
@@ -251,8 +289,15 @@ class FramedDecoder(BaseDecoder):
                 data = self._next_stream(data)
                 if self._between or self._done:
                     break
+                if self._index is not None and self._index.resumes_at(data):
+                    self._pending_point = SeekPoint(
+                        self._produced + len(output), self._fed_end - len(data)
+                    )
             limit = max_length - len(output) if max_length >= 0 else -1
             produced = self._decomp.decompress(data, limit)
+            if produced and self._pending_point is not None:
+                points.append(self._pending_point)
+                self._pending_point = None
             output.extend(produced)
             data = b""
             if self._decomp.eof:
@@ -262,7 +307,8 @@ class FramedDecoder(BaseDecoder):
                 continue
             if self._decomp.needs_input or not produced:
                 break
-        return DecodeOut(bytes(output))
+        self._produced += len(output)
+        return DecodeOut(bytes(output), points)
 
     def flush(self) -> DecodeOut:
         if self._done:
@@ -303,6 +349,13 @@ class FramedDecoder(BaseDecoder):
             return self._need_more
         return self._between or self._decomp.needs_input
 
+    def build_index(
+        self, inner: BinaryIO, last_known: SeekPoint
+    ) -> tuple[list[SeekPoint], int | None]:
+        if self._index is None:
+            return [], None
+        return self._index.build(inner, last_known)
+
 
 def FramedDecompressorStream(
     path: str | os.PathLike[str] | BinaryIO,
@@ -311,17 +364,23 @@ def FramedDecompressorStream(
     codec_name: str,
     magic: StreamStart,
     zero_padding: bool = True,
+    index: StreamIndex | None = None,
     collector: DiagnosticCollector | None = None,
     report_trailing_data: bool = False,
     refuse_input_after_end: bool = False,
 ) -> DecompressorStream:
-    """Decode a one-stream library decompressor's codec (forward-only; O(n) rewind)."""
+    """Decode a one-stream library decompressor's codec.
+
+    Forward-only with an O(n) rewind, unless ``index`` makes its streams seek points.
+    """
     return DecompressorStream(
         path,
-        make_decoder=lambda _p, _i: FramedDecoder(
+        make_decoder=lambda point, _i: FramedDecoder(
             new_decompressor,
             magic=magic,
             zero_padding=zero_padding,
+            index=index,
+            start=point,
         ),
         collector=collector,
         codec_name=codec_name,

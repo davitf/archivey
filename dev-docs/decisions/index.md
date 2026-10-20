@@ -35,6 +35,7 @@ not fully recovered yet.
 | [0019](0019-no-top-level-extract.md) | No top-level `extract()`; extract through an open reader | recorded |
 | [0020](0020-native-zip-reader.md) | Native ZIP reader; stdlib `zipfile` leaves the library | recorded |
 | [0021](0021-native-tar-reader.md) | Native TAR reader; stdlib `tarfile` leaves the library | recorded |
+| [0022](0022-ppmd-always-in-a-child-process.md) | Every PPMd member decodes in a child process | recorded (implementation pending) |
 
 Related long-form material (not ADRs):
 

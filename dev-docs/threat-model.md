@@ -1129,8 +1129,12 @@ archivey in a worker they can kill. Public:
 
 The stdlib `zlib`, `bz2` and `lzma` and pyppmd below 16 MiB (handed the member whole, which
 avoids the input pattern known to crash it) run in-process. A crash nobody has found yet
-would abort the process. Both rapidgzip decoders run in a child process;
-`scripts/accelerator_crash_search.py` tells whether they still need to. `MemoryError` is not translated, so
+would abort the process. For pyppmd the one call left after a short return is the
+single-byte decode that frees a waiting worker at teardown; it has not been seen to crash,
+but on a stream that has ended it is a decode after the end, so it stays a candidate
+([`known-issues.md`](known-issues.md) §Intermittent `pyppmd` native aborts). Both
+rapidgzip decoders run in a child process; `scripts/accelerator_crash_search.py` tells
+whether they still need to. `MemoryError` is not translated, so
 running out of memory is never mistaken for a damaged archive; the limits above exist to
 keep a hostile archive from getting that far. Public:
 [where the guarantees stop](../docs/security.md#where-the-guarantees-stop).
@@ -1149,8 +1153,9 @@ with a hard latency budget set them to `OFF`. Public:
 
 ### A seek trusts the file's own index
 
-A cold seek into a `.xz` or `.lz` goes where the file's index says (XZ block records, or
-lzip member trailers), and both are attacker-controlled. An index consistent with itself
+A cold seek into a `.xz`, `.lz`, seekable `.zst` or BGZF `.gz` goes where the file's index
+says (XZ block records, lzip member trailers, the zstd seek table, or BGZF block sizes and
+ISIZEs), and all are attacker-controlled. An index consistent with itself
 but not with the data serves bytes from the wrong unit, and `try_get_size()` /
 `member.size` report the index's total, with no error. Accepted, ruled by davi on
 2026-09-23 (PR #407 review round 1): a unit's real end is known only by decompressing
@@ -1160,14 +1165,17 @@ own tools trust their indexes the same way.
 
 What the design still catches: a seek landing inside the misdescribed region resumes
 from a checked point before it and raises when the decode reaches the end of the lying
-unit (the member's trailer for lzip, the stream end for xz); bytes returned before that
-are correct for their offsets. A seek past the lie followed by a read to the end is not
+unit (the member's trailer for lzip and BGZF, the stream end for xz, the start of the
+frame the table placed elsewhere for zstd); bytes returned before that are correct for their
+offsets. A seek past the lie followed by a read to the end is not
 caught, since every later unit is genuine. A diagnostic for an ambiguous trailer walk was
 considered and not taken: an attacker who controls the trailers can avoid it. Public:
 [the integrity guarantee](../docs/errors-and-diagnostics.md#the-integrity-guarantee) and
 [where the guarantees stop](../docs/security.md#where-the-guarantees-stop). Tests:
 `tests/test_seekable_streams.py::test_lzip_cold_seek_trusts_a_self_consistent_trailer_chain`,
-`::test_xz_cold_seek_trusts_a_self_consistent_block_index`.
+`::test_xz_cold_seek_trusts_a_self_consistent_block_index`,
+`tests/test_zstd_seekable.py::test_cold_seek_trusts_a_self_consistent_table`,
+`tests/test_bgzf_seek.py::test_bgzf_cold_seek_trusts_the_block_sizes`.
 
 ### Windows directory sources
 
@@ -1279,7 +1287,7 @@ writing lands (possibly after 1.0), and must be a day-one decision of the writin
 | O14 | 7z encoded-header nesting | [Listing](#listing) |
 | O15 | Tar extended header sized an allocation | [Allocations sized by a header field](#allocations-sized-by-a-header-field) |
 | O16 | ISO directory record sized an allocation | [Allocations sized by a header field](#allocations-sized-by-a-header-field) |
-| O17 | Seek trusts the xz/lzip index | [A seek trusts the file's own index](#a-seek-trusts-the-files-own-index) |
+| O17 | Seek trusts the xz/lzip/zstd/BGZF index | [A seek trusts the file's own index](#a-seek-trusts-the-files-own-index) |
 | O18 | Archive chooses the key-derivation cost | [Key derivation](#key-derivation) |
 | O19 | Data-stored symlink target sized an allocation | [Listing](#listing) |
 | O20 | 7z BCJ2 in pure Python | CPU: [No CPU or wall-clock bound](#no-cpu-or-wall-clock-bound); memory: [Decoder memory](#decoder-memory) |

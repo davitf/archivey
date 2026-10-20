@@ -94,6 +94,7 @@ from archivey.internal.streams.streamtools import (
 from archivey.internal.streams.streamtools.binaryio import (
     read_arrived,
     read_blocking,
+    readinto_via_read,
     try_readinto,
 )
 
@@ -187,6 +188,27 @@ class _GatheringReader:
         # ``read_exact`` refuses an over-read in the follow-up, as the check above
         # does for the first read.
         return data + read_exact(self._inner, n - got)
+
+
+def _readinto_or_stall(reader: object, view: memoryview) -> int | None:
+    """:func:`try_readinto`, with a 0 into a non-empty buffer confirmed by ``read``.
+
+    A non-blocking stream with nothing ready answers ``readinto`` with ``None``, which
+    raises. PyPy's buffered reader answers 0 instead, the same as at the end, so a 0
+    is asked again with ``read``: ``b""`` is the end, ``None`` a stall (which raises),
+    and bytes that arrived in between are copied in. That is one more ``read`` each
+    time the inner answers 0 into a non-empty buffer, on every interpreter: two at the
+    end of a stream of unknown length, none on the fact-length path, whose clamp
+    answers the end without I/O.
+
+    The check sits at this boundary because :class:`ArchiveSource` is the only wrapper
+    placed directly over a caller's stream; every other ``try_readinto`` caller reads
+    a stream that has already come through here, where a 0 is already the end.
+    """
+    got = try_readinto(reader, view)
+    if got != 0 or not len(view):
+        return got
+    return readinto_via_read(cast(BinaryIO, reader), view)
 
 
 class _ArrivedView(ReadOnlyIOStream):
@@ -645,18 +667,23 @@ class ArchiveSource(ReadOnlyIOStream):
         # step. A replayed prefix or the gathering strategy goes through ``read``.
         if self._replay or self._gatherer is not None or self._reader is None:
             return super().readinto(b)
-        view = memoryview(b).cast("B")
-        if self._length is not None:
-            remaining = max(self._length - self._pos, 0)
-            if len(view) > remaining:
-                view = view[:remaining]
-        if not len(view):
-            # Nothing asked, or nothing left: answered without I/O, as ``read`` is.
-            return 0
+        # Views released on return: see try_readinto.
+        with memoryview(b) as outer, outer.cast("B") as whole:
+            limit = len(whole)
+            if self._length is not None:
+                limit = min(limit, max(self._length - self._pos, 0))
+            if not limit:
+                # Nothing asked, or nothing left: answered without I/O, as ``read`` is.
+                return 0
+            with whole[:limit] as view:
+                return self._fill(b, view)
+
+    def _fill(self, b: WriteableBuffer, view: memoryview) -> int:
+        """:meth:`readinto` of ``view``, the part of ``b`` the length leaves."""
         # ``None`` from ``readinto`` is a stall. A missing or refused
         # ``readinto`` falls back to ``read``, which refuses ``None`` too.
         reader = self._reader
-        got = try_readinto(reader, view)
+        got = _readinto_or_stall(reader, view)
         if got is None:
             return super().readinto(b)
         # Full-count, as ``read`` is: a short fill is asked again, so a non-blocking
@@ -675,7 +702,8 @@ class ArchiveSource(ReadOnlyIOStream):
         total = got
         while 0 < got and total < len(view):
             want = len(view) - total
-            got = try_readinto(reader, view[total:])
+            with view[total:] as rest:
+                got = _readinto_or_stall(reader, rest)
             assert got is not None, f"readinto refused after serving: {reader!r}"
             if got > want:
                 raise ValueError(

@@ -121,9 +121,10 @@ Rulings from the maintainer in #523's thread:
   | Explanation | Why and trade-offs | Opinion allowed; one bounded topic |
 
 - **Code and tables before prose.** "The code is immediately understandable, more than a
-  paragraph." Give an example for each form an argument takes (a list, a function), a
-  table of values and effects for each option, and a table of examples when behaviour
-  depends on the input.
+  paragraph." Give an example for each form an argument takes (a list, a function), the
+  values and effects of each option, and examples when behaviour depends on the input.
+  Use a table only when it fits a 390 px phone screen, which in practice means three
+  columns or fewer; otherwise write the same facts as a list, one item per value or input.
 - **Follow the user's choices.** Start with the call the reader makes, then the arguments
   they choose, then what each choice does. Every argument of the call appears on the
   page, and each section says which argument it explains.

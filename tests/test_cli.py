@@ -153,27 +153,31 @@ def test_version_verbose_names_each_install_hint_once() -> None:
         MissingComponent("pyppmd", hint, ("ppmd",)),
         MissingComponent("unrar", "install RARLAB unrar", ("rar",)),
         MissingComponent("brotli", hint, ("brotli",)),
+        MissingComponent("lz4", hint, ("lz4",), reason="archivey does not use lz4"),
     ]
     from archivey.cli import main as main_mod
 
     assert main_mod._format_missing_components(missing) == (
-        f"pyppmd, brotli ({hint}); unrar (install RARLAB unrar)"
+        f"pyppmd, brotli ({hint}); unrar (install RARLAB unrar); "
+        "lz4 (archivey does not use lz4)"
     )
 
 
 def test_version_verbose_never_repeats_an_install_hint(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Each format's printed line names each of its install hints exactly once.
+    """Each format's printed line names each of its components' advice exactly once.
 
     Vacuous on a full install (nothing is missing); real on the core-only legs, where
-    the recommended-extra packages must share one hint. Hints are free text (unrar's
-    is a whole refusal with ``;`` and parentheses), so count them, don't parse them.
+    the recommended-extra packages must share one hint, and under PyPy, where a package
+    archivey does not use prints its reason instead (``MissingComponent.advice``).
+    Advice is free text (unrar's is a whole refusal with ``;`` and parentheses), so
+    count it, don't parse it.
     """
     assert main(["--version", "-v"]) == EXIT_OK
     lines = capsys.readouterr().out.splitlines()
     for fmt in list_known_formats():
-        hints = {m.install_hint for m in format_availability(fmt).missing}
+        hints = {m.advice for m in format_availability(fmt).missing}
         if not hints:
             continue
         prefix = f"  {format_format_label(fmt)}: "
@@ -1581,7 +1585,7 @@ def test_test_early_abort_reports_not_tested(
         yielded = False
         for item in real(self, members):
             if yielded:
-                raise ReadError("simulated solid abort")
+                raise ReadError("simulated mid-pass failure")
             yielded = True
             yield item
 

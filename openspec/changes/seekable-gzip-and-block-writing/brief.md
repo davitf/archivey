@@ -1,6 +1,6 @@
 # seekable-gzip-and-block-writing — zero-dependency random access for blocked gzip
 
-**Status:** Exploration — specs only, no code lands in this change; zero of twenty-four tasks. Depends on the Phase 2 stream layer; the write half also depends on the later writing phase. Not breaking. Effort: large overall, but splittable.
+**Status:** Exploration — specs only, no code lands in this change. BGZF reading shipped separately (2026-10-20, `gzip-member-seek-points`); mgzip, indexed_gzip and writing remain. Depends on the Phase 2 stream layer; the write half also depends on the later writing phase. Not breaking. Effort: large overall, but splittable.
 
 **Why it matters:** random access inside a plain gzip stream needs an accelerator, because block boundaries can only be found by decoding. But two widely used gzip variants — BGZF, ubiquitous in bioinformatics, and mgzip from multi-threaded writers — are self-describing: each stores its per-block compressed size in the gzip header, so a seek index can be built by walking members without decompressing, exactly like we already do for xz and lzip. That means archivey can give these random access with no dependency at all, matching the native-first philosophy.
 

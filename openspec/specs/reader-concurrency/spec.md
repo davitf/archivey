@@ -395,10 +395,12 @@ outside lifecycle locks.
 
 If explicit reader/member close triggers final teardown and teardown fails, the
 closer SHALL be irrevocably closed and the translated error SHALL propagate
-once; repeated closes SHALL not retry or re-raise it. A safety-net finalizer
-SHALL use the same once-guards, never raise, and MAY report through
-`sys.unraisablehook` only outside all Archivey locks. Native accelerator
-finalizers retain their close-before-free guarantee.
+once; repeated closes SHALL not retry or re-raise it. A member stream has no
+finalizer of its own: when it is dropped unclosed, `IOBase.__del__` calls its
+`close()`, which releases the lease in its `finally`. That close SHALL use the
+same once-guards, and an error from it MAY reach `sys.unraisablehook` only
+outside all Archivey locks. Native accelerator finalizers retain their
+close-before-free guarantee.
 
 Member close SHALL release its lease in `finally` even when inner close fails.
 If inner close and the resulting final backend teardown both fail, both
