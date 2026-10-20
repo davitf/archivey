@@ -4,7 +4,7 @@ on:
     branches: [claude/project-thread-upv4hd-pypy-memory-scratch]
 jobs:
   probe:
-    if: true
+    if: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -12,7 +12,7 @@ jobs:
       - run: uv python install pypy3.11
       - run: uv run --python pypy3.11 --no-project python scratch/release_probe.py
   extras:
-    if: false
+    if: true
     runs-on: ubuntu-latest
     timeout-minutes: 50
     strategy:
