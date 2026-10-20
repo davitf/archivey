@@ -18,6 +18,7 @@ jobs:
         continue-on-error: true
         env:
           PYTHONFAULTHANDLER: "1"
+          PYPY_GC_MAX: "1500MB"
         run: >
           (while sleep 15; do echo "MEM $(free -m | awk 'NR==2{print "used " $3 " of " $2 " avail " $7}') swap $(free -m | awk 'NR==3{print $3}') TOP $(ps -eo rss=,args= --sort=-rss | head -4 | awk '{printf "%dMB %s %s %s | ", $1/1024, $2, $3, $NF}')"; done) > mem.log 2>&1 & MON=$!; cat /proc/sys/vm/overcommit_memory;
           uv run --python pypy3.11 --no-sync
@@ -55,6 +56,7 @@ jobs:
         continue-on-error: true
         env:
           PYTHONFAULTHANDLER: "1"
+          PYPY_GC_MAX: "1500MB"
         run: >
           (while sleep 15; do echo "MEM $(free -m | awk 'NR==2{print "used " $3 " of " $2 " avail " $7}') swap $(free -m | awk 'NR==3{print $3}') TOP $(ps -eo rss=,args= --sort=-rss | head -4 | awk '{printf "%dMB %s %s %s | ", $1/1024, $2, $3, $NF}')"; done) > mem.log 2>&1 & MON=$!; cat /proc/sys/vm/overcommit_memory;
           uv run --python pypy3.11 --no-sync
