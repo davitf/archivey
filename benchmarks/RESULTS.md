@@ -46,9 +46,42 @@ uv run --extra all python -m benchmarks.harness --mode structural --scale ci
 uv run --extra all python -m benchmarks.harness --mode full --scale realistic
 ```
 
-**Measurement host for tables below:** 4-core Intel Xeon (KVM), Linux x86_64.
-rapidgzip parallelises across cores — absolute speedups scale with core count;
-treat the figures as directional, not portable.
+## 0.2.0 release figures (nightly, 2026-10-19)
+
+The figures quoted in the 0.2.0 CHANGELOG entry. Source: `benchmark-wall.yml` run
+39258785182, `measured_at` 2026-10-19T13:17:56Z, `source_sha` `8c0de2e1838a`, GitHub
+`ubuntu-latest` (4 vCPUs), Python 3.11, `--mode full --scale realistic --warmup`.
+Corpus: 64 × 256 KiB members, 32 MiB gzip, 10 000 solid tiny / 1 000 non-solid
+7z/RAR list members. The band column is the nightly report's own label against
+`VISION.md`.
+
+| Case | archivey | peer | ratio | band |
+| --- | ---: | ---: | ---: | --- |
+| `zip_open_list` | 1.4 ms | 0.2 ms | 7.10× | above listing 3.0× |
+| `zip_read_all` | 19.0 ms | 10.7 ms | 1.78× | above 1.3×, under 2.0× |
+| `zip_extract` | 46.1 ms | 17.9 ms | 2.58× | above 2.0× safety |
+| `tar_open_list` | 2.0 ms | 1.4 ms | 1.49× | within listing ≤3.0× |
+| `tar_read_all` | 6.4 ms | 3.1 ms | 2.08× | above 2.0× safety |
+| `gzip_read_all` | 27.3 ms | 33.4 ms | 0.82× | within ≤1.3× |
+| `targz_read_all_accel_off` | 17.3 ms | 23.6 ms | 0.73× | within ≤1.3× |
+| `targz_read_all_accel_on` | 57.2 ms | 23.6 ms | 2.42× | above 2.0× safety |
+| `tarbz2_read_all_accel_off` | 135.3 ms | 218.4 ms | 0.62× | within ≤1.3× |
+| `tarbz2_read_all_accel_on` | 107.7 ms | 232.8 ms | 0.46× | within ≤1.3× |
+| `sevenzip_open_list` | 1.6 ms | 0.7 ms | 2.34× | above native parity (~1.25×) |
+| `sevenzip_many_open_list` | 127.9 ms | 83.9 ms | 1.52× | above native parity (~1.25×) |
+| `sevenzip_nonsolid_open_list` | 17.4 ms | 10.8 ms | 1.61× | above native parity (~1.25×) |
+| `rar_open_list` | 0.8 ms | 0.1 ms | 5.58× | above native parity (~1.25×) |
+| `rar_many_open_list` | 22.0 ms | 11.1 ms | 1.99× | above native parity (~1.25×) |
+| `rar_nonsolid_open_list` | 6.0 ms | 2.8 ms | 2.10× | above native parity (~1.25×) |
+
+Against the older tables below: the native ZIP reader replaced `zipfile`, and
+rapidgzip now runs in its own process (about 45 ms to start, `docs/security.md`), so
+forcing the gzip accelerator on at this corpus size is slower than the plain codec.
+
+**Measurement host for the tables below:** 4-core Intel Xeon (KVM), Linux x86_64,
+July 2026, before the native ZIP reader and the rapidgzip subprocess; superseded by
+the section above where they overlap. rapidgzip parallelises across cores — absolute
+speedups scale with core count; treat the figures as directional, not portable.
 
 ## Investigation: ZIP “faster than stdlib” and TAR slowdown
 
