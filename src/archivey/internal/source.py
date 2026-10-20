@@ -638,14 +638,20 @@ class ArchiveSource(ReadOnlyIOStream):
         # step. A replayed prefix or the gathering strategy goes through ``read``.
         if self._replay or self._gatherer is not None or self._reader is None:
             return super().readinto(b)
-        view = memoryview(b).cast("B")
-        if self._length is not None:
-            remaining = max(self._length - self._pos, 0)
-            if len(view) > remaining:
-                view = view[:remaining]
-        if not len(view):
-            # Nothing asked, or nothing left: answered without I/O, as ``read`` is.
-            return 0
+        # The views are released on return: until then the caller cannot resize
+        # ``b`` (``RawIOBase.read`` does), and PyPy releases one only at a collection.
+        with memoryview(b) as outer, outer.cast("B") as whole:
+            limit = len(whole)
+            if self._length is not None:
+                limit = min(limit, max(self._length - self._pos, 0))
+            if not limit:
+                # Nothing asked, or nothing left: answered without I/O, as ``read`` is.
+                return 0
+            with whole[:limit] as view:
+                return self._fill(b, view)
+
+    def _fill(self, b: WriteableBuffer, view: memoryview) -> int:
+        """:meth:`readinto` of ``view``, the part of ``b`` the length leaves."""
         # ``None`` from ``readinto`` is a stall. A missing or refused
         # ``readinto`` falls back to ``read``, which refuses ``None`` too.
         reader = self._reader
@@ -668,7 +674,8 @@ class ArchiveSource(ReadOnlyIOStream):
         total = got
         while 0 < got and total < len(view):
             want = len(view) - total
-            got = _readinto_or_stall(reader, view[total:])
+            with view[total:] as rest:
+                got = _readinto_or_stall(reader, rest)
             assert got is not None, f"readinto refused after serving: {reader!r}"
             if got > want:
                 raise ValueError(

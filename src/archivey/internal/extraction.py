@@ -29,7 +29,7 @@ import posixpath
 import stat
 import tempfile
 import uuid
-from collections.abc import Callable, Collection, Iterator
+from collections.abc import Callable, Collection, Generator, Iterator
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, assert_never, cast
@@ -388,7 +388,7 @@ def _until_listing_damage(
     reader: BaseArchiveReader,
     pairs: Iterator[tuple[ArchiveMember, ArchiveStream | None]],
     found: list[CorruptionError],
-) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
+) -> Generator[tuple[ArchiveMember, ArchiveStream | None], None, None]:
     """``pairs``, ending quietly when the listing's own damage ends them.
 
     That damage is appended to ``found`` for the caller to raise once the members

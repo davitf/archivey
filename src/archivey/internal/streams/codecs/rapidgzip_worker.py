@@ -191,12 +191,14 @@ class _ParentSource(io.RawIOBase):
         return True
 
     def readinto(self, buf: Any) -> int:
-        view = memoryview(buf).cast("B")
-        answer, _, data = self._ask(SRC_READ, len(view))
-        if answer != SRC_DATA:
-            return 0
-        view[: len(data)] = data
-        return len(data)
+        # The views are released on return: until then the caller cannot resize or
+        # free ``buf``, and PyPy releases an unreleased one only at a collection.
+        with memoryview(buf) as outer, outer.cast("B") as view:
+            answer, _, data = self._ask(SRC_READ, len(view))
+            if answer != SRC_DATA:
+                return 0
+            view[: len(data)] = data
+            return len(data)
 
     def seek(self, offset: int, whence: int = 0) -> int:
         answer, value, _ = self._ask(SRC_SEEK, offset, bytes([whence]))

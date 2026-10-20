@@ -1439,16 +1439,18 @@ class _ZisofsStream(io.RawIOBase):
         return self._position
 
     def readinto(self, b: WriteableBuffer, /) -> int:
-        view = memoryview(b).cast("B")
-        if self._position >= self._size or not len(view):
-            return 0
-        index = self._position >> self._log2
-        block = self._block(index)
-        start = self._position - (index << self._log2)
-        count = min(len(view), len(block) - start)
-        view[:count] = block[start : start + count]
-        self._position += count
-        return count
+        # Released on return: until then the caller cannot resize ``b``
+        # (``RawIOBase.read`` does), and PyPy releases a view only at a collection.
+        with memoryview(b) as outer, outer.cast("B") as view:
+            if self._position >= self._size or not len(view):
+                return 0
+            index = self._position >> self._log2
+            block = self._block(index)
+            start = self._position - (index << self._log2)
+            count = min(len(view), len(block) - start)
+            view[:count] = block[start : start + count]
+            self._position += count
+            return count
 
     def _block(self, index: int) -> bytes:
         if index == self._cached_index:
