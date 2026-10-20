@@ -73,7 +73,11 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO
 
-from archivey.config import DEFAULT_ARCHIVEY_CONFIG, AcceleratorMode
+from archivey.config import (
+    DEFAULT_ARCHIVEY_CONFIG,
+    AcceleratorMode,
+    ProcessIsolation,
+)
 from archivey.detection import DetectedBy, DetectionConfidence, FormatInfo
 from archivey.detection_cost import DetectionBudget, TierSkipReason
 from archivey.diagnostics import (
@@ -470,6 +474,11 @@ def _probe_inner_tar(
                 use_indexed_bzip2=AcceleratorMode.OFF,
                 decoder_limits=DecoderLimits.UNLIMITED,
                 probe_read_bound=_INNER_TAR_PROBE_BYTES,
+                process_isolation=(
+                    workspace.isolation
+                    if workspace is not None
+                    else ProcessIsolation.KNOWN_CRASHES
+                ),
             ),
         ) as stream:
             head = stream.read(_INNER_TAR_PROBE_BYTES)
@@ -576,7 +585,11 @@ def _probe_completes(
     whole = workspace.peek_prefix(length)
     workspace.charge_decode(input_bytes=len(whole))
     return probe(
-        whole, source_length=length, read_at=read_at, charge_decode=charge_decode
+        whole,
+        source_length=length,
+        read_at=read_at,
+        charge_decode=charge_decode,
+        isolation=workspace.isolation,
     )
 
 
@@ -863,7 +876,8 @@ def _scan_for_sfx_payload(
 
 def probe_config(config: ArchiveyConfig | None) -> ArchiveyConfig:
     """The library default config carrying only ``config``'s detection settings
-    (``detection_budget`` and ``always_probe_content``).
+    (``detection_budget``, ``always_probe_content`` and ``process_isolation``, which
+    says where the probes' trial decodes run).
 
     For a detection whose result is internal (a stub check, the rescan that words an
     empty-listing advisory): it spends what the caller allowed, but its diagnostics
@@ -875,12 +889,14 @@ def probe_config(config: ArchiveyConfig | None) -> ArchiveyConfig:
     if config is None or (
         config.detection_budget is DEFAULT_ARCHIVEY_CONFIG.detection_budget
         and config.always_probe_content == DEFAULT_ARCHIVEY_CONFIG.always_probe_content
+        and config.process_isolation is DEFAULT_ARCHIVEY_CONFIG.process_isolation
     ):
         return DEFAULT_ARCHIVEY_CONFIG
     return replace(
         DEFAULT_ARCHIVEY_CONFIG,
         detection_budget=config.detection_budget,
         always_probe_content=config.always_probe_content,
+        process_isolation=config.process_isolation,
     )
 
 
@@ -1008,7 +1024,12 @@ def _detect_source_into(
     receipt = MutableDetectionCostReceipt()
     try:
         info = _detect_format_body(
-            source, collector, resolved_budget, receipt, always_probe=always_probe
+            source,
+            collector,
+            resolved_budget,
+            receipt,
+            always_probe=always_probe,
+            isolation=effective_config.process_isolation,
         )
     except FormatDetectionError:
         alt = _first_volume_beside_stub(source) if follow_stub_volumes else None
@@ -1024,6 +1045,7 @@ def _detect_source_into(
                 resolved_budget,
                 receipt,
                 always_probe=always_probe,
+                isolation=effective_config.process_isolation,
             )
     diagnostics = (
         collector.snapshot()
@@ -1054,6 +1076,7 @@ def _detect_format_body(
     receipt: MutableDetectionCostReceipt | None = None,
     *,
     always_probe: bool = False,
+    isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
 ) -> FormatInfo:
     registry = get_registry()
     magic_entries = registry.magic_entries()
@@ -1063,7 +1086,7 @@ def _detect_format_body(
     ext_match = _match_extension(name, extension_map)
     ext_fmt = ext_match[0] if ext_match is not None else None
 
-    with PrefixWorkspace(source, budget, receipt) as workspace:
+    with PrefixWorkspace(source, budget, receipt, isolation=isolation) as workspace:
 
         def conclude(info: FormatInfo, evidence: _ConflictEvidence) -> FormatInfo:
             _warn_on_conflict(collector, name, ext_match, info.format, evidence)
@@ -1259,6 +1282,7 @@ def _detect_format_body(
                     source_length=length,
                     read_at=read_at,
                     charge_decode=charge_decode,
+                    isolation=workspace.isolation,
                 ) and _probe_completes(
                     probe, data, length, read_at, charge_decode, workspace
                 ):

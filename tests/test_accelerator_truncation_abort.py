@@ -728,7 +728,7 @@ def test_the_child_writes_no_core_dump(tmp_path: Path) -> None:
     # worker's function is run in a fresh interpreter.
     probe = """
         import ctypes
-        from archivey.internal.streams.codecs.rapidgzip_worker import disable_core_dumps
+        from archivey.internal.streams.codecs.decoder_worker import disable_core_dumps
         disable_core_dumps()
         print(ctypes.CDLL(None).prctl(3, 0, 0, 0, 0))  # PR_GET_DUMPABLE
     """
@@ -835,7 +835,7 @@ def test_any_runtime_error_rapidgzip_raised_is_translated(message: str) -> None:
         codecs_module.ZlibCodec(),
     ):
         reported = rapidgzip_child._reported_error(
-            f"RuntimeError\n\n{message}".encode()
+            f"builtins\nRuntimeError\n\n{message}".encode()
         )
         assert is_corruption_not_truncation(codec._translate_accelerator(reported))
         assert codec._translate_accelerator(RuntimeError(message)) is None
@@ -849,15 +849,19 @@ def test_an_eof_error_the_child_reported_is_still_translated() -> None:
         codecs_module.DeflateCodec(),
         codecs_module.ZlibCodec(),
     ):
-        reported = rapidgzip_child._reported_error(b"EOFError\n\nend of stream")
+        reported = rapidgzip_child._reported_error(
+            b"builtins\nEOFError\n\nend of stream"
+        )
         assert isinstance(codec._translate_accelerator(reported), TruncatedError)
 
 
 def test_an_unknown_exception_from_the_child_propagates_unmapped() -> None:
-    exc = rapidgzip_child._reported_error(b"KeyError\n\n'x'")
+    exc = rapidgzip_child._reported_error(b"builtins\nKeyError\n\n'x'")
     assert isinstance(exc, RapidgzipChildReportedError)
     assert codecs_module.GzipCodec()._translate_accelerator(exc) is None
-    missing = rapidgzip_child._reported_error(b"FileNotFoundError\n2\nno such file")
+    missing = rapidgzip_child._reported_error(
+        b"builtins\nFileNotFoundError\n2\nno such file"
+    )
     assert isinstance(missing, FileNotFoundError) and missing.errno == 2
 
 
@@ -948,9 +952,9 @@ def _fail_the_nth_read(
         if tag == READ:
             reads += 1
             if reads == n:
-                return ERR, 0, b"RuntimeError\n\ncorrupt block"
+                return ERR, 0, b"builtins\nRuntimeError\n\ncorrupt block"
         if tag == SEEK and fail_seeks and reads >= n:
-            return ERR, 0, b"RuntimeError\n\nseek refused"
+            return ERR, 0, b"builtins\nRuntimeError\n\nseek refused"
         return exchange(tag, arg, payload)
 
     child._exchange = failing  # type: ignore[method-assign]

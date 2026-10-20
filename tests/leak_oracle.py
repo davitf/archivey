@@ -443,6 +443,12 @@ def pytest_configure(config: pytest.Config) -> None:
     _installed = True
 
 
+def _close_idle_decoder_children() -> None:
+    from archivey.internal.streams.codecs.decoder_child import POOL
+
+    POOL.close_idle()
+
+
 @pytest.fixture(autouse=True)
 def _archivey_leak_oracle(request: pytest.FixtureRequest) -> Iterator[None]:
     """Snapshot children/pipe fds, run the test, fail if anything new is still live."""
@@ -452,6 +458,7 @@ def _archivey_leak_oracle(request: pytest.FixtureRequest) -> Iterator[None]:
     if request.node.get_closest_marker("allow_resource_leaks") is not None:
         children_before = _child_pids()
         yield
+        _close_idle_decoder_children()
         # Skip the fail, not the reap — leftover children would outlive the
         # session (the next test's snapshot hides them). extra_children is the
         # Linux /proc backstop for spawns that skipped subprocess.Popen.
@@ -469,6 +476,9 @@ def _archivey_leak_oracle(request: pytest.FixtureRequest) -> Iterator[None]:
     children_before = _child_pids()
     yield
 
+    # Idle decoder children wait in a pool for the next decoder, which is no leak; a
+    # child still leased to a decoder nobody closed is one.
+    _close_idle_decoder_children()
     procs = _leaked_procs()
     streams = _leaked_streams()
     extra_fds = {

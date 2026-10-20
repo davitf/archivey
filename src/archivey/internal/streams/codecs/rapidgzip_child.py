@@ -8,9 +8,10 @@ buffer alike, and no Python ``try/except`` can catch it. In a child process the 
 costs the member, and the caller gets an archivey error.
 
 :class:`RapidgzipChildStream` is the seekable decompressed stream the codec layer
-wraps, as it wrapped rapidgzip's own reader in-process. The child runs
-``rapidgzip_worker.py`` as a script, which imports nothing from ``archivey``; the
-protocol is in that file's docstring. A path source is opened by the child. A stream
+wraps, as it wrapped rapidgzip's own reader in-process. The child runs the shared
+``decoder_worker.py`` with the ``rapidgzip`` argument, which hands over to
+``rapidgzip_worker.py``; neither imports anything from ``archivey``, and the protocol
+is in ``rapidgzip_worker``'s docstring. A path source is opened by the child. A stream
 source stays in this process: the child asks for each read, seek and tell, and this
 process answers from the caller's stream, so an exception from that stream reaches
 the caller unchanged.
@@ -60,6 +61,10 @@ from archivey.internal.streams.child_process import (
     unavailable_reason,
 )
 from archivey.internal.streams.codecs import deps
+from archivey.internal.streams.codecs.decoder_worker import (
+    RAPIDGZIP_ARG,
+    parse_error_payload,
+)
 from archivey.internal.streams.codecs.deflate_resume import WINDOW_SIZE, DeflateResume
 from archivey.internal.streams.codecs.rapidgzip_worker import (
     ARG_MAX,
@@ -95,7 +100,7 @@ from archivey.internal.streams.codecs.rapidgzip_worker import (
 from archivey.internal.streams.decompressor_stream import SeekPoint, truncated_message
 from archivey.internal.streams.streamtools import ReadOnlyIOStream
 
-_WORKER = Path(__file__).with_name("rapidgzip_worker.py")
+_WORKER = Path(__file__).with_name("decoder_worker.py")
 
 # The largest memory limit the OPEN frame holds (OPEN_LIMIT is a signed 64-bit integer).
 _MAX_LIMIT = (1 << 63) - 1
@@ -240,20 +245,19 @@ def mark_callers_source(exc: BaseException) -> None:
 
 def _reported_error(payload: bytes) -> Exception:
     """Rebuild an exception the child reported (see ``_error_payload`` in the worker)."""
-    name, _, rest = payload.decode("utf-8", "replace").partition("\n")
-    errno, _, message = rest.partition("\n")
+    module, name, errno, message = parse_error_payload(payload)
     known = _REPORTED_TYPES.get(name)
     if known is not None:
         exc = known(message)
         setattr(exc, _FROM_CHILD, True)
         return exc
-    cls = getattr(builtins, name, None)
+    cls = getattr(builtins, name, None) if module == "builtins" else None
     if isinstance(cls, type) and issubclass(cls, OSError):
         # A path the child could not open. ``OSError(errno, strerror)`` would pick the
         # subclass from the errno, but the message already carries it.
         exc = cls(message)
-        if errno.lstrip("-").isdigit():
-            exc.errno = int(errno)
+        if errno is not None:
+            exc.errno = errno
         return exc
     return RapidgzipChildReportedError(f"{name}: {message}")
 
@@ -396,6 +400,7 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         )
         super().__init__()
         argv = python_argv(_WORKER, _start_error)
+        argv.append(RAPIDGZIP_ARG)
         if bzip2:
             argv.append(BZIP2_ARG)
         try:

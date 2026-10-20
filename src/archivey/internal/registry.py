@@ -14,16 +14,15 @@ import functools
 import importlib
 from collections.abc import Callable
 from types import ModuleType
-from typing import TYPE_CHECKING, Protocol
+from typing import Protocol
 
-if TYPE_CHECKING:
-    from archivey.internal.base_reader import ReadBackend
-
+from archivey.config import ProcessIsolation
 from archivey.cost import StreamCapability
 from archivey.exceptions import (
     PackageNotInstalledError,
     UnsupportedFeatureError,
 )
+from archivey.internal.base_reader import ReadBackend
 from archivey.internal.format_args import coerce_archive_format
 from archivey.internal.sfx import HitValidator
 from archivey.internal.streams.codecs import (
@@ -57,6 +56,8 @@ class ContentProbe(Protocol):
     for the total ``[0, n)`` of compressed bytes a probe will read and decode past its
     sample (Brotli's chain decode), before it reads them; ``False`` means not covered,
     and the probe keeps its verdict.
+    ``isolation`` is the caller's ``process_isolation``: where the probe's trial decode
+    runs.
     """
 
     def __call__(
@@ -67,6 +68,7 @@ class ContentProbe(Protocol):
         source_length: int | None = None,
         read_at: Callable[[int, int], bytes | None] | None = None,
         charge_decode: Callable[[int], bool] | None = None,
+        isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
     ) -> bool: ...
 
 

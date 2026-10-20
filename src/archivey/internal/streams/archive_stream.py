@@ -34,6 +34,7 @@ from archivey.exceptions import (
 )
 from archivey.internal.diagnostics_collector import leave_scope, resolve_collector
 from archivey.internal.logs import streams as logger
+from archivey.internal.streams.decompressor_stream import retire_decoder_children
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
@@ -476,6 +477,10 @@ class ArchiveStream(ReadOnlyIOStream):
         try:
             self._raise_translated(e)
         except ArchiveyError as raised:
+            if _is_content_verdict(raised) and self._inner is not None:
+                # A digest mismatch found here, above the decoder: a decoder process
+                # that produced the bad bytes must not serve another member.
+                retire_decoder_children(self._inner)
             if not self._repeat_verdict or not _is_content_verdict(raised):
                 raise
             repeat = self._verdict is not None and self._verdict_rewound
