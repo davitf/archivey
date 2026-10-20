@@ -424,6 +424,36 @@ def test_link_targets_that_name_dest_match(streaming: bool, tmp_path: Path) -> N
         assert statuses["later"] is ExtractionStatus.BLOCKED
 
 
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+def test_link_past_a_missing_name_meets_what_dest_holds(
+    streaming: bool, tmp_path: Path
+) -> None:
+    # A link member whose absolute target reaches dest past a component that does
+    # not exist, then goes on through the caller's symlink out of dest.
+    for policy in _POLICIES:
+        work = tmp_path / policy.value
+        (work / "tmp").mkdir(parents=True)
+        tempfile.tempdir = str(work / "tmp")
+        blobs = {
+            dry_run: _tar([("l", "sym", f"{work / kind}/gone/../out/evil/x")])
+            for dry_run, kind in ((False, "real"), (True, "dry"))
+        }
+        calls = iter((False, True))
+        real, dry = _both(
+            lambda: io.BytesIO(blobs[next(calls)]),
+            work,
+            policy=policy,
+            populate=lambda dest: _put(
+                dest, {"evil": ("sym", "/archivey-dry-run-test-elsewhere")}
+            ),
+            open_kwargs={"streaming": streaming},
+        )
+        assert dry == real, policy
+        if policy is not ExtractionPolicy.TRUSTED:
+            assert real[0][1] is ExtractionStatus.BLOCKED, policy
+
+
 # --- what the dry run does and does not touch ---------------------------------------
 
 
@@ -560,9 +590,17 @@ _EXISTING_LINK_CASES: dict[
         [("ln/x", "file", b"theirs"), ("ln/y", "file", b"y"), ("abs/z", "file", b"")],
     ),
     # Under one whose absolute target reaches dest past a component that does not
-    # exist: written through it too.
+    # exist: the OS cannot follow it, so the member lands on the link itself.
     "through-symlink-past-a-missing-name": (
         {"sub/x": b"mine", "ln": ("sym", "{parent}/gone/../out/sub")},
+        [("ln/y", "file", b"y")],
+    ),
+    # The same, where what it reaches in dest is a symlink out of dest: refused.
+    "through-symlink-past-a-missing-name-and-out": (
+        {
+            "sub": ("sym", "/archivey-dry-run-test-elsewhere"),
+            "ln": ("sym", "{parent}/gone/../out/sub"),
+        },
         [("ln/y", "file", b"y")],
     ),
     # And under one that leaves dest: refused.
@@ -790,6 +828,39 @@ def test_matching_an_absolute_target_is_linear_in_its_depth(
         monkeypatch.undo()
     assert len(asked) <= 2001 + len(tmp_path.parts)
     assert max(len(path) for path in asked) <= len(str(tmp_path)) + 20
+
+
+def test_matching_a_missing_target_joins_a_linear_amount(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Past a component that does not exist no filesystem call is made, so what the
+    # match costs there is the joining of path strings: pathlib joins a path's parts
+    # each time it is hashed, compared or shown. Counted as the characters handed
+    # to ``os.path.join``, which pathlib joins through from Python 3.12 (3.11 joins
+    # with ``str.join``, unseen here), it stays linear in the target's length.
+    joined = 0
+    join = os.path.join
+
+    def counted(*parts):
+        nonlocal joined
+        joined += sum(len(os.fspath(part)) for part in parts)
+        return join(*parts)
+
+    dest = tmp_path / "out"
+    deep = "/".join(f"n{i}" for i in range(2000))
+    targets = [
+        # Missing from its first component: no match.
+        f"/archivey-no-such/{deep}",
+        # Down past a missing name and back up into dest: a match.
+        f"{tmp_path}/gone/{deep}/" + "../" * 2000 + "out/data",
+    ]
+    with dry_run_module.scratch_for(dest) as dry:
+        monkeypatch.setattr(os.path, "join", counted)
+        matched = [dry.target_on_disk(target) for target in targets]
+        monkeypatch.undo()
+    assert matched[0] == targets[0]
+    assert matched[1].endswith(f"{os.sep}out{os.sep}data")
+    assert joined <= 4 * sum(len(target) for target in targets)
 
 
 def test_record_keeps_the_top_when_the_tree_cannot_be_read(

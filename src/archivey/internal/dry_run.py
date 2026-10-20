@@ -206,6 +206,11 @@ class DryRun:
     # once, so an entry the pass removed is not copied in again.
     _considered: set[Path] = field(default_factory=set)
 
+    # The walk components (``_walk``) of each link target ``target_on_disk`` gave,
+    # by that target: read back from a link of the scratch tree, the target maps to
+    # the parts it was made from, so the walk and the checks place it alike.
+    _walks: dict[str, tuple[str, ...]] = field(default_factory=dict)
+
     def target_on_disk(self, target: str) -> str:
         """The target a link is created with: an absolute target that names a path
         under dest is rewritten to the same path under the scratch copy.
@@ -223,72 +228,102 @@ class DryRun:
         symlinks there are left for the checks that resolve the link. Any other target
         is returned as it is.
 
-        The cost is linear in the target's depth, which the archive chooses: the
-        spellings are compared part by part, and the fallback resolves one component
-        at a time onto the prefix resolved before it.
+        A rewritten target is remembered with the path under dest it names, which
+        ``_link_parts`` gives the walk for it, so the walk copies in what the checks
+        then resolve through, whichever spelling the rewrite has.
+
+        The cost is linear in the target's depth, which the archive chooses. The
+        target's parts are compared with dest's no further than dest's length, the
+        names past a component that does not exist are kept in a list and never
+        joined, and only a step that exists is resolved, as the resolved path before
+        it plus one name.
         """
+        on_disk, rest = self._match(target)
+        if rest is not None:
+            self._walks[on_disk] = (_FROM_ROOT, *rest)
+        return on_disk
+
+    def _match(self, target: str) -> tuple[str, tuple[str, ...] | None]:
+        """``target_on_disk``'s target, with the parts of the target that follow dest
+        when it names a path under dest, else ``None``."""
         pure = PurePath(target)
         if not pure.anchor:
-            return target
+            return target, None
         if not pure.drive:
             # Windows root-relative (a target like \x): pathlib joins it onto the
             # link's own drive, which is dest's. A no-op elsewhere, where drive is "".
             pure = PurePath(self.dest_spellings[0].drive + target)
         parts = pure.parts
+        fold = os.path.normcase  # as PurePath compares: case folded on Windows
         for spelling in self.dest_spellings:
-            # As ``is_relative_to`` compares (case folded on Windows), without its
-            # walk over every parent of the target.
+            # ``is_relative_to``, without its walk over every parent of the target.
             leading = spelling.parts
             if len(parts) >= len(leading) and all(
-                os.path.normcase(mine) == os.path.normcase(theirs)
+                fold(mine) == fold(theirs)
                 for mine, theirs in zip(parts, leading, strict=False)
             ):
-                return str(self.scratch.joinpath(*parts[len(leading) :]))
-        # ``resolved`` is canonical while ``missing`` is 0. Past a component that does
-        # not exist it grows by name, as ``Path.resolve`` grows it, and the ``..`` that
-        # takes the last such name off brings it back to the canonical prefix; only
-        # steps that exist are resolved, each a resolved path plus one name.
-        dest = self.dest_spellings[1]
-        created = {dest, *dest.parents}
-        resolved = PurePath(parts[0])
-        missing = 0
-        # Whether a missing component that a real run does not create (dest and its
-        # parents) is on the way.
+                return self._rewrite(parts[len(leading) :], detoured=False)
+        # The target's leading part so far, as ``Path.resolve`` spells it: ``base``,
+        # resolved on the real filesystem, then ``extra``, the names past a component
+        # of it that does not exist; a ``..`` takes the last of those off. Both are
+        # compared folded against dest's parts, so dest's length bounds each compare.
+        dest = tuple(fold(part) for part in self.dest_spellings[1].parts)
+        base = parts[0]
+        base_parts: tuple[str, ...] = (fold(base),)
+        extra: list[str] = []
+        # Whether a component that does not exist, and that a real run does not
+        # create (dest and its parents), is on the way.
         detoured = False
         for end in range(2, len(parts) + 1):
             part = parts[end - 1]
-            if missing and part == "..":
-                resolved = resolved.parent
-                missing -= 1
-            elif missing:
-                resolved = resolved / part
-                missing += 1
+            if extra:
+                if part == "..":
+                    extra.pop()
+                else:
+                    extra.append(fold(part))
             else:
                 try:
-                    step = os.path.join(resolved, part)
+                    step = os.path.join(base, part)
                     if os.path.lexists(long_path(step)):
-                        resolved = PurePath(plain(os.path.realpath(long_path(step))))
+                        base = plain(os.path.realpath(long_path(step)))
+                        base_parts = tuple(fold(p) for p in PurePath(base).parts)
                     else:
-                        resolved = PurePath(step)
-                        missing = 1
+                        extra.append(fold(part))
                 except (OSError, ValueError):
-                    return target
-            if missing and part != ".." and resolved not in created:
-                detoured = True
-            if resolved != dest:
-                continue
-            if not detoured:
-                return str(self.scratch.joinpath(*parts[end:]))
-            # The OS does not take a missing name off with a later `..`: it stops
-            # there, and a link through it leads nowhere, while the checks, which
-            # resolve the path as ``Path.resolve`` does, find it inside dest. The
-            # rewritten target keeps one missing name on the way, in the private
-            # directory that holds the scratch copy, so both still hold.
-            gap = "missing" if self.scratch.name != "missing" else "missing_"
-            return str(
-                self.scratch.parent.joinpath(gap, "..", self.scratch.name, *parts[end:])
+                    return target, None
+            depth = len(base_parts) + len(extra)
+            # Whether the leading part is dest or one of its parents.
+            above = (
+                depth <= len(dest)
+                and base_parts == dest[: len(base_parts)]
+                and tuple(extra) == dest[len(base_parts) : depth]
             )
-        return target
+            if extra and part != ".." and not above:
+                detoured = True
+            if above and depth == len(dest):
+                return self._rewrite(parts[end:], detoured=detoured)
+        return target, None
+
+    def _rewrite(
+        self, rest: tuple[str, ...], *, detoured: bool
+    ) -> tuple[str, tuple[str, ...]]:
+        """The target naming ``rest`` under the scratch copy, and ``rest``.
+
+        ``detoured``: the OS does not take a missing name off with a later ``..``; it
+        stops there, and a link through it leads nowhere, while the checks, which
+        resolve the path as ``Path.resolve`` does, find it inside dest. The target
+        then keeps one missing name on the way, in the private directory that holds
+        the scratch copy, so both still hold. That directory holds only the scratch
+        copy and ``scratch_for``'s detour, named ``_`` or ``__``, so the gap's name
+        exists there only if it is the scratch copy's own.
+        """
+        if not detoured:
+            return str(self.scratch.joinpath(*rest)), rest
+        gap = "missing" if self.scratch.name != "missing" else "missing_"
+        return (
+            str(self.scratch.parent.joinpath(gap, "..", self.scratch.name, *rest)),
+            rest,
+        )
 
     def shown(self, path: Path) -> Path:
         """``path`` as the caller sees it: a scratch path under their dest, spelled as
@@ -413,7 +448,12 @@ class DryRun:
     def _link_parts(self, target: str) -> tuple[str, ...]:
         """The ``_walk`` components of a symlink of the scratch tree whose target is
         ``target``: from the link's directory, from the scratch root for an absolute
-        target under it, and ``_OUTSIDE`` for any other absolute target."""
+        target under it, and ``_OUTSIDE`` for any other absolute target. A target
+        ``target_on_disk`` rewrote is placed by the parts it was made from, whatever
+        its spelling (``_walks``)."""
+        walk = self._walks.get(target)
+        if walk is not None:
+            return walk
         pure = PurePath(target)
         if not pure.anchor:
             return pure.parts
@@ -707,6 +747,7 @@ def scratch_for(dest: Path) -> Iterator[DryRun]:
                 work_given = Path(os.path.relpath(work))
         else:
             # Spelled with ``..``: so is the scratch directory, through a sibling.
+            # Never named ``missing``, the name ``DryRun._rewrite`` needs absent here.
             detour = scratch / ("_" if work.name != "_" else "__")
             work_given = detour / ".." / work.name
     try:
