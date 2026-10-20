@@ -1,0 +1,48 @@
+name: PyPy rest scratch (temporary)
+on:
+  push:
+    branches: [claude/project-thread-upv4hd-pypy-rest-scratch]
+jobs:
+  pypy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      UV_PYTHON: pypy3.11
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [core, extras]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv python install pypy3.11
+      - run: sudo apt-get update && sudo apt-get install -y p7zip-full unrar xorriso
+      - run: uv sync --python pypy3.11 --no-dev
+      - name: install extras
+        if: matrix.mode == 'extras'
+        run: |
+          for pkg in pyppmd inflate64 brotli lz4 cryptography pycdlib tqdm \
+              backports.zstd rapidgzip \
+              pytest pytest-timeout pytest-xdist hypothesis py7zr rarfile \
+              libarchive-c ncompress urllib3 fsspec pyzstd; do
+            uv pip install --python .venv "$pkg" > /dev/null 2>&1 && echo "ok $pkg $(uv pip show --python .venv $pkg | sed -n 's/^Version: //p')" || echo "FAILED $pkg"
+          done
+      - name: suite
+        continue-on-error: true
+        env:
+          PYTHONFAULTHANDLER: "1"
+        run: >
+          uv run --python pypy3.11 --no-sync
+          --with pytest --with pytest-timeout --with pytest-xdist
+          pytest tests/ -q -n auto --timeout=300 -o addopts= --tb=short -p no:warnings
+          -m 'not ppmd_native_stress' --junitxml=r.xml -o junit_family=xunit1 > pytest.out 2>&1 || true;
+          tail -3 pytest.out
+      - if: always()
+        run: python3 scripts/junit_failure_lines.py r.xml --detail 12 --width 400
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pypy-${{ matrix.mode }}
+          path: |
+            r.xml
+            pytest.out
