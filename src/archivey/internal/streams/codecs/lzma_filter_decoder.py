@@ -12,6 +12,7 @@ from typing import BinaryIO
 from archivey.exceptions import TruncatedError
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.streams.codecs.arm64_filter import FILTER_ARM64, arm64_decode
+from archivey.internal.streams.codecs.isolated import IN_PROCESS, Decompressor, Natives
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
     DecodeOut,
@@ -72,12 +73,19 @@ class FilterDecoder(BaseDecoder):
     to the filter, which needs no bound.
     """
 
-    def __init__(self, *, lzma_filter: Mapping[str, int], unpack_size: int) -> None:
+    def __init__(
+        self,
+        *,
+        lzma_filter: Mapping[str, int],
+        unpack_size: int,
+        natives: Natives = IN_PROCESS,
+    ) -> None:
         self._lzma_filter = dict(lzma_filter)
         self._unpack_size = unpack_size
+        self._natives = natives
         self._produced = 0
         self._framer = _Lzma2Framer()
-        self._decomp: lzma.LZMADecompressor = lzma.LZMADecompressor(
+        self._decomp: Decompressor = natives.lzma_decompressor(
             format=lzma.FORMAT_RAW,
             filters=[self._lzma_filter, {"id": lzma.FILTER_LZMA2}],
         )
@@ -86,7 +94,9 @@ class FilterDecoder(BaseDecoder):
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> FilterDecoder:
         del point, inner
         return FilterDecoder(
-            lzma_filter=self._lzma_filter, unpack_size=self._unpack_size
+            lzma_filter=self._lzma_filter,
+            unpack_size=self._unpack_size,
+            natives=self._natives,
         )
 
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
@@ -190,13 +200,15 @@ class Arm64FilterDecoder(BaseDecoder):
 
 
 def _filter_decoder(
-    lzma_filter: Mapping[str, int], unpack_size: int
+    lzma_filter: Mapping[str, int], unpack_size: int, natives: Natives
 ) -> FilterDecoder | Arm64FilterDecoder:
     if lzma_filter["id"] == FILTER_ARM64:
         return Arm64FilterDecoder(
             start_offset=lzma_filter.get("start_offset", 0), unpack_size=unpack_size
         )
-    return FilterDecoder(lzma_filter=lzma_filter, unpack_size=unpack_size)
+    return FilterDecoder(
+        lzma_filter=lzma_filter, unpack_size=unpack_size, natives=natives
+    )
 
 
 def FilterStream(
@@ -207,6 +219,7 @@ def FilterStream(
     seekable: bool = False,
     collector: DiagnosticCollector | None = None,
     owns_inner: bool = False,
+    natives: Natives = IN_PROCESS,
 ) -> DecompressorStream:
     """Apply a filter-only stage — BCJ branch filter or Delta (forward-only).
 
@@ -220,7 +233,7 @@ def FilterStream(
     del collector  # accepted for call-site uniformity; BCJ emits no diagnostics today
     return DecompressorStream(
         path,
-        make_decoder=lambda _p, _i: _filter_decoder(lzma_filter, unpack_size),
+        make_decoder=lambda _p, _i: _filter_decoder(lzma_filter, unpack_size, natives),
         codec_name="filter",
         seekable=seekable,
         owns_inner=owns_inner,

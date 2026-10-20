@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 from typing import BinaryIO
 
 from archivey.exceptions import (
@@ -32,6 +33,7 @@ from archivey.internal.streams.codecs.framed_decoder import (
     StreamIndex,
     stream_magic,
 )
+from archivey.internal.streams.codecs.isolated import natives_for
 from archivey.internal.streams.codecs.zstd_framing import (
     FRAME_MAGIC as ZSTD_FRAME_MAGIC,
 )
@@ -162,7 +164,9 @@ class ZstdCodec(StreamCodec):
             )
         return FramedDecompressorStream(
             source,
-            lambda: zstd.ZstdDecompressor(options=options),
+            functools.partial(
+                natives_for(config.process_isolation).zstd_decompressor, options
+            ),
             codec_name="zstd",
             # A container coder that is one stream (a ZIP member) reads no further
             # frame: one there is input after the end (``CodecParams.single_stream``).

@@ -856,9 +856,11 @@ that are not errors are `Diagnostic` values with stable codes and a per-code pol
 the zero-configuration projection. Native
 decoders known to crash on crafted input run in a child process: the rapidgzip
 accelerator for gzip, zlib, raw DEFLATE and bzip2 (`internal/streams/codecs/rapidgzip_child.py`), and
-PPMd members over `DecoderLimits.max_ppmd_in_process_input` (16 MiB,
-`internal/streams/codecs/ppmd_child.py`); a fault signal there becomes `CorruptionError` and
-costs only the member. A rapidgzip child stopped at its memory cap
+every PPMd member (`internal/streams/codecs/ppmd_child.py`), unless `process_isolation` is
+`NONE`; `NATIVE_DECODERS` moves every other native decoder there too
+(`internal/streams/codecs/decoder_child.py`). A fault signal there becomes
+`CorruptionError` and costs only the member; a crash in a reused child is re-run in a
+fresh one before it is charged. A rapidgzip child stopped at its memory cap
 ([Decoder memory](#decoder-memory)) raises no error to the caller: the standard library
 reads the rest of the stream.
 
@@ -1127,14 +1129,13 @@ archivey in a worker they can kill. Public:
 
 ### A native decoder crash or MemoryError
 
-The stdlib `zlib`, `bz2` and `lzma` and pyppmd below 16 MiB (handed the member whole, which
-avoids the input pattern known to crash it) run in-process. A crash nobody has found yet
-would abort the process. For pyppmd the one call left after a short return is the
-single-byte decode that frees a waiting worker at teardown; it has not been seen to crash,
-but on a stream that has ended it is a decode after the end, so it stays a candidate
-([`known-issues.md`](known-issues.md) §Intermittent `pyppmd` native aborts). Both
-rapidgzip decoders run in a child process; `scripts/accelerator_crash_search.py` tells
-whether they still need to. `MemoryError` is not translated, so
+Under the default `process_isolation` the stdlib `zlib`, `bz2` and `lzma`, zstd, lz4,
+brotli and inflate64 run in-process (`NATIVE_DECODERS` isolates them too; under `NONE`
+pyppmd decodes in-process as well and rapidgzip is not used). A crash nobody has found yet
+would abort the process. pyppmd runs in a child by default because the single-byte decode
+that frees a waiting worker at teardown is a decode after the end on a stream that has
+ended ([`known-issues.md`](known-issues.md) §Intermittent `pyppmd` native aborts). Both rapidgzip decoders run in a child process;
+`scripts/accelerator_crash_search.py` tells whether they still need to. `MemoryError` is not translated, so
 running out of memory is never mistaken for a damaged archive; the limits above exist to
 keep a hostile archive from getting that far. Public:
 [where the guarantees stop](../docs/security.md#where-the-guarantees-stop).

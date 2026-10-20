@@ -19,6 +19,7 @@ from dataclasses import dataclass
 
 import pytest
 
+from archivey.config import ProcessIsolation
 from archivey.exceptions import CorruptionError, ResourceLimitError, TruncatedError
 from archivey.internal.backends.zip_local_walk import (
     _CODEC_RETAIN,
@@ -199,7 +200,10 @@ def _codec(method: int):  # noqa: ANN202 - test helper
 
 
 def _read_member(
-    walk: LocalHeaderWalk, *, limits: DecoderLimits | None = None
+    walk: LocalHeaderWalk,
+    *,
+    limits: DecoderLimits | None = None,
+    isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
 ) -> tuple[bytes, bytes, DataDescriptor | None] | None:
     entry = walk.next_entry()
     if entry is None:
@@ -211,6 +215,7 @@ def _read_member(
     config = StreamConfig(
         refuse_input_after_end=True,
         decoder_limits=limits or DecoderLimits(),
+        process_isolation=isolation,
     )
     stream = open_codec_stream(
         _codec(entry.header.method),
@@ -260,22 +265,23 @@ def test_a_codec_member_ends_where_its_codec_ends(
 
 
 @requires("pyppmd")
-def test_ppmd_with_no_size_decodes_only_in_a_child(
+def test_ppmd_with_no_size_decodes_in_a_child_unless_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Fed in pieces, pyppmd can crash the process on corrupt input, so a member with no
-    # size never decodes in this one: not when no child can start, not with the limit
-    # off. (``test_a_codec_member_ends_where_its_codec_ends`` decodes ``_BIG``, many
-    # feeds long, in the child.)
-    raw = _streamed_zip([_member(b"p", _METHODS["ppmd"].values[0], _BIG)])
-    in_process = DecoderLimits(max_ppmd_in_process_input=None)
-    with pytest.raises(ResourceLimitError, match="None rules that out"):
-        _read_all(raw, limits=in_process)
+    # Every PPMd member decodes in a child by default, so where none can start the
+    # member is refused; under NONE it is fed to pyppmd in pieces in this process.
+    # (``test_a_codec_member_ends_where_its_codec_ends`` decodes ``_BIG``, many feeds
+    # long, in the child.)
+    member = _member(b"p", _METHODS["ppmd"].values[0], _BIG)
+    raw = _streamed_zip([member])
+    assert _read_all(raw, isolation=ProcessIsolation.NONE) == [(b"p", member.data)]
     monkeypatch.setattr(
         ppmd_decoder, "ppmd_child_unavailable_reason", lambda: "no child here"
     )
-    with pytest.raises(ResourceLimitError, match="none can be started"):
+    with pytest.raises(ResourceLimitError, match="none can be started") as caught:
         _read_all(raw)
+    assert "process_isolation=KNOWN_CRASHES" in str(caught.value)
+    assert "ProcessIsolation.NONE" in str(caught.value)
 
 
 def test_a_signed_descriptor_with_another_crc_is_found_by_its_size() -> None:

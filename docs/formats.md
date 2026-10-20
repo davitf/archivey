@@ -162,8 +162,8 @@ yielded.
   ``ARCHIVE_UNLISTED_DATA``, and extraction does not keep it.
 - What a pipe cannot read: a member whose sizes come after its data (bit 3) under LZMA
   without an end marker raises ``UnsupportedFeatureError``, as no end can be found; a
-  bit-3 PPMd member is decoded in a child process, so
-  ``DecoderLimits(max_ppmd_in_process_input=None)`` refuses it. With several candidate
+  bit-3 PPMd member is fed to the decoder in pieces, since its size isn't known in
+  advance. With several candidate
   passwords, a member is confirmed on its first 1 MiB, and when more than one candidate
   is still possible after that, the first one is used.
 - Where a pipe and a file differ, on archives no writer produces or damaged ones: a

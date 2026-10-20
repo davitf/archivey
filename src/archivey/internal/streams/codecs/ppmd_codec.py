@@ -5,6 +5,7 @@ from __future__ import annotations
 import struct
 from typing import BinaryIO
 
+from archivey.config import ProcessIsolation
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
@@ -22,7 +23,6 @@ from archivey.internal.streams.codecs.base import (
     CodecSource,
     StreamCodec,
 )
-from archivey.internal.streams.codecs.ppmd_child import PpmdChildError
 from archivey.internal.streams.codecs.ppmd_decoder import PpmdDecompressorStream
 from archivey.types import MissingComponent
 
@@ -80,7 +80,13 @@ class PpmdCodec(StreamCodec):
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
-        if deps.pyppmd.load() is None:
+        # Every PPMd member decodes in a child unless NONE, so this process does not
+        # import pyppmd then (it re-enables the GIL on a free-threaded build).
+        if config.process_isolation is ProcessIsolation.NONE:
+            present = deps.pyppmd.load() is not None
+        else:
+            present = deps.pyppmd.available()
+        if not present:
             raise self._missing("PPMd streams")
         # ZIP method 98 supplies order/mem/restore directly (PPMd8). 7z supplies a
         # var.H properties blob (PPMd7). Prefer an explicit ``pack_size``; fall back to
@@ -110,6 +116,7 @@ class PpmdCodec(StreamCodec):
                 collector=config.collector,
                 refuse_input_after_end=config.refuse_input_after_end,
                 input_runs_on=params.input_runs_on,
+                isolation=config.process_isolation,
             )
         if params.input_runs_on:
             raise ValueError("input_runs_on needs PPMd8: PPMd7 has no end mark")
@@ -128,6 +135,7 @@ class PpmdCodec(StreamCodec):
             in_process_max_input=in_process_max_input,
             collector=config.collector,
             refuse_input_after_end=config.refuse_input_after_end,
+            isolation=config.process_isolation,
         )
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
@@ -146,13 +154,5 @@ class PpmdCodec(StreamCodec):
         if isinstance(exc, SystemError):
             return CorruptionError(
                 f"Error reading PPMd stream: {exception_detail(exc)}"
-            )
-        # The child process decoding a large member crashed (a fault signal, or its
-        # Windows NTSTATUS), which is what pyppmd does on data it cannot decode. Any
-        # other death is reported as ``ResourceLimitError`` or ``ReadError`` by
-        # ``PpmdChildDecoder.decode`` and never reaches here (see ``ppmd_child``).
-        if isinstance(exc, PpmdChildError):
-            return CorruptionError(
-                f"PPMd decoder process crashed while decoding this member: {exc}"
             )
         return None

@@ -54,9 +54,9 @@ from archivey.types import ArchiveMember
 # method field instead). One that decodes *before* the decryption (a 7z folder can
 # store that order) sees the same bytes whatever the key, so it does not count.
 # Measured as non-rejecting and left out: Brotli (about one random input in twenty
-# decodes a full prefix) and PPMd (about one in a hundred; archivey decodes it so that
-# pyppmd's crash on random input cannot happen, see
-# ``DecoderLimits.max_ppmd_in_process_input``). Filters never reject. A codec not
+# decodes a full prefix) and PPMd (about one in a hundred; archivey decodes it in a
+# child process, where pyppmd's crash on random input costs the candidate only, see
+# ``ProcessIsolation``). Filters never reject. A codec not
 # listed is non-rejecting.
 REJECTING_CODECS = frozenset(
     {

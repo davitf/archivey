@@ -192,7 +192,7 @@ def test_bgzf_walk_over_the_cap_is_thinned_and_keeps_the_total(
 
 @pytest.mark.parametrize(
     "data",
-    [b"", b"\x1f\x8b\x08\x04", BGZF_EOF[:20], gzip.compress(b"x")],
+    [b"", b"\x1f\x8b\x08\x04", BGZF_EOF[:20], gzip.compress(b"x", mtime=0)],
 )
 def test_short_or_plain_input_walks_no_blocks(data: bytes) -> None:
     assert walk_bgzf(io.BytesIO(data), len(data)) == ([], None, False)

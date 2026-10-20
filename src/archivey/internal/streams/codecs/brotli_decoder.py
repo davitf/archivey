@@ -7,6 +7,7 @@ from typing import BinaryIO, Protocol
 
 from archivey.exceptions import TruncatedError
 from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.streams.codecs.isolated import IN_PROCESS, Natives
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
     DecodeOut,
@@ -31,7 +32,8 @@ class _BrotliDecompressor(Protocol):
 class BrotliDecoder(BaseDecoder):
     """Decode a raw Brotli stream via the ``brotli`` package's incremental decompressor.
 
-    The ``brotli`` import is local because it's an optional dependency with no type stubs;
+    The decompressor comes from ``natives``: ``brotli`` is imported only in-process,
+    being an optional dependency with no type stubs;
     ``BrotliCodec.open`` in the codec layer gates on its presence before constructing this, so
     the import here always succeeds.
 
@@ -55,12 +57,13 @@ class BrotliDecoder(BaseDecoder):
     one.
     """
 
-    def __init__(self, inner: BinaryIO | None = None) -> None:
-        import brotli
-
-        self._brotli = brotli
+    def __init__(
+        self, inner: BinaryIO | None = None, natives: Natives = IN_PROCESS
+    ) -> None:
+        self._natives = natives
+        self._errors = natives.brotli_errors()
         self._inner = inner
-        self._decomp: _BrotliDecompressor = brotli.Decompressor()
+        self._decomp: _BrotliDecompressor = natives.brotli_decompressor()
         self._pending = b""
         # True while a prior budgeted process may still have output to drain via
         # process(b"", output_buffer_limit=…).
@@ -85,7 +88,7 @@ class BrotliDecoder(BaseDecoder):
 
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> BrotliDecoder:
         del point
-        return BrotliDecoder(inner)
+        return BrotliDecoder(inner, self._natives)
 
     def _process(self, data: bytes, max_length: int) -> bytes:
         try:
@@ -93,7 +96,7 @@ class BrotliDecoder(BaseDecoder):
                 out = self._decomp.process(data, output_buffer_limit=max_length)
             else:
                 out = self._decomp.process(data)
-        except self._brotli.error as e:
+        except self._errors as e:
             self._start_replay(self._handed + len(data), e)
             return b""
         self._handed += len(data)
@@ -177,7 +180,7 @@ class BrotliDecoder(BaseDecoder):
             raise error
         position = inner.tell()
         try:
-            decomp: _BrotliDecompressor = self._brotli.Decompressor()
+            decomp: _BrotliDecompressor = self._natives.brotli_decompressor()
             inner.seek(0)
             remaining = self._settled
             while remaining:
@@ -253,7 +256,7 @@ class BrotliDecoder(BaseDecoder):
                         self._replay_draining = bool(produced)
                     else:
                         produced = self._decomp.process(byte)
-                except self._brotli.error:
+                except self._errors:
                     # Damage before the stream could end: the original failure stands.
                     raise self._replay_error from None
             else:
@@ -313,11 +316,12 @@ def BrotliDecompressorStream(
     collector: DiagnosticCollector | None = None,
     report_trailing_data: bool = False,
     refuse_input_after_end: bool = False,
+    natives: Natives = IN_PROCESS,
 ) -> DecompressorStream:
     """Decode a raw Brotli stream (forward-only)."""
     return DecompressorStream(
         path,
-        make_decoder=lambda _p, inner: BrotliDecoder(inner),
+        make_decoder=lambda _p, inner: BrotliDecoder(inner, natives),
         collector=collector,
         codec_name="brotli",
         report_trailing_data=report_trailing_data,

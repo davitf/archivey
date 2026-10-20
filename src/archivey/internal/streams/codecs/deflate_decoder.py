@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import zlib
 from functools import partial
 from typing import BinaryIO
 
@@ -19,6 +18,7 @@ from archivey.internal.streams.codecs.deflate_resume import (
     DeflateResume,
     DeflateResumeDecoder,
 )
+from archivey.internal.streams.codecs.isolated import IN_PROCESS, Natives
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
     DecodeOut,
@@ -42,9 +42,12 @@ def _zlib_label(wbits: int) -> str:
 class ZlibDecoder(BaseDecoder):
     """Inflate a raw-deflate or zlib-wrapped stream via ``zlib.decompressobj``."""
 
-    def __init__(self, wbits: int = RAW_DEFLATE_WBITS) -> None:
+    def __init__(
+        self, wbits: int = RAW_DEFLATE_WBITS, *, natives: Natives = IN_PROCESS
+    ) -> None:
         self._wbits = wbits
-        self._decomp = zlib.decompressobj(wbits)
+        self._natives = natives
+        self._decomp = natives.zlib_decompressobj(wbits)
         self._label = _zlib_label(wbits)
         self._error = partial(zlib_error, label=self._label)
 
@@ -56,8 +59,9 @@ class ZlibDecoder(BaseDecoder):
                 self,
                 corruption=self._error,
                 truncated=truncated_message(self._label),
+                natives=self._natives,
             )
-        return ZlibDecoder(self._wbits)
+        return ZlibDecoder(self._wbits, natives=self._natives)
 
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
         if self._decomp.eof:
@@ -124,7 +128,9 @@ class GzipDecoder(BaseDecoder):
         index: bool = False,
         collector: DiagnosticCollector | None = None,
         start: SeekPoint | None = None,
+        natives: Natives = IN_PROCESS,
     ) -> None:
+        self._natives = natives
         self._index = index
         self._collector = collector
         # Source offset just past every byte fed, and output offset just past every
@@ -139,7 +145,7 @@ class GzipDecoder(BaseDecoder):
         # The current member's start, recorded once the member has output: an empty
         # member (BGZF's end marker) shares its offset with whatever follows.
         self._pending_point: SeekPoint | None = None
-        self._decomp = zlib.decompressobj(GZIP_WBITS)
+        self._decomp = natives.zlib_decompressobj(GZIP_WBITS)
         # Post-member bytes not yet resolved (NUL padding / next magic / junk).
         # Never store unconsumed_tail here — that lives on the decompressobj.
         self._retained = b""
@@ -156,8 +162,14 @@ class GzipDecoder(BaseDecoder):
                 self,
                 corruption=gzip_error,
                 truncated=truncated_message("gzip"),
+                natives=self._natives,
             )
-        return GzipDecoder(index=self._index, collector=self._collector, start=point)
+        return GzipDecoder(
+            index=self._index,
+            collector=self._collector,
+            start=point,
+            natives=self._natives,
+        )
 
     def _arm_trailing_junk(self, data: bytes) -> None:
         """End the data at ``data``: bytes after a member that start no further member.
@@ -184,7 +196,7 @@ class GzipDecoder(BaseDecoder):
             self._arm_trailing_junk(data)
             return b""
         if data.startswith(GZIP_MAGIC):
-            self._decomp = zlib.decompressobj(GZIP_WBITS)
+            self._decomp = self._natives.zlib_decompressobj(GZIP_WBITS)
             self._between_members = False
             self._retained = b""
             return data
@@ -322,11 +334,12 @@ def ZlibDecompressorStream(
     collector: DiagnosticCollector | None = None,
     report_trailing_data: bool = False,
     refuse_input_after_end: bool = False,
+    natives: Natives = IN_PROCESS,
 ) -> DecompressorStream:
     """Inflate a raw-deflate or zlib-wrapped stream (forward-only)."""
     return DecompressorStream(
         path,
-        make_decoder=lambda _p, _i: ZlibDecoder(wbits),
+        make_decoder=lambda _p, _i: ZlibDecoder(wbits, natives=natives),
         collector=collector,
         codec_name=_zlib_label(wbits),
         report_trailing_data=report_trailing_data,
@@ -340,6 +353,7 @@ def GzipDecompressorStream(
     collector: DiagnosticCollector | None = None,
     report_trailing_data: bool = False,
     index: bool = False,
+    natives: Natives = IN_PROCESS,
 ) -> DecompressorStream:
     """Inflate a gzip stream with multi-member chaining.
 
@@ -349,7 +363,7 @@ def GzipDecompressorStream(
     return DecompressorStream(
         path,
         make_decoder=lambda point, _i: GzipDecoder(
-            index=index, collector=collector, start=point
+            index=index, collector=collector, start=point, natives=natives
         ),
         collector=collector,
         codec_name="gzip",

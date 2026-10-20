@@ -24,6 +24,7 @@ from archivey.internal.streams.codecs.framed_decoder import (
     FramedDecompressorStream,
     stream_magic,
 )
+from archivey.internal.streams.codecs.isolated import natives_for
 from archivey.internal.streams.codecs.lz4_legacy import LEGACY_MAGIC, Lz4Decompressor
 from archivey.internal.streams.decompressor_stream import _StreamChecksumError
 from archivey.types import (
@@ -67,10 +68,10 @@ class Lz4Codec(StreamCodec):
             raise self._missing("lz4 streams")
         # A rewind re-decompresses from the start (the outer ArchiveStream warns on a
         # rewind — see rewind_warning).
-        lz4_frame, lz4_block = deps.lz4_frame, deps.lz4_block
+        natives = natives_for(config.process_isolation)
         return FramedDecompressorStream(
             source,
-            lambda: Lz4Decompressor(lz4_frame, lz4_block),
+            lambda: Lz4Decompressor(natives),
             codec_name="lz4",
             magic=stream_magic() if params.single_stream else _LZ4_STREAMS,
             collector=config.collector,

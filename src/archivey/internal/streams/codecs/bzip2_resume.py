@@ -30,10 +30,12 @@ takes over a read from rapidgzip's bzip2 decoder; the points come from
 from __future__ import annotations
 
 import bz2
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import BinaryIO
 
 from archivey.exceptions import TruncatedError
+from archivey.internal.streams.codecs.isolated import Decompressor
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
     DecodeOut,
@@ -93,12 +95,19 @@ class Bzip2ResumeDecoder(BaseDecoder):
     """Decode from a :class:`Bzip2Resume` point to the end of the input.
 
     ``base`` is the codec's own decoder, which every other seek point recreates.
+    ``new_decompressor`` builds the ``bz2`` decompressor, in this process or a child
+    (``process_isolation``), as the base decoder builds its own.
     """
 
-    def __init__(self, resume: Bzip2Resume, base: Decoder) -> None:
+    def __init__(
+        self,
+        resume: Bzip2Resume,
+        base: Decoder,
+        new_decompressor: Callable[[], Decompressor] = bz2.BZ2Decompressor,
+    ) -> None:
         self._base = base
         self._shifter = BitShifter(resume.bit)
-        self._decomp = bz2.BZ2Decompressor()
+        self._decomp = new_decompressor()
         # Cleared once the made-up header has gone in ahead of the first input.
         self._before_input = True
 

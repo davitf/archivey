@@ -7,7 +7,7 @@ from __future__ import annotations
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import BinaryIO, Protocol
+from typing import TYPE_CHECKING, BinaryIO, Protocol, cast
 
 from archivey.exceptions import TruncatedError
 from archivey.internal.diagnostics_collector import DiagnosticCollector
@@ -24,6 +24,9 @@ from archivey.internal.streams.decompressor_stream import (
     damaged_stream_error,
     near_stream_magic,
 )
+
+if TYPE_CHECKING:
+    from archivey.internal.streams.codecs.isolated import Decompressor
 
 
 class _OneStreamDecompressor(Protocol):
@@ -200,8 +203,10 @@ class FramedDecoder(BaseDecoder):
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> Decoder:
         del inner
         if isinstance(point.state, Bzip2Resume):
-            # Only the bzip2 takeover adds such a point (``bzip2_resume``).
-            return Bzip2ResumeDecoder(point.state, self)
+            # Only the bzip2 takeover adds such a point (``bzip2_resume``), so
+            # ``_new`` builds a bz2 decompressor, whose ``unused_data`` is bytes.
+            new = cast("Callable[[], Decompressor]", self._new)
+            return Bzip2ResumeDecoder(point.state, self, new)
         return FramedDecoder(
             self._new,
             magic=self._magic,

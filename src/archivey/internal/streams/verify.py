@@ -65,7 +65,10 @@ from archivey.internal.diagnostics_collector import (
 )
 from archivey.internal.hashing.blake2sp import Blake2sp
 from archivey.internal.logs import integrity as logger
-from archivey.internal.streams.decompressor_stream import _COMPRESSED_READ_SIZE_MAX
+from archivey.internal.streams.decompressor_stream import (
+    _COMPRESSED_READ_SIZE_MAX,
+    retire_decoder_children,
+)
 from archivey.internal.streams.resume import (
     ask_resume_offset,
     ask_seek_resume_offset,
@@ -969,7 +972,11 @@ class VerifyingStream(ReadOnlyIOStream):
             raise
 
     def read(self, n: int | None = -1, /) -> bytes:
-        return self._verifier.read(self._inner, n)
+        try:
+            return self._verifier.read(self._inner, n)
+        except CorruptionError:
+            retire_decoder_children(self._inner)
+            raise
 
     def seekable(self) -> bool:
         return is_seekable(self._inner)

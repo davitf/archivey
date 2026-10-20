@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import BinaryIO
 
+from archivey.config import ProcessIsolation
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
@@ -31,6 +32,7 @@ from archivey.internal.streams.codecs.brotli_framing import (
     probe_bytes_at,
     walk_chain,
 )
+from archivey.internal.streams.codecs.isolated import BrotliChildError, natives_for
 from archivey.types import (
     MissingComponent,
     StreamFormat,
@@ -59,7 +61,8 @@ class BrotliCodec(StreamCodec):
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
-        if deps.brotli.load() is None:
+        natives = natives_for(config.process_isolation)
+        if not natives.package_available(deps.brotli):
             raise self._missing("Brotli streams")
         # Brotli has no random-access index; a backward seek re-decodes from the start (the
         # outer ArchiveStream warns — see rewind_warning).
@@ -68,6 +71,7 @@ class BrotliCodec(StreamCodec):
             collector=config.collector,
             report_trailing_data=config.report_trailing_data,
             refuse_input_after_end=config.refuse_input_after_end,
+            natives=natives,
         )
 
     def translate(self, exc: Exception) -> ArchiveyError | None:
@@ -75,7 +79,9 @@ class BrotliCodec(StreamCodec):
         # raise here (the decompressor just never reports finished), so the base
         # DecompressorStream surfaces that as TruncatedError on its own.
         brotli = deps.brotli.loaded()
-        if brotli is not None and isinstance(exc, brotli.error):
+        if isinstance(exc, BrotliChildError) or (
+            brotli is not None and isinstance(exc, brotli.error)
+        ):
             return CorruptionError(
                 f"Error reading brotli stream: {exception_detail(exc)}"
             )
@@ -91,6 +97,7 @@ class BrotliCodec(StreamCodec):
         source_length: int | None = None,
         read_at: ProbeReadAt | None = None,
         charge_decode: ProbeChargeDecode | None = None,
+        isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
     ) -> bool:
         """Recognize a raw Brotli stream — which has no magic — by decoding a bounded prefix.
 
@@ -110,7 +117,9 @@ class BrotliCodec(StreamCodec):
             if walk.proves_invalid:
                 return False
             compressed_at = walk.compressed_at
-        if not self._decodes_sample(prefix, source_length=source_length):
+        if not self._decodes_sample(
+            prefix, source_length=source_length, isolation=isolation
+        ):
             return False
         if compressed_at is None or source_length is None:
             return True
@@ -120,6 +129,7 @@ class BrotliCodec(StreamCodec):
             compressed_at,
             read_at=read_at,
             charge_decode=charge_decode,
+            isolation=isolation,
         )
 
     def _decodes_through(
@@ -130,6 +140,7 @@ class BrotliCodec(StreamCodec):
         *,
         read_at: ProbeReadAt | None,
         charge_decode: ProbeChargeDecode | None,
+        isolation: ProcessIsolation,
     ) -> bool:
         """Whether the source decodes to ``CHAIN_DECODE_MARGIN`` past ``compressed_at``.
 
@@ -166,4 +177,4 @@ class BrotliCodec(StreamCodec):
         # ``source_length`` is left out on purpose: a sample that ends at EOF would
         # otherwise get the 64 KiB completeness drain, which the uncompressed copy alone
         # can fill before the decoder reaches the compressed block.
-        return self._decodes_sample(data, sample_bytes=len(data))
+        return self._decodes_sample(data, sample_bytes=len(data), isolation=isolation)

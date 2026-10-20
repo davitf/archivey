@@ -9,6 +9,7 @@ import zlib
 from collections.abc import Callable
 from typing import BinaryIO
 
+from archivey.config import ProcessIsolation
 from archivey.exceptions import (
     ArchiveyError,
     exception_detail,
@@ -30,6 +31,7 @@ from archivey.internal.streams.codecs.base import (
 from archivey.internal.streams.codecs.deflate_decoder import ZlibDecompressorStream
 from archivey.internal.streams.codecs.deflate_family_codec import _DeflateFamilyCodec
 from archivey.internal.streams.codecs.deflate_resume import stream_end
+from archivey.internal.streams.codecs.isolated import IN_PROCESS, Natives, natives_for
 from archivey.internal.streams.codecs.stdlib_takeover import (
     _DRAIN_CHUNK,
     _drain_into,
@@ -87,6 +89,7 @@ def _stdlib_zlib(
         collector=config.collector,
         report_trailing_data=config.report_trailing_data,
         refuse_input_after_end=config.refuse_input_after_end,
+        natives=natives_for(config.process_isolation),
     )
 
 
@@ -186,8 +189,10 @@ class _ZlibAdlerCheckStream(DelegatingStream):
         *,
         views: _SourceViews,
         trailer: int | None,
+        natives: Natives = IN_PROCESS,
     ) -> None:
         super().__init__(inner)
+        self._natives = natives
         # The same object as ``_inner``, typed: the cut-stream handover calls it.
         self._takeover = inner
         self._views = views
@@ -315,7 +320,7 @@ class _ZlibAdlerCheckStream(DelegatingStream):
         """
         produced = 0
         adler = 1
-        decoder = zlib.decompressobj()
+        decoder = self._natives.zlib_decompressobj()
         pending = b""
         stopped_short = False
         first = True
@@ -332,7 +337,10 @@ class _ZlibAdlerCheckStream(DelegatingStream):
                             raise _ZlibFirstStreamEnds(produced)
                         first = False
                         # The next of several zlib streams one after another.
-                        pending, decoder = decoder.unused_data, zlib.decompressobj()
+                        pending, decoder = (
+                            decoder.unused_data,
+                            self._natives.zlib_decompressobj(),
+                        )
                         continue
                     if not pending:
                         pending = f.read(1 << 16)
@@ -423,8 +431,10 @@ class _DeflateEndCheckStream(DelegatingStream):
         *,
         views: _SourceViews,
         refuse_input_after_end: bool = False,
+        natives: Natives = IN_PROCESS,
     ) -> None:
         super().__init__(inner)
+        self._natives = natives
         # The same object as ``_inner``, typed: the handover calls it.
         self._takeover = inner
         self._views = views
@@ -470,7 +480,11 @@ class _DeflateEndCheckStream(DelegatingStream):
             point = resume_point(end)
         with self._views.view() as f:
             found, input_after = stream_end(
-                f, point, end, check_input_after=self._refuse_input_after_end
+                f,
+                point,
+                end,
+                check_input_after=self._refuse_input_after_end,
+                natives=self._natives,
             )
         if found is not None:
             if input_after:
@@ -524,8 +538,9 @@ class DeflateCodec(_ZlibErrorCodec):
         views: _SourceViews,
     ) -> Callable[[_StdlibOnAcceleratorError], BinaryIO] | None:
         refuse = config.refuse_input_after_end
+        natives = natives_for(config.process_isolation)
         return lambda stream: _DeflateEndCheckStream(
-            stream, views=views, refuse_input_after_end=refuse
+            stream, views=views, refuse_input_after_end=refuse, natives=natives
         )
 
     def _accelerated_limit(
@@ -600,8 +615,9 @@ class ZlibCodec(_ZlibErrorCodec):
         # that back, since an AUTO open whose child cannot start decodes from it.
         with _restoring_position(source):
             trailer = _zlib_adler_trailer(accel_source)
+        natives = natives_for(config.process_isolation)
         return lambda stream: _ZlibAdlerCheckStream(
-            stream, views=views, trailer=trailer
+            stream, views=views, trailer=trailer, natives=natives
         )
 
     def content_probe(
@@ -611,8 +627,9 @@ class ZlibCodec(_ZlibErrorCodec):
         source_length: int | None = None,
         read_at: ProbeReadAt | None = None,
         charge_decode: ProbeChargeDecode | None = None,
+        isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
     ) -> bool:
         """Recognize a zlib stream: an RFC 1950 CMF/FLG header (fail-fast) that then decodes."""
         return _zlib_header_plausible(prefix) and self._decodes_sample(
-            prefix, source_length=source_length
+            prefix, source_length=source_length, isolation=isolation
         )
