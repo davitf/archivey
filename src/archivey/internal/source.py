@@ -31,10 +31,11 @@ directly), and it carries every guarantee the raw source must give:
   files, ``size`` when it is a fact, ``size_hint``, ``name``, ``seek_is_expensive``,
   all settled at construction.
 
-One read is not full-count, on purpose: :meth:`ArchiveSource.read_arrived` (and the
-raw view over it, :meth:`ArchiveSource.arrived_view`) returns what has arrived, so a
-buffer that gathers its own full-count reads can fill without waiting for a writer that
-keeps a pipe open. It exists only on a non-seekable source.
+Two reads are not full-count, on purpose, and both exist only on a non-seekable
+source. :meth:`ArchiveSource.read_arrived` (and the raw view over it,
+:meth:`ArchiveSource.arrived_view`) returns what has arrived, so a buffer that gathers
+its own full-count reads can fill without waiting for a writer that keeps a pipe open.
+:meth:`ArchiveSource.peek_arrived` does the same for the detection replay prefix.
 
 A non-seekable source also holds the **detection replay prefix**: :meth:`peek` fills it
 without consuming, and ``read`` drains it before reaching the source. Detection and the
@@ -712,7 +713,7 @@ class ArchiveSource(ReadOnlyIOStream):
     def read_arrived(self, n: int) -> bytes:
         """Up to ``n`` bytes of what has arrived; ``b""`` only at the end. Non-seekable only.
 
-        The one read here that is not full-count. Bytes still in the replay prefix
+        Not full-count, like :meth:`peek_arrived`. Bytes still in the replay prefix
         come back without reading the source. Otherwise this makes one
         :func:`read_arrived` of the source, which waits only while nothing has
         arrived. A buffer whose own ``read`` gathers until it has what its caller

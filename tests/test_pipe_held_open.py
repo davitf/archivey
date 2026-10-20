@@ -132,6 +132,27 @@ def test_open_archive_does_not_wait_for_the_writer(
             assert reader.format == expected
 
 
+@pytest.mark.parametrize("buffered", [False, True], ids=["raw", "buffered"])
+def test_a_streaming_tar_yields_its_first_member_before_the_writer_closes(
+    buffered: bool,
+) -> None:
+    """The first member and its bytes arrive while the writer still holds the pipe.
+
+    The test leaves the pass after that member: the end of the listing waits for the
+    writer by design, because the trailing-data scan reads past the trailer.
+    """
+    payload = _tar(2000)
+    with _held_open_pipe(payload, buffered=buffered) as (stream, closed):
+        with open_archive(stream, streaming=True) as reader:
+            for member, member_stream in reader.stream_members():
+                assert member_stream is not None
+                data = member_stream.read()
+                assert not closed.is_set(), "the first member waited for the writer"
+                break
+    assert member.name == "a.bin"
+    assert data == payload[512 : 512 + 2000]
+
+
 class _Trickle(io.RawIOBase):
     """A forward-only raw stream that returns at most ``step`` bytes per read."""
 
