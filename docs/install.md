@@ -92,9 +92,11 @@ isn't counted, because only encrypted members need it.
 ## Python versions and platforms
 
 Archivey needs CPython 3.11 or later. Every change is tested on Linux with 3.11 to 3.14, and on
-macOS and Windows with 3.11 and 3.14. Other platforms aren't tested. PyPy doesn't fully work yet: a
-trial run failed in places, including some LZMA data and the accelerator behind `[seekable]`. [How
-it is built](how-it-is-built.md) has the full test setup.
+macOS and Windows with 3.11 and 3.14. Other platforms aren't tested. PyPy doesn't fully work yet.
+Under PyPy, archivey doesn't use rapidgzip, lz4 or pyppmd, which misread data or crash the
+interpreter there, and reads as if they weren't installed: LZ4 and PPMd data can't be read, and the
+accelerator behind `[seekable]` is off. [How it is built](how-it-is-built.md) has the full test
+setup.
 
 ## Free-threaded Python
 
