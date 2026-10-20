@@ -248,8 +248,10 @@ def _state(codec: str, decoder: object, result: object) -> dict[str, object]:
     state: dict[str, object] = {}
     for name in _FLAGS:
         value = getattr(decoder, name, None)
-        if isinstance(value, bool):
-            state[name] = value
+        # An int too: PyPy reads a C ``bool`` member as the int 1 once it is set
+        # (backports.zstd's ``eof`` at the end of a frame).
+        if isinstance(value, int):
+            state[name] = bool(value)
     if codec not in _ASK_FOR_UNUSED:
         for name in _SUFFIXES:
             value = getattr(decoder, name, False)

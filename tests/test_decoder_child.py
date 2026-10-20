@@ -22,7 +22,7 @@ from archivey.exceptions import (
     ReadError,
     ResourceLimitError,
 )
-from archivey.internal.streams.codecs import decoder_child
+from archivey.internal.streams.codecs import decoder_child, decoder_worker
 from archivey.internal.streams.codecs.decoder_child import POOL, DecoderChild
 from archivey.internal.streams.codecs.isolated import ISOLATED
 
@@ -417,3 +417,16 @@ def test_a_forked_process_cannot_move_its_parents_decoder_to_a_child_of_its_own(
         assert first + child.call("decompress", packed[500:]) == data
     finally:
         child.close()
+
+
+def test_a_flag_read_as_an_int_is_reported_as_a_bool() -> None:
+    """PyPy reads a C ``bool`` member as the int 1 once it is set: backports.zstd's
+    ``eof`` at the end of a frame. The state still carries it, as ``True``."""
+
+    class _IntFlags:
+        eof = 1
+        needs_input = 0
+
+    state = decoder_worker._state("zstd", _IntFlags(), None)
+    assert state["eof"] is True
+    assert state["needs_input"] is False
