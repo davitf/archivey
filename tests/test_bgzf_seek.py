@@ -59,11 +59,12 @@ def _points(stream: Any) -> list[int]:
 
 def test_bgzf_walk_gives_the_size_and_block_points_without_decoding() -> None:
     data = make_bgzf(PARTS)
-    source = CountingBytesIO(data)
-    with _open(source) as stream:
+    # Unbuffered, the walk reads a header and then a trailer plus header per block.
+    counting = CountingBytesIO(data)
+    walk_bgzf(counting, len(data))
+    assert counting.bytes_read <= 18 + 26 * (len(PARTS) + 1)
+    with _open(io.BytesIO(data)) as stream:
         assert stream.seek(0, io.SEEK_END) == len(FULL)
-        # Headers and trailers, through a read buffer: far from the DEFLATE data.
-        assert source.bytes_read < len(data) // 2
         assert _points(stream) == STARTS
         for pos in (STARTS[4] + 7, 3, STARTS[2], len(FULL) - 1):
             assert stream.seek(pos) == pos
