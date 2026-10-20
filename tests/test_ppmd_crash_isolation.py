@@ -11,6 +11,7 @@ killing the session.
 
 from __future__ import annotations
 
+import contextlib
 import io
 import marshal
 import os
@@ -846,9 +847,9 @@ def test_a_model_a_fresh_child_cannot_allocate_part_way_is_a_limit_error(
         child.close()
 
 
-def _solid_ppmd_7z_second_crc_wrong(tmp_path: Path) -> Path:
+def _solid_ppmd_7z(tmp_path: Path, *, wrong: bool) -> Path:
     """Two members in one solid PPMd folder, the second's stored CRC flipped and the
-    header re-sealed."""
+    header re-sealed when ``wrong``."""
     second = b"second member of the folder\n" * 2000
     (tmp_path / "a.txt").write_bytes(b"first member of the folder\n" * 2000)
     (tmp_path / "b.txt").write_bytes(second)
@@ -860,6 +861,8 @@ def _solid_ppmd_7z_second_crc_wrong(tmp_path: Path) -> Path:
     )
     if result.returncode != 0:
         pytest.skip("7z cannot write PPMd")
+    if not wrong:
+        return archive
     raw = bytearray(archive.read_bytes())
     crc = struct.pack("<I", zlib.crc32(second))
     assert raw.count(crc) == 1
@@ -873,14 +876,17 @@ def _solid_ppmd_7z_second_crc_wrong(tmp_path: Path) -> Path:
 
 @requires_binary("7z")
 @pytest.mark.parametrize("how", ["read", "stream_members", "extract_all"])
+@pytest.mark.parametrize("wrong", [False, True], ids=["crc-ok", "crc-wrong"])
 def test_a_solid_member_whose_crc_does_not_match_retires_the_folder_child(
-    tmp_path: Path, how: str
+    tmp_path: Path, how: str, wrong: bool
 ) -> None:
     """A solid folder's members share one decoder; each way of reading the bad member
-    reaches it (the data pass hands out slices of the folder, not of a decode)."""
-    archive = _solid_ppmd_7z_second_crc_wrong(tmp_path)
+    reaches it (the data pass hands out slices of the folder, not of a decode). The
+    intact archive gives its child back, so 0 means retired, not never taken."""
+    archive = _solid_ppmd_7z(tmp_path, wrong=wrong)
     POOL.close_idle()
-    with open_archive(archive) as ar, raises_corruption_not_truncation():
+    expect = raises_corruption_not_truncation() if wrong else contextlib.nullcontext()
+    with open_archive(archive) as ar, expect:
         if how == "read":
             ar.read(next(m for m in ar.members() if m.name == "b.txt"))
         elif how == "stream_members":
@@ -889,4 +895,4 @@ def test_a_solid_member_whose_crc_does_not_match_retires_the_folder_child(
                     stream.read()
         else:
             ar.extract_all(tmp_path / "out")
-    assert POOL.idle_count() == 0
+    assert POOL.idle_count() == (0 if wrong else 1)

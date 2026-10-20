@@ -118,9 +118,10 @@ class _MemberSlice(ReadOnlyIOStream):
         return data
 
     @property
-    def block(self) -> BinaryIO:
+    def _stream(self) -> BinaryIO:
         """The decoded block this member is a range of (shared with its other
-        members): what a check on this member's bytes reports back to."""
+        members), under the name a slice gives its source: what a check on this
+        member's bytes reports back to (``retire_decoder_children``)."""
         return self._reader._block
 
     def tell(self) -> int:

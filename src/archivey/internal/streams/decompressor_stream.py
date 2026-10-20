@@ -1540,8 +1540,8 @@ _MAX_WRAPPERS = 16
 
 def retire_decoder_children(stream: object) -> None:
     """Tell every decoder under ``stream`` that its member failed a check (see
-    :meth:`BaseDecoder.spoil_child`), looking through the wrappers' ``_inner``, a
-    slice's ``_stream`` and a solid member's ``block``: a 7z coder chain stacks one
+    :meth:`BaseDecoder.spoil_child`), looking through the wrappers' ``_inner`` and a
+    slice's ``_stream`` (a solid member's is its folder): a 7z coder chain stacks one
     decoder on another, and a solid folder's decoder serves all its members."""
     for _ in range(_MAX_WRAPPERS):
         if isinstance(stream, DecompressorStream):
@@ -1554,7 +1554,7 @@ def retire_decoder_children(stream: object) -> None:
 
 
 def _layer_below(stream: object) -> object | None:
-    for name in ("_inner", "_stream", "block"):
+    for name in ("_inner", "_stream"):
         below = getattr(stream, name, None)
         if below is not None:
             return below
