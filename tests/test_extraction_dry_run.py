@@ -280,6 +280,15 @@ _FILESYSTEM_CASES = {
         ("d", "file", 0),
         ("d/f", "file", 0),
     ],
+    # A file landing on a directory this run made, which holds a member: REPLACE
+    # fails it with an error that names the directory under ``dest``.
+    "file-over-run-directory": [
+        ("x/f", "file", 0),
+        ("y", "dir", None),
+        ("y/f", "file", 0),
+        ("x", "file", 0),
+        ("y", "file", 0),
+    ],
 }
 
 
