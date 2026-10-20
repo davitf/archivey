@@ -7,3 +7,7 @@
 ## 2. Docstrings
 
 - [x] 2.1 Member and field docstrings for the enums and data classes of `types.py`, `config.py` and `diagnostics.py`, with class prose that repeated them trimmed
+
+## 3. Guide pages
+
+- [x] 3.1 Tables on `docs/` pages that scroll sideways at 390 px rewritten as lists, and the `write-user-docs` skill says when a table fits

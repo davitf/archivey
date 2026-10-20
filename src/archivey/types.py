@@ -1535,8 +1535,11 @@ class ExtractionResult:
     member, or a directory it is in, was renamed (``dd/f`` written at ``dd (1)/f``).
     After a collision settled by ``SKIP`` or ``ERROR``, this is set and ``path`` is
     ``None``. On an ``OVERWRITTEN`` result it keeps the path this member wrote to, which
-    a later member then took over (``collided_with`` says how to find it). ``None`` for
-    a member refused or failed before its destination was settled."""
+    a later member then took over. When this member wrote a file, the later member's
+    ``collided_with`` equals this path. A directory is never recorded as a collision, so
+    no result names the member that replaced one, and on a case-insensitive file system
+    that member's ``path`` can differ from this one in case. ``None`` for a member
+    refused or failed before its destination was settled."""
 
     presented_name: str | None = None
     """The member's name before a safety rewrite changed it on disk, or ``None`` when

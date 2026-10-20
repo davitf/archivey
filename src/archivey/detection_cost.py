@@ -91,6 +91,7 @@ class DetectionBudget:
     is not charged, as it is mostly a copy of input already charged to
     ``max_decode_input``."""
 
+    # The completion check is defined in ``openspec/specs/format-detection``.
     completion_window_bytes: int
     """The largest source a content-probe hit is re-checked against in full; ``0``
     turns the check off."""

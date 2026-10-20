@@ -120,7 +120,9 @@ def _is_enum_class(cls: Class) -> bool:
 def _named_instances(cls: Class) -> list[dict[str, Any]]:
     # ArchiveFormat declares its named formats as ``ZIP: ClassVar[ArchiveFormat]`` and
     # assigns them below the class body, which griffe does not read, so the values come
-    # from the imported class.
+    # from the imported class. Pops the members it returns rows for, so they get no
+    # attribute section of their own. A ``ClassVar[Cls]`` never assigned at run time
+    # fails the docs build here, on purpose.
     names = [
         name
         for name, m in cls.members.items()
@@ -136,7 +138,7 @@ def _named_instances(cls: Class) -> list[dict[str, Any]]:
     values = {name: list(vars(getattr(runtime, name)).values()) for name in names}
     # Only instances made of enum values (ArchiveFormat) read well as a members list;
     # DiagnosticPolicy.STRICT holds frozensets and stays an attribute.
-    if not all(isinstance(v, Enum) for vs in values.values() for v in vs):
+    if not all(vs and all(isinstance(v, Enum) for v in vs) for vs in values.values()):
         return []
     rows = []
     for name in names:

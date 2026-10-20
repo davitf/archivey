@@ -25,3 +25,18 @@ accessors SHALL fold into the owning class's field list.
 | Field declared `field(default_factory=dict)` with its own docstring | Its own docstring, and default `dict()` |
 | Property accessor is generated | Property appears with fields instead of a separate property section |
 | API page at 390 px wide | No section wider than the page |
+
+## ADDED Requirements
+
+### Requirement: Guide pages fit a phone screen
+
+The hand-written pages under `docs/` SHALL fit a 390 px wide screen without scrolling
+sideways. A table MUST have few enough short columns to fit; one that would not, such as
+values and effects per option or outcomes per input across several columns, MUST be
+written as a list instead.
+
+#### Scenario: Guide page at phone width
+
+| Case | Expected |
+| --- | --- |
+| Any `docs/` page at 390 px wide | No table or list wider than the page |
