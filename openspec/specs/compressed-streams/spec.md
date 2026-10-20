@@ -709,12 +709,12 @@ without the setting. Under `NATIVE_DECODERS` the caller's process MUST NOT impor
 A child MAY be kept and reused for a later decoder only after a clean finish: the
 decoder ended with no error from the child and was closed normally, so a run of small
 members does not start a process per member. A child MUST NOT be reused after it
-reported an error, died, or was interrupted part-way through a reply. A PPMd child MUST
-NOT be reused after a member that did not decode to its declared end, whose check value
-did not match, or that was refused, nor after the decoder sent the one-symbol decode that
-stops a worker waiting on input, since pyppmd can corrupt its memory there without
-crashing at once. A child SHALL serve at most a fixed number of decoders (64) before it
-is ended.
+reported an error, died, or was interrupted part-way through a request or its reply. A
+PPMd child MUST NOT be reused after a member that did not decode to its declared end,
+whose check value did not match, or that was refused, nor after the decoder sent the
+one-symbol decode that stops a worker waiting on input, since pyppmd can corrupt its
+memory there without crashing at once. A child SHALL serve at most a fixed number of
+decoders (64) before it is ended.
 
 A crash or an error in a child that served earlier decoders MUST NOT be charged to the
 decoder at once, since an earlier member may have left damage that surfaces only now:
