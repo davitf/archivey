@@ -59,9 +59,8 @@ accessors SHALL fold into the owning class's field list.
 ### Requirement: Guide pages fit a phone screen
 
 The hand-written pages under `docs/` SHALL fit a 390 px wide screen without scrolling
-sideways. A table MUST have few enough short columns to fit; one that would not, such as
-values and effects per option or outcomes per input across several columns, MUST be
-written as a list instead.
+sideways, measured on the built page. A table that would not fit, which in practice means
+one with four or more columns, MUST be written as a list instead.
 
 #### Scenario: Guide page at phone width
 
