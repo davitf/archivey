@@ -41,7 +41,7 @@ if importlib.util.find_spec("_tracemalloc") is None:
     sys.modules["tracemalloc"] = _TracemallocUnavailable("tracemalloc")
 
 # archivey never uses rapidgzip, lz4 or pyppmd under PyPy, where they misread data or
-# crash the interpreter (rapidgzip_child._UNDER_PYPY, deps.UNDER_PYPY), and the tests
+# crash the interpreter (deps.unused_reason), and the tests
 # treat them as not installed there. rapidgzip and lz4 get a ``None`` entry, which makes
 # the import fail and ``importlib.util.find_spec`` return ``None``, so no test loads
 # them. pyppmd cannot: py7zr, a test oracle, imports it. Tests that need it ask
@@ -137,11 +137,14 @@ def requires(*packages: str) -> pytest.MarkDecorator:
     Tests asserting the *degradation* behavior (a missing lib raising
     PackageNotInstalledError) should instead run unconditionally and assert that error.
     """
-    missing = [p for p in packages if not has_package(p)]
-    return pytest.mark.skipif(
-        bool(missing),
-        reason=f"requires optional package(s): {', '.join(missing)}",
-    )
+    unused = [p for p in packages if p in UNUSED_UNDER_PYPY]
+    missing = [p for p in packages if p not in unused and not has_package(p)]
+    reasons = []
+    if missing:
+        reasons.append(f"requires optional package(s): {', '.join(missing)}")
+    if unused:
+        reasons.append(f"archivey does not use {', '.join(unused)} under PyPy")
+    return pytest.mark.skipif(bool(reasons), reason="; ".join(reasons))
 
 
 def unar_refusal() -> str | None:

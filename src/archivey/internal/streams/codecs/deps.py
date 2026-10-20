@@ -102,17 +102,31 @@ class LazyOptional:
 
 
 zstd = _optional_zstd()
-# Packages archivey does not use under PyPy; it reads as if they were absent, and the
-# error says why (UNUSABLE_UNDER_PYPY_NOTE). python-lz4 crashes PyPy: its frame decoder
-# segfaults on an ordinary frame (seen with PyPy 3.11), and the crash surfaces later at
-# unrelated places. pyppmd uses its cffi build there, which ends a valid member early
-# (the PPMd decoder relies on how the C build reports its end, ppmd_decoder.py).
+# Packages archivey does not use under PyPy, with why. It reads as if they were absent, and
+# the reason replaces the install advice wherever a missing package is reported
+# (``MissingComponent.reason``). dev-docs/known-issues.md has the symptoms, the versions
+# measured and the upstream status.
 UNDER_PYPY = sys.implementation.name == "pypy"
-UNUSABLE_UNDER_PYPY_NOTE = "archivey does not use it under PyPy, where it misbehaves."
-lz4_frame = None if UNDER_PYPY else _optional("lz4.frame")
-lz4_block = None if UNDER_PYPY else _optional("lz4.block")
+_UNUSED_UNDER_PYPY = {
+    "lz4": "archivey does not use lz4 under PyPy, where its frame decoder crashes the "
+    "interpreter",
+    "pyppmd": "archivey does not use pyppmd under PyPy, where it returns PPMd data cut "
+    "short",
+    "rapidgzip": "archivey does not use rapidgzip under PyPy, where it misreads valid "
+    "streams",
+}
+
+
+def unused_reason(package: str) -> str:
+    """Why archivey does not use ``package`` on this interpreter although it may be
+    installed, or ``""`` when it uses it whenever it is installed."""
+    return _UNUSED_UNDER_PYPY.get(package, "") if UNDER_PYPY else ""
+
+
+lz4_frame = None if unused_reason("lz4") else _optional("lz4.frame")
+lz4_block = None if unused_reason("lz4") else _optional("lz4.block")
 brotli = LazyOptional("brotli")
-pyppmd = LazyOptional("pyppmd", present=False if UNDER_PYPY else None)
+pyppmd = LazyOptional("pyppmd", present=False if unused_reason("pyppmd") else None)
 inflate64 = LazyOptional("inflate64")
 # rapidgzip runs in a child process for every codec it decodes (gzip, zlib, raw deflate
 # and bzip2), so this process only needs to know it is installed. bzip2 uses rapidgzip's

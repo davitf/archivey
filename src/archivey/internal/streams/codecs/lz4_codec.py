@@ -50,7 +50,12 @@ class Lz4Codec(StreamCodec):
         # The legacy stream ``lz4 -l`` writes, and Linux kernel images use.
         MagicSignature(0, LEGACY_MAGIC, ArchiveFormat.LZ4),
     )
-    requirement = MissingComponent("lz4", "pip install archivey[recommended]", ("lz4",))
+    requirement = MissingComponent(
+        "lz4",
+        "pip install archivey[recommended]",
+        ("lz4",),
+        reason=deps.unused_reason("lz4"),
+    )
 
     def _backend_present(self) -> bool:
         return deps.lz4_frame is not None and deps.lz4_block is not None
@@ -59,10 +64,7 @@ class Lz4Codec(StreamCodec):
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
         if deps.lz4_frame is None or deps.lz4_block is None:
-            raise self._missing(
-                "lz4 streams",
-                note=deps.UNUSABLE_UNDER_PYPY_NOTE if deps.UNDER_PYPY else "",
-            )
+            raise self._missing("lz4 streams")
         # A rewind re-decompresses from the start (the outer ArchiveStream warns on a
         # rewind — see rewind_warning).
         lz4_frame, lz4_block = deps.lz4_frame, deps.lz4_block

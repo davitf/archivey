@@ -298,6 +298,37 @@ scenarios with it. Adversarial unfinished-decoder tests run in subprocess childr
 [`ppmd-native-investigation-results.md`](investigations/ppmd-native-investigation-results.md)
 §D, §I and §K.5.
 
+## PyPy: rapidgzip, python-lz4 and pyppmd misbehave (open)
+
+**Symptom.** Under PyPy 3.11 (the allowed-to-fail `pypy3.11` CI job, with the releases
+`pyproject.toml` allows: rapidgzip 0.16, lz4 4.4, pyppmd 1.3):
+
+- rapidgzip refuses valid gzip streams ("Failed to detect a valid file format"), reads a
+  bzip2 stream as empty, and aborts the process when it reads a Python file object.
+- python-lz4's frame decoder segfaults on an ordinary frame, and the crash surfaces later
+  at unrelated places in the suite.
+- pyppmd runs its cffi build, which ends a valid PPMd member early: the decoder relies on
+  how the C extension reports the end of data (`ppmd_decoder.py`), and the cffi build
+  reports it sooner, so the read returns data cut short.
+
+**What archivey does.** It treats all three as absent under PyPy, whether installed or not
+(`deps.unused_reason` in `internal/streams/codecs/deps.py`; `rapidgzip_child` refuses to
+start the child). `MissingComponent.reason` carries why, and every report of a missing
+package (the `PackageNotInstalledError` of a read, `format_availability()`, the registry's
+refusal and `archivey --version -v`) shows it in place of the install advice. LZ4 and PPMd
+data cannot be read there; `AUTO` decodes gzip, zlib, deflate and bzip2 with the standard
+library, and `ON` raises. The tests treat the three as not installed under PyPy
+(`UNUSED_UNDER_PYPY` in `tests/conftest.py`).
+
+**What remains.** PPMd reads under PyPy need either a pure-Python PPMd decoder or a
+workaround for how pyppmd's cffi build reports the end. LZ4 needs a python-lz4 that runs
+under PyPy. rapidgzip needs upstream support for PyPy.
+
+**Upstream.** Not filed with rapidgzip, python-lz4 or pyppmd.
+
+**Evidence.** The `pypy3.11` job logs in CI; PyPy is not a supported interpreter
+([`docs/install.md`](../docs/install.md) §Python versions and platforms).
+
 ## Intermittent Linux full-suite heap corruption (`[all]` / Hypothesis late crash)
 
 **Symptom.** On GitHub Actions `ubuntu-latest` required legs with `--extra all` or

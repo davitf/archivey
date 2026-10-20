@@ -68,7 +68,10 @@ def _check_ppmd7_properties(order: int, mem_size: int) -> None:
 class PpmdCodec(StreamCodec):
     codec = Codec.PPMD
     requirement = MissingComponent(
-        "pyppmd", "pip install archivey[recommended]", ("ppmd",)
+        "pyppmd",
+        "pip install archivey[recommended]",
+        ("ppmd",),
+        reason=deps.unused_reason("pyppmd"),
     )
 
     def _backend_present(self) -> bool:
@@ -78,10 +81,7 @@ class PpmdCodec(StreamCodec):
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
         if deps.pyppmd.load() is None:
-            raise self._missing(
-                "PPMd streams",
-                note=deps.UNUSABLE_UNDER_PYPY_NOTE if deps.UNDER_PYPY else "",
-            )
+            raise self._missing("PPMd streams")
         # ZIP method 98 supplies order/mem/restore directly (PPMd8). 7z supplies a
         # var.H properties blob (PPMd7). Prefer an explicit ``pack_size``; fall back to
         # the sized source length (``SlicingStream`` / path size) filled into

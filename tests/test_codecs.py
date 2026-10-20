@@ -6,6 +6,7 @@ from __future__ import annotations
 import dataclasses
 import gzip
 import hashlib
+import importlib
 import importlib.util
 import io
 import random
@@ -13,12 +14,16 @@ import re
 import shutil
 import sys
 import sysconfig
+import types
 import zlib
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Literal
 
 import pytest
 
+from archivey import ArchiveFormat, format_availability, open_archive
+from archivey.cli.main import _format_missing_components
 from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import (
     ArchiveyError,
@@ -2857,6 +2862,9 @@ def test_absent_codec_backend_hint_is_installable(
     rot unnoticed, because ``format_availability`` reported the updated string while
     ``open()`` still advertised a deleted extra.
     """
+    requirement = codec_requirement(codec)
+    if requirement is not None and requirement.reason:
+        pytest.skip(f"no install hint here: {requirement.reason}")
     current = getattr(codecs_module.deps, absent_global)
     absent = (
         codecs_module.deps.LazyOptional(current.name, present=False)
@@ -2869,24 +2877,69 @@ def test_absent_codec_backend_hint_is_installable(
     _assert_hint_is_installable(str(ei.value))
 
 
-@pytest.mark.parametrize(
-    ("codec", "absent_global"), [(Codec.LZ4, "lz4_frame"), (Codec.PPMD, "pyppmd")]
-)
-def test_a_package_unused_under_pypy_says_why(
-    codec: Codec, absent_global: str, monkeypatch: pytest.MonkeyPatch
+@pytest.fixture
+def deps_built_under_pypy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[types.ModuleType]:
+    """``deps`` re-run as if the interpreter were PyPy, and rebuilt afterwards."""
+    deps = codecs_module.deps
+    monkeypatch.setattr(sys.implementation, "name", "pypy")
+    importlib.reload(deps)
+    try:
+        yield deps
+    finally:
+        monkeypatch.undo()
+        importlib.reload(deps)
+
+
+def test_packages_unused_under_pypy_count_as_absent(
+    deps_built_under_pypy: types.ModuleType,
 ) -> None:
-    """Under PyPy lz4 and pyppmd count as absent even when installed, and the error
-    says why."""
-    monkeypatch.setattr(codecs_module.deps, "UNDER_PYPY", True)
-    current = getattr(codecs_module.deps, absent_global)
-    absent = (
-        codecs_module.deps.LazyOptional(current.name, present=False)
-        if isinstance(current, codecs_module.deps.LazyOptional)
-        else None
+    """Under PyPy archivey treats lz4, pyppmd and rapidgzip as absent even when they are
+    installed, and has a reason for each."""
+    deps = deps_built_under_pypy
+    assert deps.lz4_frame is None
+    assert deps.lz4_block is None
+    assert deps.pyppmd.available() is False
+    for package in ("lz4", "pyppmd", "rapidgzip"):
+        assert f"archivey does not use {package} under PyPy" in deps.unused_reason(
+            package
+        )
+    assert codecs_module.rapidgzip_child.rapidgzip_child_unavailable_reason() == (
+        deps.unused_reason("rapidgzip")
     )
-    monkeypatch.setattr(codecs_module.deps, absent_global, absent)
-    with pytest.raises(PackageNotInstalledError, match="does not use it under PyPy"):
-        open_codec_stream(codec, io.BytesIO(b""))
+    assert deps.unused_reason("brotli") == ""
+
+
+def test_an_unused_package_reports_its_reason_on_every_channel(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A package archivey does not use here is reported with the reason, not the
+    install advice: by the codec open, by ``format_availability()``, by the registry's
+    refusal and by ``--version -v``."""
+    reason = "archivey does not use lz4 under PyPy, where it crashes"
+    codec = stream_codec(Codec.LZ4)
+    requirement = dataclasses.replace(codec.requirement, reason=reason)
+    monkeypatch.setattr(codec, "requirement", requirement)
+    monkeypatch.setattr(codecs_module.deps, "lz4_frame", None)
+
+    with pytest.raises(PackageNotInstalledError) as ei:
+        open_codec_stream(Codec.LZ4, io.BytesIO(b""))
+    assert str(ei.value) == (
+        f"The 'lz4' package is required for lz4 streams, but {reason}."
+    )
+
+    availability = format_availability(ArchiveFormat.LZ4)
+    assert availability.missing == (requirement,)
+    assert availability.missing[0].advice == reason
+    assert _format_missing_components(availability.missing) == f"lz4 ({reason})"
+
+    path = tmp_path / "a.lz4"
+    path.write_bytes(b"\x04\x22\x4d\x18" + bytes(16))
+    with pytest.raises(PackageNotInstalledError) as ei:
+        open_archive(path)
+    assert reason in str(ei.value)
+    assert "pip install" not in str(ei.value)
 
 
 def test_absent_crypto_hint_is_installable(monkeypatch: pytest.MonkeyPatch) -> None:

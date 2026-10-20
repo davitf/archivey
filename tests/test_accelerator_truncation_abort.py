@@ -1091,13 +1091,13 @@ def test_under_pypy_on_is_refused_with_the_reason(
 ) -> None:
     """rapidgzip misreads valid streams under PyPy, so no child runs it there and ON
     says why."""
-    monkeypatch.setattr(rapidgzip_child, "_UNDER_PYPY", True)
+    monkeypatch.setattr(codecs_module.deps, "UNDER_PYPY", True)
     assert rapidgzip_child.rapidgzip_child_unavailable_reason() == (
-        "rapidgzip does not decode correctly under PyPy"
+        "archivey does not use rapidgzip under PyPy, where it misreads valid streams"
     )
     path = _write(tmp_path, "valid.gz", gzip.compress(_payload()))
     with pytest.raises(
-        ResourceLimitError, match=r"\(rapidgzip does not decode .*PyPy\)"
+        ResourceLimitError, match=r"\(archivey does not use rapidgzip under PyPy"
     ):
         open_codec_stream(Codec.GZIP, str(path), config=_ON)
 
