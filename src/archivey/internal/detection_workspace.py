@@ -53,13 +53,13 @@ PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE = 1 << 20
 class CandidateView(Protocol):
     """The callable :meth:`PrefixWorkspace.candidate_view` returns.
 
-    ``view(n)`` returns the candidate's first ``n`` bytes. ``view(n, start)`` returns
-    only bytes ``[start, n)``, so a reader that keeps what it got before asks for the
-    new bytes alone. Without ``start``, a reader that grows its prefix one small read
-    at a time copies the whole prefix on every read.
+    ``view(end)`` returns the candidate's first ``end`` bytes. ``view(end, start)``
+    returns only bytes ``[start, end)``, so a reader that keeps what it got before asks
+    for the new bytes alone. Without ``start``, a reader that grows its prefix one small
+    read at a time copies the whole prefix on every read.
     """
 
-    def __call__(self, length: int, start: int = 0, /) -> bytes: ...
+    def __call__(self, end: int, start: int = 0, /) -> bytes: ...
 
 
 class PrefixWorkspace:
@@ -268,10 +268,10 @@ class PrefixWorkspace:
     ) -> CandidateView:
         """A ``peek_more(n)``-shaped callable relative to ``candidate_origin``.
 
-        ``peek_more(n)`` returns the first ``n`` bytes of the *candidate*, which are the
-        absolute range ``[candidate_origin, candidate_origin + n)``. Served from the
-        shared buffer — never a second fetch of bytes already retrieved.
-        ``peek_more(n, start)`` returns only the part from ``start``, and the receipt
+        ``peek_more(end)`` returns the first ``end`` bytes of the *candidate*, which are
+        the absolute range ``[candidate_origin, candidate_origin + end)``. Served from
+        the shared buffer — never a second fetch of bytes already retrieved.
+        ``peek_more(end, start)`` returns only the part from ``start``, and the receipt
         is charged for that part only (:class:`CandidateView`).
 
         With ``arrived``, a short result does not mean the source has ended: only a
@@ -296,20 +296,20 @@ class PrefixWorkspace:
 
         returned = 0
 
-        def peek_more(length: int, start: int = 0, /) -> bytes:
+        def peek_more(end: int, start: int = 0, /) -> bytes:
             nonlocal returned
             if start < 0:
                 raise ValueError("start must be non-negative")
             if limit is not None:
                 remaining = max(0, limit - candidate_origin)
-                if length > remaining:
+                if end > remaining:
                     self._clamped_view_read = True
-                length = min(length, remaining)
-            wanted = max(0, length - start)
+                end = min(end, remaining)
+            wanted = max(0, end - start)
             if not arrived:
                 return self.peek_range(candidate_origin + start, wanted)
             held = len(self._buf) - candidate_origin
-            if held > returned or held >= length:
+            if held > returned or held >= end:
                 # Enough is buffered, or more than last time: no read.
                 self._receipt.prefix_bytes += wanted
                 first = candidate_origin + start
@@ -318,7 +318,7 @@ class PrefixWorkspace:
                 data = self.peek_range(candidate_origin + start, wanted, arrived=True)
             # How far into the candidate this call's answer reaches, whatever
             # ``start`` was.
-            returned = max(0, min(len(self._buf) - candidate_origin, length))
+            returned = max(0, min(len(self._buf) - candidate_origin, end))
             return data
 
         return peek_more
@@ -484,13 +484,15 @@ class PrefixWorkspace:
         if nbytes <= 0:
             return b"", False
         if self._peekable is not None:
-            # Grow the source's replay prefix; slice only the delta we lack.
+            # Grow the source's replay prefix, and take only the bytes past the
+            # buffer: the whole prefix on every read would make a source that
+            # returns small reads cost the square of its length.
             start = len(self._buf)
             end = start + nbytes
             if arrived:
-                delta = self._peekable.peek_arrived(end)[start:end]
+                delta = self._peekable.peek_arrived(end, start)
                 return delta, not delta
-            delta = self._peekable.peek(end)[start:end]
+            delta = self._peekable.peek(end, start)
             return delta, len(delta) < nbytes
         if self._handle is not None:
             assert self._entry_pos is not None

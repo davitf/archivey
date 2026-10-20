@@ -188,10 +188,12 @@ def _non_archive_signature(data: bytes) -> str | None:
 class _BoundedPeekReader(ReadOnlyIOStream):
     """A bounded, non-consuming reader over a ``peek_more`` callable.
 
-    ``peek_more(n, start)`` returns the candidate's bytes ``[start, n)`` without
+    ``peek_more(end, start)`` returns the candidate's bytes ``[start, end)`` without
     consuming them (a workspace :class:`CandidateView`). The reader keeps what it has
-    peeked and asks only for the bytes past it, so the cost stays linear in the bytes
-    read even when each peek grows the prefix by a few bytes. Reads walk an internal
+    peeked and asks only for the bytes past it, and the workspace takes only those
+    bytes from its source (``ArchiveSource.peek_arrived``'s ``start``). So each byte is
+    copied a fixed number of times even when each peek grows the prefix by a few
+    bytes; what is left per peek is a fixed cost per call. Reads walk an internal
     offset over that buffer, letting a codec pull exactly as much compressed input as
     it needs and never more than ``limit`` (one maximum compressor block).
 

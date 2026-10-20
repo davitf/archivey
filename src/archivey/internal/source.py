@@ -713,17 +713,18 @@ class ArchiveSource(ReadOnlyIOStream):
         self._pos += total
         return total
 
-    def peek(self, n: int) -> bytes:
+    def peek(self, n: int, start: int = 0) -> bytes:
         """The first ``n`` unconsumed bytes, without consuming them; non-seekable only.
 
         Fills the replay prefix detection reads from. Fewer than ``n`` bytes come back
-        only when the source ends first. ``None`` from the source raises
+        only when the source ends first. With ``start``, only the bytes from
+        ``start`` to ``n`` come back, so a caller that keeps what it peeked before
+        does not copy the whole prefix again. The prefix keeps every byte. ``None`` from the source raises
         ``BlockingIOError`` rather than coming back as an empty prefix. A seekable
         source is rewound instead of replayed, so this refuses there rather than
         growing a buffer nobody drains.
         """
-        if n < 0:
-            raise ValueError("peek size must be non-negative")
+        _check_peek_range(n, start)
         replay = self._replay
         if replay is None:
             raise io.UnsupportedOperation("peek: the source is seekable; rewind it")
@@ -736,7 +737,7 @@ class ArchiveSource(ReadOnlyIOStream):
             chunk = self._full_count_reader().read(missing)
             if chunk:
                 replay.extend(chunk)
-        return bytes(replay[:n])
+        return bytes(replay[start:n])
 
     def read_arrived(self, n: int) -> bytes:
         """Up to ``n`` bytes of what has arrived; ``b""`` only at the end. Non-seekable only.
@@ -778,7 +779,7 @@ class ArchiveSource(ReadOnlyIOStream):
             raise io.UnsupportedOperation("arrived_view: the source is seekable")
         return _ArrivedView(self)
 
-    def peek_arrived(self, n: int) -> bytes:
+    def peek_arrived(self, n: int, start: int = 0) -> bytes:
         """Like :meth:`peek`, but makes one read that returns what has arrived.
 
         When the replay prefix holds fewer than ``n`` bytes, this makes one
@@ -788,17 +789,16 @@ class ArchiveSource(ReadOnlyIOStream):
         writer sent less than ``n`` bytes and keeps the pipe open therefore
         answers with what it sent, where :meth:`peek` would wait for the writer
         to close. ``None`` from the source raises ``BlockingIOError``, as it does
-        for :meth:`peek`.
+        for :meth:`peek`. ``start`` is :meth:`peek`'s.
         """
-        if n < 0:
-            raise ValueError("peek size must be non-negative")
+        _check_peek_range(n, start)
         replay = self._replay
         if replay is None:
             raise io.UnsupportedOperation("peek: the source is seekable; rewind it")
         missing = n - len(replay)
         if missing > 0:
             replay.extend(read_arrived(self._stream(), missing))
-        return bytes(replay[:n])
+        return bytes(replay[start:n])
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         if not self._seekable:
@@ -894,6 +894,13 @@ class ArchiveSource(ReadOnlyIOStream):
         if self._joined is not None:
             return f"ArchiveSource(volumes={self._volume_count})"
         return f"ArchiveSource({self._caller_stream!r})"
+
+
+def _check_peek_range(n: int, start: int) -> None:
+    if n < 0:
+        raise ValueError("peek size must be non-negative")
+    if start < 0:
+        raise ValueError("peek start must be non-negative")
 
 
 def seek_is_expensive(stream: BinaryIO) -> bool:
