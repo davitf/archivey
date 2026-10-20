@@ -46,43 +46,51 @@ uv run --extra all python -m benchmarks.harness --mode structural --scale ci
 uv run --extra all python -m benchmarks.harness --mode full --scale realistic
 ```
 
-## 0.2.0 release figures (nightly, 2026-10-19)
+## 0.2.0 release figures (2026-10-20)
 
 The figures quoted in the 0.2.0 CHANGELOG entry. Source: `benchmark-wall.yml` run
-39258785182, `measured_at` 2026-10-19T13:17:56Z, `source_sha` `8c0de2e1838a`, GitHub
+39380611718 (`workflow_dispatch`, `skip_drift=true` to re-seed after the one-pass peer
+change), `measured_at` 2026-10-20T07:04:29Z, `source_sha` `b72df0b7b231`, GitHub
 `ubuntu-latest` (4 vCPUs), Python 3.11, `--mode full --scale realistic --warmup`.
 Corpus: 64 × 256 KiB members, 32 MiB gzip; 7z listing 10 000 solid tiny / 1 000
 non-solid members; RAR listing 1 000 / 256 members, the committed ci-scale fixtures,
-because the nightly has no `rar` writer. The band column is the nightly report's own
-label against `VISION.md`.
+because the nightly has no `rar` writer. The `tarfile` peers for `.tar.gz` and
+`.tar.bz2` read in one forward pass. The band column is the report's own label against
+`VISION.md`.
 
 | Case | archivey | peer | ratio | band |
 | --- | ---: | ---: | ---: | --- |
-| `zip_open_list` | 1.4 ms | 0.2 ms | 7.10× | above listing 3.0× |
-| `zip_read_all` | 19.0 ms | 10.7 ms | 1.78× | above 1.3×, under 2.0× |
-| `zip_extract` | 46.1 ms | 17.9 ms | 2.58× | above 2.0× safety |
-| `tar_open_list` | 2.0 ms | 1.4 ms | 1.49× | within listing ≤3.0× |
-| `tar_read_all` | 6.4 ms | 3.1 ms | 2.08× | above 2.0× safety |
-| `gzip_read_all` | 27.3 ms | 33.4 ms | 0.82× | within ≤1.3× |
-| `targz_read_all_accel_off` | 17.3 ms | 23.6 ms | 0.73× | within ≤1.3× |
-| `targz_read_all_accel_on` | 57.2 ms | 23.6 ms | 2.42× | above 2.0× safety |
-| `tarbz2_read_all_accel_off` | 135.3 ms | 218.4 ms | 0.62× | within ≤1.3× |
-| `tarbz2_read_all_accel_on` | 107.7 ms | 232.8 ms | 0.46× | within ≤1.3× |
-| `sevenzip_open_list` | 1.6 ms | 0.7 ms | 2.34× | above native parity (~1.25×) |
-| `sevenzip_many_open_list` | 127.9 ms | 83.9 ms | 1.52× | above native parity (~1.25×) |
-| `sevenzip_nonsolid_open_list` | 17.4 ms | 10.8 ms | 1.61× | above native parity (~1.25×) |
-| `rar_open_list` | 0.8 ms | 0.1 ms | 5.58× | above native parity (~1.25×) |
-| `rar_many_open_list` | 22.0 ms | 11.1 ms | 1.99× | above native parity (~1.25×) |
-| `rar_nonsolid_open_list` | 6.0 ms | 2.8 ms | 2.10× | above native parity (~1.25×) |
+| `zip_open_list` | 1.9 ms | 0.2 ms | 8.57× | above listing 3.0× |
+| `zip_read_all` | 22.7 ms | 11.5 ms | 1.97× | above 1.3×, under 2.0× |
+| `zip_extract` | 55.4 ms | 21.3 ms | 2.59× | above 2.0× safety |
+| `tar_open_list` | 3.5 ms | 1.5 ms | 2.34× | within listing ≤3.0× |
+| `tar_read_all` | 9.0 ms | 3.2 ms | 2.85× | above 2.0× safety |
+| `gzip_read_all` | 31.9 ms | 36.9 ms | 0.86× | within ≤1.3× |
+| `targz_read_all_accel_off` | 22.9 ms | 13.5 ms | 1.69× | above 1.3×, under 2.0× |
+| `targz_read_all_accel_on` | 73.8 ms | 13.7 ms | 5.38× | above 2.0× safety |
+| `tarbz2_read_all_accel_off` | 134.0 ms | 121.6 ms | 1.10× | within ≤1.3× |
+| `tarbz2_read_all_accel_on` | 112.2 ms | 113.5 ms | 0.99× | within ≤1.3× |
+| `sevenzip_open_list` | 1.8 ms | 0.8 ms | 2.33× | above native parity (~1.25×) |
+| `sevenzip_many_open_list` | 157.5 ms | 103.0 ms | 1.53× | above native parity (~1.25×) |
+| `sevenzip_nonsolid_open_list` | 22.4 ms | 14.3 ms | 1.56× | above native parity (~1.25×) |
+| `rar_open_list` | 1.0 ms | 0.2 ms | 5.57× | above native parity (~1.25×) |
+| `rar_many_open_list` | 27.7 ms | 14.1 ms | 1.96× | above native parity (~1.25×) |
+| `rar_nonsolid_open_list` | 7.9 ms | 3.7 ms | 2.16× | above native parity (~1.25×) |
 
-The `targz_*` and `tarbz2_*` peer times are inflated: the peer opens `tarfile` in `r:`
-mode, where `getmembers()` reads to the end and each `extractfile()` seeks back, so the
-archive is decompressed twice. Against `tarfile` in one pass (`r|`), the accelerators-off
-cases take about the same time; the harness fix is tracked separately.
+Cost model from the same run (`benchmarks/cost_model.py`; not a gate). Rows marked \*
+have a check rung more than 25% and 0.5 ms off the fit.
 
-Against the older tables below: the native ZIP reader replaced `zipfile`, and
-rapidgzip now runs in its own process (about 45 ms to start, `docs/security.md`), so
-forcing the gzip accelerator on at this corpus size is slower than the plain codec.
+| format | side | open | reading | throughput |
+| --- | --- | ---: | ---: | ---: |
+| zip | archivey | 0.32 ms | 5k members/s | 367 MiB/s |
+| zip | zipfile | 0.06 ms | 50k members/s | 378 MiB/s |
+| tar | archivey \* | 0.39 ms | 11k members/s | no codec |
+| tar | tarfile \* | not resolved | 37k members/s | no codec |
+
+Against the older tables below: the native ZIP reader replaced `zipfile`, rapidgzip now
+runs in its own process (about 45 ms to start, `docs/security.md`), so forcing the gzip
+accelerator on at this corpus size is slower than the plain codec, and the earlier
+`.tar.gz` / `.tar.bz2` peers decompressed twice.
 
 **Measurement host for the tables below:** 4-core Intel Xeon (KVM), Linux x86_64,
 July–September 2026, before the native ZIP reader and the rapidgzip subprocess;

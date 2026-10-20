@@ -33,9 +33,10 @@ and each change will be listed here. No major changes are expected.
   Brotli, Unix compress). Self-extracting archives are read behind their stub.
 - **Automatic format detection** from the file's content, with the extension as the last
   signal, so a misnamed file still opens.
-- **Native 7z and RAR metadata readers.** Listing a 7z or RAR needs no third-party
-  package. 7z data decodes in-process, BCJ2 included. RAR data needs RARLAB `unrar` or
-  `rar`, or `unar`.
+- **Native readers.** archivey parses ZIP, TAR, 7z and RAR headers itself, without
+  `zipfile`, `tarfile` or any third-party package, so listing any of them needs no
+  extra install. 7z data decodes without external tools, BCJ2 included. RAR data needs
+  RARLAB `unrar` or `rar`, or `unar`.
 - **Encrypted archives:** ZipCrypto and WinZip AES in ZIP, AES in 7z (headers too),
   and RAR3/RAR5 encryption, with one password or a list of candidates.
 - **Safe extraction by default.** `extract_all()` blocks path traversal, symlink and
@@ -47,15 +48,16 @@ and each change will be listed here. No major changes are expected.
   all raising `ResourceLimitError`.
 - **Built for streaming.** `stream_members()` hands out each member as a stream, in
   archive order and in one pass, so a solid 7z or RAR is decoded once and a large member
-  is read in chunks rather than held in memory. TAR and the single-file formats also read
-  from a non-seekable source. The documented access costs say which operations re-read
-  or re-decompress.
+  is read in chunks rather than held in memory. TAR, ZIP and the single-file formats
+  also read from a non-seekable source such as a pipe. The documented access costs say
+  which operations re-read or re-decompress.
 - **Overlapping operations on one reader.** With `concurrent_operations=True`, random
   reads, listing, `stream_members()` passes and `extract_all()` may overlap on one
   reader, from one thread or several, in every format.
 - **Verified reads.** A member whose CRC or other checksum fails, or that ends short,
-  raises from `read()`. Codec errors map to one `ArchiveyError` hierarchy, and
-  non-fatal oddities are reported as structured diagnostics that
+  raises from `read()`, and a `stream_members()` pass goes on to the members after it
+  wherever the format lets it reach them. Codec errors map to one `ArchiveyError`
+  hierarchy, and non-fatal oddities are reported as structured diagnostics that
   `DiagnosticPolicy.STRICT` turns into errors.
 - **Zero-dependency core.** ZIP, TAR, directories and the standard-library codecs need
   no extra packages. `[recommended]` adds the other codecs, crypto and ISO;
@@ -78,24 +80,26 @@ and each change will be listed here. No major changes are expected.
 
 ### Performance
 
-Measured on 2026-10-19 at commit `8c0de2e1` in one nightly run on a GitHub
-`ubuntu-latest` runner (4 vCPUs, Python 3.11). Each figure is archivey's time over the
-standard library's or reference reader's time; lower is better. The bands are the
-targets in [`VISION.md`](VISION.md); the full table is in `benchmarks/RESULTS.md`.
+Measured on 2026-10-20 at commit `b72df0b7` in one run of the realistic benchmark on a
+GitHub `ubuntu-latest` runner (4 vCPUs, Python 3.11). Each figure is archivey's time
+over the standard library's or reference reader's time; lower is better. The bands are
+the targets in [`VISION.md`](VISION.md); the full table is in `benchmarks/RESULTS.md`.
 
-- Single-stream gzip: about 0.8× `gzip`, within the 1.3× band for reads. `.tar.gz` and
-  `.tar.bz2` with accelerators off take about the same time as `tarfile` reading in one
-  pass (`r|`, measured separately). The nightly shows 0.6–0.7× because its `tarfile`
-  peer opens in `r:` mode, which decompresses the archive twice.
-- Reading every member: ZIP about 1.8× `zipfile` (above 1.3×), plain TAR about 2.1×
-  `tarfile`. Extracting a ZIP is about 2.6× `zipfile.extractall()`. Plain TAR reads
-  and ZIP extraction are above even the 2× allowance for safety checks.
-- Listing: TAR about 1.5× (within its 2–3× band); ZIP about 7× (1.4 ms against 0.2 ms
-  for 64 members), above it. 7z is 1.5–2.3× `py7zr` and RAR 2–5.6× `rarfile`, against
-  a parity target.
-- Accelerators turn on by default only when you ask to seek in a large file. Forced on
-  at this corpus size, the gzip one is about 3× slower than the plain codec, and the
-  bzip2 one is about 1.25× faster.
+- **Per-member cost is the main gap.** Once a member is open, archivey reads ZIP data at
+  about the same rate as `zipfile` (about 370 MiB/s on both sides), but it gets through
+  about 5 000 members a second where `zipfile` gets through 50 000. For plain TAR it is
+  11 000 against `tarfile`'s 37 000.
+- **Reads:** single-stream gzip about 0.9× `gzip`, and `.tar.bz2` about 1.1× `tarfile`,
+  both within the 1.3× band. Reading every member of a ZIP is about 2× `zipfile` and of
+  a `.tar.gz` about 1.7× `tarfile`, above 1.3×. Plain TAR reads (about 2.9× `tarfile`)
+  and ZIP extraction (about 2.6× `zipfile.extractall()`) are above even the 2× allowance
+  for safety checks.
+- **Listing:** TAR about 2.3× `tarfile`, within its 2–3× band; ZIP about 8.6× (1.9 ms
+  against 0.2 ms for 64 members), above it. 7z is 1.5–2.3× `py7zr` and RAR 2–5.6×
+  `rarfile`, against a parity target.
+- **Accelerators** turn on by default only when you ask to seek in a large file. Forced
+  on at this corpus size, the gzip one is about 3× slower than the plain codec, and the
+  bzip2 one is about 1.2× faster.
 
 ### Security
 
