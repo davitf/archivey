@@ -326,6 +326,35 @@ def make_multiblock_xz(data: bytes, block_size: int) -> bytes:
     return result.stdout
 
 
+def seekable_zstd_table(
+    frames: list[tuple[int, int]], *, checksums: bool = False, descriptor: int = 0
+) -> bytes:
+    """The skippable frame that ends a Seekable Zstandard file, for ``frames``.
+
+    ``frames`` holds ``(compressed_size, decompressed_size)`` per frame. ``checksums``
+    writes 12-byte entries (with a zero checksum) and sets the descriptor's flag;
+    ``descriptor`` adds bits to it.
+    """
+    entry = struct.Struct("<III" if checksums else "<II")
+    body = b"".join(entry.pack(c, d, *([0] if checksums else [])) for c, d in frames)
+    flags = descriptor | (0x80 if checksums else 0)
+    body += struct.pack("<IBI", len(frames), flags, 0x8F92EAB1)
+    return struct.pack("<II", 0x184D2A5E, len(body)) + body
+
+
+def make_seekable_zstd(parts: list[bytes], *, checksums: bool = False) -> bytes:
+    """A Seekable Zstandard file: one frame per part, then the seek table."""
+    from tests.conftest import zstd_backend
+
+    zstd = zstd_backend()
+    frames = [zstd.compress(part) for part in parts]
+    table = seekable_zstd_table(
+        [(len(f), len(p)) for f, p in zip(frames, parts, strict=True)],
+        checksums=checksums,
+    )
+    return b"".join(frames) + table
+
+
 def make_unix_compress(data: bytes) -> bytes:
     """LZW-compress ``data`` into a standard unix-compress (`.Z`) stream.
 

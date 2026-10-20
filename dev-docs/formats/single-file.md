@@ -14,7 +14,7 @@ behaviour and links the row.
 | [`gzip.md`](gzip.md) | gzip, zlib, and raw DEFLATE as the ZIP and 7z coder; the `rapidgzip` accelerator and its child process |
 | [`bzip2.md`](bzip2.md) | bzip2, and `rapidgzip`'s in-process bzip2 decoder |
 | [`xz.md`](xz.md) | xz, lzip and LZMA Alone: the LZMA family, with archivey's own seekable xz and lzip decoders |
-| [`zstd-lz4.md`](zstd-lz4.md) | zstd and LZ4: frame formats read through their libraries, with no seek index |
+| [`zstd-lz4.md`](zstd-lz4.md) | zstd and LZ4: frame formats read through their libraries; zstd seeks from frame starts and the seekable format's table |
 | [`brotli.md`](brotli.md) | Brotli: no magic, found by a content probe |
 | [`unix-compress.md`](unix-compress.md) | Unix `compress` (`.Z`): archivey's own LZW decoder |
 
@@ -236,7 +236,8 @@ Where resume points come from, per codec:
 | lzip | Every member. Default `lzip` writes one; `plzip` one per data block, many with a small `-B` |
 | `.Z` | Every CLEAR code, which `compress` emits when the dictionary stops paying |
 | gzip, zlib, raw DEFLATE, bzip2 | None natively. With `rapidgzip` engaged, its own index, built as it decodes |
-| LZMA Alone, zstd, LZ4, Brotli | None |
+| zstd | On declared seek demand: every regular frame after the first, recorded as a forward read reaches it, and every frame the seekable format's seek table lists ([`zstd-lz4.md`](zstd-lz4.md) §2.3) |
+| LZMA Alone, LZ4, Brotli | None |
 
 **The rewind report.** A backward seek emits `STREAM_REWIND_REDECOMPRESSES`, once per
 stream, when the decoded progress it discards reaches 1 MiB
@@ -392,8 +393,9 @@ Shared by the codecs; each page adds its own.
   decodes each block raw with its filter chain and a clamped LZMA2 dictionary, walking
   into later streams, and a chain Python's `lzma` cannot build raw (ARM64, RISC-V)
   leaves the inner TAR unclaimed, recorded as `CAPABILITY_UNAVAILABLE`.
-- **A crafted index misplaces bytes on a seek.** xz and lzip seeks trust the file's own
-  index; a forward read verifies it, a cold seek does not. Accepted: threat-model O17.
+- **A crafted index misplaces bytes on a seek.** xz, lzip and seekable-zstd seeks trust
+  the file's own index; a forward read verifies it, a cold seek does not. Accepted:
+  threat-model O17.
 - **A seek table grows with the unit count the file declares.** An lzip member can be 26
   bytes, so a table could cost several times the file's size; capped by
   `MAX_SEEK_POINTS` (§2.3).
