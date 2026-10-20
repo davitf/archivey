@@ -169,7 +169,7 @@ def test_a_child_is_not_reused_after_an_interrupted_request(
     # Back in the pool, the child would read the next decoder's frames as the rest
     # of the payload and never reply.
     assert not child._lease.reusable
-    with pytest.raises(ArchiveyUsageError, match="interrupted"):
+    with pytest.raises(ArchiveyUsageError, match="interrupted in the middle of a"):
         child.call("decompress", b"")
     child.close()
     assert POOL.idle_count() == 0

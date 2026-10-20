@@ -403,8 +403,8 @@ class DecoderChild:
             raise self._death
         if self._interrupted:
             raise ArchiveyUsageError(
-                f"the {self.describe} is not running: a reply from it was "
-                "interrupted, and this decoder cannot continue"
+                f"the {self.describe} was interrupted in the middle of a request "
+                "or its reply, and this decoder cannot continue"
             )
         process = self._lease.process
         if process is None:
