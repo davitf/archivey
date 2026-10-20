@@ -150,7 +150,9 @@ notice when the read pass ends early, and a one-line summary (`N OK, M failed`) 
 exit non-zero if any member fails;
 `-v` / `--verbose` SHALL add a per-member OK/FAIL line. When a cheap member
 index is available and the stream ends before every selected file member has
-been counted OK or failed (archive-wide error or solid/poisoned abort), the
+been counted OK or failed (an archive-wide error, such as damage to the archive's
+structure: a TAR cut inside a member, a compressed TAR whose stream fails; a member's
+data error, solid archives included, fails that member and does not end the stream), the
 summary SHALL append `, K not tested` where `K` is the untested remainder. A
 directory skipped as above counts in `K` whether or not an index was available and
 whether or not the pass reached its end.

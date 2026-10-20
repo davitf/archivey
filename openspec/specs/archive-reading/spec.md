@@ -789,6 +789,18 @@ growing decompressed-block cache until reader close. On solid archives, random
 directed to `stream_members()` by `reader.cost.access_cost` and by the `open()` /
 `read()` docstrings rather than by a runtime warning.
 
+A member's data error (a digest mismatch, a corrupt or cut-short compressed stream) SHALL
+be raised from that member's stream read and SHALL NOT end the pass, whether or not the
+caller read that stream: the pass SHALL yield the members after it whenever the walk of
+the archive's structure can reach them, and SHALL end without raising. Members after the
+damage in the same solid block fail too, each from its own read, as `7z t` and `unrar t`
+fail them; a later solid block reads cleanly. Random `open()` / `read()` give each member
+the same outcome. A format that stores no member checksum (ISO, TAR) returns damaged bytes
+with no error. The pass itself raises only when damage to the archive's structure stops
+that walk (DR-2): a TAR cut inside a member, a compressed TAR whose stream fails, a ZIP
+read from a pipe whose local-header walk loses its place. The members after that point
+are not yielded; resyncing past such damage is out of scope.
+
 A `stream_members()` invocation is an exclusive one-pass/data-path operation in
 both modes. It SHALL NOT overlap random `open()`, materialization, another
 iteration/data pass, unrelated extraction, or reader close. On a reader opened with
@@ -842,6 +854,11 @@ advancing a closed pass SHALL end the iteration. Closing a pass that is executin
 | Encrypted solid 7z `[a.txt, link, b.txt]`, `read_link_targets=False`, `stream_members(lambda m: False)` to the end | Nothing decoded; provider never consulted; `link_target` unset; no `SYMLINK_TARGET_UNAVAILABLE` |
 | `stream_members(file_copy_streams=False)`, RAR5 file copy | The copy is yielded with stream `None`; its source with its bytes |
 | `stream_members(file_copy_streams=0)` | `ArchiveyUsageError` at the call |
+| One member's data damaged, non-solid ZIP (from a file or a pipe), 7z or RAR, either mode, its stream read or not | That member's read raises `CorruptionError`; every later member is yielded and reads correctly; the pass ends without raising |
+| Same, solid 7z with one folder or solid RAR | The damaged member and the later ones in its block raise from their reads; the pass ends without raising |
+| Same, solid 7z with two folders, damage in the first | Only the damaged member raises; the second folder reads correctly |
+| Same, ISO or plain TAR | No error; the damaged bytes are returned; later members read correctly |
+| Archive structure damaged (TAR cut inside a member, compressed TAR stream fails, pipe ZIP local header lost) | Members before the damage yielded; then the pass raises and ends |
 
 ### Requirement: Transparent link following
 
