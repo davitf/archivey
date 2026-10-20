@@ -9,6 +9,10 @@ The writer holds the pipe open until the test releases it, or for ``_HOLD_SECOND
 at most. A detection that waits for the end of the source therefore returns only
 after the writer closes, and the test fails on the flag that records the close, not
 on a clock. A regression fails after ``_HOLD_SECONDS`` and does not hang.
+
+A test that expects a read to wait arms ``release_in`` just before that read. The
+close cannot come before the timer is armed, so a read that does not wait returns
+before the close, and the flag catches it.
 """
 
 from __future__ import annotations
@@ -60,35 +64,52 @@ def _tar_gz(size: int) -> bytes:
 
 
 @contextmanager
-def _held_open_pipe(
-    payload: bytes, *, buffered: bool, hold: float = _HOLD_SECONDS
-) -> Iterator[tuple[BinaryIO, threading.Event]]:
-    """A pipe holding ``payload`` and a flag set when the writer closes its end.
+def _releasable_pipe(
+    payload: bytes, *, buffered: bool
+) -> Iterator[tuple[BinaryIO, threading.Event, Callable[[float], None]]]:
+    """A pipe holding ``payload``, a flag set when the writer closes its end, and
+    ``release_in(delay)``, which closes the writer ``delay`` seconds from now.
 
-    The writer closes after ``hold`` seconds, or when the test leaves the block.
+    The writer sends ``payload`` in as many writes as the pipe buffer needs.
     """
-    assert len(payload) < 4096, "one write fits the pipe buffer on every platform"
     read_fd, write_fd = os.pipe()
     release = threading.Event()
     closed = threading.Event()
 
     def writer() -> None:
         try:
-            os.write(write_fd, payload)
-            release.wait(hold)
+            view = memoryview(payload)
+            while view:
+                view = view[os.write(write_fd, view) :]
+            release.wait(_HOLD_SECONDS)
         finally:
             closed.set()
             os.close(write_fd)
+
+    def release_in(delay: float) -> None:
+        timer = threading.Timer(delay, release.set)
+        timer.daemon = True
+        timer.start()
 
     thread = threading.Thread(target=writer, daemon=True)
     thread.start()
     stream = open(read_fd, "rb", buffering=-1 if buffered else 0)  # noqa: SIM115
     try:
-        yield stream, closed  # type: ignore[misc]  # FileIO when unbuffered
+        yield stream, closed, release_in  # type: ignore[misc]  # FileIO when unbuffered
     finally:
         release.set()
         thread.join()
         stream.close()
+
+
+@contextmanager
+def _held_open_pipe(
+    payload: bytes, *, buffered: bool
+) -> Iterator[tuple[BinaryIO, threading.Event]]:
+    """A pipe holding ``payload`` and a flag set when the writer closes its end."""
+    assert len(payload) < 4096, "one write fits the pipe buffer on every platform"
+    with _releasable_pipe(payload, buffered=buffered) as (stream, closed, _):
+        yield stream, closed
 
 
 _CASES: list[tuple[str, Callable[[int], bytes], ArchiveFormat]] = [
@@ -156,9 +177,8 @@ def test_a_streaming_tar_yields_its_first_member_before_the_writer_closes(
     assert data == payload[512 : 512 + 2000]
 
 
-# A test that expects a wait holds the pipe this long, so it does not sit through
-# ``_HOLD_SECONDS``.
-_SHORT_HOLD_SECONDS = 0.5
+# How long a test that expects a read to wait lets that read block.
+_RELEASE_DELAY_SECONDS = 0.2
 
 
 @pytest.mark.parametrize("buffered", [False, True], ids=["raw", "buffered"])
@@ -167,18 +187,50 @@ def test_a_short_gzip_opens_at_once_and_its_first_read_waits_for_the_writer(
 ) -> None:
     """The decoder asks for a 64 KiB feed, which a short held-open pipe gives only on close."""
     data = os.urandom(2000)
-    with _held_open_pipe(
-        gzip.compress(data, mtime=0), buffered=buffered, hold=_SHORT_HOLD_SECONDS
-    ) as (stream, closed):
+    with _releasable_pipe(gzip.compress(data, mtime=0), buffered=buffered) as (
+        stream,
+        closed,
+        release_in,
+    ):
         with open_archive(stream, streaming=True) as reader:
             assert not closed.is_set(), "open_archive waited for the writer"
             for _, member_stream in reader.stream_members():
                 assert member_stream is not None
+                release_in(_RELEASE_DELAY_SECONDS)
                 head = member_stream.read(1000)
                 assert closed.is_set(), (
                     "the first read returned before the writer closed"
                 )
                 rest = member_stream.read()
+    assert head + rest == data
+
+
+@pytest.mark.parametrize("buffered", [False, True], ids=["raw", "buffered"])
+def test_a_long_gzip_waits_for_the_writer_only_at_its_last_feed(buffered: bool) -> None:
+    """Reads that the earlier 64 KiB feeds fill return at once; the last feed waits.
+
+    The data does not compress, so its compressed size tracks its output, and every
+    read up to 128 KiB before the end needs only full feeds.
+    """
+    data = os.urandom(400_000)
+    early = len(data) - 128 * 1024
+    with _releasable_pipe(gzip.compress(data, mtime=0), buffered=buffered) as (
+        stream,
+        closed,
+        release_in,
+    ):
+        with open_archive(stream, streaming=True) as reader:
+            for _, member_stream in reader.stream_members():
+                assert member_stream is not None
+                head = b""
+                while len(head) < early:
+                    head += member_stream.read(8192)
+                assert not closed.is_set(), "an early read waited for the writer"
+                release_in(_RELEASE_DELAY_SECONDS)
+                rest = member_stream.read()
+                assert closed.is_set(), (
+                    "the last read returned before the writer closed"
+                )
     assert head + rest == data
 
 
@@ -218,9 +270,11 @@ def test_a_zip_with_data_descriptors_ends_its_last_member_only_when_the_writer_c
     """
     datas = [os.urandom(1000), os.urandom(1000)]
     got: list[bytes] = []
-    with _held_open_pipe(
-        _zip_with_data_descriptors(datas), buffered=buffered, hold=_SHORT_HOLD_SECONDS
-    ) as (stream, closed):
+    with _releasable_pipe(_zip_with_data_descriptors(datas), buffered=buffered) as (
+        stream,
+        closed,
+        release_in,
+    ):
         with open_archive(stream, streaming=True) as reader:
             assert not closed.is_set(), "open_archive waited for the writer"
             for member, member_stream in reader.stream_members():
@@ -229,6 +283,7 @@ def test_a_zip_with_data_descriptors_ends_its_last_member_only_when_the_writer_c
                     got.append(member_stream.read())
                     assert not closed.is_set(), "the first member waited for the writer"
                 else:
+                    release_in(_RELEASE_DELAY_SECONDS)
                     got.append(member_stream.read())
                     assert closed.is_set(), (
                         "the last member ended before the writer closed"

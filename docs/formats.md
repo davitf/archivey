@@ -967,8 +967,8 @@ yielded.
   incompressible data). A pipe is not checked at open, because the check would consume
   bytes of its one pass; it fails on the first read as before. So a `.gz` sent down a
   pipe that the sender keeps open opens at once, but a read can wait. The decoder reads
-  the compressed data in 64 KiB pieces, and a read from a pipe returns only when it has
-  64 KiB or the sender closes the pipe. So the read that needs the last piece waits
+  the compressed data in 64 KiB pieces, and its read of each piece returns only when it
+  has 64 KiB or the sender closes the pipe. So the read that needs the last piece waits
   until the sender closes the pipe, at any size. For a `.gz` under 64 KiB, that is the
   first read. Close the sending side when the file is done.
 - The `[seekable]` accelerator's bzip2 decoder reads input that is not bzip2 as an empty
