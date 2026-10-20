@@ -351,7 +351,9 @@ def test_allow_resource_leaks_reaps_without_failing(tmp_path: Path) -> None:
     The probe holds the ``Popen`` and asks it, not the bare pid: on Windows
     ``os.kill(pid, 0)`` is TerminateProcess, and once the oracle drops the last
     handle the pid is free for reuse, so the probe could kill an unrelated
-    process and report it alive.
+    process and report it alive. ``poll()`` is a faithful witness because the
+    oracle reaps a pinned child through this same ``Popen``, so its ``wait()``
+    sets the ``returncode`` that ``poll()`` reports.
     """
     proc = _run_isolated(
         tmp_path,
@@ -372,7 +374,7 @@ def test_following_sees_child_reaped() -> None:
     alive = child.poll() is None
     if alive:
         child.kill()
-        child.wait()
+        child.wait(timeout=5)
     assert not alive, f"pid {child.pid} still alive after marked test"
 """,
     )
