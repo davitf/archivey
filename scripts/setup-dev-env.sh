@@ -104,6 +104,8 @@ install_macos_packages() {
   command -v 7z >/dev/null 2>&1 || brew install p7zip
   command -v unar >/dev/null 2>&1 || brew install unar
   command -v xorriso >/dev/null 2>&1 || brew install xorriso
+  # htslib ships bgzip, for tests/test_bgzf_seek.py's reference-writer test.
+  command -v bgzip >/dev/null 2>&1 || brew install htslib
 }
 
 install_windows_packages() {

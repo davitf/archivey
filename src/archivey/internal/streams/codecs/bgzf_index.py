@@ -14,11 +14,12 @@ Every member starts a fresh DEFLATE stream, so each member's start is a resume p
 and its ISIZE (exact: a member holds at most 64 KiB) gives the output offset of the
 next. The file ends with an empty member, the EOF marker.
 
-The walk reads the file once, front to back, in 256 KiB pieces, and inflates
-nothing. Jumping from header to header would read fewer bytes on a local file, but
-through the stream's read buffer every jump costs a buffer refill anyway (about half
-of a typical ``bgzip`` member), and on a remote source one request per member is far
-slower than a few large sequential reads.
+The walk reads the first header (one read buffer's worth), and stops there when the
+file is not BGZF. Otherwise it reads the file once, front to back, in 256 KiB pieces,
+and inflates nothing. Jumping from header to header would read fewer bytes on paper,
+but through the stream's read buffer (``io.DEFAULT_BUFFER_SIZE``: 8 KiB, 128 KiB from
+Python 3.14) every jump refills the buffer, and on a remote source one request per
+member is far slower than a few large sequential reads.
 
 The walk trusts the sizes, like the xz and lzip indexes (threat-model O17); a forward
 read still decodes and checks every member. It ends quietly where a member does not
@@ -32,6 +33,7 @@ Spec: https://samtools.github.io/hts-specs/SAMv1.pdf §4.1
 
 from __future__ import annotations
 
+import io
 from dataclasses import dataclass
 from typing import BinaryIO
 
@@ -90,7 +92,18 @@ def walk_bgzf(
     kept: SpacedCollector[_Block] = SpacedCollector(lambda b: b.decompressed_start)
     offset = decompressed = 0
     stream.seek(0)
-    buf = b""
+    # The first header decides whether the file is BGZF at all, before the walk reads
+    # a piece: most gzip files are not. One buffer's worth costs what a header-sized
+    # read would, and leaves the read buffer empty, so the pieces after it are not
+    # split in two.
+    buf = stream.read(io.DEFAULT_BUFFER_SIZE)
+    if len(buf) >= _FIXED_HEADER:
+        xlen = int.from_bytes(buf[10:12], "little")
+        if len(buf) < _FIXED_HEADER + xlen:
+            buf += stream.read(_FIXED_HEADER + xlen - len(buf))
+        extra = buf[_FIXED_HEADER : _FIXED_HEADER + xlen]
+        if _block_size(buf[:_FIXED_HEADER], extra) is None:
+            return [], None, False
     pos = 0  # ``buf[pos]`` is the byte at ``offset``
     while True:
         # Keep a whole member in hand: ``_CHUNK`` is more than the largest one.

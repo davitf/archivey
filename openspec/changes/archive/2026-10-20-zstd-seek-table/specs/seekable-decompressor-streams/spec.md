@@ -14,6 +14,7 @@ frame (`single_stream`), SHALL keep no points.
 | Multi-frame file, read forward, then seek back | Resumes at the frame start before the target |
 | Skippable frame before each frame (pzstd) | Points at the regular frames only |
 | Stream opened without seek demand | No points kept, no table read |
+| ZIP zstd member (`single_stream`) ending in a seek table, seek declared | No table read; the only point stays at offset 0 |
 
 ### Requirement: zstd reads the Seekable Zstandard seek table
 
@@ -30,5 +31,5 @@ seek-table cap SHALL be thinned and keep the exact total.
 | --- | --- |
 | `seek(0, SEEK_END)` | Total from the table; only the table is read |
 | Seek into frame N | Decoding resumes at frame N's start |
-| Reserved descriptor bits set, or frame sizes that do not reach the table | `SEEK_INDEX_DEGRADED` (scan `zstd_seek_table`); reads decode from the start |
+| Reserved descriptor bits set, a frame of 0 compressed bytes, or frame sizes that do not reach the table | `SEEK_INDEX_DEGRADED` (scan `zstd_seek_table`); reads decode from the start |
 | Zeros after the table | No table found, no diagnostic; reads decode from the start |

@@ -70,7 +70,7 @@ def test_bgzf_walk_gives_the_size_and_block_points_without_decoding() -> None:
         assert stream.seek(0, io.SEEK_END) == len(full)
         # The file once, front to back, in a few large reads; nothing inflated.
         assert source.bytes_read <= len(data) + 8192
-        assert source.read_calls <= len(data) // (1 << 18) + 2
+        assert source.read_calls <= len(data) // (1 << 18) + 3
         assert _points(stream) == starts
         for pos in (starts[20] + 7, 3, starts[2], len(full) - 1):
             assert stream.seek(pos) == pos
@@ -196,6 +196,14 @@ def test_bgzf_walk_over_the_cap_is_thinned_and_keeps_the_total(
 )
 def test_short_or_plain_input_walks_no_blocks(data: bytes) -> None:
     assert walk_bgzf(io.BytesIO(data), len(data)) == ([], None, False)
+
+
+def test_a_plain_gzip_costs_the_walk_one_header_read() -> None:
+    """Most gzip files are not BGZF; the first header says so before any piece."""
+    data = gzip.compress(random.Random(3).randbytes(600_000))
+    source = CountingBytesIO(data)
+    assert walk_bgzf(io.BufferedReader(source), len(data)) == ([], None, False)
+    assert source.bytes_read <= io.DEFAULT_BUFFER_SIZE
 
 
 def test_the_eof_marker_alone_is_an_empty_walk_with_size_zero() -> None:
