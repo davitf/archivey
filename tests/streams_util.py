@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import bz2
 import functools
+import gzip
 import io
 import lzma
 import random
@@ -16,6 +18,8 @@ from dataclasses import dataclass
 from typing import BinaryIO
 
 import pytest
+
+from archivey.types import StreamFormat
 
 
 class NonSeekableBytesIO(io.RawIOBase):
@@ -689,3 +693,47 @@ def assert_no_member_tail_seek(seeks: list[MemberSeek], sizes: dict[int, int]) -
     """
     forward = [s for s in seeks if s.after > s.before]
     assert all(s.after < sizes[s.stream] - MEMBER_TAIL_BYTES for s in forward), seeks
+
+
+# One compressor for each stream format a compressed TAR can use. A compressor whose
+# library is missing skips the test that calls it.
+def _zstd(data: bytes) -> bytes:
+    from tests.conftest import zstd_backend
+
+    try:
+        backend = zstd_backend()
+    except RuntimeError:
+        pytest.skip("no zstd backend")
+    return backend.compress(data)
+
+
+def _lz4(data: bytes) -> bytes:
+    frame = pytest.importorskip("lz4.frame")
+    return frame.compress(data)
+
+
+def _brotli(data: bytes) -> bytes:
+    return pytest.importorskip("brotli").compress(data)
+
+
+def _lzip(data: bytes) -> bytes:
+    return make_lzip_member(data)
+
+
+def _unix_compress(data: bytes) -> bytes:
+    pytest.importorskip("ncompress")
+    return make_unix_compress(data)
+
+
+STREAM_COMPRESSORS: dict[StreamFormat, Callable[[bytes], bytes]] = {
+    StreamFormat.GZIP: lambda d: gzip.compress(d, mtime=0),
+    StreamFormat.BZIP2: bz2.compress,
+    StreamFormat.XZ: lzma.compress,
+    StreamFormat.LZMA_ALONE: lambda d: lzma.compress(d, format=lzma.FORMAT_ALONE),
+    StreamFormat.ZLIB: zlib.compress,
+    StreamFormat.ZSTD: _zstd,
+    StreamFormat.LZ4: _lz4,
+    StreamFormat.BROTLI: _brotli,
+    StreamFormat.LZIP: _lzip,
+    StreamFormat.UNIX_COMPRESS: _unix_compress,
+}

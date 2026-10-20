@@ -28,6 +28,8 @@ from typing import BinaryIO
 import pytest
 
 from archivey import ArchiveFormat, detect_format, open_archive
+from archivey.types import ContainerFormat, StreamFormat
+from tests.streams_util import STREAM_COMPRESSORS
 
 _HOLD_SECONDS = 10.0
 
@@ -114,14 +116,16 @@ def test_detect_format_does_not_wait_for_the_writer(
     assert info.format == expected
 
 
-# TAR_GZ is not here: its backend reads the first header through a decoder that
-# fills a full 8 KiB read-ahead from a full 64 KiB feed, and still waits, also with
-# ``format=``.
 @pytest.mark.parametrize("buffered", [False, True], ids=["raw", "buffered"])
 @pytest.mark.parametrize(
     ("make", "expected"),
-    [(_zip, ArchiveFormat.ZIP), (_gzip, ArchiveFormat.GZ), (_tar, ArchiveFormat.TAR)],
-    ids=["zip", "gz", "tar"],
+    [
+        (_zip, ArchiveFormat.ZIP),
+        (_gzip, ArchiveFormat.GZ),
+        (_tar, ArchiveFormat.TAR),
+        (_tar_gz, ArchiveFormat.TAR_GZ),
+    ],
+    ids=["zip", "gz", "tar", "tar.gz"],
 )
 def test_open_archive_does_not_wait_for_the_writer(
     make: Callable[[int], bytes], expected: ArchiveFormat, buffered: bool
@@ -132,25 +136,51 @@ def test_open_archive_does_not_wait_for_the_writer(
             assert reader.format == expected
 
 
+# Brotli is not here: its decoder keeps a full 64 KiB feed, because it cannot find the
+# end of its stream inside a feed (``BrotliDecoder``).
+_TAR_STREAMS = [
+    None,
+    *(f for f in STREAM_COMPRESSORS if f is not StreamFormat.BROTLI),
+]
+
+
 @pytest.mark.parametrize("buffered", [False, True], ids=["raw", "buffered"])
+@pytest.mark.parametrize(
+    "stream_format",
+    _TAR_STREAMS,
+    ids=lambda f: "tar" if f is None else f"tar.{f.value}",
+)
 def test_a_streaming_tar_yields_its_first_member_before_the_writer_closes(
-    buffered: bool,
+    stream_format: StreamFormat | None, buffered: bool
 ) -> None:
     """The first member and its bytes arrive while the writer still holds the pipe.
 
-    The test leaves the pass after that member: the end of the listing waits for the
-    writer by design, because the trailing-data scan reads past the trailer.
+    ``format=`` is passed, since a short bzip2 or xz hit waits in detection (the
+    trailer step needs the length). The test leaves the pass after that member: the
+    end of the listing waits for the writer by design, because the trailing-data scan
+    reads past the trailer.
     """
-    payload = _tar(2000)
+    data = b"0123456789abcdef" * 125
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT) as tf:
+        info = tarfile.TarInfo("a.bin")
+        info.size = len(data)
+        tf.addfile(info, io.BytesIO(data))
+    tar = buf.getvalue()[: 512 + -(-len(data) // 512) * 512 + 1024]
+    if stream_format is None:
+        payload, fmt = tar, ArchiveFormat.TAR
+    else:
+        payload = STREAM_COMPRESSORS[stream_format](tar)
+        fmt = ArchiveFormat(ContainerFormat.TAR, stream_format)
     with _held_open_pipe(payload, buffered=buffered) as (stream, closed):
-        with open_archive(stream, streaming=True) as reader:
+        with open_archive(stream, streaming=True, format=fmt) as reader:
             for member, member_stream in reader.stream_members():
                 assert member_stream is not None
-                data = member_stream.read()
+                got = member_stream.read()
                 assert not closed.is_set(), "the first member waited for the writer"
                 break
     assert member.name == "a.bin"
-    assert data == payload[512 : 512 + 2000]
+    assert got == data
 
 
 class _Trickle(io.RawIOBase):

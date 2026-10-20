@@ -127,6 +127,7 @@ from archivey.internal.streams.decompressor_stream import _StreamChecksumError
 from archivey.internal.streams.streamtools import (
     DelegatingStream,
     LockedStream,
+    OneReadEachStream,
     ReadAheadStream,
     ReadOnlyIOStream,
     SharedView,
@@ -612,6 +613,19 @@ class TarReader(BaseArchiveReader):
         if self._compressed:
             codec = codec_for_stream_format(format.stream)
             codec_source: str | BinaryIO
+            # A forward-only source, read streaming, may be a pipe whose writer keeps
+            # it open. The decoder is fed what has arrived, and the walk asks the
+            # codec for what it reads, not a read-ahead, so neither waits for bytes
+            # nobody has asked for yet. Brotli keeps the full feed: its decoder cannot
+            # find the end of its stream inside a feed (``BrotliDecoder``), so where
+            # the feeds split would decide whether bytes after the end read as
+            # trailing data or as corruption.
+            arrived = (
+                streaming
+                and source.path is None
+                and not source.seekable()
+                and format.stream is not StreamFormat.BROTLI
+            )
             if source.path is not None:
                 # A file goes to the codec as its path, as for a bare compressed file:
                 # the codec opens its own handle and may use path-only accelerators, and
@@ -621,8 +635,19 @@ class TarReader(BaseArchiveReader):
                 # A stream whose size is not known is counted, so the live
                 # decompression-ratio guard can see compressed bytes consumed.
                 codec_source = self._track_source_seeks(
-                    self._wrap_compressed_input(source)
+                    self._wrap_compressed_input(
+                        cast("BinaryIO", source.arrived_view()) if arrived else source
+                    )
                 )
+                if arrived:
+                    # The codec puts a full-count buffer in front of a raw source,
+                    # which would wait for a whole feed. Each read of this wrap is one
+                    # read of what has arrived. A decoder reads its input until
+                    # ``b""``, and for every codec here a feed split at any byte gives
+                    # the same members, bytes, errors and diagnostics
+                    # (``tests/test_compressed_tar_short_reads.py``). The count the
+                    # ratio guard reads is still the bytes pulled from the source.
+                    codec_source = OneReadEachStream(codec_source)
             stream = open_codec_stream(
                 codec,
                 codec_source,
@@ -650,6 +675,12 @@ class TarReader(BaseArchiveReader):
                 # would fill the first one in a loop, and a loop that reaches a damaged
                 # codec tail raises and drops the bytes already decoded, though the
                 # walk may need none of the tail.
+                return stream
+            if arrived:
+                # A read-ahead asks the codec for 8 KiB, and the codec decodes until
+                # it has them: on a held-open pipe that waits for bytes past what
+                # the walk needs. The walk reads the codec directly instead, as a
+                # random-access walk does, each read the size it needs.
                 return stream
             # The walker reads 512-byte blocks: a buffer in front makes each one a copy
             # from memory, not a decoder call. It reads the codec once per read, so a
