@@ -61,9 +61,12 @@ def _tar_gz(size: int) -> bytes:
 
 @contextmanager
 def _held_open_pipe(
-    payload: bytes, *, buffered: bool
+    payload: bytes, *, buffered: bool, hold: float = _HOLD_SECONDS
 ) -> Iterator[tuple[BinaryIO, threading.Event]]:
-    """A pipe holding ``payload`` and a flag set when the writer closes its end."""
+    """A pipe holding ``payload`` and a flag set when the writer closes its end.
+
+    The writer closes after ``hold`` seconds, or when the test leaves the block.
+    """
     assert len(payload) < 4096, "one write fits the pipe buffer on every platform"
     read_fd, write_fd = os.pipe()
     release = threading.Event()
@@ -72,7 +75,7 @@ def _held_open_pipe(
     def writer() -> None:
         try:
             os.write(write_fd, payload)
-            release.wait(_HOLD_SECONDS)
+            release.wait(hold)
         finally:
             closed.set()
             os.close(write_fd)
@@ -151,6 +154,86 @@ def test_a_streaming_tar_yields_its_first_member_before_the_writer_closes(
                 break
     assert member.name == "a.bin"
     assert data == payload[512 : 512 + 2000]
+
+
+# A test that expects a wait holds the pipe this long, so it does not sit through
+# ``_HOLD_SECONDS``.
+_SHORT_HOLD_SECONDS = 0.5
+
+
+@pytest.mark.parametrize("buffered", [False, True], ids=["raw", "buffered"])
+def test_a_short_gzip_opens_at_once_and_its_first_read_waits_for_the_writer(
+    buffered: bool,
+) -> None:
+    """The decoder asks for a 64 KiB feed, which a short held-open pipe gives only on close."""
+    data = os.urandom(2000)
+    with _held_open_pipe(
+        gzip.compress(data, mtime=0), buffered=buffered, hold=_SHORT_HOLD_SECONDS
+    ) as (stream, closed):
+        with open_archive(stream, streaming=True) as reader:
+            assert not closed.is_set(), "open_archive waited for the writer"
+            for _, member_stream in reader.stream_members():
+                assert member_stream is not None
+                head = member_stream.read(1000)
+                assert closed.is_set(), (
+                    "the first read returned before the writer closed"
+                )
+                rest = member_stream.read()
+    assert head + rest == data
+
+
+class _NotSeekable(io.BytesIO):
+    """A sink ``zipfile`` cannot seek, so it writes data descriptors (bit 3), as to a pipe."""
+
+    def seekable(self) -> bool:
+        return False
+
+    def seek(self, *args: object) -> int:
+        raise io.UnsupportedOperation("seek")
+
+    def tell(self) -> int:
+        raise io.UnsupportedOperation("tell")
+
+
+def _zip_with_data_descriptors(datas: list[bytes]) -> bytes:
+    sink = _NotSeekable()
+    with zipfile.ZipFile(sink, "w") as zf:
+        for i, data in enumerate(datas):
+            zf.writestr(f"m{i}.bin", data)
+    payload = sink.getvalue()
+    assert int.from_bytes(payload[6:8], "little") & 0x8, (
+        "the first member has bit 3 set"
+    )
+    return payload
+
+
+@pytest.mark.parametrize("buffered", [False, True], ids=["raw", "buffered"])
+def test_a_zip_with_data_descriptors_ends_its_last_member_only_when_the_writer_closes(
+    buffered: bool,
+) -> None:
+    """Every member but the last reads whole while the writer holds the pipe.
+
+    A member with a data descriptor ends where the next signature starts. The last
+    member's end, and the central directory after it, come only with the close.
+    """
+    datas = [os.urandom(1000), os.urandom(1000)]
+    got: list[bytes] = []
+    with _held_open_pipe(
+        _zip_with_data_descriptors(datas), buffered=buffered, hold=_SHORT_HOLD_SECONDS
+    ) as (stream, closed):
+        with open_archive(stream, streaming=True) as reader:
+            assert not closed.is_set(), "open_archive waited for the writer"
+            for member, member_stream in reader.stream_members():
+                assert member_stream is not None
+                if member.name == "m0.bin":
+                    got.append(member_stream.read())
+                    assert not closed.is_set(), "the first member waited for the writer"
+                else:
+                    got.append(member_stream.read())
+                    assert closed.is_set(), (
+                        "the last member ended before the writer closed"
+                    )
+    assert got == datas
 
 
 class _Trickle(io.RawIOBase):

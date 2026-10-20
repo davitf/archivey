@@ -177,8 +177,9 @@ yielded.
   your `filter`, gives it a safe name, since its data was not kept.
 - The pass reads the pipe to its end before it reads the directory, so it ends, and the
   members are final, only when the sender closes the pipe. A sender that keeps the pipe
-  open after the ZIP keeps the pass waiting after the last member. Close the sending side
-  when the ZIP is done.
+  open after the ZIP keeps the pass waiting after the last member, and, when the sizes
+  come after each member's data (bit 3), in the read that ends the last member's data.
+  Close the sending side when the ZIP is done.
 - **A member whose local header disagrees with the central directory on its name, or
   stores a real CRC-32 where the directory stores 0, is read**, from a file and a pipe
   alike, as `unzip` reads it. The directory's name is used, reported as
@@ -964,9 +965,12 @@ yielded.
   deep: damage further in still fails on the read. It costs one decoded block, which is
   noticeable only for `.bz2` (a block is up to 900 KB of output; about 30 ms on
   incompressible data). A pipe is not checked at open, because the check would consume
-  bytes of its one pass; it fails on the first read as before. For the same reason, a
-  `.gz` shorter than 64 KiB, sent down a pipe that the sender keeps open, opens at once,
-  but the first read of its member waits until the sender closes the pipe.
+  bytes of its one pass; it fails on the first read as before. So a `.gz` sent down a
+  pipe that the sender keeps open opens at once, but a read can wait. The decoder reads
+  the compressed data in 64 KiB pieces, and a read from a pipe returns only when it has
+  64 KiB or the sender closes the pipe. So the read that needs the last piece waits
+  until the sender closes the pipe, at any size. For a `.gz` under 64 KiB, that is the
+  first read. Close the sending side when the file is done.
 - The `[seekable]` accelerator's bzip2 decoder reads input that is not bzip2 as an empty
   stream. When it yields nothing, Archivey decodes the source again with the standard
   library, so a corrupt `.bz2` raises the same error whether or not
