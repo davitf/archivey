@@ -2829,22 +2829,20 @@ class ZipReader(BaseArchiveReader):
         header only, and their directory copies are empty or hold the times alone. A
         file read takes the owner from the directory alone, so a local-only ``0x7855``
         gives it no owner, and the pass must end with the directory's owner too. Left
-        ``None`` here, the owner reaches extraction the way the mode does: nothing is
-        applied as the member is written, and the directory's owner is applied at the
-        end of the pass. Yielding the local ids instead would make extraction
-        ``chown`` at write time, which the directory could not take back. A ZIP with
-        no directory has no owner from either read.
+        ``None`` here, the owner reaches extraction the way the mode does: extraction
+        places the member only once the directory is read, with the directory's owner.
+        Yielding the local ids instead would give the pass an owner no file read
+        gives. A ZIP with no directory has no owner from either read.
 
         A backslash is a literal character until the host says otherwise, except at the
         end of the name, which makes the member a ``DIRECTORY`` until then: a DOS or
-        Windows writer marks its folders that way, and a folder the pass wrote as a file
-        would stop every member inside it from being written, where a directory the host
-        turns out not to make one is taken back at the end of the pass. Nothing is
-        reported here: on a pipe the directory's version of the
-        member reports what it finds, once. A ZIP with no directory lists this
-        member as it stands (``_iter_walked``), and reports nothing for it either,
-        as the pipe read reports nothing when no directory arrives; the listing then
-        raises.
+        Windows writer marks its folders that way, and the pass stages no bytes for
+        what is usually a folder. A member the host then makes a file with data is not
+        placed: it fails, its data never staged, where a file read writes it. Nothing is
+        reported here: on a pipe the directory's version of the member reports what it
+        finds, once. A ZIP with no directory lists this member as it stands
+        (``_iter_walked``), and reports nothing for it either, as the pipe read reports
+        nothing when no directory arrives; the listing then raises.
         """
         header = entry.header
         central = _central_from_local(entry)

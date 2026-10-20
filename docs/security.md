@@ -91,12 +91,15 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   more members than its end record says gives you members up to the limit before the error, as a TAR
   does. A ZIP read from a pipe is checked like a TAR as its members arrive, and again on its index
   at the end.
-- **A ZIP extracted from a pipe is checked on what it writes before its index arrives.** The pass
-  writes each member as it comes, and only the index at the end says which members the extraction
-  keeps. The extraction limits count what's on disk while it's there, so a member that's later
-  removed can still stop the extraction under `max_entries` or `max_extracted_bytes`, where the
-  same archive read from a file completes. An `abort_on` check runs before a member is written, so
-  it can also stop the extraction for a member the end would have removed.
+- **A ZIP extracted from a pipe is checked on what it stages before its index arrives.** The pass
+  writes each member's data into a private `.archivey-tmp-` folder in the destination, and only the
+  index at the end says which members the extraction keeps. The extraction limits count what's
+  staged while it's there, so a member that's then not extracted, one your `filter` drops
+  included, can still stop the extraction under `max_entries` or `max_extracted_bytes`, where the
+  same archive read from a file completes. The name checks and `abort_on` run on each member's
+  name as the pass meets it, so a hostile archive is refused before the rest of it is decoded, and
+  the extraction can stop for a member the index would have left out. A run that stops before the
+  index leaves nothing of its own in the destination.
 - **Limits apply to each archive separately.** A small archive can hold archives that each expand
   up to the limit, and those can hold more, so the total grows with every level you extract. Be
   careful if you extract archives found inside other archives.

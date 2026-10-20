@@ -645,9 +645,9 @@ def test_the_kept_data_drops_the_longest_first() -> None:
 def test_a_link_whose_kept_data_was_dropped_leaves_no_file_behind(
     tmp_path: Path,
 ) -> None:
-    """The pass writes the link's data as a file before the directory makes it a
-    link. With the target dropped, the end of the pass takes that file back and
-    fails the link alone, as for any link whose target the read cannot reach."""
+    """The pass stages the link's data as a file's before the directory makes it a
+    link. With the target dropped, placement does not place the link and fails it
+    alone, as for any link whose target the read cannot reach."""
     data = _small_files_then_link(10, 3000, "d/" * 1750)
     with archivey.open_archive(
         _pipe(data), streaming=True, config=_limited(20_000)
