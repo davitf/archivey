@@ -351,8 +351,11 @@ class ForwardArchiveReader(ABC):
         ``dry_run=True`` runs the same extraction into a private scratch directory and
         removes it afterwards. Every check runs and every member body is read and
         verified, but files are created empty and nothing is written under ``dest``.
-        The report reads as it would for an extraction into an empty ``dest``, with
-        paths under ``dest``.
+        What ``dest`` holds already is read, and met as a real run meets it: the
+        ``overwrite`` policy applies to it, and a file or symlink in the way is
+        refused, skipped, replaced or renamed around in the same way. The report reads
+        as the report of a real extraction into the same ``dest`` would, with paths
+        under ``dest``.
         """
         ...
 

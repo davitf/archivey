@@ -1,6 +1,11 @@
 """The dry run's scratch tree: a private copy of the destination that a dry run extracts
 into for real, and the translation of every path it reports back to the caller's dest.
 
+The copy starts empty and is filled from dest as the pass goes (``DryRun.bring_in``):
+the entries of each directory of dest that a member's path, link target or hardlink
+source passes through are copied in, a file as an empty file and a symlink as a symlink,
+before the pass looks at them. dest itself is only read.
+
 ``ExtractionCoordinator.run`` describes what a dry run shows and where it says less
 than a real run would.
 """
@@ -14,18 +19,37 @@ import shutil
 import stat
 import tempfile
 from collections.abc import Iterator
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePath
 from typing import BinaryIO, NamedTuple
 
 from archivey.internal.filters import resolve_or_raise_on_loop
 from archivey.internal.logs import extraction as logger
 from archivey.internal.long_paths import long_path, plain
-from archivey.types import ExtractionResult
+from archivey.types import ArchiveMember, ExtractionResult, MemberType
 
 # Prefix of the private scratch directory a dry run extracts into. Removed when the run
 # ends, like the temp files atomic writes stage.
 DRY_RUN_PREFIX = "archivey-dry-run-"
+
+# How many symlinks ``DryRun.bring_in`` follows on one path, the bound Linux puts on a
+# resolution (``MAXSYMLINKS``): past it the path does not resolve, so nothing further
+# on it is looked at.
+_MAX_LINK_HOPS = 40
+
+# ``DryRun._walk`` components: restart at the scratch root, and stop (the path has left
+# the scratch tree). No entry on disk has either name, as a name cannot hold a NUL; a
+# member name that holds one is refused by ``check_universal``, and before that it can
+# only restart or stop the walk inside the scratch tree.
+_FROM_ROOT = "\0root"
+_OUTSIDE = "\0outside"
+
+
+def _dir_copy_mode(mode: int) -> int:
+    """The mode of the scratch copy of a directory of dest that has ``mode``: the same,
+    plus the owner's read, write and search bits, so the copy can be filled and
+    walked."""
+    return stat.S_IMODE(mode) & 0o777 | stat.S_IRWXU
 
 
 def scratch_tree(
@@ -88,6 +112,18 @@ def remove_scratch(root: Path) -> None:
         )
 
 
+class _Copy(NamedTuple):
+    """An entry ``DryRun`` copied into the scratch tree from dest (``_copy_in``)."""
+
+    # The entry of dest it copies.
+    source: Path
+    # The copy's inode and mtime when made, and whether it is a directory: an entry
+    # the pass replaced is another file (``DryRun._is_untouched_copy``).
+    ino: int
+    mtime_ns: int
+    is_dir: bool
+
+
 class ScratchRecord(NamedTuple):
     """What a dry run's pass left in the scratch copy of dest (``DryRun.record``)."""
 
@@ -127,6 +163,12 @@ class DryRun:
     dest_spellings: tuple[PurePath, PurePath]
     # Where FILE bodies go instead of the file (``os.devnull``).
     sink: BinaryIO
+    # The scratch directories whose entries in dest were copied in (``_expand``).
+    _expanded: set[Path] = field(default_factory=set)
+    # Each entry copied in from dest, by its scratch path (``_copy_in``).
+    _copies: dict[Path, _Copy] = field(default_factory=dict)
+    # Copied directories a DIRECTORY member named, which the run reports as its own.
+    _claimed: set[Path] = field(default_factory=set)
 
     def target_on_disk(self, target: str) -> str:
         """The target a link is created with: an absolute target that names a path
@@ -191,7 +233,38 @@ class DryRun:
         """What the pass left in the scratch copy of dest, for ``ExtractionReport``:
         the entries directly under it, and, when there is exactly one, every entry and
         symlink of the tree (``scratch_tree``), which the CLI's hoist prediction walks.
-        ``None`` for what could not be read."""
+        ``None`` for what could not be read.
+
+        Only what the run made counts, as only that is in a real run's results. An
+        entry copied in from dest and left as it was is not recorded, and neither is
+        a directory of dest, unless the run put something in it or a DIRECTORY member
+        named it."""
+        if not self._copies:
+            return self._record_all()
+        tree = scratch_tree(self.scratch)
+        if tree is None:
+            return ScratchRecord(None, None, None)
+        entries, links = tree
+        kept: set[str] = set()
+        for rel, _ in entries:
+            path = self.scratch / rel
+            try:
+                st = os.lstat(long_path(path))
+            except OSError:
+                return ScratchRecord(None, None, None)
+            if not self._is_untouched_copy(path, st):
+                parts = rel.split("/")
+                kept.update("/".join(parts[:i]) for i in range(1, len(parts) + 1))
+        entries = tuple(entry for entry in entries if entry[0] in kept)
+        top = tuple(entry for entry in entries if "/" not in entry[0])
+        if len(top) != 1:
+            return ScratchRecord(top, None, None)
+        return ScratchRecord(
+            top, entries, tuple(link for link in links if link[0] in kept)
+        )
+
+    def _record_all(self) -> ScratchRecord:
+        """``record`` for a scratch tree that holds nothing copied in from dest."""
         top: tuple[tuple[str, bool], ...] | None = None
         tree = None
         with contextlib.suppress(OSError):
@@ -207,6 +280,185 @@ class DryRun:
         if tree is None:
             return ScratchRecord(top, None, None)
         return ScratchRecord(top, tree[0], tree[1])
+
+    # --- what dest holds already ---------------------------------------------------
+
+    def bring_in(self, member: ArchiveMember) -> None:
+        """Copy into the scratch tree the entries of dest that handling ``member`` can
+        look at, so the pass meets them where a real run meets them in dest.
+
+        ``member`` is the member as it reaches disk. The entries are those of each
+        directory on its path, followed through symlinks as the OS resolves the path,
+        and of the directory the path names: what the overwrite policy, a parent in
+        the way, a RENAME's free name and a REPLACE's emptiness check look at. For a
+        symlink the same is done along its target from the link's directory, and for
+        a hardlink along the member it links to. A directory's entries are copied once,
+        the first time a path passes through it.
+        """
+        rel = PurePath(member.name.rstrip("/"))
+        if rel.anchor:
+            return  # ``check_universal`` refuses it, so nothing is placed
+        self._walk(rel.parts)
+        if member.type is MemberType.DIRECTORY:
+            path = self.scratch.joinpath(*rel.parts)
+            if path in self._copies:
+                self._claimed.add(path)
+        target = member.link_target
+        if target is None:
+            return
+        if member.type is MemberType.HARDLINK:
+            source = PurePath(target.rstrip("/"))
+            if not source.anchor:
+                self._walk(source.parts)
+        elif member.type is MemberType.SYMLINK:
+            on_disk = self._link_parts(self.target_on_disk(target))
+            self._walk((*rel.parent.parts, *on_disk))
+
+    def _link_parts(self, target: str) -> tuple[str, ...]:
+        """The ``_walk`` components of a symlink of the scratch tree whose target is
+        ``target``: from the link's directory, from the scratch root for an absolute
+        target under it, and ``_OUTSIDE`` for any other absolute target."""
+        pure = PurePath(target)
+        if not pure.anchor:
+            return pure.parts
+        try:
+            return (_FROM_ROOT, *pure.relative_to(self.scratch).parts)
+        except ValueError:
+            return (_OUTSIDE,)
+
+    def _walk(self, parts: tuple[str, ...]) -> None:
+        """Follow ``parts`` from the scratch root as the OS resolves a path, copying in
+        the entries of each directory it enters (``_expand``). It stops where the path
+        meets a file or nothing, or leaves the scratch tree. Above the scratch root it
+        can only come back in by dest's name (``../out/x``), as the scratch root is the
+        one entry there named like dest (``scratch_for``)."""
+        pending = list(reversed(parts))
+        current = self.scratch
+        above = self.scratch.parent
+        self._expand(current)
+        hops = 0
+        while pending:
+            part = pending.pop()
+            if part == _FROM_ROOT:
+                current = self.scratch
+                continue
+            if part == _OUTSIDE or (current == above and part != self.scratch.name):
+                return
+            if part == "..":
+                current = current.parent
+                continue
+            path = current / part
+            try:
+                st = os.lstat(long_path(path))
+            except (OSError, ValueError):  # missing, or a name the OS does not take
+                return
+            if stat.S_ISDIR(st.st_mode):
+                current = path
+                self._expand(current)
+                continue
+            hops += 1
+            if not stat.S_ISLNK(st.st_mode) or hops > _MAX_LINK_HOPS:
+                return
+            try:
+                target = plain(os.readlink(long_path(path)))
+            except OSError:
+                return
+            pending.extend(reversed(self._link_parts(target)))
+
+    def _expand(self, directory: Path) -> None:
+        """Copy in, once, the entries of the directory of dest that ``directory``
+        stands for: dest for the scratch root, and for a directory copied in from dest
+        (``_copy_in``) the one it copies, while the pass has left it in place. A
+        directory the run made stands for none."""
+        if directory in self._expanded:
+            return
+        self._expanded.add(directory)
+        if directory == self.scratch:
+            source = self.shown_dest
+            try:
+                st = os.stat(long_path(source))
+            except (OSError, ValueError):
+                return
+            if not stat.S_ISDIR(st.st_mode):
+                return
+            # A `./` member keeps dest's mode, and reports it when it differs from
+            # the member's own; the scratch root is given that mode.
+            os.chmod(long_path(directory), _dir_copy_mode(st.st_mode))
+        else:
+            copy = self._copies.get(directory)
+            try:
+                st = os.lstat(long_path(directory))
+            except OSError:
+                return
+            if copy is None or not self._is_untouched_copy(directory, st):
+                return
+            source = copy.source
+        try:
+            with os.scandir(long_path(source)) as listing:
+                entries = list(listing)
+        except OSError as exc:
+            # The pass then meets none of what it holds.
+            logger.debug("Dry run could not list %r: %s", str(source), exc)
+            return
+        for entry in entries:
+            path = directory / entry.name
+            if not os.path.lexists(long_path(path)):
+                self._copy_in(entry, path)
+
+    def _copy_in(self, entry: os.DirEntry[str], path: Path) -> None:
+        """Create at ``path`` a copy of ``entry``, an entry of dest: a directory, with
+        its entries left for ``_expand``; an empty file with the file's mode; or a
+        symlink with its target, rewritten as ``target_on_disk`` rewrites a link
+        member's.
+
+        A directory's copy gets the owner's read, write and search bits added to its
+        mode (``_dir_copy_mode``). Anything that is not a directory or a symlink (a
+        FIFO, a device) is copied as an empty file, as the pass treats each such entry
+        as a file. So is a symlink the OS will not create (Windows without the
+        privilege)."""
+        st = entry.stat(follow_symlinks=False)
+        is_junction = getattr(entry, "is_junction", None)  # Python 3.12+
+        if stat.S_ISLNK(st.st_mode) or (is_junction is not None and is_junction()):
+            if not self._copy_link(entry, path):
+                open(long_path(path), "xb").close()
+        elif stat.S_ISDIR(st.st_mode):
+            os.mkdir(long_path(path))
+            os.chmod(long_path(path), _dir_copy_mode(st.st_mode))
+        else:
+            open(long_path(path), "xb").close()
+            os.chmod(long_path(path), stat.S_IMODE(st.st_mode) & 0o777)
+        made = os.lstat(long_path(path))
+        self._copies[path] = _Copy(
+            Path(plain(entry.path)),
+            made.st_ino,
+            made.st_mtime_ns,
+            stat.S_ISDIR(made.st_mode),
+        )
+
+    def _copy_link(self, entry: os.DirEntry[str], path: Path) -> bool:
+        """Create at ``path`` a symlink with ``entry``'s target; whether it was made."""
+        try:
+            target = plain(os.readlink(entry.path))
+            os.symlink(
+                self.target_on_disk(target),
+                long_path(path),
+                target_is_directory=os.path.isdir(entry.path),
+            )
+        except OSError as exc:
+            logger.debug("Dry run copies symlink %r as a file: %s", entry.path, exc)
+            return False
+        return True
+
+    def _is_untouched_copy(self, path: Path, st: os.stat_result) -> bool:
+        """Whether the entry at ``path`` (``st`` its ``lstat``) is a copy of dest's
+        that the pass left as it was: not replaced, and for a directory not named by a
+        DIRECTORY member."""
+        copy = self._copies.get(path)
+        if copy is None or path in self._claimed or st.st_ino != copy.ino:
+            return False
+        if copy.is_dir:
+            return stat.S_ISDIR(st.st_mode)
+        return not stat.S_ISDIR(st.st_mode) and st.st_mtime_ns == copy.mtime_ns
 
     def check_creatable(self) -> None:
         """Raise what ``mkdir(parents=True)`` would raise for the absent ``shown_dest``,

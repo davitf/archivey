@@ -688,15 +688,26 @@ class ExtractionCoordinator:
         consults the filesystem (a parent resolved through an earlier member's symlink,
         a link escape, a collision) behaves as it would in ``dest``. Each FILE body is
         read, decompressed, verified and counted against the limits, then discarded:
-        the file itself is created empty. The scratch directory starts empty, so the
-        run shows what extracting into an empty ``dest`` would do; ``dest`` itself is
-        checked the way a real run checks it and is never created. Paths in the results
-        and in errors are reported under ``dest``, and the scratch directory is removed
-        before this returns or raises. What a completed pass left directly under the
-        scratch copy of ``dest`` is kept in ``dry_run_top_level``.
+        the file itself is created empty. ``dest`` itself is checked the way a real run
+        checks it and is never created or written to. What it holds already is read
+        into the scratch directory as the pass reaches it (``DryRun.bring_in``): the
+        entries of each directory of ``dest`` that a member's path, link target or
+        hardlink source passes through, a file as an empty file with its mode, a
+        directory with its mode, a symlink with its target. So the overwrite policy,
+        a caller's file or symlink in the way, and a RENAME's free name are met as in
+        ``dest``. Paths in the results and in errors are reported under ``dest``, and
+        the scratch directory is removed before this returns or raises. What a
+        completed pass made directly under the scratch copy of ``dest``, not counting
+        what it copied in and left as it was, is kept in ``dry_run_top_level``.
 
         Where the scratch tree cannot stand in for ``dest``, the run says less than a
-        real one would. A link target that leaves ``dest`` is resolved outside the
+        real one would. The copy of a directory of ``dest`` always has its owner's
+        read, write and search bits, so a directory there that the caller cannot
+        write to, or that the run cannot list, is not refused as a real run refuses
+        it, and a member that keeps such a directory's mode reports that bit too; a
+        directory that cannot be listed is copied as empty. A symlink of ``dest`` that
+        the OS will not create in the scratch tree (Windows without the privilege) is
+        copied as an empty file. A link target that leaves ``dest`` is resolved outside the
         scratch tree, so one that comes back into ``dest`` through a symlink outside it,
         or climbs above the directory that holds it, is refused where a real run could
         accept it; an absolute target is matched against ``dest`` by name and is not
@@ -2135,8 +2146,14 @@ class ExtractionCoordinator:
         return False
 
     def _check_universal(self, member: ArchiveMember, dest_root: Path) -> None:
-        """``check_universal`` on the disk spelling, reporting the stored names."""
+        """``check_universal`` on the disk spelling, reporting the stored names.
+
+        Every name that reaches disk is checked here first, so a dry run copies in
+        what dest holds along it here (``DryRun.bring_in``), before anything of the
+        pass looks at the scratch tree there."""
         on_disk = disk_spelled(member)
+        if self._dry is not None:
+            self._dry.bring_in(on_disk)
         try:
             check_universal(on_disk, dest_root, link_target_on_disk=self._on_disk)
         except ExtractionError as exc:
@@ -3922,7 +3939,7 @@ class ExtractionCoordinator:
                     if next(entries, None) is not None:
                         raise ExtractionError(
                             f"Destination is a directory that is not empty: "
-                            f"{display_path(dest_path)}",
+                            f"{display_path(self._shown(dest_path))}",
                             member_name=member.name,
                         )
                 self._note_link_change(dest_path)

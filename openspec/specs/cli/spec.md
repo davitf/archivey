@@ -676,7 +676,7 @@ not the library's, and the CLI's parser reads both.
 
 `archivey extract --dry-run` SHALL run the extraction with `dry_run=True`. It SHALL
 print the same per-member lines and return the same exit code as the same command
-without `--dry-run` would against an empty destination, and its closing summary SHALL
+without `--dry-run` would against the same destination, and its closing summary SHALL
 say that nothing was written. With no `-d`, it SHALL name the smart default destination
 it would use, and SHALL NOT move anything. Where a real run would move a single
 top-level entry out of that destination, it SHALL name where that entry would land,

@@ -1599,21 +1599,28 @@ expresses "raise on the first failure".
 truthiness like the other boolean flags.
 
 With `dry_run=True`, the extraction SHALL run the same pass as a real extraction into
-a private scratch directory that starts empty, and SHALL NOT create or change anything
-under `dest`. Directories, symlinks and hardlinks SHALL be created in the scratch
-directory, so every check that consults the filesystem behaves as in a real extraction.
-Every FILE body SHALL be read, decompressed, verified and counted against the
-extraction limits; its bytes SHALL be discarded and the file created empty.
+a private scratch directory, and SHALL NOT create or change anything under `dest`.
+Directories, symlinks and hardlinks SHALL be created in the scratch directory, so every
+check that consults the filesystem behaves as in a real extraction. Every FILE body
+SHALL be read, decompressed, verified and counted against the extraction limits; its
+bytes SHALL be discarded and the file created empty. What `dest` already holds SHALL
+be read into the scratch directory before the pass looks at it: the entries of each
+directory of `dest` that a member's path, link target or hardlink source passes
+through, a file as an empty file and a symlink with its target, so the overwrite policy
+and an entry in the way meet them as in `dest`.
 
 The returned report SHALL equal the report of a real extraction with the same
-arguments into an empty `dest`, with every path in it (`path`, `requested_path`,
+arguments into the same `dest`, with every path in it (`path`, `requested_path`,
 `collided_with`) under `dest`. An absolute link target that names a path under `dest`
 SHALL be checked as naming the same path under the scratch directory. Two cases are
 exempt, because the scratch directory cannot reproduce them: a link target that leaves
 `dest` and comes back into it through a symlink outside `dest`, or by climbing above
 the directory that holds `dest`, MAY be refused where a real extraction accepts it; and
 bytes a real extraction counts for copying a hardlink across a filesystem boundary
-inside `dest` are not counted. A `dest` that exists and is not a directory SHALL be
+inside `dest` are not counted. And a directory of `dest` keeps its owner's read,
+write and search bits in the scratch directory, so a refusal that comes from its
+permissions MAY appear only in a real extraction, and a symlink of `dest` that the OS
+will not create there is copied as an empty file. A `dest` that exists and is not a directory SHALL be
 refused as a real extraction refuses it. A `dest` that does not exist SHALL be refused
 with the error a real extraction gets creating it when the nearest part of its path
 that exists cannot be resolved, is not a directory, or cannot be written to. Whether
@@ -1632,10 +1639,11 @@ files read-only.
 
 | Case | Expected |
 | --- | --- |
-| Any archive, any policy, overwrite and access mode | Report equals that of a real extraction into an empty `dest` |
+| Any archive, any policy, overwrite and access mode | Report equals that of a real extraction into the same `dest`, empty or not |
 | A member whose data fails its digest | `FAILED`, as in a real extraction |
 | Output over `max_extracted_bytes` | `ResourceLimitError`, as in a real extraction |
-| `dest` holds a file of the same name as a member | Member `EXTRACTED` at `dest/<name>`; the existing file is unchanged |
+| `dest` holds a file of the same name as a member | The overwrite policy's outcome, as in a real extraction (`FAILED` under `ERROR`); the existing file is unchanged |
+| `dest` holds a symlink where a member lands, or on a member's path | Replaced, renamed around, written through or refused as in a real extraction; the symlink is unchanged |
 | `dest` is a regular file | `ExtractionError`; nothing created |
 | `dest`'s parent is a regular file | `OSError`, as in a real extraction; nothing created |
 | `dest`'s parent is a directory the caller cannot write to, or a symlink loop | The `OSError` a real extraction raises; nothing created |
