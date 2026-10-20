@@ -1439,8 +1439,7 @@ class _ZisofsStream(io.RawIOBase):
         return self._position
 
     def readinto(self, b: WriteableBuffer, /) -> int:
-        # Released on return: until then the caller cannot resize ``b``
-        # (``RawIOBase.read`` does), and PyPy releases a view only at a collection.
+        # Views released on return: see try_readinto.
         with memoryview(b) as outer, outer.cast("B") as view:
             if self._position >= self._size or not len(view):
                 return 0

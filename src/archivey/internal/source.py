@@ -85,7 +85,11 @@ from archivey.internal.streams.streamtools import (
     source_size_fact,
     underlying_stream,
 )
-from archivey.internal.streams.streamtools.binaryio import read_blocking, try_readinto
+from archivey.internal.streams.streamtools.binaryio import (
+    read_blocking,
+    readinto_via_read,
+    try_readinto,
+)
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
@@ -185,18 +189,19 @@ def _readinto_or_stall(reader: object, view: memoryview) -> int | None:
     A non-blocking stream with nothing ready answers ``readinto`` with ``None``, which
     raises. PyPy's buffered reader answers 0 instead, the same as at the end, so a 0
     is asked again with ``read``: ``b""`` is the end, ``None`` a stall (which raises),
-    and bytes that arrived in between are copied in. This costs one call, at the end.
+    and bytes that arrived in between are copied in. That is one more ``read`` each
+    time the inner answers 0 into a non-empty buffer, on every interpreter: two at the
+    end of a stream of unknown length, none on the fact-length path, whose clamp
+    answers the end without I/O.
+
+    The check sits at this boundary because :class:`ArchiveSource` is the only wrapper
+    placed directly over a caller's stream; every other ``try_readinto`` caller reads
+    a stream that has already come through here, where a 0 is already the end.
     """
     got = try_readinto(reader, view)
     if got != 0 or not len(view):
         return got
-    data = read_blocking(cast(BinaryIO, reader), len(view))
-    if len(data) > len(view):
-        raise ValueError(
-            f"inner returned {len(data)} bytes for read({len(view)}): {reader!r}"
-        )
-    view[: len(data)] = data
-    return len(data)
+    return readinto_via_read(cast(BinaryIO, reader), view)
 
 
 class ArchiveSource(ReadOnlyIOStream):
@@ -638,8 +643,7 @@ class ArchiveSource(ReadOnlyIOStream):
         # step. A replayed prefix or the gathering strategy goes through ``read``.
         if self._replay or self._gatherer is not None or self._reader is None:
             return super().readinto(b)
-        # The views are released on return: until then the caller cannot resize
-        # ``b`` (``RawIOBase.read`` does), and PyPy releases one only at a collection.
+        # Views released on return: see try_readinto.
         with memoryview(b) as outer, outer.cast("B") as whole:
             limit = len(whole)
             if self._length is not None:

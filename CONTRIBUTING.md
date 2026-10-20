@@ -247,6 +247,10 @@ maintainer.
     files you touched: a comment naming a deleted call site, or explaining a case the
     change made unreachable, is now wrong. This is the single most common finding in
     this repo's reviews, and it is cheapest to catch before pushing.
+- **A `readinto` releases every view of the caller's buffer before it returns**
+  (`with memoryview(b) as view:`), test doubles included. The caller may resize the
+  buffer next, and PyPy frees a dropped view only at a collection; the full contract is
+  in `try_readinto`'s docstring.
 - **Match the surrounding code.** Naming, structure, and idiom should read like the file
   you're editing.
 - **Type-checker suppressions must be justified, and are a last resort.** A bare

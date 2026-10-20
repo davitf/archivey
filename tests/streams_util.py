@@ -121,10 +121,10 @@ class ShortReadBytesIO(io.RawIOBase):
         return data
 
     def readinto(self, b) -> int:  # type: ignore[override]  # test double; broad buffer type
-        mv = memoryview(b).cast("B")
-        data = self.read(len(mv))
-        mv[: len(data)] = data
-        return len(data)
+        with memoryview(b) as outer, outer.cast("B") as mv:
+            data = self.read(len(mv))
+            mv[: len(data)] = data
+            return len(data)
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         if not self._seekable:

@@ -191,8 +191,8 @@ class _ParentSource(io.RawIOBase):
         return True
 
     def readinto(self, buf: Any) -> int:
-        # The views are released on return: until then the caller cannot resize or
-        # free ``buf``, and PyPy releases an unreleased one only at a collection.
+        # Views released on return (the rule in binaryio.try_readinto): the caller
+        # may resize or free ``buf`` next.
         with memoryview(buf) as outer, outer.cast("B") as view:
             answer, _, data = self._ask(SRC_READ, len(view))
             if answer != SRC_DATA:

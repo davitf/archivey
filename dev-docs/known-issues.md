@@ -340,3 +340,24 @@ rapidgzip.
 
 **Evidence.** [`linux-heap-corruption-soak.md`](investigations/linux-heap-corruption-soak.md):
 the CI step split, the soak and A/B recipes, and the recorded red runs.
+
+## PyPy: buffer views and non-blocking `readinto` (open, by design upstream)
+
+**Symptom.** Two PyPy 3.11 behaviours that CPython does not share. A `memoryview` that
+goes out of scope is released only at a garbage collection, so a caller that resizes the
+buffer it handed to `readinto` (`RawIOBase.read` does) gets `BufferError: Existing exports
+of data: object cannot be re-sized`. And a non-blocking buffered reader with nothing ready
+answers `readinto` with 0, the same as at the end, where CPython answers `None`.
+
+**What archivey does.** Every `readinto` releases its views before it returns, a rule in
+`try_readinto`'s docstring and in CONTRIBUTING.md §Coding standards. `ArchiveSource`, the
+one wrapper over a caller's stream, asks a 0 again with `read` (`_readinto_or_stall` in
+`internal/source.py`), so a stall raises `BlockingIOError` instead of passing for the end.
+Pinned by the zero-answering doubles in `tests/test_archive_source.py`.
+
+**What remains.** Nothing gates either rule on PyPy: the PyPy CI job is allowed to fail.
+A new `readinto` that keeps a view passes every other check.
+
+**Upstream.** Not filed; both are documented PyPy behaviour rather than bugs.
+
+**Evidence.** The PyPy trial job in `.github/workflows/ci.yml`; the tests named above.
