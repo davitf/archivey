@@ -53,6 +53,7 @@ import enum
 import gc
 import sys
 import threading
+import weakref
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, TypeVar
 
@@ -121,7 +122,7 @@ class LiveStreamReservation:
     """Opaque live-stream slot reservation.
 
     Disjoint from ``id()`` values in ``_live_streams``. A reservation must never
-    be stored in that set: ``release_live_stream_id`` reasons about id reuse, and
+    be stored in that map: ``release_live_stream_id`` reasons about id reuse, and
     a synthetic int dropped in there would be mistakable for a stream.
     """
 
@@ -207,7 +208,12 @@ class ReaderState:
         self._side_passes: set[OperationToken] = set()
         self._children: set[OperationToken] = set()
         self._workers: set[OperationToken] = set()
-        self._live_streams: set[int] = set()
+        # Open public member streams: ``id(stream)`` to a weak reference, in the order
+        # they were registered. ``reader.close()`` closes them in that order
+        # (:meth:`live_streams`). Weak, so this map never keeps a dropped stream alive:
+        # a dropped stream's ``close()`` runs from ``IOBase.__del__`` and releases its
+        # entry (:meth:`release_live_stream_id`).
+        self._live_streams: dict[int, weakref.ref[ArchiveStream]] = {}
         self._reservations: set[LiveStreamReservation] = set()
         # Leases of live streams and reservations only.
         self._lease_count = 0
@@ -490,7 +496,10 @@ class ReaderState:
                 self._children.discard(token)
                 return
             self._workers.discard(token)
-            if not self._workers:
+            # Only a draining close() waits on this condition, and it sets ``_closing``
+            # before it waits. Every open() releases a worker, so the notify is skipped
+            # when no close can be waiting.
+            if not self._workers and self._closing:
                 self._workers_cv.notify_all()
 
     def begin_materialization(self) -> bool:
@@ -590,9 +599,10 @@ class ReaderState:
         reserve → open → bind, so ``close()`` cannot complete in between. Does not
         increment the lease — the reservation already holds it.
         """
+        ref = weakref.ref(stream)
         with self._lock:
             self._reservations.discard(token)
-            self._live_streams.add(id(stream))
+            self._live_streams[id(stream)] = ref
 
     def release_reservation(self, token: LiveStreamReservation) -> bool:
         """Drop an unbound reservation. True → the caller should run teardown.
@@ -621,17 +631,23 @@ class ReaderState:
     def release_live_stream_id(self, sid: int) -> bool:
         """Release a stream lease by identity token.
 
-        Separate from :meth:`release_live_stream` so a stream's own finalizer can hold
-        the token instead of the stream — holding the stream would keep it alive and
-        stop the finalizer from ever running. Safe against id reuse: the token is
-        removed when the stream closes, and a finalizer runs before its referent's
-        memory can be handed to another object.
+        Separate from :meth:`release_live_stream` so a stream's close hook can hold
+        the token instead of the stream: a hook that held the stream would keep a
+        dropped stream alive, and its ``close()`` would then never run. Safe against
+        id reuse: the token is removed when the stream closes, and the interpreter
+        runs ``close()`` on a dropped stream (``IOBase.__del__``) before its memory
+        can be handed to another object.
         """
         with self._lock:
-            if sid not in self._live_streams:
+            if self._live_streams.pop(sid, None) is None:
                 return False
-            self._live_streams.discard(sid)
             return self._release_lease_locked()
+
+    def live_streams(self) -> list[ArchiveStream]:
+        """The registered member streams not yet released, in registration order."""
+        with self._lock:
+            refs = list(self._live_streams.values())
+        return [stream for ref in refs if (stream := ref()) is not None]
 
     def mark_reader_closed(self) -> bool:
         """Mark reader closed and release the reader lease. True → run teardown now.

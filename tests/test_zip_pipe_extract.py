@@ -1,9 +1,10 @@
 """Extracting a ZIP read from a source that cannot seek.
 
-The pass writes each member as its local header describes it; the central directory,
-read after the last member, then settles the mode, type and name of what was written
-(``ExtractionCoordinator._settle_revised_members``). Each test extracts the same bytes
-from a file and from a pipe and expects the same files on disk and the same results.
+The pass stages each member's data in a private directory under the destination; once
+the central directory, read after the last member, has settled each member's mode, type
+and name, the members are placed (``ExtractionCoordinator._stage_then_place``). Each
+test extracts the same bytes from a file and from a pipe and expects the same files on
+disk and the same results.
 """
 
 from __future__ import annotations
@@ -148,8 +149,8 @@ def test_modes_from_the_directory_reach_the_files(
 
 def test_a_time_only_the_directory_holds_is_applied(tmp_path: Path) -> None:
     """The central entry's extended-timestamp field gives the modification time; the
-    local header's copy is renamed to a field no reader knows, so the pass writes
-    the DOS time first and the directory's time replaces it."""
+    local header's copy is renamed to a field no reader knows, so only the
+    directory gives that time, and the member is placed with it."""
     when = 1_600_000_000
     info = _entry("a.txt", mode=0o100644)
     info.extra = struct.pack("<HHBl", 0x5455, 5, 1, when)
@@ -265,7 +266,7 @@ def _dos_docs() -> bytes:
     [
         (["docs/r.txt"], ["docs/r.txt"]),
         # The name a DOS host's directory never gives: nothing matches, from a pipe
-        # too, though the pass wrote the member before it knew.
+        # too, though the pass staged the member before it knew.
         (["docs\\r.txt"], []),
         (["docs/"], ["docs/"]),
     ],
@@ -278,44 +279,55 @@ def test_members_by_name_select_what_the_directory_names(
     assert ("docs/r.txt" in tree) == ("docs/r.txt" in expected)
 
 
-def test_a_filter_by_a_name_the_directory_gives_fails_from_a_pipe(
+def test_a_filter_by_a_name_the_directory_gives_extracts_from_a_pipe(
     tmp_path: Path,
 ) -> None:
-    """The pass offers the filter ``docs\\r.txt``, which it drops; the data has
-    gone by when the directory names it ``docs/r.txt`` (``design.md``)."""
+    """The filter runs once, at placement, on the name the directory gives."""
 
     def docs_only(member: ArchiveMember) -> ArchiveMember | None:
         return member if member.name.startswith("docs/") else None
 
-    from_file = _extract(_dos_docs(), tmp_path / "file", piped=False, filter=docs_only)
-    from_pipe = _extract(
-        _dos_docs(), tmp_path / "pipe", piped=True, filter=docs_only,
-        on_error="continue",
-    )  # fmt: skip
-    assert [(n, s) for n, s, _ in from_file] == [
+    results, tree = _both(_dos_docs(), tmp_path, filter=docs_only)
+    assert [(n, s) for n, s, _ in results] == [
         ("docs/", ExtractionStatus.EXTRACTED),
         ("docs/r.txt", ExtractionStatus.EXTRACTED),
     ]
-    # On Windows the filter already sees docs/r.txt during the pass (CI), so it takes
-    # the member while its data is still in the stream.
-    assert [(n, s) for n, s, _ in from_pipe] == [
-        ("docs/", ExtractionStatus.EXTRACTED),
-        (
-            "docs/r.txt",
-            ExtractionStatus.EXTRACTED if os.name == "nt" else ExtractionStatus.FAILED,
-        ),
-    ]
+    assert tree["docs/r.txt"][0] == b"read me"
 
 
-def test_a_member_dropped_for_its_data_is_an_extraction_error(tmp_path: Path) -> None:
-    """The archive is sound: the pass cannot go back for the bytes."""
+def test_a_filter_rename_of_a_refused_local_name_fails_from_a_pipe(
+    tmp_path: Path,
+) -> None:
+    """From a file, the filter renames ``../evil.txt`` before the checks and it is
+    written as ``safe.txt``. From a pipe, the checks refuse the local header's name
+    before anything is staged, so the renamed member has no data to place (DR-5a)."""
 
-    def docs_only(member: ArchiveMember) -> ArchiveMember | None:
-        return member if member.name.startswith("docs/") else None
+    def rename(member: ArchiveMember) -> ArchiveMember:
+        return member.replace(name="safe.txt")
+
+    data = _zip([(_entry("../evil.txt"), b"evil!!!")])
+    from_file = _extract(data, tmp_path / "file", piped=False, filter=rename)
+    from_pipe = _extract(
+        data, tmp_path / "pipe", piped=True, filter=rename, on_error="continue"
+    )
+    assert from_file == [("../evil.txt", ExtractionStatus.EXTRACTED, "safe.txt")]
+    assert from_pipe == [("../evil.txt", ExtractionStatus.FAILED, None)]
+    assert (tmp_path / "file" / "safe.txt").read_bytes() == b"evil!!!"
+    assert list((tmp_path / "pipe").iterdir()) == []
+
+
+def test_a_member_a_predicate_takes_only_in_the_end_is_an_extraction_error(
+    tmp_path: Path,
+) -> None:
+    """A predicate is asked during the pass too: one that leaves ``docs\\r.txt`` out
+    then has its data go by unstaged, and the archive is sound."""
+
+    def docs_only(member: ArchiveMember) -> bool:
+        return member.name.startswith("docs/")
 
     source = NonSeekableBytesIO(_dos_docs())
     with archivey.open_archive(source, streaming=True) as reader:
-        report = reader.extract_all(tmp_path, filter=docs_only, on_error="continue")
+        report = reader.extract_all(tmp_path, members=docs_only, on_error="continue")
     errors = [r.error for r in report.results if r.error is not None]
     if os.name == "nt":
         assert errors == []
@@ -336,9 +348,9 @@ def _seed(dest: Path, files: dict[str, bytes]) -> None:
 def test_a_member_the_list_leaves_out_in_the_end_keeps_the_callers_file(
     overwrite: str, tmp_path: Path
 ) -> None:
-    """The pass writes ``x\\y`` at ``x/y`` while the list could take it by its DOS
-    spelling; a Unix host leaves it ``x\\y``, which the list does not take, and
-    what the caller had at ``x/y`` is back."""
+    """The pass stages ``x\\y`` while the list could take it by its DOS spelling
+    ``x/y``; a Unix host leaves it ``x\\y``, which the list does not take, so it is
+    not placed, and what the caller has at ``x/y`` is never touched."""
     data = _zip([(_entry("x\\y"), b"ARCHIVE")])
     for where in ("file", "pipe"):
         _seed(tmp_path / where, {"x/y": b"MINE"})
@@ -404,10 +416,10 @@ def test_a_member_the_list_takes_in_the_end_meets_the_callers_parent(
 
 
 @posix_modes
-def test_a_run_stopped_in_the_pass_puts_the_callers_parent_back(
+def test_a_run_stopped_in_the_pass_leaves_the_callers_parent(
     tmp_path: Path,
 ) -> None:
-    """As ``test_a_run_stopped_in_the_pass_puts_the_callers_file_back``, with the
+    """As ``test_a_run_stopped_in_the_pass_leaves_the_callers_file``, with the
     caller's file at the parent ``x`` that ``x/y`` implies."""
     data = _zip([(_entry("x\\y"), b"ARCHIVE"), (_entry("../evil"), b"Z")])
     for where, piped in (("file", False), ("pipe", True)):
@@ -423,40 +435,6 @@ def test_a_run_stopped_in_the_pass_puts_the_callers_parent_back(
             )
         assert (tmp_path / where / "x").read_bytes() == b"MINE"
         assert sorted(p.name for p in (tmp_path / where).iterdir()) == ["x"]
-
-
-def test_a_stopped_run_that_cannot_take_back_the_parent_keeps_the_callers_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """As ``test_a_run_stopped_in_the_pass_puts_the_callers_parent_back``, where
-    the filesystem refuses to remove ``x/y`` (Windows, for a read-only member):
-    the run's ``x`` stays, so the caller's file stays where it was moved aside
-    rather than being deleted."""
-    data = _zip([(_entry("x\\y"), b"ARCHIVE"), (_entry("../evil"), b"Z")])
-    dest = tmp_path / "pipe"
-    _seed(dest, {"x": b"MINE"})
-    refused = dest / "x" / "y"
-    real_unlink = os.unlink
-
-    def unlink(path: object, *args: object, **kwargs: object) -> None:
-        if Path(os.fspath(path)) == refused:  # type: ignore[arg-type]
-            raise PermissionError(13, "Access is denied", os.fspath(path))  # type: ignore[arg-type]
-        real_unlink(path, *args, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(os, "unlink", unlink)
-    with pytest.raises(ArchiveyError):
-        _extract(
-            data,
-            dest,
-            piped=True,
-            members=["x/y", "../evil"],
-            overwrite="replace",
-            abort_on=["blocked_member"],
-        )
-    monkeypatch.undo()
-    kept = [p for p in dest.iterdir() if p.is_file()]
-    assert [p.read_bytes() for p in kept] == [b"MINE"]
-    assert (dest / "x" / "y").read_bytes() == b"ARCHIVE"
 
 
 def test_a_read_only_file_of_the_callers_is_handled_as_from_a_file(
@@ -489,11 +467,11 @@ def test_a_read_only_file_of_the_callers_is_handled_as_from_a_file(
         ("z.txt", {"limits": ExtractionLimits(max_entries=1)}),
     ],
 )
-def test_a_run_stopped_in_the_pass_puts_the_callers_file_back(
+def test_a_run_stopped_in_the_pass_leaves_the_callers_file(
     second: str, options: dict[str, object], tmp_path: Path
 ) -> None:
-    """The run stops before the directory says whether ``x\\y`` is ``x/y``, so
-    nothing the pass wrote at the caller's ``x/y`` is kept."""
+    """The run stops before the directory says whether ``x\\y`` is ``x/y``, so it
+    places nothing, and the caller's ``x/y`` is as it was."""
     data = _zip([(_entry("x\\y"), b"ARCHIVE"), (_entry(second), b"Z")])
     for where, piped in (("file", False), ("pipe", True)):
         _seed(tmp_path / where, {"x/y": b"MINE"})
@@ -513,9 +491,12 @@ def test_a_run_stopped_in_the_pass_puts_the_callers_file_back(
 
 
 @needs_symlinks
-def test_a_run_stopped_while_settling_keeps_what_it_settled(tmp_path: Path) -> None:
+def test_a_run_stopped_during_placement_keeps_the_member_placed_before(
+    tmp_path: Path,
+) -> None:
     """The directory retypes ``payload`` as a link out of the destination, which
-    stops the run; ``docs/r.txt``, settled before it, replaced the caller's file."""
+    stops the run at its placement; ``docs/r.txt``, placed before it, replaced the
+    caller's file."""
     data = _zip(
         [
             (_entry("docs\\r.txt", host=0), b"read me"),
@@ -568,13 +549,11 @@ def _possible_links(last: tuple[zipfile.ZipInfo, bytes]) -> bytes:
     ],
     ids=["limit", "abort_on"],
 )
-def test_a_run_stopped_in_the_pass_leaves_no_link_as_a_file(
+def test_a_run_stopped_in_the_pass_leaves_nothing_in_the_destination(
     last: tuple[zipfile.ZipInfo, bytes], options: dict[str, object], tmp_path: Path
 ) -> None:
-    """The run stops before the directory says which members are links, so every
-    file the pass wrote whose data could be a link's is taken back: one within the
-    target cap, or one that starts with a Windows link's reparse tag. A longer file
-    stays, though its mode was never applied."""
+    """The run stops before the directory says which members are links, so no member
+    is placed: neither the files whose data could be a link's nor the longer one."""
     with pytest.raises(ArchiveyError):
         _extract(
             _possible_links(last),
@@ -583,20 +562,17 @@ def test_a_run_stopped_in_the_pass_leaves_no_link_as_a_file(
             policy="trusted",
             **options,
         )
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["long.bin"]
-    assert (tmp_path / "long.bin").read_bytes() == _LONG_FILE
-    # The directory's 0o755 never reached it: the member was not settled.
-    assert stat.S_IMODE((tmp_path / "long.bin").stat().st_mode) != 0o755
+    assert list(tmp_path.iterdir()) == []
 
 
 @needs_symlinks
-def test_a_run_stopped_while_settling_takes_back_what_it_had_not_settled(
+def test_a_run_stopped_during_placement_keeps_what_it_placed(
     tmp_path: Path,
 ) -> None:
     """The directory makes ``evil`` a link out of the destination, which stops the
-    run as the end of the pass settles it: the members settled before it stay, links
-    made, and the files written for the members after it that may be links are taken
-    back. A file read stops at ``evil`` too, before writing those."""
+    run when placement reaches it: the members placed before it stay, links made, and
+    the members after it are not placed. A file read stops at ``evil`` too, before
+    writing those."""
     data = _zip(
         [
             (_entry("rel_link", mode=0o120777), b"target.txt"),
@@ -617,32 +593,6 @@ def test_a_run_stopped_while_settling_takes_back_what_it_had_not_settled(
         "rel_link": ("symlink", "target.txt"),
         "target.txt": (b"t", 0o600),
     }
-
-
-def test_a_file_that_may_be_a_link_and_cannot_be_removed_stays_with_a_warning(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    refused = tmp_path / "rel_link"
-    real_unlink = os.unlink
-
-    def unlink(path: object, *args: object, **kwargs: object) -> None:
-        if Path(os.fspath(path)) == refused:  # type: ignore[arg-type]
-            raise PermissionError(13, "Access is denied", os.fspath(path))  # type: ignore[arg-type]
-        real_unlink(path, *args, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(os, "unlink", unlink)
-    with pytest.raises(ArchiveyError):
-        _extract(
-            _possible_links((_entry("../evil"), b"Z")),
-            tmp_path,
-            piped=True,
-            abort_on=["blocked_member"],
-            policy="trusted",
-        )
-    monkeypatch.undo()
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["long.bin", "rel_link"]
-    assert "rel_link" in caplog.text
-    assert "symlink" in caplog.text
 
 
 @pytest.mark.parametrize("overwrite", ["replace", "skip"])
@@ -743,8 +693,8 @@ def test_a_member_the_filter_drops_in_the_end_reports_progress(tmp_path: Path) -
 
 
 @posix_modes
-def test_the_filter_is_told_when_the_member_can_still_change(tmp_path: Path) -> None:
-    """``member_state_final`` on what the filter gets, as on what a predicate gets."""
+def test_the_filter_sees_each_member_once_and_final(tmp_path: Path) -> None:
+    """The filter runs at placement only, on the member the directory describes."""
     data = _zip([(_entry("a\\"), b"")])
     seen: list[tuple[str, bool]] = []
 
@@ -753,12 +703,10 @@ def test_the_filter_is_told_when_the_member_can_still_change(tmp_path: Path) -> 
         return member
 
     _extract(data, tmp_path, piped=True, filter=probe, on_error="continue")
-    assert seen[-1][1] is True
-    assert all(final is False for _, final in seen[:-1])
-    assert len(seen) == 2
+    assert [final for _, final in seen] == [True]
 
 
-def test_a_special_file_the_directory_reveals_is_removed(tmp_path: Path) -> None:
+def test_a_special_file_the_directory_reveals_is_refused(tmp_path: Path) -> None:
     data = _zip([(_entry("fifo", mode=0o010644), b""), (_entry("b"), b"after")])
     results, tree = _both(data, tmp_path, on_error="continue")
     assert results[0][:2] == ("fifo", ExtractionStatus.BLOCKED)
@@ -781,11 +729,11 @@ def test_a_dos_name_moves_to_its_folder(
     assert tree["docs/readme.txt"][0] == b"read me"
 
 
-def test_a_rewrite_from_disk_is_counted_as_a_copy(
+def test_a_staged_file_lands_without_a_copy(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The renamed file is written again from the bytes already on disk, which the
-    byte cap counts and the decompression ratio does not: nothing is decoded twice."""
+    """A member placed under the name the directory gives lands by a rename of its
+    staged file: its bytes are counted once, when staged, and copied never."""
     counted: dict[str, int] = {"decoded": 0, "copied": 0}
     count, count_copy = BombTracker.count, BombTracker.count_copy
 
@@ -801,9 +749,9 @@ def test_a_rewrite_from_disk_is_counted_as_a_copy(
     monkeypatch.setattr(BombTracker, "count_copy", copied)
     data = _zip([(_entry("docs\\readme.txt", host=0), b"read me")])
     _extract(data, tmp_path / "pipe", piped=True)
-    # On Windows the pass already writes it at docs/readme.txt (CI), so nothing is
-    # written again.
-    assert counted == {"decoded": 7, "copied": 0 if os.name == "nt" else 7}
+    assert counted == {"decoded": 7, "copied": 0}
+    assert (tmp_path / "pipe" / "docs" / "readme.txt").read_bytes() == b"read me"
+    assert sorted(p.name for p in (tmp_path / "pipe").iterdir()) == ["docs"]
 
 
 @pytest.mark.parametrize("policy", list(ExtractionPolicy))
@@ -818,18 +766,26 @@ def test_a_unix_name_ending_in_a_backslash_is_a_file(
 
 
 @posix_modes
+@pytest.mark.parametrize("policy", list(ExtractionPolicy))
 def test_a_unix_file_ending_in_a_backslash_with_data_fails_from_a_pipe(
-    tmp_path: Path,
+    policy: ExtractionPolicy, tmp_path: Path
 ) -> None:
-    """Its bytes went by while the pass took it for a folder (a crafted shape)."""
+    """The pass takes it for a folder and stages none of its bytes, so a Unix host
+    that makes it a file leaves nothing to place: it fails from a pipe, where the
+    file read writes it (a crafted shape; ``dev-docs/formats/zip.md`` §9)."""
     data = _zip([(_entry("odd\\", mode=0o100644), b"data")])
-    assert _extract(data, tmp_path / "file", piped=False, policy="trusted") == [
-        ("odd\\", ExtractionStatus.EXTRACTED, "odd\\")
+    from_file = _extract(data, tmp_path / "file", piped=False, policy=policy)
+    assert [(name, status) for name, status, _ in from_file] == [
+        ("odd\\", ExtractionStatus.EXTRACTED)
     ]
-    piped = _extract(
-        data, tmp_path / "pipe", piped=True, policy="trusted", on_error="continue"
-    )
-    assert piped == [("odd\\", ExtractionStatus.FAILED, None)]
+    source = NonSeekableBytesIO(data)
+    with archivey.open_archive(source, streaming=True) as reader:
+        report = reader.extract_all(
+            tmp_path / "pipe", policy=policy, on_error="continue"
+        )
+    [result] = report.results
+    assert (result.member.name, result.status) == ("odd\\", ExtractionStatus.FAILED)
+    assert isinstance(result.error, ExtractionError)
     assert list((tmp_path / "pipe").iterdir()) == []
 
 
@@ -887,7 +843,7 @@ def _outcomes(
     ]
 
 
-def test_an_unlisted_local_entry_is_taken_back(tmp_path: Path) -> None:
+def test_an_unlisted_local_entry_is_not_placed(tmp_path: Path) -> None:
     hand = _Hand()
     hand.local(b"a.txt", b"one")
     hand.local(b"sub/planted.txt", b"not listed")
@@ -906,7 +862,7 @@ def _reversed_pair() -> bytes:
 
 
 def test_a_reversed_same_name_pair_fails_the_current_copy(tmp_path: Path) -> None:
-    """The pass wrote the second copy; the directory makes the first current, whose
+    """The pass staged the second copy; the directory makes the first current, whose
     bytes have gone by. Random access writes "first" there."""
     data = _reversed_pair()
     report = _piped_report(data, tmp_path / "pipe", on_error=OnError.CONTINUE)
@@ -920,11 +876,15 @@ def test_a_reversed_same_name_pair_fails_the_current_copy(tmp_path: Path) -> Non
     assert (tmp_path / "file" / "dup.txt").read_bytes() == b"first"
 
 
-def test_a_reversed_pair_under_stop_raises_after_settling(tmp_path: Path) -> None:
+def test_a_reversed_pair_under_stop_raises_when_placement_reaches_it(
+    tmp_path: Path,
+) -> None:
+    """The first failure in listing order stops the run, so ``other.txt``, after
+    it, is not placed."""
     with pytest.raises(CorruptionError, match="current copy") as raised:
         _piped_report(_reversed_pair(), tmp_path, on_error=OnError.STOP)
     assert raised.value.member_name == "dup.txt"
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["other.txt"]
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_an_empty_current_copy_is_written_again(tmp_path: Path) -> None:
@@ -953,18 +913,20 @@ def test_a_contradicted_descriptor_fails_the_member(tmp_path: Path) -> None:
 
 def test_a_contradicted_descriptor_under_stop_raises(tmp_path: Path) -> None:
     data, _whole = _planted_prefix_zip()
-    # The planted member's data fails its check as the pass writes it, which would
+    # The planted member's data fails its check as the pass stages it, which would
     # stop the run first (a failure during the pass stops it before the directory
-    # can say the member is not listed), so the filter leaves it out.
+    # can say the member is not listed), so the selection leaves it out. The filter
+    # runs only at placement, too late for that.
     with pytest.raises(CorruptionError, match="data descriptor") as raised:
         _piped_report(
             data,
             tmp_path,
             on_error=OnError.STOP,
-            filter=lambda m: None if m.name == "inner" else m,
+            members=lambda m: m.name != "inner",
         )
     assert raised.value.member_name == "outer.bin"
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["after.txt"]
+    # The first member in listing order fails, so nothing is placed.
+    assert list(tmp_path.iterdir()) == []
 
 
 def _contradicted_header() -> bytes:
@@ -984,7 +946,7 @@ def test_a_contradicted_local_header_fails_the_member(tmp_path: Path) -> None:
         ("a.txt", ExtractionStatus.FAILED, CorruptionError),
         ("b.txt", ExtractionStatus.EXTRACTED, None),
     ]
-    # The pass wrote a.txt's bytes before the directory contradicted its header.
+    # The pass staged a.txt's bytes before the directory contradicted its header.
     assert sorted(p.name for p in tmp_path.iterdir()) == ["b.txt"]
 
 
@@ -992,7 +954,7 @@ def test_a_contradicted_local_header_under_stop_raises(tmp_path: Path) -> None:
     with pytest.raises(CorruptionError, match="local header and its central") as raised:
         _piped_report(_contradicted_header(), tmp_path, on_error=OnError.STOP)
     assert raised.value.member_name == "a.txt"
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["b.txt"]
+    assert list(tmp_path.iterdir()) == []
 
 
 def _missing_entry(name: bytes = b"b.txt") -> bytes:
@@ -1017,7 +979,7 @@ def test_a_directory_entry_with_no_local_entry_gets_a_failed_result(
         ("a.txt", ExtractionStatus.EXTRACTED, None),
         ("b.txt", ExtractionStatus.FAILED, CorruptionError),
     ]
-    # b.txt's local entry is one the directory does not list, so it is taken back.
+    # b.txt's local entry is one the directory does not list, so it is not placed.
     assert sorted(p.name for p in tmp_path.iterdir()) == ["a.txt"]
 
 
@@ -1244,24 +1206,210 @@ def test_a_missing_entry_meets_the_overwrite_policy_first(
     )
 
 
-def test_a_moved_copy_the_filesystem_keeps_is_logged(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
+# -- Staging (``_stage_then_place``) --------------------------------------------------
+
+
+def test_a_refused_first_member_stops_the_run_before_the_rest_is_decoded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A DOS name is written again under its real name from the copy the pass wrote,
-    moved aside first; a removal of that copy the filesystem refuses is reported."""
-    fixture = Path(__file__).parent / "fixtures" / "zip_backslash" / "dos_backslash.zip"
-    real_unlink = os.unlink
+    """The universal checks run on the local header's name before anything is
+    staged, so ``abort_on`` refuses a hostile archive without decoding the rest."""
+    from archivey.internal.extraction import ExtractionCoordinator
 
-    def refuse_temp(path: str | os.PathLike[str], *args: object, **kw: object) -> None:
+    staged: list[int] = []
+    write_staged = ExtractionCoordinator._write_staged
+
+    def counting(self: ExtractionCoordinator, *args: object) -> Path:
+        staged.append(1)
+        return write_staged(self, *args)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(ExtractionCoordinator, "_write_staged", counting)
+    data = _zip([(_entry("../../etc/passwd"), b"root"), (_entry("big"), b"\0" * 4096)])
+    with pytest.raises(FilterRejectionError):
+        _extract(data, tmp_path, piped=True, abort_on={AbortOn.BLOCKED_MEMBER})
+    assert staged == []
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_refused_local_name_blocks_and_the_stop_run_goes_on(tmp_path: Path) -> None:
+    """``on_error="stop"`` does not stop on a refusal: the member is blocked, from a
+    pipe as from a file, and the members after it are extracted."""
+    data = _zip([(_entry("../../etc/passwd"), b"root"), (_entry("big"), b"\0" * 4096)])
+    results, tree = _both(data, tmp_path, on_error="stop")
+    assert [(name, status) for name, status, _ in results] == [
+        ("../../etc/passwd", ExtractionStatus.BLOCKED),
+        ("big", ExtractionStatus.EXTRACTED),
+    ]
+    assert sorted(tree) == ["big"]
+
+
+def test_a_data_failure_while_staging_stops_a_stop_run_at_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from archivey.internal.extraction import ExtractionCoordinator
+
+    staged: list[int] = []
+    write_staged = ExtractionCoordinator._write_staged
+
+    def failing(
+        self: ExtractionCoordinator,
+        stream: object,
+        position: int,
+        emit: object,
+    ) -> Path:
+        staged.append(position)
+        if position == 0:
+            raise CorruptionError("damaged by the test")
+        return write_staged(self, stream, position, emit)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(ExtractionCoordinator, "_write_staged", failing)
+    data = _zip([(_entry("a.txt"), b"one"), (_entry("b.txt"), b"two")])
+    with pytest.raises(CorruptionError, match="damaged by the test"):
+        _extract(data, tmp_path / "stop", piped=True, on_error="stop")
+    assert staged == [0]
+    assert list((tmp_path / "stop").iterdir()) == []
+    staged.clear()
+    results = _extract(data, tmp_path / "continue", piped=True, on_error="continue")
+    assert [r[:2] for r in results] == [
+        ("a.txt", ExtractionStatus.FAILED),
+        ("b.txt", ExtractionStatus.EXTRACTED),
+    ]
+    assert sorted(p.name for p in (tmp_path / "continue").iterdir()) == ["b.txt"]
+
+
+@posix_modes
+def test_a_staged_file_lands_by_a_rename_with_its_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    replaced: list[tuple[str, str]] = []
+    real_replace = os.replace
+
+    def recording(src: str, dst: str) -> None:
+        replaced.append((os.path.basename(os.path.dirname(src)), os.path.basename(dst)))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", recording)
+    data = _zip([(_entry("run.sh", mode=0o100750), b"#!/bin/sh\n")])
+    _extract(data, tmp_path, piped=True, policy="trusted")
+    [(staging, landed)] = replaced
+    assert staging.startswith(".archivey-tmp-")
+    assert landed == "run.sh"
+    assert stat.S_IMODE((tmp_path / "run.sh").stat().st_mode) == 0o750
+    # The staged name is gone with its directory.
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["run.sh"]
+
+
+def test_a_staging_directory_that_cannot_be_removed_stays_with_a_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    real_rmdir = os.rmdir
+
+    def refuse(path: str, *args: object, **kwargs: object) -> None:
         if os.path.basename(path).startswith(".archivey-tmp-"):
-            raise PermissionError(13, "Permission denied", str(path))
-        real_unlink(path, *args, **kw)  # type: ignore[arg-type]
+            raise PermissionError(13, "Permission denied", path)
+        real_rmdir(path, *args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(os, "unlink", refuse_temp)
-    with archivey.open_archive(
-        NonSeekableBytesIO(fixture.read_bytes()), streaming=True
-    ) as reader:
-        reader.extract_all(tmp_path / "out")
-    assert "the earlier copy of" in caplog.text
+    monkeypatch.setattr(os, "rmdir", refuse)
+    _extract(_zip([(_entry("a.txt"), b"one")]), tmp_path, piped=True)
+    monkeypatch.undo()
+    left = sorted(p.name for p in tmp_path.iterdir())
+    assert len(left) == 2
+    assert left[0].startswith(".archivey-tmp-")
+    assert left[1] == "a.txt"
+    assert "staged" in caplog.text
+
+
+def test_a_read_only_staged_file_is_removed_when_the_run_stops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Windows refuses to remove a read-only file; the removal opens it up first."""
+    from archivey.internal.extraction import ExtractionCoordinator
+
+    write_staged = ExtractionCoordinator._write_staged
+
+    def read_only(self: ExtractionCoordinator, *args: object) -> Path:
+        path = write_staged(self, *args)  # type: ignore[arg-type]
+        os.chmod(path, stat.S_IREAD)
+        return path
+
+    monkeypatch.setattr(ExtractionCoordinator, "_write_staged", read_only)
+    data = _zip([(_entry("a.txt"), b"one"), (_entry("../evil"), b"Z")])
+    with pytest.raises(FilterRejectionError):
+        _extract(data, tmp_path, piped=True, abort_on={AbortOn.BLOCKED_MEMBER})
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_member_staged_and_not_placed_stops_counting_toward_max_entries(
+    tmp_path: Path,
+) -> None:
+    """``a.txt`` counts while staged; the filter drops it, so ``d/``, placed after,
+    fits under ``max_entries=1``, as from a file."""
+    data = _zip([(_entry("a.txt"), b"one"), (_entry("d/", mode=0o40755), b"")])
+    results, tree = _both(
+        data,
+        tmp_path,
+        filter=lambda m: None if m.name == "a.txt" else m,
+        limits=ExtractionLimits(max_entries=1),
+    )
+    assert [name for name, _, _ in results] == ["d/"]
+    assert sorted(tree) == ["d"]
+
+
+def test_progress_reports_each_member_while_staged_then_the_tallies(
+    tmp_path: Path,
+) -> None:
+    """The directory drops ``b.txt``; each member is reported in order while
+    staged, and placement makes one more report with the outcome tallies."""
+    hand = _Hand()
+    hand.local(b"a.txt", b"one")
+    hand.local(b"b.txt", b"two")
+    hand.local(b"c.txt", b"three")
+    seen: list[archivey.ExtractionProgress] = []
+    _piped_report(hand.directory(0, 2), tmp_path, on_progress=seen.append)
+    assert [(p.member.name, p.members_done, p.members_extracted) for p in seen] == [
+        ("a.txt", 1, 0),
+        ("b.txt", 2, 0),
+        ("c.txt", 3, 0),
+        ("c.txt", 3, 2),
+    ]
+    assert [p.member_bytes_written for p in seen[:3]] == [3, 3, 5]
+
+
+def test_a_collision_abort_keeps_the_member_placed_before_it(tmp_path: Path) -> None:
+    data = _zip([(_entry("A.txt"), b"first"), (_entry("a.txt"), b"second")])
+    from archivey.exceptions import NameCollisionError
+
+    with pytest.raises(NameCollisionError):
+        _extract(
+            data,
+            tmp_path,
+            piped=True,
+            overwrite="replace",
+            abort_on={AbortOn.NAME_COLLISION},
+        )
+    assert [(p.name, p.read_bytes()) for p in tmp_path.iterdir()] == [
+        ("A.txt", b"first")
+    ]
+
+
+def test_an_unmatched_entry_under_raise_places_nothing(tmp_path: Path) -> None:
+    """The member list is known once the directory is read, before any member is
+    placed, so a ``RAISE`` disposition refuses the call as from a file."""
+    from archivey.config import ArchiveyConfig
+    from archivey.diagnostics import DiagnosticCode, DiagnosticPolicy
+    from archivey.exceptions import DiagnosticRaisedError
+
+    config = ArchiveyConfig(
+        diagnostic_policy=DiagnosticPolicy(
+            raise_on={DiagnosticCode.MEMBER_SELECTOR_UNMATCHED}
+        )
+    )
+    data = _zip([(_entry("a.txt"), b"one")])
+    with (
+        archivey.open_archive(
+            NonSeekableBytesIO(data), streaming=True, config=config
+        ) as reader,
+        pytest.raises(DiagnosticRaisedError),
+    ):
+        reader.extract_all(tmp_path, members=["a.txt", "typo.txt"])
+    assert list(tmp_path.iterdir()) == []

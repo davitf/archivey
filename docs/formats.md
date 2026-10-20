@@ -40,7 +40,8 @@ images](https://github.com/davitf/archivey/blob/main/dev-docs/formats/dmg.md) an
   source required.
 - **`.zst` / `.tar.zst`:** in core on Python 3.14 and later; else `[recommended]`
   (`backports.zstd`). Listing: one member; the `.tar` form as `.tar.gz`. Random member access:
-  rewind seek unless indexed later.
+  seek by frame with `seekable_members=True`; a one-frame file rewinds. Reads the Seekable
+  Zstandard seek table.
 - **`.lz4` / `.tar.lz4`:** `[recommended]`. Listing: one member; the `.tar` form as `.tar.gz`.
   Random member access: rewind seek.
 - **`.br`:** `[recommended]`. Listing: one member. Random member access: rewind seek. No magic;
@@ -153,16 +154,16 @@ yielded.
   from its data descriptor once the pass gets past its data. Until the pass reaches the directory, a
   member's ``mode``, ``create_system``, ``comment``, ``uid`` and ``gid`` are ``None`` and a symlink
   is a ``FILE``; then every member is updated in place, and ``member_state_final`` turns ``True``.
-  Extraction writes each member as it arrives and, at the end of the pass, applies modes and owners,
-  makes the links (after running your ``filter`` again on them) and removes what a member the
-  directory types ``OTHER`` wrote, so the files on disk match a read from a file. A member the
-  directory does not list (an appended update, a planted entry) is still yielded by the pass when it
-  is met. When the pass reaches the directory, it is dropped from the listing and reported as
-  ``ARCHIVE_UNLISTED_DATA``, and extraction does not keep it.
+  Extraction keeps each member's data in a private ``.archivey-tmp-`` folder inside the
+  destination and puts the members in place only once the pass has read the directory, calling
+  your ``filter`` once on each member as the directory describes it, so the files on disk match a
+  read from a file. A member the directory does not list (an appended update, a planted entry) is
+  still yielded by the pass when it is met. When the pass reaches the directory, it is dropped from
+  the listing and reported as ``ARCHIVE_UNLISTED_DATA``, and extraction does not keep it.
 - What a pipe cannot read: a member whose sizes come after its data (bit 3) under LZMA
   without an end marker raises ``UnsupportedFeatureError``, as no end can be found; a
-  bit-3 PPMd member is decoded in a child process, so
-  ``DecoderLimits(max_ppmd_in_process_input=None)`` refuses it. With several candidate
+  bit-3 PPMd member is fed to the decoder in pieces, since its size isn't known in
+  advance. With several candidate
   passwords, a member is confirmed on its first 1 MiB, and when more than one candidate
   is still possible after that, the first one is used.
 - Where a pipe and a file differ, on archives no writer produces or damaged ones: a
@@ -171,7 +172,9 @@ yielded.
   reaches the directory, where a read from a file reads it. Two same-named members whose
   directory order reverses their file order list and stream from a pipe as from a file,
   but extraction from a pipe raises `CorruptionError` for that name, where extraction
-  from a file writes the copy the directory lists last.
+  from a file writes the copy the directory lists last. A member whose local header's
+  name the safety checks refuse fails extraction from a pipe even when the directory, or
+  your `filter`, gives it a safe name, since its data was not kept.
 - The pass reads the pipe to its end before it reads the directory, so it ends, and the
   members are final, only when the sender closes the pipe. A sender that keeps the pipe
   open after the ZIP keeps the pass waiting after the last member.

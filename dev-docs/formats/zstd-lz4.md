@@ -16,7 +16,7 @@ behaviour and links the row.
 | Read | zstd and LZ4 frames as one-member archives and inside `.tar.zst` / `.tar.lz4`, and the legacy LZ4 stream (`lz4 -l`) the same way; zstd as a ZIP method; LZ4 as a 7z coder |
 | Write | **Not shipped** |
 | Backends | zstd: the standard library's `compression.zstd` on Python 3.14 and later, `backports.zstd` from `[recommended]` before it. LZ4: `lz4.frame` from `[recommended]`, and `lz4.block` from the same package for the legacy stream |
-| Seeking | A backward seek decodes again from the start |
+| Seeking | zstd, on declared seek demand: from the frame before the target, and the seekable format's seek table gives every frame and the size without decoding (§2.3). LZ4: a backward seek decodes again from the start |
 | Size | `None`, even when the frame header declares it |
 | Digests | None listed. A frame's content checksum, when present, is checked on read; the legacy LZ4 stream has none |
 | Metadata | None beyond the shared fields |
@@ -123,9 +123,24 @@ that ends inside a size field or a block is `TruncatedError`. Input that ends ex
 between two blocks cannot be told from the stream's real end, so a file cut there reads
 short with no error; `lz4 -dc` reads it the same way.
 
-Neither codec records resume points, so a backward seek decodes again from the start and
-the rewind report says so ([`single-file.md`](single-file.md) §2.3). A seekable zstd
-reader using the frames as restart points is deferred (§7).
+**zstd seeks from frame starts.** Each zstd frame is decoded on its own, so on declared seek
+demand every regular frame after the first is a resume point, recorded when a forward read
+reaches it (`FramedDecoder` with a `StreamIndex`). A skippable frame holds no output and is
+not one. A file in the *Seekable Zstandard* format (`contrib/seekable_format` in the zstd
+repository) ends with a skippable frame (magic `0x184D2A5E`) that lists every frame's
+compressed and decompressed size, under a 9-byte footer: frame count, a descriptor byte, and
+the magic `0x8F92EAB1`. A forward seek past the known points, `SEEK_END` or a size query
+reads that table (`codecs/zstd_seek_table.py`): every frame becomes a resume point and the
+total is the stream's size, with nothing decoded. The table is trusted, like the xz and lzip
+indexes (§5). Its optional per-frame checksums are the low 32 bits of XXH64, which the
+standard library lacks, so they are not checked; a frame's own content checksum still is.
+A table with reserved descriptor bits set, or whose frames do not end where the table
+starts, emits `SEEK_INDEX_DEGRADED` (scan `zstd_seek_table`) and reads decode from the
+start. The table must end the file: zeros after it hide it, and the file then seeks like
+any other zstd file. A single-frame file, the default `zstd` output, has nothing to resume
+from, so a backward seek decodes again from the start and the rewind report says so
+([`single-file.md`](single-file.md) §2.3). LZ4 records no resume points, so every LZ4
+backward seek does that too. A ZIP zstd member is one frame and keeps none.
 
 ### 2.4 Extract
 
@@ -218,7 +233,8 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | An LZ4 file starting with a skippable frame is not detected by content | **archivey** | The skippable-frame walk is zstd's only |
 | A damaged `--no-check` file reads with no error | **format** | No checksum (§1) |
 | A file `zstd -t` refuses reads, with `ARCHIVE_TRAILING_DATA` | **archivey** | Bytes after the last frame are reported, not refused ([`single-file.md`](single-file.md) §6); `DiagnosticPolicy.STRICT` raises |
-| A backward seek re-decodes from the start | **format** / **archivey** | No seek table for either (§7) |
+| A backward seek in a single-frame zstd file or any LZ4 file re-decodes from the start | **format** | Nothing in the stream to resume from (§2.3) |
+| A cold seek into a seekable-zstd file trusts its seek table | **format** / **archivey** | Accepted as for xz and lzip: threat-model O17 |
 
 ## 6. Decisions
 
@@ -232,16 +248,16 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | One library decompressor per frame, framed by magic in archivey's engine | Finds where the last frame ends, so bytes after it are reported rather than failing the read | `compression.zstd.open` and `lz4.frame.open`, which fail on them |
 | Zero bytes end the data unless they run to the end of the file; a frame after them is `ARCHIVE_TRAILING_DATA` (maintainer ruling, 2026-10-10) | Match the official tools (DR-6): `zstd` and `lz4` stop at zeros between frames and fail, and the same rule already holds for gzip and bzip2. Zeros at the end of the file stay silent although `zstd` and `lz4` refuse them too: one rule for every codec, as tape and block devices pad files with zeros ([`single-file.md`](single-file.md) §6) | Reading a frame after the zeros; refusing zeros at the end, as `zstd` and `lz4` do |
 | Do not report a frame's content size | It covers one frame, and proving there is one frame means reading to the end | Reporting it when present |
+| Seek with frame starts and the seekable format's table, natively | Frames are independent, so a frame start is an exact resume point, and the table lists them all from the end of the file; `indexed_zstd` bundles the native core ADR 0008 keeps out | `indexed_zstd`; checking the table's XXH64 checksums, which needs a dependency |
 
 ## 7. Open questions
 
 - **Content size for a single-frame file.** A seekable source could confirm there is one
   frame by walking the frame headers and block sizes without decoding; that would give
   `size` for most files. Tracked internally.
-- **Seekable zstd.** The frames of a `pzstd` file, or the seek table of the seekable-zstd
-  format, are restart points. `indexed_zstd` is frame-granular and bundles the same native
-  core as `indexed_bzip2`, the library ADR 0008 keeps out, so a native frame index is
-  preferred. See [`IDEAS.md`](../IDEAS.md) §Performance.
+- **Frame index without a seek table.** A multi-frame file with no seek table (`pzstd`)
+  gets its frame points only as a forward read reaches them. Walking the frame and block
+  headers would find them without decoding.
 
 ## 8. Verify
 
@@ -256,6 +272,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | A cut zstd frame is `TruncatedError` | `tests/test_codecs.py::test_truncated_zstd_translates_to_truncated` |
 | Skippable frames before a regular frame; alone they are not a claim; the walk stays in the prefix | `tests/test_detection.py::test_zstd_behind_one_skippable_frame`, `::test_zstd_behind_chained_skippable_frames`, `::test_zstd_skippable_frames_alone_are_not_a_zstd_claim`, `::test_zstd_skippable_frame_larger_than_the_prefix_is_not_claimed`, `::test_zstd_skippable_walk_arithmetic` |
 | Backward seeks re-decode and are reported | `tests/test_seekable_streams.py::test_zstd_rewinds_and_warns_on_backward_seek`, `::test_lz4_warns_on_rewind` |
+| Frame starts and the seekable-zstd table give resume points and the size; a bad table degrades; the table is trusted | `tests/test_zstd_seekable.py` |
 | zstd as a ZIP method | `tests/test_zip_native_codecs.py::test_zip_zstd_handbuilt_roundtrip`, `::test_zip_zstd_without_backend_raises` |
 | The zstd window is capped by `max_decoder_memory`, on `.zst` and ZIP method 93 | `tests/test_decoder_limits.py::test_zstd_window_over_libzstd_default_reads_under_the_cap`, `::test_zstd_window_against_the_cap`, `::test_zip_zstd_member_window_is_capped`, `::test_zstd_window_over_libzstd_s_ceiling` |
 | A frame after zero bytes is trailing data, and strict refuses it; zeros at the end and frames with nothing between them stay silent | `tests/test_stream_trailing_data.py::test_a_stream_after_nul_padding_is_trailing_data`, `::test_strict_refuses_a_stream_after_nul_padding`, `::test_a_seek_to_the_end_stops_at_nul_padding`, `::test_nul_padding_at_the_end_and_direct_concatenation_stay_silent` |
@@ -265,7 +282,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 The LZ4 skippable-frame gap has no test; it was measured with the tools in §3.
 
 **Building fixtures.** `compression.zstd` or `backports.zstd` and `lz4.frame` write both
-formats. `zstd`, `pzstd` and `lz4` install from the distribution.
+formats; `tests/streams_util.py::make_seekable_zstd` adds a seek table. `zstd`, `pzstd` and `lz4` install from the distribution.
 
 ## 9. References
 
@@ -277,6 +294,7 @@ formats. `zstd`, `pzstd` and `lz4` install from the distribution.
   [ADR 0008](../decisions/0008-single-accelerator-rapidgzip.md) ·
   [`library-analysis.md`](../library-analysis.md) §zstd, §lz4
 - Code: `internal/streams/codecs/zstd_codec.py` (`ZstdCodec`), `lz4_codec.py` (`Lz4Codec`) ·
-  `internal/streams/codecs/zstd_framing.py` · `internal/streams/codecs/lz4_legacy.py`
+  `internal/streams/codecs/zstd_framing.py` · `internal/streams/codecs/zstd_seek_table.py` ·
+  `internal/streams/codecs/lz4_legacy.py`
 - Handbook: [`single-file.md`](single-file.md) · [`zip.md`](zip.md) (zstd method) ·
   [`7z.md`](7z.md) (LZ4 coder) · [`tar.md`](tar.md)

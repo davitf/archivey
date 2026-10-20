@@ -30,6 +30,7 @@ from archivey.internal.streams.streamtools import (
     DEFAULT_UNKNOWN_LENGTH_READ_STEP,
     ensure_bufferedio,
     is_seekable,
+    read_arrived,
     source_byte_size,
     source_name,
 )
@@ -37,6 +38,7 @@ from archivey.internal.volumes import ConcatenatedFile
 from tests.streams_util import (
     FactSizedReadRecorder,
     NonSeekableBytesIO,
+    QueuedChunks,
     ReadSizeRecorder,
     ShortReadBytesIO,
     ShortReadNonSeekable,
@@ -202,11 +204,12 @@ class _OverCountingReadinto(io.BytesIO):
         self._short_first = short_first
 
     def readinto(self, b: WriteableBuffer, /) -> int:  # type: ignore[override]
-        view = memoryview(b).cast("B")
-        if self._short_first:
-            self._short_first = False
-            return super().readinto(view[:2])
-        return super().readinto(view) + self._extra
+        with memoryview(b) as outer, outer.cast("B") as view:
+            if self._short_first:
+                self._short_first = False
+                with view[:2] as head:
+                    return super().readinto(head)
+            return super().readinto(view) + self._extra
 
 
 def test_readinto_refuses_a_count_larger_than_the_buffer() -> None:
@@ -568,6 +571,43 @@ class _BufferedShortThenStall(io.BufferedIOBase):
         return len(chunk)
 
 
+class _BufferedShortThenZero(_BufferedShortThenStall):
+    """:class:`_BufferedShortThenStall` as PyPy's ``BufferedReader`` answers it:
+    ``readinto`` with nothing ready returns 0, the same as at the end, where CPython
+    returns ``None``. Only ``read`` still tells the stall (``None``) from the end."""
+
+    def readinto(self, b: memoryview, /) -> int | None:  # type: ignore[override]
+        got = super().readinto(b)
+        return 0 if got is None else got
+
+
+class _ZeroThenArrives(io.BufferedIOBase):
+    """``readinto`` answers 0 while ``read`` already has ``data``: bytes that arrived
+    between the two calls. After ``data``, both answer the end."""
+
+    def __init__(self, data: bytes, *, over_read: int = 0) -> None:
+        super().__init__()
+        self._data = data
+        self._over_read = over_read
+
+    def readable(self) -> bool:
+        return True
+
+    def read(self, size: int | None = -1, /) -> bytes:  # type: ignore[override]
+        take = len(self._data) if size is None or size < 0 else size
+        chunk, self._data = self._data[: take + self._over_read], self._data[take:]
+        return chunk
+
+    def readinto(self, b: memoryview, /) -> int:  # type: ignore[override]
+        return 0
+
+
+_STALL_DOUBLES = {
+    "none": _BufferedShortThenStall,  # CPython's answer
+    "zero": _BufferedShortThenZero,  # PyPy's answer
+}
+
+
 _SHORT_THEN_STALL_READS: dict[str, Callable[[ArchiveSource], object]] = {
     "read(n)": lambda s: s.read(10),
     "read(-1)": lambda s: s.read(-1),
@@ -577,11 +617,13 @@ _SHORT_THEN_STALL_READS: dict[str, Callable[[ArchiveSource], object]] = {
 }
 
 
+@pytest.mark.parametrize("double", _STALL_DOUBLES.values(), ids=_STALL_DOUBLES)
 @pytest.mark.parametrize(
     "call", _SHORT_THEN_STALL_READS.values(), ids=_SHORT_THEN_STALL_READS
 )
 def test_buffered_short_then_stall_is_not_end_of_file(
     call: Callable[[ArchiveSource], object],
+    double: type[_BufferedShortThenStall],
 ) -> None:
     """Bytes that have arrived, then a stall, are not a short source.
 
@@ -589,9 +631,28 @@ def test_buffered_short_then_stall_is_not_end_of_file(
     without ever returning ``None``. Taken as final, that is a truncated prefix
     reported as the whole source.
     """
-    wrapped = ArchiveSource.for_stream(_BufferedShortThenStall(b"ABCDE"))  # type: ignore[arg-type]  # BufferedIOBase double
+    wrapped = ArchiveSource.for_stream(double(b"ABCDE"))  # type: ignore[arg-type]  # BufferedIOBase double
     with pytest.raises(BlockingIOError, match="non-blocking"):
         call(wrapped)
+
+
+def test_readinto_zero_while_read_has_bytes_delivers_them() -> None:
+    """A 0 from ``readinto`` is asked again with ``read``: bytes that arrived in
+    between are delivered, not taken for the end."""
+    double = _ZeroThenArrives(b"ABCDE")
+    wrapped = ArchiveSource.for_stream(double)  # type: ignore[arg-type]  # BufferedIOBase double
+    buf = bytearray(10)
+    assert wrapped.readinto(buf) == 5
+    assert bytes(buf[:5]) == b"ABCDE"
+    assert wrapped.readinto(buf) == 0
+
+
+def test_readinto_zero_then_an_over_long_read_is_refused() -> None:
+    """The ``read`` that confirms a 0 is held to its size, as every read here is."""
+    double = _ZeroThenArrives(b"ABCDEFGH", over_read=3)
+    wrapped = ArchiveSource.for_stream(double)  # type: ignore[arg-type]  # BufferedIOBase double
+    with pytest.raises(ValueError, match="the excess is already consumed"):
+        wrapped.readinto(bytearray(4))
 
 
 def _tar_head(n: int) -> bytes:
@@ -1273,3 +1334,97 @@ def test_a_closed_source_refuses_to_read_a_borrowed_stream() -> None:
         source.tell()
     assert caller.tell() == 3
     assert not caller.closed
+
+
+class _BufferedChunks(io.BufferedIOBase):
+    """``QueuedChunks`` behind a buffered surface: ``read`` gathers, ``read1`` does not."""
+
+    def __init__(self, *chunks: bytes | None) -> None:
+        super().__init__()
+        self.raw_chunks = QueuedChunks(*chunks)
+
+    def readable(self) -> bool:
+        return True
+
+    def read(self, size: int | None = -1, /) -> bytes | None:  # type: ignore[override]
+        out = b""
+        want = -1 if size is None else size
+        while want < 0 or len(out) < want:
+            chunk = self.raw_chunks.read(-1 if want < 0 else want - len(out))
+            if chunk is None:
+                return out or None
+            if not chunk:
+                break
+            out += chunk
+        return out
+
+    def read1(self, size: int = -1, /) -> bytes:
+        chunk = self.raw_chunks.read(size)
+        # BufferedReader.read1 answers b"" for a stall as well as for EOF.
+        return b"" if chunk is None else chunk
+
+
+@pytest.mark.parametrize(
+    "wrap", [QueuedChunks, _BufferedChunks], ids=["raw", "buffered"]
+)
+def test_read_arrived_takes_one_reads_worth(wrap: Callable[..., io.IOBase]) -> None:
+    """One read's worth, not a full count; ``b""`` only at the end."""
+    stream = wrap(b"abc", b"defg")
+    assert read_arrived(stream, 10) == b"abc"  # type: ignore[arg-type]  # test double
+    assert read_arrived(stream, 2) == b"de"  # type: ignore[arg-type]  # test double
+    assert read_arrived(stream, 10) == b"fg"  # type: ignore[arg-type]  # test double
+    assert read_arrived(stream, 10) == b""  # type: ignore[arg-type]  # test double
+
+
+@pytest.mark.parametrize(
+    "wrap", [QueuedChunks, _BufferedChunks], ids=["raw", "buffered"]
+)
+def test_read_arrived_refuses_a_stall(wrap: Callable[..., io.IOBase]) -> None:
+    """``None`` from the stream, or a buffered ``read1``'s ``b""`` stall, is not EOF."""
+    stream = wrap(None)
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        read_arrived(stream, 10)  # type: ignore[arg-type]  # test double
+
+
+def test_read_arrived_refuses_a_non_positive_size() -> None:
+    with pytest.raises(ValueError, match="positive"):
+        read_arrived(io.BytesIO(b"x"), 0)
+
+
+def test_read_arrived_refuses_an_over_read() -> None:
+    class _OverReads(io.RawIOBase):
+        def readable(self) -> bool:
+            return True
+
+        def read(self, n: int = -1, /) -> bytes:
+            return b"x" * (n + 1)
+
+    with pytest.raises(ValueError, match="inner returned 5 bytes for read"):
+        read_arrived(_OverReads(), 4)  # type: ignore[arg-type]  # test double
+
+
+def test_peek_arrived_grows_by_one_reads_worth_and_replays() -> None:
+    """``peek_arrived`` makes one read per call and keeps the bytes for the backend."""
+    inner = QueuedChunks(b"abc", b"defg")
+    source = ArchiveSource.for_stream(inner)  # type: ignore[arg-type]  # test double
+    assert source.peek_arrived(10) == b"abc"
+    assert source.peek_arrived(2) == b"ab"  # already held: no read
+    assert inner.calls == 1
+    assert source.peek_arrived(10) == b"abcdefg"
+    assert source.peek_arrived(10) == b"abcdefg"  # no growth: the end
+    assert source.read() == b"abcdefg"
+
+
+def test_peek_arrived_refuses_a_stall() -> None:
+    source = ArchiveSource.for_stream(QueuedChunks(b"ab", None))  # type: ignore[arg-type]  # test double
+    assert source.peek_arrived(10) == b"ab"
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        source.peek_arrived(10)
+
+
+def test_peek_arrived_refuses_a_seekable_source_and_a_negative_size() -> None:
+    with pytest.raises(io.UnsupportedOperation, match="seekable"):
+        ArchiveSource.for_stream(io.BytesIO(b"abc")).peek_arrived(2)
+    source = ArchiveSource.for_stream(QueuedChunks(b"abc"))  # type: ignore[arg-type]  # test double
+    with pytest.raises(ValueError, match="non-negative"):
+        source.peek_arrived(-1)

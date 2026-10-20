@@ -48,11 +48,9 @@ from archivey.exceptions import (
     _UsageTypeError,
     exception_detail,
 )
-from archivey.internal.base_reader import MAX_LINK_TARGET_BYTES
 from archivey.internal.bomb_tracker import (
     AlwaysStopResourceLimitError,
     BombTracker,
-    CopyCounter,
 )
 from archivey.internal.dry_run import DryRun, scratch_for
 from archivey.internal.file_copy_pass import FileCopyPass
@@ -71,10 +69,6 @@ from archivey.internal.link_watch import LinkWatch
 from archivey.internal.logs import extraction as logger
 from archivey.internal.long_paths import long_path, plain
 from archivey.internal.selection import CollectionSelector
-from archivey.internal.windows_reparse import (
-    IO_REPARSE_TAG_MOUNT_POINT,
-    IO_REPARSE_TAG_SYMLINK,
-)
 from archivey.paths import numbered_name
 from archivey.terminal import display_path, quoted
 from archivey.types import (
@@ -102,16 +96,14 @@ if TYPE_CHECKING:
 _CHUNK = 1024 * 1024  # 1 MiB copy chunk
 
 # Prefix of the temp files atomic FILE writes stage in the destination directory
-# (mkstemp appends a random suffix). Python-level failures unlink them; a removal the
-# filesystem refuses (logged) or a hard kill (SIGKILL, power loss) can leave one:
-# leftover ``.archivey-tmp-*`` files in an extraction destination are archivey's and
-# are safe to delete. Documented in docs/extracting.md; keep the value and that doc in
-# sync.
+# (mkstemp appends a random suffix), and of the staging directory of a pass that stages
+# its members (``_write_staged``: a ZIP from a pipe). Python-level failures remove
+# them; a removal the filesystem refuses (logged) or a hard kill (SIGKILL, power loss)
+# can leave one: leftover ``.archivey-tmp-*`` files and directories in an extraction
+# destination are archivey's and are safe to delete once no extraction is running
+# there (a staging directory holds a running pipe extraction's only copy of its
+# data). Documented in docs/extracting.md; keep the value and that doc in sync.
 _TMP_PREFIX = ".archivey-tmp-"
-
-# The fields ``_apply_metadata`` puts on disk.
-_APPLIED_METADATA = ("uid", "gid", "mode", "modified")
-
 
 # A module attribute, not ``os.name`` at each use, so a test can take the Windows path
 # on POSIX.
@@ -312,7 +304,7 @@ class _PassedData(io.RawIOBase):
     decides as it would with the data there (a member it would not write does not
     fail)."""
 
-    def __init__(self, error: ArchiveyError) -> None:
+    def __init__(self, error: ArchiveyError | OSError) -> None:
         super().__init__()
         self._error = error
 
@@ -323,7 +315,7 @@ class _PassedData(io.RawIOBase):
         raise self._error
 
 
-def _passed_data(error: ArchiveyError) -> BinaryIO:
+def _passed_data(error: ArchiveyError | OSError) -> BinaryIO:
     """A ``_PassedData`` that raises ``error``, as the member stream it stands in for."""
     return cast("BinaryIO", _PassedData(error))
 
@@ -351,8 +343,8 @@ def _final_members_only(
     selector: Callable[[ArchiveMember], bool],
 ) -> Callable[[ArchiveMember], bool]:
     """``selector`` for the members the walk will not change, and yes for the rest,
-    which the pass selects provisionally (``_provisionally_selected``) and the end
-    of the pass for good."""
+    which the pass selects provisionally (``_provisionally_selected``) and placement
+    for good (``_stage_then_place``)."""
 
     def select(member: ArchiveMember) -> bool:
         return not member.member_state_final or selector(member)
@@ -363,14 +355,14 @@ def _final_members_only(
 def _provisionally_selected(
     selector: Callable[[ArchiveMember], bool], member: ArchiveMember
 ) -> bool:
-    """Whether the pass reads and writes a member the walk can still change, before
-    the end of the pass selects it for good (``_settle_revised_members``).
+    """Whether the pass stages a member the walk can still change, before placement
+    selects it for good (``_stage_then_place``).
 
     A ``members=`` collection matches any name the member can end up with, so the
-    data of every member it may select is written while the stream holds it, and
+    data of every member it may select is staged while the stream holds it, and
     nothing is recorded as matched yet. A predicate is asked about the member as it
-    is now; a member it leaves out holds a place, and its bytes, if it has any,
-    cannot be written later.
+    is now; the data of a member it leaves out is not staged, and cannot be placed
+    later.
     """
     if isinstance(selector, CollectionSelector):
         return selector.would_select(member, _possible_names(member.name))
@@ -451,6 +443,30 @@ class _Orphan:
     spelled_from: ArchiveMember | None = None
 
 
+@dataclass
+class _Staging:
+    """A member a pass that stages its members met, or one the walk lists that the
+    stream never held (``missing``), on its way to placement (``_stage_then_place``).
+
+    ``final``: the member was final when yielded, so the walk's selection already
+    took it. ``staged``: its data in the staging directory, and ``staged_bytes`` what
+    the bomb limits counted for it. ``error``: the failure that stopped its staging.
+    ``refused``: its local header's name was refused, so nothing was staged.
+    ``reported``: the pass reported it to ``on_progress``. ``reversed``: it is the
+    current copy of its name, though the stream holds another copy after it.
+    """
+
+    member: ArchiveMember
+    final: bool
+    staged: Path | None = None
+    staged_bytes: int = 0
+    error: ArchiveyError | OSError | None = None
+    refused: bool = False
+    missing: CorruptionError | None = None
+    reported: bool = True
+    reversed: bool = False
+
+
 @dataclass(frozen=True)
 class _Claim:
     """A destination claimed by a member written this run, with the index of that
@@ -487,9 +503,9 @@ class _RunState:
     total_estimate: int | None = None
     results: list[ExtractionResult] = field(default_factory=list)
     # Running counts of EXTRACTED and BLOCKED results, kept here rather than in the
-    # pass loop because a REPLACE collision, a link recheck or a streaming take-back
-    # revises an *earlier* member's result and must correct the tally with it
-    # (progress reports tallies of results, not of writes attempted).
+    # pass loop because a REPLACE collision, a link recheck or a streaming pass's
+    # superseded copy revises an *earlier* member's result and must correct the
+    # tally with it (progress reports tallies of results, not of writes attempted).
     members_extracted: int = 0
     members_blocked: int = 0
     # Result index -> output bytes counted for it, for each member that reached
@@ -592,29 +608,12 @@ class _RunState:
     # copy is then copied from that file if it still matches.
     streaming_now: int | None = None
     declined: set[int] = field(default_factory=set)
-    # A pass whose members can change once its walk ends (a ZIP from a pipe, whose
-    # central directory comes last; ``_REVISES_YIELDED_MEMBERS``): result index -> the
-    # member as the pass handled it and the member written for it (``None`` when
-    # nothing was), so the end of the pass settles what changed
-    # (``_settle_revised_members``). ``None`` for a member the selection or the
-    # filter left out during the pass (``_hold_place``).
-    revisable: dict[int, tuple[ArchiveMember, ArchiveMember | None] | None] = field(
-        default_factory=dict
-    )
-    # Results the end of the pass took back with no outcome of their own: the filter
-    # excluded the member once it was changed, so random access records nothing for
-    # it. Dropped from the report when the run returns it.
-    dropped: set[int] = field(default_factory=set)
-    # Held places of members the selection left out, which the pass did not count
-    # toward ``members_done``; the end of the pass counts the ones it writes.
-    untallied: set[int] = field(default_factory=set)
-    # Whether the pass ended and settled what it wrote (``_settle_revised_members``);
-    # a run stopped before then never knew which provisional writes to keep.
-    settled: bool = False
-    # Entries that were at a destination before the run, moved aside so a member
-    # the pass wrote there before the walk settled it could be taken back
-    # (``_set_aside``): the destination -> where the entry is now.
-    set_aside: dict[Path, Path] = field(default_factory=dict)
+    # The staging directory of a pass whose members can change once its walk ends
+    # (a ZIP from a pipe, whose central directory comes last;
+    # ``_REVISES_YIELDED_MEMBERS``): the pass writes each member's data there, and the
+    # members are placed from it once the walk has ended (``_stage_then_place``).
+    # Created on the first staged member; removed when the run ends.
+    staging: Path | None = None
     written_files: dict[tuple[int, Path], tuple[int, int, int, int]] = field(
         default_factory=dict
     )
@@ -649,15 +648,10 @@ class _MemberState:
     # Intra-member progress emit while copying a FILE (None when on_progress is unset
     # or the member has no streamed body).
     emit_progress: Callable[[], None] | None = None
-    # Set by ``_run_pass`` for a member the walk can still change, so a caller's
-    # entry it replaces is moved aside rather than removed (``_set_aside``).
-    provisional: bool = False
-    # Set by ``_redo_revised_member`` when the FILE body is this run's own earlier
-    # copy, read back from disk: nothing is decoded, so it counts as a copy
-    # (``BombTracker.count_copy``), not toward the decompression ratio.
-    recopy: bool = False
-    # Where that earlier copy was moved to be read from (``_open_parked_copy``).
-    recopy_from: Path | None = None
+    # The member's data as the pass staged it (``_stage_then_place``): a FILE written
+    # from it lands by renaming it (``_write_file_atomic``), and its bytes were
+    # counted when it was staged.
+    staged: Path | None = None
     # A streaming pass's earlier copies of this member's name, left in place while it
     # is handled so it can replace one atomically: path -> index of the superseded
     # result. See ``_park_earlier_copies``.
@@ -817,14 +811,21 @@ class ExtractionCoordinator:
         # settled now: report the entries that matched nothing before anything is
         # written or created, so a RAISE disposition refuses the call with nothing on
         # disk.
-        # Without a free list the answer is known only at the end of the pass.
+        # Without a free list the answer is known only at the end of the pass, or,
+        # for a pass that stages its members, once its walk has ended and before any
+        # member is placed (``_stage_then_place``).
         unmatched_pending: CollectionSelector | None = None
+        # A pass that stages its members never has a free list here (its reader lists
+        # nothing up front, and ``extract_all`` refuses a streaming reader whose pass
+        # has started), so ``_stage_then_place`` is its only reporter: the report is
+        # made once.
+        assert not (reader._REVISES_YIELDED_MEMBERS and all_members is not None)
         if isinstance(selector, CollectionSelector):
             if all_members is not None and not listing_damaged:
                 selector.report_unmatched(
                     reader._diagnostics_collector, reader._archive_name
                 )
-            else:
+            elif not reader._REVISES_YIELDED_MEMBERS:
                 unmatched_pending = selector
         # Created only after that report, so a refusal leaves no directory behind.
         created_root = self._ensure_dest_root(dest)
@@ -888,22 +889,18 @@ class ExtractionCoordinator:
             self._run_pass(reader, stream_selector, selected_total)
         except _AbortExtraction as abort:
             # An abort_on trigger fired: no report is returned, and output already
-            # written for earlier members stays on disk (same as OnError.STOP), except
-            # what a revising pass (a ZIP read from a pipe) takes back in ``finally``
-            # below: the files it wrote that could still be links. Nothing
-            # partial exists for the triggering member — every trigger fires before its
-            # write begins, and FILE writes land atomically in any case.
+            # written for earlier members stays on disk (same as OnError.STOP). A pass
+            # that stages its members (a ZIP read from a pipe) has placed none of them
+            # before its walk ends, so a stop then leaves nothing of the run in the
+            # destination. Nothing partial exists for the triggering member — every
+            # trigger fires before its write begins, and FILE writes land atomically
+            # in any case.
             raise abort.error from None
         finally:
-            # Also when the run stops early. A stop before the end of a revising
-            # pass settled every member first takes back the files that may be
-            # links, so the caller's entries they replaced come back below.
-            if self._state.revisable:
-                self._take_back_possible_links()
-            # The caller's entries a streaming pass moved aside come back first,
-            # where nothing of the run's replaced them.
-            if self._state.set_aside:
-                self._restore_set_aside()
+            # Also when the run stops early; first, while the destination root is
+            # still writable (its own deferred metadata comes last).
+            if self._state.staging is not None:
+                self._remove_staging()
             # Links first: remaking one changes its directory, whose times come next.
             self._settle_link_kinds()
             # The directories the run did write end with their stored metadata, as
@@ -914,8 +911,7 @@ class ExtractionCoordinator:
             unmatched_pending.report_unmatched(
                 reader._diagnostics_collector, reader._archive_name
             )
-        dropped = self._state.dropped
-        return [r for i, r in enumerate(self._state.results) if i not in dropped]
+        return self._state.results
 
     def _run_pass(
         self,
@@ -930,191 +926,42 @@ class ExtractionCoordinator:
         discards them rather than returning them.
         """
         state = self._state
-        results = state.results
-        tracker = state.tracker
-        members_done = 0
-        # Archive name -> result index of the latest member of that name that went on to
-        # be written (or tried). Random access stamps last-entry-wins before the pass, so
-        # a shadowed copy reaches the SUPERSEDED branch below and is never recorded here.
-        # A streaming pass learns of the later copy only when it arrives; see
-        # ``_park_earlier_copies``.
-        current_by_name: dict[str, int] = {}
-
         copies = FileCopyPass(keep_source=self._keep_copy_source)
         # Damage that ends the listing ends this loop, not the pass: the members listed
         # before it are all written, including the hardlinks the second pass below
         # completes, and then it is raised. A hardlink only points back, so every
         # source the second pass needs is in that prefix.
-        # The pass is closed on the way out, so an error out of the loop body closes
+        # Each pass is closed on the way out, so an error out of the loop body closes
         # the open member stream (and any unrar child) at once. CPython would close
         # an unnamed pass as soon as the error left the loop; PyPy closes a dropped
         # one only when it is collected. Binding the pass to ``pairs`` is safe only
         # because ``_closing_pass`` closes it: without that, a caller holding the
         # traceback would keep it (and the unrar child) alive on CPython too.
         listing_damage: list[CorruptionError] = []
-        revises = reader._REVISES_YIELDED_MEMBERS
-        # A member the walk can still rename or retype is selected on what it
-        # becomes, so the reader yields it whatever the selection says now; the loop
-        # holds its place (``_hold_place``).
-        walk_selector = (
-            stream_selector
-            if stream_selector is None or not revises
-            else _final_members_only(stream_selector)
-        )
-        pairs = _until_listing_damage(
-            reader, reader._stream_members(walk_selector, copies), listing_damage
-        )
-        with _closing_pass(pairs):
-            for original, stream in pairs:
-                member_started = False
-                recorded_index: int | None = None
-                presented_name: str | None = None
-                rewrites: frozenset[NameRewrite] = frozenset()
-                current = self._current = _MemberState()
-                provisional = current.provisional = (
-                    revises and not original.member_state_final
-                )
-                transformed: ArchiveMember | None = None
-                if (
-                    provisional
-                    and stream_selector is not None
-                    and not _provisionally_selected(stream_selector, original)
-                ):
-                    # The selection is made again on what the member becomes
-                    # (``_settle_revised_members``); until then it holds a place, and
-                    # is not counted as handled.
-                    self._close(stream)
-                    self._hold_place(original, selected_later=True)
-                    continue
-                # What the member was when handled, if the walk can still change it.
-                before = original.replace() if provisional else None
-
-                def record(_error: object, failed: ExtractionResult) -> bool:
-                    nonlocal recorded_index
-                    if results and results[-1].member is failed.member:
-                        recorded_index = len(results) - 1
-                        self._set_result(recorded_index, failed)
-                    else:
-                        recorded_index = self._append_result(failed)
-                    return False
-
-                def cleanup() -> None:
-                    self._close(stream)
-                    if current.parked:
-                        self._drop_parked_copies(original.name, recorded_index)
-
-                with self._handling(
-                    original, kind=original.type.value, record=record, cleanup=cleanup
-                ):
-                    self._park_earlier_copies(
-                        original.name, current_by_name.get(original.name)
+        if reader._REVISES_YIELDED_MEMBERS:
+            self._stage_then_place(reader, stream_selector, copies, listing_damage)
+        else:
+            members_done = 0
+            # Archive name -> result index of the latest member of that name that
+            # went on to be written (or tried). Random access stamps last-entry-wins
+            # before the pass, so a shadowed copy reaches the SUPERSEDED branch of
+            # ``_handle_member`` and is never recorded here. A streaming pass learns
+            # of the later copy only when it arrives; see ``_park_earlier_copies``.
+            current_by_name: dict[str, int] = {}
+            pairs = _until_listing_damage(
+                reader, reader._stream_members(stream_selector, copies), listing_damage
+            )
+            with _closing_pass(pairs):
+                for original, stream in pairs:
+                    self._handle_member(
+                        original,
+                        stream,
+                        current_by_name=current_by_name,
+                        members_done=members_done,
                     )
-                    current_by_name.pop(original.name, None)
-                    # User filter sees every selected member (including non-current);
-                    # the is_current skip is hardwired after the filter and does not
-                    # force a write even if the filter returns the member.
-                    transformed, presented_name, rewrites = self._transform(original)
-                    if transformed is None:
-                        # Filter returned None: caller-elected exclusion — no
-                        # ExtractionResult (same as a selector exclusion). Still counts
-                        # as processed for progress. A member the walk can still change
-                        # holds a place until the filter has seen what it becomes.
-                        if before is not None:
-                            recorded_index = self._hold_place(original)
-                    elif not original.is_current:
-                        recorded_index = self._append_result(
-                            ExtractionResult(
-                                original, None, ExtractionStatus.SUPERSEDED, None
-                            )
-                        )
-                    else:
-                        result_index = recorded_index = self._append_result(
-                            ExtractionResult(
-                                original, None, ExtractionStatus.FAILED, None
-                            )
-                        )
-                        current_by_name[original.name] = result_index
-                        if not original.is_anti:
-                            # Counted only now, once the selector, the filter and the
-                            # universal check have accepted the member: a member skipped
-                            # or rejected before this does not count toward max_entries.
-                            tracker.start_member(original)
-                            member_started = True
-                            if self._on_progress is not None:
-                                # Capture members_done for intra-member reports: members
-                                # fully completed *before* this one. The outcome tallies
-                                # are read live: they change only when a member
-                                # completes, except that this member's REPLACE can
-                                # revise an earlier result first.
-                                done_so_far = members_done
-                                member = original
-
-                                def emit_progress() -> None:
-                                    self._report_progress(
-                                        member, done_so_far, tracker.member_bytes
-                                    )
-
-                                current.emit_progress = emit_progress
-
-                        written = self._write_member(
-                            original, transformed, stream, result_index
-                        )
-                        self._set_result(result_index, written)
-
-                if member_started and recorded_index is not None:
-                    state.counted[recorded_index] = tracker.member_bytes
-                if (
-                    before is not None
-                    and recorded_index is not None
-                    and recorded_index not in state.dropped
-                ):
-                    landed = (
-                        results[recorded_index].status is ExtractionStatus.EXTRACTED
-                    )
-                    state.revisable[recorded_index] = (
-                        before,
-                        transformed if landed else None,
-                    )
-
-                # A portable rewrite is recorded on whatever result this member ended up
-                # with, including a BLOCKED/FAILED one: the rewrite happened before the
-                # outcome.
-                if presented_name is not None and recorded_index is not None:
-                    self._set_result(
-                        recorded_index,
-                        replace(
-                            results[recorded_index],
-                            presented_name=presented_name,
-                            rewrites=rewrites,
-                        ),
-                    )
-
-                members_done += 1
-                self._report_progress(
-                    original,
-                    members_done,
-                    tracker.member_bytes if member_started else 0,
-                )
-                if selected_total is not None and members_done >= selected_total:
-                    break
-
-        failed_at_end: list[tuple[int, ArchiveyError]] = []
-        if state.revisable or reader._failed_at_end:
-            failed_at_end = self._settle_revised_members(stream_selector, members_done)
-        state.settled = True
-        if failed_at_end and self._stops_on_failure():
-            # The first such failure, now that every revision is made.
-            raise min(failed_at_end, key=lambda found: found[0])[1]
-        if listing_damage and any(
-            listing_damage[0] is error for _, error in reader._failed_at_end
-        ):
-            # The walk raised for a member the settlement above has dealt with. Its
-            # result carries the failure, unless a seekable read of the same bytes would
-            # not have read the member's data either: the selection or the filter left
-            # it out, the directory makes it not current, or its result carries an
-            # outcome decided before any of its data was read (by the filter, a policy
-            # check or the overwrite policy). Then nothing reports it, as from a file.
-            listing_damage.clear()
+                    members_done += 1
+                    if selected_total is not None and members_done >= selected_total:
+                        break
 
         # Core second pass: resolve orphaned hardlinks whose (re-readable) source was
         # excluded. Only populated for a seekable source; forward-only orphans already
@@ -1123,6 +970,545 @@ class ExtractionCoordinator:
             self._resolve_orphans(reader)
         if listing_damage:
             raise listing_damage[0]
+
+    def _handle_member(
+        self,
+        original: ArchiveMember,
+        stream: BinaryIO | None,
+        *,
+        current_by_name: dict[str, int] | None,
+        members_done: int,
+        staged: Path | None = None,
+        fail_with: ArchiveyError | OSError | None = None,
+        report: bool = True,
+    ) -> int | None:
+        """Handle one member of a pass: the filter, the policy checks, the overwrite
+        policy and the write, recording its result. Return the index of that result,
+        or ``None`` when no result was recorded (the filter dropped the member).
+
+        ``current_by_name`` is the pass's record of the latest written member of each
+        name (``_run_pass``), or ``None`` where every member's ``is_current`` is final,
+        so no earlier copy is ever taken back (``_park_earlier_copies``).
+        ``members_done`` is the number of members handled before this one. ``staged``
+        is the member's data as a pass staged it (``_stage_then_place``): its bytes and
+        its entry were counted then, so they are not counted again. ``fail_with`` fails
+        a member the pass knows is bad, once the filter and the checks have let it
+        through, for a type that reads no ``stream``. ``report=False`` makes no
+        progress report for it.
+        """
+        state = self._state
+        results = state.results
+        tracker = state.tracker
+        member_started = False
+        recorded_index: int | None = None
+        presented_name: str | None = None
+        rewrites: frozenset[NameRewrite] = frozenset()
+        current = self._current = _MemberState(staged=staged)
+
+        def record(_error: object, failed: ExtractionResult) -> bool:
+            nonlocal recorded_index
+            if results and results[-1].member is failed.member:
+                recorded_index = len(results) - 1
+                self._set_result(recorded_index, failed)
+            else:
+                recorded_index = self._append_result(failed)
+            return False
+
+        def cleanup() -> None:
+            self._close(stream)
+            if current.parked:
+                self._drop_parked_copies(original.name, recorded_index)
+
+        with self._handling(
+            original, kind=original.type.value, record=record, cleanup=cleanup
+        ):
+            if current_by_name is not None:
+                self._park_earlier_copies(
+                    original.name, current_by_name.pop(original.name, None)
+                )
+            # User filter sees every selected member (including non-current); the
+            # is_current skip is hardwired after the filter and does not force a write
+            # even if the filter returns the member.
+            transformed, presented_name, rewrites = self._transform(original)
+            if transformed is None:
+                # Filter returned None: caller-elected exclusion — no ExtractionResult
+                # (same as a selector exclusion). Still counts as processed for progress.
+                pass
+            elif not original.is_current:
+                recorded_index = self._append_result(
+                    ExtractionResult(original, None, ExtractionStatus.SUPERSEDED, None)
+                )
+            else:
+                result_index = recorded_index = self._append_result(
+                    ExtractionResult(original, None, ExtractionStatus.FAILED, None)
+                )
+                if current_by_name is not None:
+                    current_by_name[original.name] = result_index
+                if fail_with is not None and transformed.type is not MemberType.FILE:
+                    raise fail_with
+                if not original.is_anti and staged is None:
+                    # Counted only now, once the selector, the filter and the
+                    # universal check have accepted the member: a member skipped or
+                    # rejected before this does not count toward max_entries.
+                    tracker.start_member(original)
+                    member_started = True
+                    if self._on_progress is not None and report:
+                        # Capture members_done for intra-member reports: members fully
+                        # completed *before* this one. The outcome tallies are read
+                        # live: they change only when a member completes, except that
+                        # this member's REPLACE can revise an earlier result first.
+                        done_so_far = members_done
+                        member = original
+
+                        def emit_progress() -> None:
+                            self._report_progress(
+                                member, done_so_far, tracker.member_bytes
+                            )
+
+                        current.emit_progress = emit_progress
+
+                written = self._write_member(
+                    original, transformed, stream, result_index
+                )
+                self._set_result(result_index, written)
+
+        if member_started and recorded_index is not None:
+            state.counted[recorded_index] = tracker.member_bytes
+
+        # A portable rewrite is recorded on whatever result this member ended up with,
+        # including a BLOCKED/FAILED one: the rewrite happened before the outcome.
+        if presented_name is not None and recorded_index is not None:
+            self._set_result(
+                recorded_index,
+                replace(
+                    results[recorded_index],
+                    presented_name=presented_name,
+                    rewrites=rewrites,
+                ),
+            )
+
+        if report:
+            self._report_progress(
+                original,
+                members_done + 1,
+                tracker.member_bytes if member_started else 0,
+            )
+        return recorded_index
+
+    # --- a pass that stages its members ----------------------------------------------
+
+    def _stage_then_place(
+        self,
+        reader: BaseArchiveReader,
+        selector: Callable[[ArchiveMember], bool] | None,
+        copies: FileCopyPass,
+        listing_damage: list[CorruptionError],
+    ) -> None:
+        """The pass of a reader whose walk changes the members it yielded once it ends
+        (``_REVISES_YIELDED_MEMBERS``: a ZIP from a pipe learns each member's type,
+        mode, host and current copy only from the central directory, after the last
+        member). ``safe-extraction``, "A ZIP extracted from a non-seekable source is
+        settled at the end of the pass", is the contract.
+
+        During the walk each member the selection may take is staged
+        (``_stage_member``): its data goes into one private directory under the
+        destination, and nothing else is written there. Once the walk has ended, the
+        members are placed in listing order by ``_handle_member``, as a pass over the
+        same archive from a file handles them, each FILE landing from its staged file
+        by a rename.
+        """
+        # A member the walk can still rename or retype is selected on what it
+        # becomes, so the reader yields it whatever the selection says now.
+        walk_selector = None if selector is None else _final_members_only(selector)
+        staging: list[_Staging] = []
+        members_done = 0
+        pairs = _until_listing_damage(
+            reader, reader._stream_members(walk_selector, copies), listing_damage
+        )
+        with _closing_pass(pairs):
+            for original, stream in pairs:
+                # A member already final when yielded was selected by ``walk_selector``.
+                entry = _Staging(original, final=original.member_state_final)
+                staging.append(entry)
+                if (
+                    not entry.final
+                    and selector is not None
+                    and not _provisionally_selected(selector, original)
+                ):
+                    # The selection is made again on what the member becomes, at
+                    # placement. Its data is not staged, and it is not counted as
+                    # handled.
+                    entry.reported = False
+                    self._close(stream)
+                    continue
+                self._stage_member(entry, stream, len(staging) - 1, members_done)
+                members_done += 1
+
+        if listing_damage and any(
+            listing_damage[0] is error for _, error in reader._failed_at_end
+        ):
+            # The walk raised for a member placement deals with: its result carries
+            # the failure, unless a seekable read of the same bytes would not have
+            # read the member's data either (the selection or the filter left it out,
+            # the directory makes it not current, or an outcome decided before any
+            # of its data was read). Then nothing reports it, as from a file.
+            listing_damage.clear()
+
+        # A current copy of a name the stream holds again later: the directory
+        # reverses the two copies' order (``_placement_data``).
+        later: set[str] = set()
+        for entry in reversed(staging):
+            name = entry.member.name
+            entry.reversed = name in later and entry.member.is_current
+            later.add(name)
+        # The selection, made for good on what each member became. A member the walk
+        # took out of the listing is not placed.
+        failing = {id(member): error for member, error in reader._failed_at_end}
+        yielded = {id(entry.member) for entry in staging}
+        placing: list[_Staging] = []
+        for entry in staging:
+            member = entry.member
+            if member._member_id in reader._dropped_listed or (
+                not entry.final and selector is not None and not selector(member)
+            ):
+                self._unstage(entry, placed=False)
+                continue
+            placing.append(entry)
+        # A member the directory lists and the stream never held.
+        for member, error in reader._failed_at_end:
+            if id(member) in yielded:
+                continue
+            if selector is not None and not selector(member):
+                continue
+            placing.append(_Staging(member, final=True, missing=error, reported=False))
+        if isinstance(selector, CollectionSelector) and not listing_damage:
+            # Every member has been offered to the selection, before any is placed,
+            # as when the member list is free (``_run``).
+            selector.report_unmatched(
+                reader._diagnostics_collector, reader._archive_name
+            )
+
+        for entry in placing:
+            self._place_member(entry, failing, members_done)
+            if not entry.reported:
+                members_done += 1
+        if placing:
+            # The outcome tallies count placed results only: one report gives them,
+            # once placement ends.
+            last = placing[-1]
+            self._report_progress(last.member, members_done, last.staged_bytes)
+
+    def _place_member(
+        self,
+        entry: _Staging,
+        failing: dict[int, CorruptionError],
+        members_done: int,
+    ) -> None:
+        """Place ``entry``'s member once the walk has ended (``_stage_then_place``), and
+        drop what is left of its staged data."""
+        stream, fail_with = self._placement_data(entry, failing)
+        index: int | None = None
+        try:
+            index = self._handle_member(
+                entry.member,
+                stream,
+                current_by_name=None,
+                members_done=members_done,
+                staged=entry.staged if stream is None else None,
+                fail_with=fail_with,
+                report=False,
+            )
+        finally:
+            results = self._state.results
+            placed = index is not None and results[index].status in (
+                ExtractionStatus.EXTRACTED,
+                ExtractionStatus.OVERWRITTEN,
+            )
+            self._unstage(entry, placed=placed)
+
+    def _stage_member(
+        self, entry: _Staging, stream: BinaryIO | None, position: int, members_done: int
+    ) -> None:
+        """Stage ``entry``'s member while the pass holds its data, and report it to
+        ``on_progress``.
+
+        The universal path-safety checks and the name policy run first, on the
+        member as its local header names it (``_check_local_name``). A member they
+        refuse is not staged; the refusal stops the run at once where ``abort_on``
+        or ``OnError.STOP`` stops on it, and waits for placement otherwise. A FILE
+        with data is then written to the staging directory, counted toward the bomb
+        limits as any write is. A failure while it is written stops an
+        ``OnError.STOP`` run at once, and is otherwise kept for placement, as is a
+        refusal. A directory or an empty file stages nothing.
+        """
+        tracker = self._state.tracker
+        original = entry.member
+        started = False
+
+        def record(error: ArchiveyError | OSError, failed: ExtractionResult) -> bool:
+            if started:
+                entry.error = error
+            else:
+                entry.refused = True
+            # A failure under STOP, or a block under ``AbortOn.BLOCKED_MEMBER``, stops
+            # the run now (``_stop_or_log``); anything else waits for placement, which
+            # records and logs it.
+            if failed.status is ExtractionStatus.FAILED:
+                return not self._stops_on_failure()
+            return AbortOn.BLOCKED_MEMBER not in self._abort_on
+
+        def cleanup() -> None:
+            self._close(stream)
+
+        self._current = _MemberState()
+        with self._handling(
+            original, kind=original.type.value, record=record, cleanup=cleanup
+        ):
+            self._check_local_name(original)
+            if (
+                original.type is MemberType.FILE
+                and original.size != 0
+                and not original.is_anti
+            ):
+                tracker.start_member(original)
+                started = True
+                emit: Callable[[], None] | None = None
+                if self._on_progress is not None:
+
+                    def emit() -> None:
+                        self._report_progress(
+                            original, members_done, tracker.member_bytes
+                        )
+
+                try:
+                    entry.staged = self._write_staged(stream, position, emit)
+                except BaseException:
+                    tracker.refund(tracker.member_bytes)
+                    raise
+                entry.staged_bytes = tracker.member_bytes
+        self._report_progress(original, members_done + 1, entry.staged_bytes)
+
+    def _check_local_name(self, original: ArchiveMember) -> None:
+        """Run the universal checks and the name policy on ``original`` as its local
+        header names it, before its data is staged (``_stage_member``).
+
+        Raises the refusal, or ``NameRewrittenError`` (through ``_AbortExtraction``)
+        under ``AbortOn.NAME_SANITIZED``. The directory can still make ``\\`` a
+        separator (a DOS host), so a member is refused only when every name it can end
+        with is refused, and aborted on for a rewrite only when every such name is
+        rewritten. The caller's filter does not run: it runs once, at placement."""
+        names = [original.name]
+        separated = original.name.replace("\\", "/")
+        if separated != original.name:
+            names.append(separated)
+        refusal: ExtractionError | None = None
+        rewrite: NameRewrittenError | None = None
+        for name in names:
+            candidate = (
+                original if name == original.name else original.replace(name=name)
+            )
+            try:
+                found = self._local_name_rewrite(candidate)
+            except ExtractionError as exc:
+                refusal = refusal or exc
+                continue
+            if found is None:
+                return
+            rewrite = rewrite or found
+        if rewrite is not None:
+            raise _AbortExtraction(rewrite)
+        assert refusal is not None
+        raise refusal
+
+    def _local_name_rewrite(self, member: ArchiveMember) -> NameRewrittenError | None:
+        """The checks of ``_check_local_name`` on one name: raise its refusal, or
+        return the error ``AbortOn.NAME_SANITIZED`` would stop on (``None`` when it
+        would not), as ``_transform`` decides them without a filter."""
+        transformed = POLICY_TRANSFORMS[self._policy](member)
+        rerooted_from: str | None = None
+        if self._policy is not ExtractionPolicy.STRICT:
+            rerooted = reroot_absolute(transformed)
+            if rerooted.name != transformed.name:
+                rerooted_from = transformed.name
+            transformed = rerooted
+        dest_root = self._state.dest_root
+        self._check_universal(transformed, dest_root)
+        portable = apply_name_policy(transformed, self._policy)
+        if portable is not transformed:
+            try:
+                self._check_universal(portable, dest_root)
+            except ExtractionError as exc:
+                _report_stored_spelling(exc, portable, transformed)
+                raise
+        if AbortOn.NAME_SANITIZED not in self._abort_on:
+            return None
+        if rerooted_from is not None:
+            return NameRewrittenError(
+                f"Absolute name re-rooted: {quoted(rerooted_from)} -> "
+                f"{quoted(transformed.name)}",
+                member_name=member.name,
+            )
+        if portable.name != transformed.name:
+            return NameRewrittenError(
+                f"Name rewritten for portability: {quoted(transformed.name)} -> "
+                f"{quoted(portable.name)}",
+                member_name=member.name,
+            )
+        return None
+
+    def _write_staged(
+        self,
+        stream: BinaryIO | None,
+        position: int,
+        emit_progress: Callable[[], None] | None,
+    ) -> Path:
+        """Write a member's data from ``stream`` to the staging directory, under its
+        position in the pass, and return where; on any failure nothing of it stays.
+
+        The directory is ``.archivey-tmp-`` and a random suffix, directly under the
+        destination, created private on the first call. Each file is created at the
+        ordinary creation mode, which a placed file without a stored mode keeps
+        (``_write_file_atomic``). A dry run creates the file empty, as it creates
+        every file."""
+        state = self._state
+        if state.staging is None:
+            staging = self._temp_sibling(state.dest)
+            os.mkdir(long_path(staging), 0o700)
+            state.staging = staging
+        # Every check that could still skip the member has passed, so a member whose
+        # recorded size is already over the ratio is refused before its data is read.
+        state.tracker.check_recorded_size()
+        path = state.staging / str(position)
+        fd = _open_new_file(path, 0o666)
+        try:
+            with os.fdopen(fd, "wb") as dst:
+                self._copy_to_fileobj(
+                    stream,
+                    dst if self._dry is None else self._dry.sink,
+                    state.tracker,
+                    emit_progress=emit_progress,
+                )
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(long_path(path))
+            raise
+        return path
+
+    def _placement_data(
+        self, entry: _Staging, failing: dict[int, CorruptionError]
+    ) -> tuple[BinaryIO | None, ArchiveyError | OSError | None]:
+        """The data ``_handle_member`` places ``entry``'s member from, and the error
+        that fails it where it reads none, as ``(stream, fail_with)``. A ``None``
+        stream with a staged file means the staged file.
+
+        The data stands in for what a pass over the same archive from a file reads.
+        A stream that raises (``_PassedData``) raises only when the write reads it,
+        so the overwrite policy decides first:
+
+        - A member with no local entry raises the walk's error where it reads data.
+        - Any other member the end of the walk fails (``_failed_at_end``) raises the
+          walk's error, whatever its type and whatever it staged.
+        - The current copy of a name the stream holds again after it (the directory
+          reverses the two copies' order) raises ``CorruptionError`` unless it is
+          empty, as the archive contradicts itself.
+        - A member whose staging failed raises that failure; a link among them fails
+          with it too, as its target came from the data that failed.
+        - A member with a staged file is placed from it.
+        - A member that needs no bytes (a directory, a link, an empty file) needs no
+          data.
+        - Any other member's data went by unstaged: its local header's name was
+          refused, or the selection left it out during the pass.
+        """
+        member = entry.member
+        is_file = member.type is MemberType.FILE
+        missing = entry.missing
+        if missing is not None:
+            return (_passed_data(missing) if is_file else None), None
+        failed = failing.get(id(member))
+        if failed is not None:
+            return (_passed_data(failed) if is_file else None), failed
+        if entry.reversed and is_file and member.size != 0:
+            return (
+                _passed_data(
+                    CorruptionError(
+                        f"The archive's directory makes {quoted(member.name)} the "
+                        "current copy of its name, though the stream holds a later "
+                        "copy",
+                        member_name=member.name,
+                    )
+                ),
+                None,
+            )
+        if entry.error is not None:
+            if is_file:
+                return _passed_data(entry.error), None
+            return None, entry.error if member.type is MemberType.SYMLINK else None
+        if entry.staged is not None or not is_file:
+            return None, None
+        if member.size == 0:
+            return io.BytesIO(), None
+        why = (
+            "its local header's name was refused"
+            if entry.refused
+            else "the archive's directory changed the member"
+        )
+        return (
+            _passed_data(
+                ExtractionError(
+                    f"The data of {quoted(member.name)} was passed before {why}, "
+                    "and was not kept",
+                    member_name=member.name,
+                )
+            ),
+            None,
+        )
+
+    def _unstage(self, entry: _Staging, *, placed: bool) -> None:
+        """Remove ``entry``'s staged file if it is still there, and stop counting what
+        the bomb limits counted for it: its bytes, and its entry too unless its member
+        was ``placed`` (a link placed without its data). The archive-wide ratio keeps
+        its bytes: they were decoded."""
+        staged = entry.staged
+        if staged is None:
+            return
+        entry.staged = None
+        if not os.path.lexists(long_path(staged)):
+            # Landed: it is the member's file now.
+            return
+        self._state.tracker.refund(entry.staged_bytes, entry=not placed)
+        with contextlib.suppress(OSError):
+            os.chmod(long_path(staged), stat.S_IREAD | stat.S_IWRITE)
+        with contextlib.suppress(OSError):
+            os.unlink(long_path(staged))
+
+    def _remove_staging(self) -> None:
+        """Remove the staging directory and whatever is left in it, when the run ends.
+        Each entry is made writable first, as a stored mode can leave a staged file
+        read-only, which Windows refuses to remove. A removal the filesystem refuses
+        leaves the directory, with a warning naming it: it is safe to delete."""
+        state = self._state
+        staging = state.staging
+        if staging is None:
+            return
+        state.staging = None
+        root = long_path(staging)
+        try:
+            with os.scandir(root) as entries:
+                names = [entry.name for entry in entries]
+            for name in names:
+                path = os.path.join(root, name)
+                with contextlib.suppress(OSError):
+                    os.chmod(path, stat.S_IREAD | stat.S_IWRITE)
+                os.unlink(path)
+            os.rmdir(root)
+        except OSError as exc:
+            self._rebase_os_error(exc)
+            logger.warning(
+                "Could not remove %r, where the members were staged before the "
+                "archive's directory was read: %s",
+                str(self._shown(staging)),
+                exc,
+            )
 
     def _park_earlier_copies(self, name: str, earlier: int | None) -> None:
         """Park every earlier non-directory copy of ``name`` still on disk for the
@@ -1176,8 +1562,8 @@ class ExtractionCoordinator:
 
     def _take_back_written(self, index: int) -> None:
         """Undo what result ``index`` put on disk and counted, for a member a streaming
-        pass wrote and must now handle otherwise (``_supersede_written_copy``,
-        ``_redo_revised_member``); the caller records its new result.
+        pass wrote and must now handle otherwise (``_supersede_written_copy``); the
+        caller records its new result.
 
         A file is parked in ``_current``, a directory removed when empty, and the
         claim, hardlink-source entries and bomb-limit counts are released.
@@ -1210,46 +1596,6 @@ class ExtractionCoordinator:
             member_bytes = state.counted.pop(index)
             state.tracker.refund(0 if content_kept else member_bytes)
         state.orphans[:] = [o for o in state.orphans if o.result_index != index]
-
-    @contextlib.contextmanager
-    def _taking_back(self, index: int) -> Iterator[None]:
-        """Run a take-back of result ``index`` outside the handling of any member: it
-        gets its own member state, and the copies it parks are removed when it ends."""
-        self._current = _MemberState()
-        try:
-            yield
-        finally:
-            self._drop_parked_copies(self._state.results[index].member.name, None)
-
-    def _open_parked_copy(self, path: Path) -> BinaryIO:
-        """Open the parked copy at ``path`` to write its member again, from a temporary
-        name beside it: the write may land on ``path`` itself (on Windows, a DOS name
-        whose backslashes the directory makes separators), and Windows refuses to
-        replace a file that is open."""
-        aside = self._temp_sibling(path.parent)
-        os.replace(long_path(path), long_path(aside))
-        self._current.recopy_from = aside
-        self._current.parked.pop(path, None)
-        return open(long_path(aside), "rb")  # noqa: SIM115
-
-    def _remove_recopy_source(self, aside: Path, name: str) -> None:
-        """Remove the moved parked copy once its member is written again or failed:
-        the parked copy goes either way (``_drop_parked_copies``). A removal the
-        filesystem refuses is logged, not raised: this runs in a ``finally``."""
-        with contextlib.suppress(OSError):
-            os.chmod(long_path(aside), stat.S_IREAD | stat.S_IWRITE)
-        try:
-            os.unlink(long_path(aside))
-        except FileNotFoundError:
-            pass
-        except OSError as exc:
-            self._rebase_os_error(exc)
-            logger.warning(
-                "Could not remove %r, the earlier copy of %r: %s",
-                str(self._shown(aside)),
-                name,
-                exc,
-            )
 
     def _drop_parked_copies(self, name: str, result_index: int | None) -> None:
         """Remove each parked copy of ``name`` unless the member just handled, recorded
@@ -1295,596 +1641,6 @@ class ExtractionCoordinator:
                 state.unremoved.setdefault(name, {})[path] = index
             else:
                 state.written_paths.discard(path)
-
-    def _settle_revised_members(
-        self, selector: Callable[[ArchiveMember], bool] | None, members_done: int
-    ) -> list[tuple[int, ArchiveyError]]:
-        """Bring what the pass wrote in line with the members as the walk left them
-        (``_REVISES_YIELDED_MEMBERS``): a ZIP from a pipe learns each member's mode,
-        host and full type only from the central directory, after the last member.
-
-        The selection is made here, on what each member became: one it no longer
-        selects is taken back with no result, as random access never saw it. A member
-        the selection or the filter left out during the pass held a place
-        (``_hold_place``) and is handled now, if it is selected, so the filter sees
-        it again; one the selection had left out is counted toward ``members_done``
-        then, as the pass did not count it. A member whose type or name changed is
-        handled again from the start (``_redo_revised_member``). One whose metadata
-        alone changed gets it applied to what was written
-        (``_reapply_revised_metadata``). A member the walk took out of the listing is
-        taken back as an unselected one is. Then the failures only the end of the
-        walk finds are settled (``_settle_failures_at_end``), and returned for the
-        run to stop on. Nothing else is touched.
-        """
-        state = self._state
-        reader = state.reader
-        # ``state.revisable`` keeps the members not settled yet, so a run that stops
-        # part way takes back what of theirs may be a link (``_run``).
-        revisable = state.revisable
-        # Members inside a folder come after it, so the last are taken back first and
-        # the folder is empty by the time its turn comes.
-        for index in sorted(revisable, reverse=True):
-            member = state.results[index].member
-            if member._member_id in reader._dropped_listed or (
-                selector is not None and not selector(member)
-            ):
-                del revisable[index]
-                if index not in state.dropped:
-                    self._unselect_revised_member(index)
-        # The selection is final from here: a member settled so far is kept, if
-        # the run stops now, as a file run keeps what it wrote before stopping.
-        state.settled = True
-        settling = list(revisable)
-        for index in settling:
-            handled = revisable.pop(index)
-            member = state.results[index].member
-            if handled is None:
-                self._redo_revised_member(index)
-                # A member the filter then drops counts too, as it does in the pass.
-                if index in state.untallied:
-                    members_done += 1
-                    self._report_progress(
-                        member, members_done, state.counted.get(index, 0)
-                    )
-                continue
-            before, written = handled
-            if index in state.dropped:
-                self._redo_revised_member(index)
-            elif member.type is not before.type or member.name != before.name:
-                self._redo_revised_member(index)
-            elif written is not None:
-                self._reapply_revised_metadata(index, before, written)
-        return self._settle_failures_at_end(settling, selector, members_done)
-
-    def _settle_failures_at_end(
-        self,
-        indices: list[int],
-        selector: Callable[[ArchiveMember], bool] | None,
-        members_done: int,
-    ) -> list[tuple[int, ArchiveyError]]:
-        """Give the results at ``indices`` the outcome random access would, for what
-        only the end of the walk finds (``design.md`` of the native ZIP reader,
-        "Failures found at the end of the pass"), and return the failures, by result
-        index, for the run to stop on once all of them are made.
-
-        - A member the walk made not current is taken back, if the pass wrote it, and
-          ``SUPERSEDED`` whatever its write came to: random access never writes it. A
-          refusal from the filter or the policy checks, made before any write (no
-          ``requested_path``), stands, as random access runs them on every copy.
-        - A member the walk fails (``_failed_at_end``: its data is not what the index
-          describes) is taken back and ``FAILED`` with the walk's error, if it is
-          current.
-        - A member the walk made current after the pass superseded it is handled
-          again; its bytes were not written, so it fails unless it needs none.
-        - A member the walk fails that it never yielded (an index entry with no data
-          in the stream) gets a ``FAILED`` result, if it is selected
-          (``_settle_missing_member``), and is reported to ``on_progress`` then, as
-          ``members_done`` past the pass's count.
-
-        Whatever was at the path stays only if a member's result there is
-        ``EXTRACTED``: the bytes random access would write there have gone by.
-        """
-        state = self._state
-        reader = state.reader
-        failures: list[tuple[int, ArchiveyError]] = []
-        for index in indices:
-            result = state.results[index]
-            refused_before_write = (
-                result.status in (ExtractionStatus.BLOCKED, ExtractionStatus.FAILED)
-                and result.requested_path is None
-            )
-            if (
-                index not in state.dropped
-                and result.status is not ExtractionStatus.SUPERSEDED
-                and not refused_before_write
-                and not result.member.is_current
-            ):
-                with self._taking_back(index):
-                    self._supersede_written_copy(index)
-        failing = {id(member): error for member, error in reader._failed_at_end}
-        for index in indices:
-            result = state.results[index]
-            member = result.member
-            if index in state.dropped:
-                failing.pop(id(member), None)
-                continue
-            error = failing.pop(id(member), None)
-            if error is not None:
-                if result.status is ExtractionStatus.EXTRACTED or (
-                    member.is_current and result.status is ExtractionStatus.SUPERSEDED
-                ):
-                    self._fail_at_end(index, error)
-                    failures.append((index, error))
-            elif result.status is ExtractionStatus.SUPERSEDED and member.is_current:
-                self._hold_place_at(index)
-                self._redo_revised_member(index, damaged=True, failures=failures)
-        for member, error in reader._failed_at_end:
-            if id(member) not in failing:
-                continue
-            if selector is not None and not selector(member):
-                continue
-            members_done += 1
-            self._settle_missing_member(member, error, failures)
-            self._report_progress(member, members_done, 0)
-        if self._stops_on_failure():
-            # The run raises the first and drops the report: no line has a reader.
-            return failures
-        for index, error in failures:
-            # archivey/cli/logging_config.py matches this format string literally.
-            logger.warning(
-                "Skipping %s %r: %s",
-                state.results[index].member.type.value,
-                state.results[index].member.name,
-                error,
-            )
-        return failures
-
-    def _settle_missing_member(
-        self,
-        member: ArchiveMember,
-        error: ArchiveyError,
-        failures: list[tuple[int, ArchiveyError]],
-    ) -> None:
-        """Give ``member``, which the index lists and the stream never held, the
-        result random access gives it: it is handled as a held place
-        (``_redo_revised_member``), so the filter, the policy checks and the overwrite
-        policy run as for any member, and its data, read where the write needs it,
-        fails with ``error``. A ``FAILED`` result is appended to ``failures`` for the
-        caller to stop on; any other outcome stops or is logged there, as the pass
-        does."""
-        index = self._append_result(
-            ExtractionResult(member, None, ExtractionStatus.SUPERSEDED, None)
-        )
-        self._state.dropped.add(index)
-        self._redo_revised_member(index, missing=error, failures=failures)
-
-    def _fail_at_end(self, index: int, error: ArchiveyError) -> None:
-        """Take back what result ``index`` wrote, and record it ``FAILED``."""
-        state = self._state
-        prior = state.results[index]
-        with self._taking_back(index):
-            self._take_back_written(index)
-        self._set_result(
-            index,
-            ExtractionResult(
-                prior.member,
-                None,
-                ExtractionStatus.FAILED,
-                error,
-                presented_name=prior.presented_name,
-                rewrites=prior.rewrites,
-            ),
-        )
-
-    def _unselect_revised_member(self, index: int) -> None:
-        """Take back what result ``index`` wrote for a member the selection no longer
-        takes, now that the walk has settled it, and leave it no result. The
-        folders created for it go too, once empty: random access never wrote it."""
-        state = self._state
-        path = state.results[index].path
-        with self._taking_back(index):
-            self._take_back_written(index)
-            self._hold_place_at(index)
-        # One whose own member the selection also drops is removed when its turn
-        # comes, which is after everything inside it.
-        self._remove_created_parents(path)
-
-    def _remove_created_parents(self, path: Path | None) -> None:
-        """Remove the folders this run created as parents of ``path`` alone, now that
-        what it wrote there is taken back: each while it is empty, up to the first
-        one a member of the run wrote, or one the run found there."""
-        state = self._state
-        parent = path.parent if path is not None else None
-        while parent is not None and parent != state.dest:
-            if parent not in state.created_dirs or parent in state.written_paths:
-                break
-            try:
-                os.rmdir(long_path(parent))
-            except OSError:
-                break
-            self._forget_removed_directory(parent)
-            parent = parent.parent
-
-    def _forget_removed_directory(self, path: Path) -> None:
-        """Drop what the run recorded for the directory it just removed at ``path``:
-        its deferred metadata, and the records that it is the run's own."""
-        state = self._state
-        self._drop_pending_dir(path)
-        state.created_dirs.discard(path)
-        state.written_paths.discard(path)
-        key = self._physical_key(path)
-        recorded = state.run_dirs.get(key)
-        if recorded is not None:
-            recorded.discard(self._physical_path(path))
-            if not recorded:
-                del state.run_dirs[key]
-
-    def _hold_place(
-        self, member: ArchiveMember, *, selected_later: bool = False
-    ) -> int:
-        """Record a result for ``member`` that the report leaves out unless the end
-        of the pass gives it an outcome (``_settle_revised_members``), and return its
-        index. Nothing is kept of it but the result: the end of the pass reads the
-        member the reader holds. ``selected_later`` marks a member the selection
-        left out, which the pass did not count as handled (``untallied``)."""
-        state = self._state
-        index = self._append_result(
-            ExtractionResult(member, None, ExtractionStatus.SUPERSEDED, None)
-        )
-        state.dropped.add(index)
-        state.revisable[index] = None
-        if selected_later:
-            state.untallied.add(index)
-        return index
-
-    def _hold_place_at(self, index: int) -> None:
-        """Turn result ``index`` back into a held place with no outcome."""
-        member = self._state.results[index].member
-        self._set_result(
-            index, ExtractionResult(member, None, ExtractionStatus.SUPERSEDED, None)
-        )
-        self._state.dropped.add(index)
-
-    def _set_aside(self, path: Path) -> None:
-        """Move the caller's entry at ``path`` (a file, a symlink or an empty
-        directory) to a free name beside it, for a member the walk can still change
-        that is about to replace it (``_MemberState.provisional``).
-
-        Random access writes such a member only once the selection and the filter
-        have seen what it is, and only then replaces what the caller had there. A
-        streaming pass writes it before, so the entry it replaces is kept until the
-        end of the run (``_restore_set_aside``)."""
-        aside = self._temp_sibling(path.parent)
-        os.rename(long_path(path), long_path(aside))
-        self._state.set_aside[path] = aside
-
-    def _restore_set_aside(self) -> None:
-        """Put back each entry ``_set_aside`` moved, unless the run's final write is
-        at its path, as random access would have replaced it too; then the entry is
-        removed. One whose path holds something else now is left where it was moved,
-        with a warning, rather than lost.
-
-        An entry moved aside for a parent a member implied
-        (``_make_room_for_parents``) is the same: the run's directory there replaced
-        it, unless that directory is gone, as when its member was not selected in the
-        end (``_unselect_revised_member``).
-
-        A run that stopped before the end of its pass never settled what it wrote
-        there, so that write is taken back and the caller's entry returns: whether
-        the member was selected is not known. A write the filesystem refuses to take
-        back leaves the entry where it was moved, with a warning."""
-        state = self._state
-        set_aside, state.set_aside = state.set_aside, {}
-        for path, aside in set_aside.items():
-            on_disk = long_path(aside)
-            try:
-                if not state.settled and path in state.written_paths:
-                    self._remove_unsettled(path)
-                elif not state.settled and path in state.created_dirs:
-                    self._remove_unsettled_tree(path)
-                replaced = path in state.written_paths or path in state.created_dirs
-                if replaced and not any(
-                    path in unremoved for unremoved in state.unremoved.values()
-                ):
-                    if os.path.isdir(on_disk) and not os.path.islink(on_disk):
-                        os.rmdir(on_disk)
-                    else:
-                        os.unlink(on_disk)
-                elif os.path.lexists(long_path(path)):
-                    logger.warning(
-                        "Could not put back %r, moved aside while the archive's "
-                        "directory was read: its place is taken. It is at %r",
-                        str(self._shown(path)),
-                        str(self._shown(aside)),
-                    )
-                else:
-                    os.rename(on_disk, long_path(path))
-                    self._note_link_change(path)
-            except OSError as exc:
-                self._rebase_os_error(exc)
-                logger.warning(
-                    "Could not settle %r, moved aside while the archive's directory "
-                    "was read: %s",
-                    str(self._shown(path)),
-                    exc,
-                )
-
-    def _take_back_possible_links(self) -> None:
-        """Remove each file a revising pass wrote whose member the walk could still
-        make a link, when the run stops before the end of the pass settled it
-        (``_settle_revised_members``).
-
-        A ZIP from a pipe yields every member that is not a directory as a ``FILE``:
-        only the central directory, after the last member, says which are symlinks.
-        Until then the pass writes a link's target text as a file's content. A run
-        that stops before the directory never learns which, and a link left on disk
-        as a file holding its target is a wrong answer (DR-1), where random access
-        would have made the link, or refused it. So every such file whose data could
-        be a link's is taken back: one of at most ``MAX_LINK_TARGET_BYTES`` bytes,
-        the longest target a read gives, or one that starts with a Windows symlink or
-        junction reparse tag, whose buffer the directory can make a link at any
-        length. A longer file stays; as a link its target is over the cap, which a
-        read reports as an error and extraction never creates.
-
-        A file the filesystem refuses to remove stays, with a warning. Nothing is
-        reported for it: a stopped run returns no results. The folders made for these
-        members stay, unlike those ``_unselect_revised_member`` removes: the member was
-        written, so a file read stopped at the same point made and kept them too.
-        """
-        state = self._state
-        for index, handled in state.revisable.items():
-            if handled is None:
-                continue
-            _before, written = handled
-            result = state.results[index]
-            path = result.path
-            if (
-                written is None
-                or written.type is not MemberType.FILE
-                or result.status is not ExtractionStatus.EXTRACTED
-                or path is None
-                or path not in state.written_paths
-            ):
-                continue
-            try:
-                if not self._may_be_link_data(path):
-                    continue
-                self._remove_unsettled(path)
-            except OSError as exc:
-                self._rebase_os_error(exc)
-                logger.warning(
-                    "Could not remove %r, written before the archive's directory "
-                    "said whether it is a symlink: %s",
-                    str(self._shown(path)),
-                    exc,
-                )
-
-    @staticmethod
-    def _may_be_link_data(path: Path) -> bool:
-        """Whether the regular file at ``path`` holds what a link member's data can
-        be: a target within ``MAX_LINK_TARGET_BYTES``, or a Windows reparse buffer
-        for a symlink or a junction (``_take_back_possible_links``)."""
-        target = long_path(path)
-        info = os.lstat(target)
-        if not stat.S_ISREG(info.st_mode):
-            return False
-        if info.st_size <= MAX_LINK_TARGET_BYTES:
-            return True
-        with open(target, "rb") as f:
-            head = f.read(4)
-        return int.from_bytes(head, "little") in (
-            IO_REPARSE_TAG_MOUNT_POINT,
-            IO_REPARSE_TAG_SYMLINK,
-        )
-
-    def _remove_unsettled_tree(self, path: Path) -> None:
-        """``_remove_unsettled`` for what the run wrote or created at ``path`` and
-        under it, deepest first. A folder that still has entries stays.
-
-        A failure to remove ``path`` itself propagates, as one entry left under it
-        makes that removal fail: the run's directory is still there, so the caller
-        must not take it as replaced (``_restore_set_aside``)."""
-        state = self._state
-        under = {
-            p
-            for p in (*state.written_paths, *state.created_dirs)
-            if p.is_relative_to(path) and p != path
-        }
-        for p in sorted(under, key=lambda p: len(p.parts), reverse=True):
-            with contextlib.suppress(OSError):
-                self._remove_unsettled(p)
-        self._remove_unsettled(path)
-
-    def _remove_unsettled(self, path: Path) -> None:
-        """Remove what the run wrote at ``path`` before its pass was cut short (a
-        file, a link or an empty folder); a folder with entries stays."""
-        state = self._state
-        target = long_path(path)
-        if os.path.isdir(target) and not os.path.islink(target):
-            os.rmdir(target)
-            self._forget_removed_directory(path)
-        else:
-            os.unlink(target)
-            self._note_link_change(path)
-        state.written_paths.discard(path)
-
-    def _reapply_revised_metadata(
-        self, index: int, before: ArchiveMember, written: ArchiveMember
-    ) -> None:
-        """Apply to result ``index``'s entry the metadata its member gained after it
-        was written (a mode, owner or time the central directory holds).
-
-        The policy transform runs on the member as it is now, and each field it
-        changes replaces the written one, unless the caller's filter had set that
-        field itself: what the filter returned wins, as it does when nothing changed.
-        A directory's metadata is still waiting for the end of the run, so its entry
-        there is replaced instead.
-        """
-        state = self._state
-        result = state.results[index]
-        path = result.path
-        if (
-            result.status is not ExtractionStatus.EXTRACTED
-            or path is None
-            or path not in state.written_paths
-        ):
-            return
-        transform = POLICY_TRANSFORMS[self._policy]
-        was = transform(before)
-        now = transform(result.member)
-        changes = {
-            name: getattr(now, name)
-            for name in _APPLIED_METADATA
-            if getattr(written, name) == getattr(was, name)
-            and getattr(now, name) != getattr(was, name)
-        }
-        if not changes:
-            return
-        revised = written.replace(**changes)
-        if revised.type is MemberType.DIRECTORY:
-            pending = state.pending_dirs.get(self._physical_key(path), {})
-            if self._physical_path(path) in pending:
-                self._defer_directory_metadata(path, revised)
-        elif not os.path.islink(long_path(path)):
-            self._apply_metadata(path, revised)
-
-    def _redo_revised_member(
-        self,
-        index: int,
-        *,
-        damaged: bool = False,
-        missing: ArchiveyError | None = None,
-        failures: list[tuple[int, ArchiveyError]] | None = None,
-    ) -> None:
-        """Handle result ``index``'s member again, now that the walk has changed its
-        type or name, as random access would have handled it from the start.
-
-        The filter and the policy checks run again on the changed member
-        (``safe-extraction``), and whatever the pass wrote for it is taken back first,
-        so a refusal leaves nothing at its path. A file whose name changed is written
-        again from the bytes already on disk; a link's target comes from its data,
-        which the reader kept. A member that now needs bytes the stream has passed,
-        and that were not written, fails when the write reads them (``_PassedData``),
-        unless it has none (an empty file): the overwrite policy decides first, as it
-        does in random access, so a member it would not write does not fail. That is
-        also how a member the pass left out (a held place) is handled: its bytes were
-        not written, so it can be a link, a directory or an empty file, and fails
-        otherwise. Results other than ``EXTRACTED`` and ``BLOCKED`` stand: nothing was
-        written for them that the change could alter.
-
-        ``damaged``: the walk changed the member because the archive contradicts
-        itself, so a failure for passed bytes is ``CorruptionError``. ``missing``: the
-        member's data was never in the stream (``_settle_missing_member``), and reading
-        it raises this, whatever its size. ``failures``:
-        a failure is appended there for the caller to stop on, not stopped on here.
-        """
-        state = self._state
-        result = state.results[index]
-        member = result.member
-        held_place = index in state.dropped
-        if not held_place and result.status not in (
-            ExtractionStatus.EXTRACTED,
-            ExtractionStatus.BLOCKED,
-        ):
-            return
-        current = self._current = _MemberState()
-        written = result.status is ExtractionStatus.EXTRACTED
-        old_path = result.path if written else None
-        held: BinaryIO | None = None
-        member_started = False
-        presented_name: str | None = None
-        rewrites: frozenset[NameRewrite] = frozenset()
-
-        def record(error: ArchiveyError | OSError, failed: ExtractionResult) -> bool:
-            state.dropped.discard(index)
-            self._set_result(index, failed)
-            if (
-                failures is not None
-                and failed.status is ExtractionStatus.FAILED
-                and isinstance(error, ArchiveyError)
-            ):
-                failures.append((index, error))
-                return True
-            return False
-
-        def cleanup() -> None:
-            self._close(held)
-            if current.recopy_from is not None:
-                self._remove_recopy_source(current.recopy_from, member.name)
-            if current.parked:
-                self._drop_parked_copies(member.name, index)
-
-        def remove_parents() -> None:
-            if written and old_path is not None and old_path not in state.written_paths:
-                # What an EXTRACTED result wrote is gone (a parked file only now): the
-                # folders made for it alone go too, while empty. Random access makes
-                # them only if the member is written there, and then they stay.
-                self._remove_created_parents(old_path)
-
-        with self._handling(
-            member,
-            kind=member.type.value,
-            record=record,
-            cleanup=cleanup,
-            after=remove_parents,
-        ):
-            # A BLOCKED result wrote nothing, and is released all the same: what it
-            # was charged, if anything, is refunded rather than charged twice.
-            self._take_back_written(index)
-            transformed, presented_name, rewrites = self._transform(member)
-            if transformed is None:
-                # Not tallied, then dropped from the report.
-                self._hold_place_at(index)
-            elif held_place and not member.is_current:
-                state.dropped.discard(index)
-            else:
-                state.dropped.discard(index)
-                if transformed.type is MemberType.FILE:
-                    if missing is not None:
-                        held = _passed_data(missing)
-                    elif old_path is not None and old_path in current.parked:
-                        held = self._open_parked_copy(old_path)
-                        current.recopy = True
-                    elif member.size == 0:
-                        held = io.BytesIO()
-                    elif damaged:
-                        held = _passed_data(
-                            CorruptionError(
-                                f"The data of {quoted(member.name)} was passed before "
-                                "the archive's directory made it the current copy of "
-                                "its name, and was not written",
-                                member_name=member.name,
-                            )
-                        )
-                    else:
-                        held = _passed_data(
-                            ExtractionError(
-                                f"The data of {quoted(member.name)} was passed before "
-                                "the archive's directory changed the member, and was "
-                                "not written",
-                                member_name=member.name,
-                            )
-                        )
-                if not member.is_anti:
-                    state.tracker.start_member(member)
-                    member_started = True
-                self._set_result(
-                    index, ExtractionResult(member, None, ExtractionStatus.FAILED, None)
-                )
-                self._set_result(
-                    index, self._write_member(member, transformed, held, index)
-                )
-        if member_started:
-            state.counted[index] = state.tracker.member_bytes
-        if presented_name is not None:
-            self._set_result(
-                index,
-                replace(
-                    state.results[index],
-                    presented_name=presented_name,
-                    rewrites=rewrites,
-                ),
-            )
 
     def _is_callers_entry(self, path: Path, st: os.stat_result) -> bool:
         """Whether the entry at ``path`` (``st`` its ``lstat``) was there before this
@@ -2424,6 +2180,9 @@ class ExtractionCoordinator:
 
         Directories are structural (parents recur, entries merge) and are never claimed
         in the map, so a directory member landing on a real directory merges into it.
+        A non-directory member landing on a directory this run wrote or created as a
+        parent still collides with it (``_run_directory_at``): ``collided_with`` and the
+        abort apply, and the policy then meets the directory as it would any other.
         One landing on an entry that is not a real directory (a file or a symlink) goes
         through the same resolution as any other member: under every policy it collides
         with a claim this run holds there, so ``collided_with``, the abort and a REPLACE
@@ -2457,19 +2216,57 @@ class ExtractionCoordinator:
             if prior is not None and self._policy is not ExtractionPolicy.TRUSTED
             else None
         )
+        if (
+            collided is None
+            and transformed.type != MemberType.DIRECTORY
+            and self._policy is not ExtractionPolicy.TRUSTED
+        ):
+            collided = self._run_directory_at(requested)
         if collided is not None:
-            assert prior is not None
-            self._check_collision_abort(original, transformed, prior)
+            self._check_collision_abort(original, collided, directory=prior is None)
         if self._overwrite is OverwritePolicy.RENAME:
             if prior is not None or self._occupied(requested):
                 is_dir = transformed.type == MemberType.DIRECTORY
                 free = self._derive_free_name(requested, is_dir=is_dir)
                 return free, None, collided
             return requested, None, None
-        if collided is not None:
-            assert prior is not None
+        if prior is not None and collided is not None:
             return prior.physical, prior, collided
-        return requested, None, None
+        # A directory of this run (``collided``, set) is met where it is, by name.
+        return requested, None, collided
+
+    def _run_directory_at(self, path: Path) -> Path | None:
+        """The directory this run wrote or created as a parent at ``path``, under any
+        spelling that reaches it (``_is_run_directory``), or ``None``.
+
+        Returned as the directory member's result reports it when one wrote it, so a
+        caller joins ``collided_with`` to that result by path; a directory the run
+        only created as a parent has no result, and is returned as ``path``."""
+        state = self._state
+        # Every directory the run created on disk is in ``run_dirs``: a run that made
+        # none under this key pays no ``lstat``. A directory that was already in
+        # ``dest`` is not there, even when a DIRECTORY member of this run merged into
+        # it and reports it: it is the caller's, so landing on it is no collision.
+        if not state.run_dirs.get(self._physical_key(path)):
+            return None
+        try:
+            st = os.lstat(long_path(path))
+        except (OSError, ValueError):
+            return None
+        if not stat.S_ISDIR(st.st_mode) or not self._is_run_directory(path, st):
+            return None
+        # The key is casefolded, so on a case-sensitive filesystem it can also cover
+        # another directory (``X/`` beside ``x/``): only the same directory counts.
+        for index in reversed(state.written_dirs.get(self._collision_key(path), ())):
+            written = state.results[index].path
+            if written is None:
+                continue
+            if written == path:
+                return written
+            with contextlib.suppress(OSError, ValueError):
+                if os.path.samestat(st, os.lstat(long_path(written))):
+                    return written
+        return path
 
     def _callers_parent(self, path: Path) -> Path | None:
         """The parent of ``path`` under the destination that the caller holds as an
@@ -2677,9 +2474,12 @@ class ExtractionCoordinator:
         logger.warning("Skipping %s %r: %s", kind, name, error)
 
     def _check_collision_abort(
-        self, original: ArchiveMember, transformed: ArchiveMember, prior: _Claim
+        self, original: ArchiveMember, collided: Path, *, directory: bool
     ) -> None:
-        """Abort on a collision event if the caller asked to be stopped by one.
+        """Abort on a collision event with ``collided`` if the caller asked to be
+        stopped by one. ``directory`` says that ``collided`` is a directory this run
+        made (``_run_directory_at``), which no member may have written: one created
+        only as a parent is at the name the aborting member asked for.
 
         Fires on **every** non-TRUSTED collision whatever resolution follows — replaced,
         skipped, errored or renamed — because the trigger is the collision itself, not its
@@ -2688,10 +2488,10 @@ class ExtractionCoordinator:
         """
         if AbortOn.NAME_COLLISION not in self._abort_on:
             return
+        what = "a directory this run created at" if directory else "already-written"
         raise _AbortExtraction(
             NameCollisionError(
-                f"Name collision with already-written "
-                f"{display_path(self._shown(prior.path))}",
+                f"Name collision with {what} {display_path(self._shown(collided))}",
                 member_name=original.name,
             )
         )
@@ -2939,7 +2739,8 @@ class ExtractionCoordinator:
         declined = self._make_room(original, transformed, dest_path, atomic=True)
         if declined is not None:
             return declined
-        if stream is None and self._current.retyped:
+        staged = self._current.staged
+        if stream is None and staged is None and self._current.retyped:
             # The pass yielded this member as a link, with no data stream, before its
             # data showed it is a file. Random access opens it now. A forward-only pass
             # is already past that data, so the content is out of reach: fail the member
@@ -2966,7 +2767,7 @@ class ExtractionCoordinator:
         else:
             state.streaming_now = id(original) if stream is not None else None
             try:
-                self._write_file_atomic(stream, dest_path, transformed)
+                self._write_file_atomic(stream, dest_path, transformed, staged=staged)
             finally:
                 state.streaming_now = None
         if self._dry is None and id(original) in state.declined:
@@ -3345,8 +3146,8 @@ class ExtractionCoordinator:
                     error: ArchiveyError | OSError, failed: ExtractionResult
                 ) -> bool:
                     # One failed source, N failed links: the fan-out is recorded on the
-                    # results themselves, so a caller can tell N separate failures from
-                    # one failure seen N times without joining against a diagnostic.
+                    # results themselves, so a caller can tell N separate failures from one
+                    # failure seen N times without joining against a diagnostic.
                     # Nothing the second pass runs raises FilterRejectionError.
                     assert failed.status is ExtractionStatus.FAILED
                     self._record_failure_group(group, error)
@@ -3924,16 +3725,6 @@ class ExtractionCoordinator:
         # member replaces it under any policy, as random access would never have
         # written it.
         parked = dest_path in self._current.parked
-        # A member the walk can still change keeps the caller's entry it replaces
-        # (``_set_aside``): the end of the pass may not select it.
-        # On Windows a read-only entry of the caller's is not moved: replacing it
-        # fails, as it does from a file (``_readonly_cleared``).
-        aside = (
-            not parked
-            and self._current.provisional
-            and self._is_callers_entry(dest_path, st)
-            and not (_WINDOWS and not st.st_mode & stat.S_IWRITE)
-        )
         if not parked:
             # A real directory recreated as a directory is fine under any policy.
             if member.type == MemberType.DIRECTORY and stat.S_ISDIR(existing):
@@ -3965,21 +3756,19 @@ class ExtractionCoordinator:
                     if next(entries, None) is not None:
                         raise ExtractionError(
                             f"Destination is a directory that is not empty: "
-                            f"{display_path(dest_path)}",
+                            f"{display_path(self._shown(dest_path))}",
                             member_name=member.name,
                         )
                 self._note_link_change(dest_path)
-                if aside:
-                    self._set_aside(dest_path)
-                else:
-                    with self._readonly_cleared(dest_path):
-                        os.rmdir(long_path(dest_path))
+                with self._readonly_cleared(dest_path):
+                    os.rmdir(long_path(dest_path))
                 # Its member's metadata has no directory left to go on.
                 self._drop_pending_dir(dest_path)
                 self._current.removed_existing = True
-                # A directory member of this run that wrote it no longer has it. This is
-                # not a collision event (directories are never claimed), so only the
-                # result is revised; ``collided_with`` is untouched. Only under REPLACE:
+                # A directory member of this run that wrote it no longer has it, so its
+                # result is revised (directories are never claimed, so there is no
+                # claim to hand over; ``_resolve_collision`` set this member's
+                # ``collided_with`` from ``_run_directory_at``). Only under REPLACE:
                 # RENAME reaches this arm only after a filesystem race, with nothing of
                 # this run's here, and OVERWRITTEN is a REPLACE outcome.
                 if self._overwrite is OverwritePolicy.REPLACE:
@@ -3990,10 +3779,7 @@ class ExtractionCoordinator:
         # RENAME over an existing file or symlink.
         if moves_links:
             self._note_link_change(dest_path)
-        if aside:
-            self._set_aside(dest_path)
-            self._current.removed_existing = True
-        elif not atomic:
+        if not atomic:
             with self._readonly_cleared(dest_path):
                 os.unlink(long_path(dest_path))
             # A parked copy's result is already SUPERSEDED: nothing to revise.
@@ -4003,7 +3789,12 @@ class ExtractionCoordinator:
         return True
 
     def _write_file_atomic(
-        self, stream: BinaryIO | None, dest_path: Path, member: ArchiveMember
+        self,
+        stream: BinaryIO | None,
+        dest_path: Path,
+        member: ArchiveMember,
+        *,
+        staged: Path | None = None,
     ) -> None:
         """Write a FILE by streaming into a temp sibling, applying ``member``'s metadata,
         then ``os.replace()``-ing it onto ``dest_path`` — atomic, so a mid-stream failure
@@ -4017,7 +3808,17 @@ class ExtractionCoordinator:
         creation would, ``0o666`` less the umask, rather than ``mkstemp``'s private
         ``0o600``. Nothing chmods it afterwards, so the temp's creation mode is the file's
         final mode. STRICT and STANDARD give a mode-less member their own default instead
-        (see ``_effective_mode``), so this arm is TRUSTED's alone."""
+        (see ``_effective_mode``), so this arm is TRUSTED's alone.
+
+        ``staged`` is the member's data as a pass staged it (``_stage_then_place``),
+        created at the ordinary creation mode. It gets ``member``'s metadata and lands
+        by the same swap, and ``stream`` is not read: nothing is copied, and nothing is
+        counted again, since its bytes were counted when it was staged. Where the swap
+        cannot rename it (another filesystem mounted inside the destination), it is
+        copied, uncounted, as any stream is."""
+        if staged is not None:
+            self._land_staged(staged, dest_path, member)
+            return
         # Every check that could still skip the member has passed, so a member whose
         # recorded size is already over the ratio is refused before any temp file
         # exists.
@@ -4039,9 +3840,7 @@ class ExtractionCoordinator:
                 self._copy_to_fileobj(
                     stream,
                     dst if self._dry is None else self._dry.sink,
-                    CopyCounter(self._state.tracker)
-                    if self._current.recopy
-                    else self._state.tracker,
+                    self._state.tracker,
                     emit_progress=self._current.emit_progress,
                 )
             self._apply_metadata(tmp, member)
@@ -4063,11 +3862,43 @@ class ExtractionCoordinator:
                 )
             raise
 
+    def _land_staged(
+        self, staged: Path, dest_path: Path, member: ArchiveMember
+    ) -> None:
+        """Land the staged file ``staged`` on ``dest_path`` (``_write_file_atomic``)."""
+        self._apply_metadata(staged, member)
+        try:
+            self._swap_into_place(staged, dest_path, member)
+        except OSError as exc:
+            if exc.errno != errno.EXDEV:
+                raise
+        else:
+            return
+        tmp = self._temp_sibling(dest_path.parent)
+        try:
+            with (
+                open(long_path(staged), "rb") as src,
+                os.fdopen(_open_new_file(tmp, 0o600), "wb") as dst,
+            ):
+                self._copy_to_fileobj(src, dst, None)
+            self._apply_metadata(tmp, member)
+            if self._effective_mode(member) is None:
+                os.chmod(
+                    long_path(tmp), stat.S_IMODE(os.stat(long_path(staged)).st_mode)
+                )
+            self._swap_into_place(tmp, dest_path, member)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(long_path(tmp))
+            raise
+        with contextlib.suppress(OSError):
+            os.unlink(long_path(staged))
+
     @staticmethod
     def _copy_to_fileobj(
         stream: BinaryIO | None,
         dst: BinaryIO,
-        tracker: BombTracker | CopyCounter | None,
+        tracker: BombTracker | None,
         emit_progress: Callable[[], None] | None = None,
     ) -> None:
         """Copy ``stream`` into the already-open ``dst`` in chunks, counting each toward the

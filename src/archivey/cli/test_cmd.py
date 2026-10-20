@@ -106,9 +106,13 @@ def run_test(
         member_error: BaseException | None = None
         try:
             # Manual iteration so open-time failures (wrong password, corrupt header)
-            # count as FAIL and still reach the summary (F4). Once the pass raises,
-            # further next() yields StopIteration — remaining members are lost (library
-            # limitation for solid / poisoned streams); report them as "not tested" (P8).
+            # count as FAIL and still reach the summary (F4). A member's data error is
+            # raised from its own stream read and the pass goes on, solid archives
+            # included. Of the damage cases, only damage to the archive's structure (a
+            # cut TAR, a failed compressed TAR stream, a pipe ZIP whose local-header
+            # walk loses its place) makes the pass raise; so can non-damage errors such
+            # as a ListingLimits bound. Further next() then yields StopIteration and
+            # the remaining members are reported "not tested" (P8).
             # The ``with`` ends the pass here, deterministically, whatever leaves the
             # loop (Ctrl-C, a broken stderr pipe), rather than leaving a suspended
             # pass for ``reader.close()`` or the garbage collector to end while the

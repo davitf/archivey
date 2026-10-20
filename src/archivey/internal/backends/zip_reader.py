@@ -50,6 +50,7 @@ from datetime import datetime
 from functools import lru_cache
 from typing import (
     TYPE_CHECKING,
+    Any,
     BinaryIO,
     Literal,
     NamedTuple,
@@ -136,7 +137,7 @@ from archivey.internal.backends.zipcrypto import (
     password_matches_check_byte,
 )
 from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
-from archivey.internal.config import stream_config_from_archivey
+from archivey.internal.config import StreamConfig, stream_config_from_archivey
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
 from archivey.internal.hashing import crc32_digest
@@ -165,18 +166,25 @@ from archivey.internal.password_confirm import (
 )
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
-from archivey.internal.streams.archive_stream import ArchiveStream
+from archivey.internal.streams.archive_stream import (
+    ArchiveStream,
+    ExceptionTranslator,
+    RewindWarning,
+)
 from archivey.internal.streams.codecs import (
     Codec,
     CodecParams,
     decode_lzma_filter_properties,
+    open_codec_raw,
     open_codec_stream,
 )
 from archivey.internal.streams.streamtools import (
     DelegatingStream,
     SharedView,
     SlicingStream,
+    is_seekable,
     read_exact,
+    source_byte_size,
 )
 from archivey.internal.streams.verify import VerifyingStream, ask_digest_intact
 from archivey.internal.timestamps import (
@@ -1354,6 +1362,17 @@ class ZipReader(BaseArchiveReader):
             self._config,
             streaming=streaming,
             seekable=MemberStreams.SEEKABLE in member_streams,
+        )
+        # What every member's decoder config shares, built once rather than per member.
+        # The member's compressed size is the codec's input exactly, so a byte after
+        # the codec's end of stream is CorruptionError (DR-3; 7-Zip: "There are some
+        # data after the end of the payload data", an error in ZIP). That covers a
+        # declared size short of an LZMA or PPMd stream too: the rest of the stream is
+        # input left after the size (``DataAfterEndError``).
+        self._member_decoder_config = replace(
+            self._stream_config,
+            refuse_input_after_end=True,
+            collector=self._diagnostics_collector,
         )
         # One handle and one lock for everything that reads the archive: the directory
         # walk, local headers, and every member's SharedView. A read holds the lock for
@@ -2810,22 +2829,20 @@ class ZipReader(BaseArchiveReader):
         header only, and their directory copies are empty or hold the times alone. A
         file read takes the owner from the directory alone, so a local-only ``0x7855``
         gives it no owner, and the pass must end with the directory's owner too. Left
-        ``None`` here, the owner reaches extraction the way the mode does: nothing is
-        applied as the member is written, and the directory's owner is applied at the
-        end of the pass. Yielding the local ids instead would make extraction
-        ``chown`` at write time, which the directory could not take back. A ZIP with
-        no directory has no owner from either read.
+        ``None`` here, the owner reaches extraction the way the mode does: extraction
+        places the member only once the directory is read, with the directory's owner.
+        Yielding the local ids instead would give the pass an owner no file read
+        gives. A ZIP with no directory has no owner from either read.
 
         A backslash is a literal character until the host says otherwise, except at the
         end of the name, which makes the member a ``DIRECTORY`` until then: a DOS or
-        Windows writer marks its folders that way, and a folder the pass wrote as a file
-        would stop every member inside it from being written, where a directory the host
-        turns out not to make one is taken back at the end of the pass. Nothing is
-        reported here: on a pipe the directory's version of the
-        member reports what it finds, once. A ZIP with no directory lists this
-        member as it stands (``_iter_walked``), and reports nothing for it either,
-        as the pipe read reports nothing when no directory arrives; the listing then
-        raises.
+        Windows writer marks its folders that way, and the pass stages no bytes for
+        what is usually a folder. A member the host then makes a file with data is not
+        placed: it fails, its data never staged, where a file read writes it. Nothing is
+        reported here: on a pipe the directory's version of the member reports what it
+        finds, once. A ZIP with no directory lists this member as it stands
+        (``_iter_walked``), and reports nothing for it either, as the pipe read reports
+        nothing when no directory arrives; the listing then raises.
         """
         header = entry.header
         central = _central_from_local(entry)
@@ -3104,8 +3121,9 @@ class ZipReader(BaseArchiveReader):
         """Decode a member body through the shared codec layer.
 
         ``body`` is the member's data as the codec sees it: the raw payload of an
-        unencrypted member, or the plaintext out of a decrypt stage. Every member,
-        encrypted or not, decodes here. Failures raise as ``ArchiveyError``.
+        unencrypted member, or the plaintext out of a decrypt stage. Every encrypted
+        member decodes here; an unencrypted one decodes in :meth:`_open_codec_member`,
+        with the same config. Failures raise as ``ArchiveyError``.
 
         ``sequential_body`` marks a body that seeks only by re-reading from its start
         (the ZipCrypto stage). ``AUTO`` accelerators then stay off: they read their
@@ -3113,46 +3131,92 @@ class ZipReader(BaseArchiveReader):
         ``keyed_settings`` marks codec settings a ZipCrypto key decrypted
         (:attr:`_ZipCipher.keyed_settings`).
         """
-        size = member.size
-        # The member's compressed size is the codec's input exactly, so a byte after
-        # the codec's end of stream is CorruptionError (DR-3; 7-Zip: "There are some
-        # data after the end of the payload data", an error in ZIP). That covers a
-        # declared size short of an LZMA or PPMd stream too: the rest of the stream is
-        # input left after the size (``DataAfterEndError``).
-        config = replace(
-            self._stream_config,
-            expected_decompressed_size=size,
-            refuse_input_after_end=True,
-        )
-        if sequential_body:
-            config = replace(
-                config,
-                use_rapidgzip=_sequential_accelerator(config.use_rapidgzip),
-                use_indexed_bzip2=_sequential_accelerator(config.use_indexed_bzip2),
-            )
-        try:
-            try:
-                params = self._member_codec_params(
-                    loc, body, method=method, size=size, keyed=keyed_settings
-                )
-            except ArchiveyError as exc:
-                # A codec header refused where it is read (malformed, cut short, or
-                # a setting archivey cannot decode): stamped with the member, as a
-                # raw decoder error from the same member would be.
-                self._reraise_member_error(exc, member.name)
-            return open_codec_stream(
+        return self._open_decoder(
+            loc,
+            member,
+            body,
+            method=method,
+            codec=codec,
+            sequential_body=sequential_body,
+            keyed_settings=keyed_settings,
+            open_codec=lambda config, params: open_codec_stream(
                 codec,
                 body,
                 config=config,
                 params=params,
                 seekable=self._stream_config.seekable,
                 collector=self._diagnostics_collector,
+            ),
+        )
+
+    def _open_decoder(
+        self,
+        loc: _ZipLocator,
+        member: ArchiveMember,
+        body: BinaryIO,
+        *,
+        method: int,
+        codec: Codec,
+        sequential_body: bool,
+        keyed_settings: bool,
+        open_codec: Callable[[StreamConfig, CodecParams], _T],
+    ) -> _T:
+        """Read the codec header and build the config ``codec`` opens with.
+
+        ``open_codec`` opens it. ``body`` is closed if anything here fails.
+        """
+        try:
+            try:
+                params = self._member_codec_params(
+                    loc, body, method=method, size=member.size, keyed=keyed_settings
+                )
+            except ArchiveyError as exc:
+                # A codec header refused where it is read (malformed, cut short, or
+                # a setting archivey cannot decode): stamped with the member, as a
+                # raw decoder error from the same member would be.
+                self._reraise_member_error(exc, member.name)
+            return open_codec(
+                self._member_config(body, member, codec, sequential_body), params
             )
         except BaseException as exc:
             body.close()
             if isinstance(exc, _ZIP_MEMBER_READ_ERRORS):
                 self._reraise_member_error(exc, member.name)
             raise
+
+    def _member_config(
+        self,
+        body: BinaryIO,
+        member: ArchiveMember,
+        codec: Codec,
+        sequential_body: bool,
+    ) -> StreamConfig:
+        """The decoder config for one member: one copy of the reader's, or none.
+
+        Each copy of this dataclass costs a few microseconds, and a reader makes one
+        per member it opens.
+        """
+        base = self._member_decoder_config
+        if codec is Codec.STORED:
+            # ``StoredCodec`` reads nothing from its config, and the codec openers do
+            # no config work for a stored stream source.
+            return base
+        changes: dict[str, Any] = {"expected_decompressed_size": member.size}
+        # The codec opener fills the input size from ``body`` as it finds it, in a
+        # copy of its own. Filled here instead while ``body`` is still at its start,
+        # where the opener would read the same value from the same object. A codec
+        # header read (LZMA, PPMd) moves it, and the opener then measures the view
+        # it puts over the rest.
+        if not is_seekable(body) or body.tell() == 0:
+            input_size = source_byte_size(body)
+            if input_size is not None:
+                changes["compressed_input_size"] = input_size
+        if sequential_body:
+            changes["use_rapidgzip"] = _sequential_accelerator(base.use_rapidgzip)
+            changes["use_indexed_bzip2"] = _sequential_accelerator(
+                base.use_indexed_bzip2
+            )
+        return replace(base, **changes)
 
     def _member_codec_params(
         self,
@@ -3197,9 +3261,20 @@ class ZipReader(BaseArchiveReader):
         return CodecParams()
 
     def _verified_member_stream(
-        self, decoded: BinaryIO, member: ArchiveMember
+        self,
+        decoded: BinaryIO,
+        member: ArchiveMember,
+        *,
+        translate: ExceptionTranslator | None = None,
+        rewind_warning: RewindWarning | None = None,
+        seekable: bool | None = None,
     ) -> ArchiveStream:
-        """The public member stream, with the stored CRC and size fused in."""
+        """The public member stream, with the stored CRC and size fused in.
+
+        ``translate``, ``rewind_warning`` and ``seekable`` go to
+        :meth:`_wrap_member_stream`, for a ``decoded`` that is a bare codec stream
+        rather than an ``ArchiveStream`` (:meth:`_open_codec_member`).
+        """
         hashes = member.hashes
         size = member.size
         if hashes or size is not None:
@@ -3222,26 +3297,61 @@ class ZipReader(BaseArchiveReader):
                 verify_member=member if fill is None else fill,
                 end_check=None if unknown is None else unknown.check,
                 fill_size=fill is not None,
+                translate=translate,
+                rewind_warning=rewind_warning,
+                seekable=seekable,
             )
         # A listed member carries a size, or a digest when its size is unknown (with
         # no CRC-32, ``_to_member`` keeps the stored size); only a caller's own
         # copy rebuilt with ``replace(size=None, hashes={})`` gets here, and is then
         # not verified.
-        return self._wrap_member_stream(decoded, member.name, size=size)
+        return self._wrap_member_stream(
+            decoded,
+            member.name,
+            size=size,
+            translate=translate,
+            rewind_warning=rewind_warning,
+            seekable=seekable,
+        )
 
     def _open_codec_member(
         self, loc: _ZipLocator, member: ArchiveMember
     ) -> ArchiveStream:
-        """Decode an unencrypted ZIP member through the shared codec layer."""
+        """Decode an unencrypted ZIP member through the shared codec layer.
+
+        The codec opens bare (``open_codec_raw``), and the member stream carries its
+        translator and rewind warning, so the member has one ``ArchiveStream``.
+        :meth:`_decode_body` instead builds the codec's own stream, which the member
+        stream then collapses away. An encrypted member keeps that, because its
+        password checks read the decoded body before the member stream exists.
+        """
         codec = self._member_codec(loc.method, member.name)
-        decoded = self._decode_body(
+        body = self._open_raw_payload(loc, member)
+        opened = self._open_decoder(
             loc,
             member,
-            self._open_raw_payload(loc, member),
+            body,
             method=loc.method,
             codec=codec,
+            sequential_body=False,
+            keyed_settings=False,
+            open_codec=lambda config, params: open_codec_raw(
+                codec, body, config=config, params=params
+            ),
         )
-        return self._verified_member_stream(decoded, member)
+        # What the codec's own stream, built with ``seekable=`` the config's seek
+        # demand, would have answered: seekable only with that demand set and a
+        # decoder that can seek, and with a rewind warning only under that demand.
+        seek_demand = self._stream_config.seekable
+        return self._verified_member_stream(
+            opened.stream,
+            member,
+            translate=opened.translate,
+            rewind_warning=opened.rewind_warning if seek_demand else None,
+            seekable=(
+                self._seek_declared() and seek_demand and is_seekable(opened.stream)
+            ),
+        )
 
     def _payload_is_complete(self, loc: _ZipLocator, member: ArchiveMember) -> bool:
         """Whether the file holds every byte of ``loc``'s declared payload."""

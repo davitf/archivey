@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import sys
 from types import ModuleType
 
 from archivey.internal import logs
@@ -55,8 +56,8 @@ class LazyOptional:
 
     def __init__(self, name: str, *, present: bool | None = None) -> None:
         self.name = name
-        # ``present=`` overrides the lookup, for tests: ``False`` stands for an absent
-        # package, ``True`` for an installed one.
+        # ``present=`` overrides the lookup: ``False`` stands for an absent package
+        # (also one archivey does not use here), ``True`` for an installed one (tests).
         self._present = present
         self._module: ModuleType | None = None
         self._import_failed = False
@@ -101,10 +102,32 @@ class LazyOptional:
 
 
 zstd = _optional_zstd()
-lz4_frame = _optional("lz4.frame")
-lz4_block = _optional("lz4.block")
+# Packages archivey does not use under PyPy, with why. It reads as if they were absent, and
+# the reason replaces the install advice wherever a missing package is reported
+# (``MissingComponent.reason``). dev-docs/known-issues.md has the symptoms, the versions
+# measured and the upstream status. tests/conftest.py keeps its own copy of these names
+# (``UNUSED_UNDER_PYPY``), because it must block the imports before archivey loads.
+UNDER_PYPY = sys.implementation.name == "pypy"
+_UNUSED_UNDER_PYPY = {
+    "lz4": "archivey does not use lz4 under PyPy, where its frame decoder crashes the "
+    "interpreter",
+    "pyppmd": "archivey does not use pyppmd under PyPy, where it returns PPMd data cut "
+    "short",
+    "rapidgzip": "archivey does not use rapidgzip under PyPy, where it misreads valid "
+    "streams",
+}
+
+
+def unused_reason(package: str) -> str:
+    """Why archivey does not use ``package`` on this interpreter although it may be
+    installed, or ``""`` when it uses it whenever it is installed."""
+    return _UNUSED_UNDER_PYPY.get(package, "") if UNDER_PYPY else ""
+
+
+lz4_frame = None if unused_reason("lz4") else _optional("lz4.frame")
+lz4_block = None if unused_reason("lz4") else _optional("lz4.block")
 brotli = LazyOptional("brotli")
-pyppmd = LazyOptional("pyppmd")
+pyppmd = LazyOptional("pyppmd", present=False if unused_reason("pyppmd") else None)
 inflate64 = LazyOptional("inflate64")
 # rapidgzip runs in a child process for every codec it decodes (gzip, zlib, raw deflate
 # and bzip2), so this process only needs to know it is installed. bzip2 uses rapidgzip's

@@ -12,11 +12,12 @@ outside `out/`, and an archive that expands far beyond its size is stopped. [Wha
 with unusual members](#what-each-policy-does-with-unusual-members) has the details.
 
 To extract from a pipe, open it with `streaming=True`. Extraction reads each member once, in order,
-so it needs no other option. A ZIP keeps its index at the end, so from a pipe archivey writes each
-member as it arrives, then brings the files in line with the index once it gets there: it sets
-permissions, turns symlinks into links, and removes what the index doesn't list. When `members` is
-a function it's called twice for each member, and a `filter` is called twice for a member it left
-out the first time; both see `member.member_state_final` as `False` the first time.
+so it needs no other option. A ZIP keeps its index at the end, so from a pipe archivey first
+writes each member's data into one `.archivey-tmp-` folder inside the destination, and puts the
+members in place only once it has read the index, the same way it does from a file. If the run
+stops before then, nothing of it is left in the destination. When `members` is a function it's
+called twice for each member, and sees `member.member_state_final` as `False` the first time. A
+`filter` is called once, on the member as the index describes it.
 
 Its `members` argument picks what to extract. It takes names,
 [`ArchiveMember`][archivey.ArchiveMember] objects from a listing, or a mix of both:
@@ -114,7 +115,7 @@ aren't failures. It's empty by default:
 | `abort_on` value | Raises when |
 |---|---|
 | `"blocked_member"` | A member is refused |
-| `"name_collision"` | Two members of the archive would be written to the same path. This raises before `overwrite` is applied, so even with `"rename"` the second member isn't written. Not checked under `"trusted"` |
+| `"name_collision"` | Two members of the archive would be written to the same path. This includes a file member landing on a folder that an earlier member created, as `x` does after `x/f`. This raises before `overwrite` is applied, so even with `"rename"` the second member isn't written. Not checked under `"trusted"` |
 | `"name_sanitized"` | A name is rewritten to its portable spelling, or an absolute name is placed inside the destination. Under `"strict"` an absolute name is refused instead, so `"blocked_member"` is the one that catches it |
 
 After an abort there's no report, and the files already written stay on disk.
@@ -125,9 +126,10 @@ well as `policy="strict"`. The enums are `ExtractionPolicy`, `OverwritePolicy`, 
 
 `on_progress` gets a snapshot after each member and every so often during a large one: the member,
 the bytes and members done so far, and the expected totals when the archive records them. It's
-meant for progress bars. A ZIP read from a pipe reports each member as it's written, before its
-index says whether the extraction keeps it, so the count of members done can include one that's
-removed at the end.
+meant for progress bars. A ZIP read from a pipe reports each member as its data is read, before its
+index says whether the extraction keeps it, so the count of members done can include one that isn't
+extracted in the end. Its counts of members extracted and blocked stay at 0 until the members are
+in place, and one last snapshot gives them.
 
 `dry_run=True` runs the same extraction into an empty temporary folder, which is deleted before the
 call returns. Every member is decompressed and checked, but the files it creates stay empty, and
@@ -192,7 +194,9 @@ policy.
     `NameRewrite.PORTABLE_NAME` in `result.rewrites` say which ones those are.
 
 A `filter` sees each member before these checks run, so it can rename one they would refuse, such as
-`../evil.txt`, and that member is then written under its new name. Device files are refused whatever
+`../evil.txt`, and that member is then written under its new name. A ZIP read from a pipe is the
+exception: there the checks also run on each member's name as it arrives, before its data is kept,
+so a member they refuse fails even if the filter renames it. Device files are refused whatever
 the filter does, and a link pointing outside is refused unless the filter also changes its target.
 `archivey.sanitize_names` is a ready-made filter for this, passed as `filter=` to `extract_all`. It
 drops a leading `/` or drive letter, resolves or drops `..`, removes those reordering characters,
@@ -234,8 +238,8 @@ ZIP's central directory is damaged, archivey also finds the members after the da
 in front of each one's data, and writes those too before it raises. A damaged 7z index fails
 `open_archive` before anything is written.
 
-A process killed during an extraction can leave a file named `.archivey-tmp-` followed by random
-characters in the destination. It's safe to delete.
+A process killed during an extraction can leave a file or folder named `.archivey-tmp-` followed by
+random characters in the destination. Once no extraction is running there, it's safe to delete.
 
 ## On Windows
 
