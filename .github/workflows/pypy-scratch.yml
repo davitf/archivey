@@ -32,7 +32,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        drop: [none, pyppmd, inflate64, brotli, lz4, backports.zstd, pyzstd, rapidgzip, cryptography]
+        drop: [none]
     env:
       UV_PYTHON: pypy3.11
     steps:
@@ -53,22 +53,7 @@ jobs:
       - name: rapidgzip in-process smoke
         if: matrix.drop == 'none'
         continue-on-error: true
-        run: |
-          .venv/bin/python -X faulthandler -c "
-          import gzip, io, rapidgzip
-          data = gzip.compress(b'hello world ' * 100000)
-          with rapidgzip.open(io.BytesIO(data), parallelization=1) as f:
-              print('bytesio', len(f.read()))
-          open('t.gz','wb').write(data)
-          with rapidgzip.open('t.gz', parallelization=1) as f:
-              print('path', len(f.read()))
-          " 2>&1 | tail -30
-          .venv/bin/python -X faulthandler -c "
-          import bz2, io, rapidgzip
-          data = bz2.compress(b'hello world ' * 100000)
-          with rapidgzip.IndexedBzip2File(io.BytesIO(data), parallelization=1) as f:
-              print('bz2 bytesio', len(f.read()))
-          " 2>&1 | tail -30
+        run: .venv/bin/python .github/pypy_smoke.py
       - name: extras
         continue-on-error: true
         env:
