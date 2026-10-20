@@ -121,6 +121,7 @@ from archivey.internal.streams.codecs.brotli_framing import (
     parse_metablock,
 )
 from archivey.internal.streams.streamtools import (
+    OneReadEachStream,
     ReadOnlyIOStream,
     source_name,
 )
@@ -192,12 +193,21 @@ class _BoundedPeekReader(ReadOnlyIOStream):
     repositionable view of the peeked prefix) can still run; seeking never pulls
     bytes beyond ``limit``, and peeks still grow only on demand when a read needs
     more of the prefix.
+
+    With ``arrived``, ``peek_more`` is a view that returns what has arrived
+    (``PrefixWorkspace.candidate_view(..., arrived=True)``), and a short peek is not
+    the end of the source. A sized read then returns at least one byte unless the
+    source has ended, as a raw stream's read does, and ``read(-1)`` keeps peeking to
+    the end or the bound.
     """
 
-    def __init__(self, peek_more: Callable[[int], bytes], limit: int) -> None:
+    def __init__(
+        self, peek_more: Callable[[int], bytes], limit: int, *, arrived: bool = False
+    ) -> None:
         super().__init__()
         self._peek_more = peek_more
         self._limit = limit
+        self._arrived = arrived
         self._offset = 0
         self._buf = b""
         # Set when a read asked for bytes past ``limit`` and the window was full, so the
@@ -233,6 +243,17 @@ class _BoundedPeekReader(ReadOnlyIOStream):
         end = self._limit if n < 0 else min(self._offset + n, self._limit)
         if end > len(self._buf):
             self._buf = self._peek_more(end)  # a superset of the current buffer
+            # Peek again while the view is short of what this read must return. A peek
+            # that does not grow the buffer is the end of the source.
+            while (
+                self._arrived
+                and len(self._buf) < end
+                and (n < 0 or len(self._buf) <= self._offset)
+            ):
+                grown = self._peek_more(end)
+                if len(grown) <= len(self._buf):
+                    break
+                self._buf = grown
         if past_limit and len(self._buf) >= self._limit:
             self.hit_limit = True
         chunk = self._buf[self._offset : end]
@@ -276,6 +297,33 @@ def _match_magic(
     return None
 
 
+def _near_magic_settled(
+    head: bytes,
+    magic_entries: list[MagicSignature],
+    preempted: frozenset[ArchiveFormat],
+) -> bool:
+    """Whether :func:`_match_magic` gives the same answer for every longer prefix.
+
+    ``head`` is a prefix of the source, maybe shorter than the window. Signatures are
+    tried in table order, as :func:`_match_magic` tries them. A signature whose bytes
+    are all in ``head`` matches or not, and no later byte changes that. One whose bytes
+    in ``head`` already differ from it cannot match. Any other one could still match,
+    so the answer is not settled. A match settles the answer unless a trailer can
+    outrank its format: that check needs the source length (``preempted``). No match is
+    not settled, because the tiers after near magic read the whole window.
+    """
+    for entry in magic_entries:
+        start = entry.offset
+        held = head[start : start + len(entry.magic)]
+        if len(held) == len(entry.magic):
+            if held == entry.magic:
+                return entry.format not in preempted
+            continue
+        if entry.magic.startswith(held):
+            return False
+    return False
+
+
 def _match_magic_behind_prefix(
     data: bytes,
     walks: list[tuple[ArchiveFormat, Callable[[bytes], bool]]],
@@ -308,6 +356,8 @@ def _probe_inner_tar(
     stream_format: StreamFormat,
     peek_more: Callable[[int], bytes],
     workspace: PrefixWorkspace | None = None,
+    *,
+    view_arrived: bool = False,
 ) -> bool:
     """Whether decompressing the source yields a TAR (``ustar`` at offset 257).
 
@@ -385,13 +435,19 @@ def _probe_inner_tar(
             return False
         limit = min(limit, workspace.decode_input_left, workspace.read_ceiling)
 
-    source = _BoundedPeekReader(peek_more, limit)
+    source = _BoundedPeekReader(peek_more, limit, arrived=view_arrived)
+    # The codec stream puts a full-count buffer in front of a raw source, and that
+    # buffer would wait for a whole 64 KiB feed from a pipe. A view that returns
+    # what has arrived is handed over as a buffered stream that makes one read per
+    # read, so the decoder is fed what is there. The decoder reads until ``b""``, and
+    # a feed split at any byte gives the same output.
+    codec_input: BinaryIO = OneReadEachStream(source) if view_arrived else source
     head = b""
     unavailable = False
     try:
         with open_codec_stream(
             codec,
-            source,
+            codec_input,
             config=StreamConfig(
                 streaming=True,
                 seekable=True,
@@ -552,6 +608,7 @@ def _resolve_single_file_or_tar(
     *,
     ext_match: tuple[ArchiveFormat, str] | None = None,
     workspace: PrefixWorkspace | None = None,
+    view_arrived: bool = False,
 ) -> FormatInfo:
     """Upgrade a single-file-compressor match to its TAR combo when the payload is a tarball.
 
@@ -561,13 +618,16 @@ def _resolve_single_file_or_tar(
     An inner-TAR upgrade is corroboration for a probe hit — two independent signals had
     to hold — so ``corroborated`` is set. Otherwise a matching extension (same stream
     format) is the corroborating signal. ``peek_more`` gives the probe a bounded,
-    non-consuming view of the source to decode from.
+    non-consuming view of the source to decode from; ``view_arrived`` says it is a
+    view that returns what has arrived (:class:`_BoundedPeekReader`).
     """
     if (
         fmt.container == ContainerFormat.RAW_STREAM
         and fmt.stream != StreamFormat.UNCOMPRESSED
     ):
-        if _probe_inner_tar(fmt.stream, peek_more, workspace):
+        if _probe_inner_tar(
+            fmt.stream, peek_more, workspace, view_arrived=view_arrived
+        ):
             tar_fmt = ArchiveFormat(ContainerFormat.TAR, fmt.stream)
             return FormatInfo(
                 tar_fmt,
@@ -1015,17 +1075,24 @@ def _detect_format_body(
             budget.max_prefix_bytes,
             max(DETECTION_LIMIT, near_span),
         )
-        data = workspace.peek_prefix(near_needed)
+        # A pipe is read for what has arrived and stops as soon as the near magic
+        # settles the answer, so a short archive whose writer keeps the pipe open is
+        # detected without waiting for the writer to close it. Any other outcome still
+        # reads the whole window: the later tiers look at all of it, and a short
+        # window is how they learn the source length.
+        preempted = frozenset(f for entry in trailers for f in entry.preempts)
+        data = workspace.peek_prefix_until(
+            near_needed, lambda head: _near_magic_settled(head, near, preempted)
+        )
         peek_more = workspace.candidate_view(0)
 
         # Freeze the probe/far size-gate length from the near peek alone. A later SFX or
         # far growth that hits EOF would make ``remaining_known()`` report a length; that
         # is correct for capability accounting but must not flip content-probe framing
         # gates that deliberately treat a DETECTION_LIMIT-sized non-seekable peek as
-        # unknown-length (A-34 stub residual).
+        # unknown-length (A-34 stub residual). A peek that stopped early on a pipe is
+        # short with the source not ended, and ``remaining_known()`` is ``None`` then.
         length = workspace.remaining_known()
-        if length is None and len(data) < near_needed:
-            length = len(data)
 
         # 1. Exact magic in the default window.
         magic_fmt = _match_magic(data, near)
@@ -1038,13 +1105,19 @@ def _detect_format_body(
                 trailer_fmt = _match_trailer(workspace, trailers)
                 if trailer_fmt is not None:
                     magic_fmt = trailer_fmt
+            # On a forward-only source the inner-TAR probe reads what has arrived
+            # too: a short ``.gz`` on a held-open pipe decodes its first TAR header
+            # without waiting for the writer to close the pipe. A random-access
+            # source keeps the seekable view.
+            arrived = workspace.forward_only
             info = _resolve_single_file_or_tar(
                 magic_fmt,
                 DetectionConfidence.CERTAIN,
                 "magic",
-                peek_more,
+                workspace.candidate_view(0, arrived=arrived),
                 ext_match=ext_match,
                 workspace=workspace,
+                view_arrived=arrived,
             )
             return conclude(info, _ConflictEvidence.MAGIC)
 

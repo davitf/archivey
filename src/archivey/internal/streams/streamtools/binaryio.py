@@ -198,6 +198,38 @@ def read_blocking(stream: ReadableStream, n: int = -1) -> bytes:
     return data
 
 
+def read_arrived(stream: ReadableStream, n: int) -> bytes:
+    """Between 1 and ``n`` bytes of what has arrived, or ``b""`` only at EOF.
+
+    The opposite of :func:`read_exact`: one read, which waits only while nothing
+    has arrived. On a pipe whose writer holds it open, a full-count read of more
+    than the writer sent waits for the writer to close; this one returns what the
+    writer sent. A raw stream's ``read(n)`` already behaves like this. A buffered
+    one fills the whole request, so its ``read1`` is used instead, which makes at
+    most one raw read. ``read1`` returns ``b""`` both at EOF and on a non-blocking
+    stream with nothing ready, so a ``b""`` from it is checked with ``read(1)``,
+    which returns ``None`` for the second case. ``None`` raises
+    ``BlockingIOError``, as :func:`read_blocking` does. A buffered stream with no
+    ``read1`` gets a plain ``read(n)``, which may wait for all ``n`` bytes.
+    """
+    if n <= 0:
+        raise ValueError("n must be positive")
+    data: bytes | None
+    if isinstance(stream, io.BufferedIOBase):
+        try:
+            data = stream.read1(n)
+        except io.UnsupportedOperation:
+            data = read_blocking(stream, n)
+        else:
+            if not data:
+                data = read_blocking(stream, 1)
+    else:
+        data = read_blocking(stream, n)
+    if len(data) > n:
+        raise ValueError(f"inner returned {len(data)} bytes for read({n}): {stream!r}")
+    return data
+
+
 def readinto_via_read(src: ReadableStream, b: WriteableBuffer) -> int:
     """Fill ``b`` from ``src.read``, for streams that have no ``readinto``.
 

@@ -36,6 +36,7 @@ from archivey.internal.streams.streamtools import (
     read_exact,
     source_byte_size,
 )
+from archivey.internal.streams.streamtools.binaryio import read_arrived
 
 # Default amount detection peeks (``format-detection``'s DETECTION_LIMIT). A peek grows
 # past it on demand — 32 774 bytes when the ISO probe is triggered — so this is the
@@ -147,6 +148,11 @@ class PrefixWorkspace:
         return tuple(self._receipt.skips)
 
     @property
+    def forward_only(self) -> bool:
+        """Whether the source is read forward once, with no handle to seek."""
+        return self._peekable is not None or self._raw_forward is not None
+
+    @property
     def buffered_length(self) -> int:
         return len(self._buf)
 
@@ -165,8 +171,14 @@ class PrefixWorkspace:
             return len(self._buf)
         return None
 
-    def ensure(self, end: int) -> None:
+    def ensure(self, end: int, *, arrived: bool = False) -> None:
         """Grow the prefix buffer to at least ``end`` bytes (or EOF).
+
+        With ``arrived``, a forward-only source is read once, for what has arrived
+        (:func:`~archivey.internal.streams.streamtools.binaryio.read_arrived`), so the
+        buffer can stay short of ``end`` without the source having ended. It grows
+        by at least one byte unless the source has ended. A random-access source
+        cannot hold a reader back, so it is read to ``end`` either way.
 
         Does not materialise a ``bytes`` copy of the whole buffer — callers slice
         ``self._buf`` for the span they need.
@@ -176,18 +188,19 @@ class PrefixWorkspace:
         if end <= len(self._buf) or self._source_exhausted:
             return
         needed = end - len(self._buf)
-        chunk = self._fetch_forward(needed)
+        chunk, ended = self._fetch_forward(needed, arrived=arrived)
         if chunk:
             self._buf.extend(chunk)
             self._receipt.unique_bytes_read += len(chunk)
-        if len(chunk) < needed:
+        if ended:
             self._source_exhausted = True
 
-    def peek_range(self, origin: int, length: int) -> bytes:
+    def peek_range(self, origin: int, length: int, *, arrived: bool = False) -> bytes:
         """Return ``length`` bytes starting at archive-relative ``origin``.
 
         Extends the prefix buffer when the range lies in the forward-growing region.
-        Does not re-fetch bytes already buffered.
+        Does not re-fetch bytes already buffered. ``arrived`` is :meth:`ensure`'s: the
+        result can then be short while the source has not ended.
         """
         if origin < 0 or length < 0:
             raise ValueError("origin and length must be non-negative")
@@ -195,7 +208,7 @@ class PrefixWorkspace:
             return b""
         end = origin + length
         self._receipt.prefix_bytes += length
-        self.ensure(end)
+        self.ensure(end, arrived=arrived)
         if origin >= len(self._buf):
             return b""
         return bytes(self._buf[origin:end])
@@ -204,14 +217,50 @@ class PrefixWorkspace:
         """Convenience: :meth:`peek_range` from archive origin 0."""
         return self.peek_range(0, length)
 
+    def peek_prefix_until(self, length: int, settled: Callable[[bytes], bool]) -> bytes:
+        """The first ``length`` bytes, or fewer once ``settled`` accepts what arrived.
+
+        :meth:`peek_prefix` with an early stop. A forward-only source is read for
+        what has arrived, one read at a time, and ``settled`` is asked about the
+        prefix after each read. It returns ``True`` only when no later byte can
+        change the caller's answer. This stops a pipe whose writer sent a short
+        archive and keeps the pipe open from holding detection until the writer
+        closes it. A random-access source is read to ``length`` in one read, as
+        :meth:`peek_prefix` reads it. The receipt is charged one request of
+        ``length``, as :meth:`peek_prefix` charges it.
+        """
+        if length < 0:
+            raise ValueError("length must be non-negative")
+        if length == 0:
+            return b""
+        self._receipt.prefix_bytes += length
+        while (
+            len(self._buf) < length
+            and not self._source_exhausted
+            and not settled(bytes(self._buf))
+        ):
+            self.ensure(length, arrived=True)
+        return bytes(self._buf[:length])
+
     def candidate_view(
-        self, candidate_origin: int, *, limit: int | None = None
+        self,
+        candidate_origin: int,
+        *,
+        limit: int | None = None,
+        arrived: bool = False,
     ) -> Callable[[int], bytes]:
         """A ``peek_more(n)``-shaped callable relative to ``candidate_origin``.
 
         ``peek_more(n)`` returns the first ``n`` bytes of the *candidate*, which are the
         absolute range ``[candidate_origin, candidate_origin + n)``. Served from the
         shared buffer — never a second fetch of bytes already retrieved.
+
+        With ``arrived``, a short result does not mean the source has ended: only a
+        result no longer than the one before it does. A call that asks for more than
+        the view last returned gets what the buffer already holds when that is more,
+        and reads the source (:meth:`ensure`) only when it is not. So a probe that asks
+        for a large block over a pipe gets the bytes that are there, and waits only
+        when it has used all of them.
 
         ``limit`` is an exclusive archive-origin ceiling (the SFX scan passes
         ``scan_limit`` plus ``validator_allowance(budget)``, which every
@@ -226,13 +275,26 @@ class PrefixWorkspace:
         if limit is not None and limit < 0:
             raise ValueError("limit must be non-negative")
 
+        returned = 0
+
         def peek_more(length: int) -> bytes:
+            nonlocal returned
             if limit is not None:
                 remaining = max(0, limit - candidate_origin)
                 if length > remaining:
                     self._clamped_view_read = True
                 length = min(length, remaining)
-            return self.peek_range(candidate_origin, length)
+            if not arrived:
+                return self.peek_range(candidate_origin, length)
+            held = len(self._buf) - candidate_origin
+            if held > returned or held >= length:
+                # Enough is buffered, or more than last time: no read.
+                self._receipt.prefix_bytes += length
+                data = bytes(self._buf[candidate_origin : candidate_origin + length])
+            else:
+                data = self.peek_range(candidate_origin, length, arrived=True)
+            returned = len(data)
+            return data
 
         return peek_more
 
@@ -386,14 +448,25 @@ class PrefixWorkspace:
     def __exit__(self, *exc: object) -> None:
         self.close()
 
-    def _fetch_forward(self, nbytes: int) -> bytes:
+    def _fetch_forward(self, nbytes: int, *, arrived: bool) -> tuple[bytes, bool]:
+        """The next bytes after the buffer, and whether the source has ended.
+
+        Up to ``nbytes`` bytes. Without ``arrived``, or from a random-access handle,
+        a short result is the end of the source. With ``arrived``, a forward-only
+        source is read once for what has arrived, and only an empty result is the
+        end.
+        """
         if nbytes <= 0:
-            return b""
+            return b"", False
         if self._peekable is not None:
             # Grow the source's replay prefix; slice only the delta we lack.
-            end = len(self._buf) + nbytes
-            peeked = self._peekable.peek(end)
-            return peeked[len(self._buf) : end]
+            start = len(self._buf)
+            end = start + nbytes
+            if arrived:
+                delta = self._peekable.peek_arrived(end)[start:end]
+                return delta, not delta
+            delta = self._peekable.peek(end)[start:end]
+            return delta, len(delta) < nbytes
         if self._handle is not None:
             assert self._entry_pos is not None
             # Sequential growth: seek only when the handle is not at the end of the
@@ -401,7 +474,12 @@ class PrefixWorkspace:
             expected = self._entry_pos + len(self._buf)
             if self._handle.tell() != expected:
                 self._handle.seek(expected)
-            return read_exact(self._handle, nbytes)
+            data = read_exact(self._handle, nbytes)
+            return data, len(data) < nbytes
         if self._raw_forward is not None:
-            return read_exact(self._raw_forward, nbytes)
-        return b""
+            if arrived:
+                data = read_arrived(self._raw_forward, nbytes)
+                return data, not data
+            data = read_exact(self._raw_forward, nbytes)
+            return data, len(data) < nbytes
+        return b"", True

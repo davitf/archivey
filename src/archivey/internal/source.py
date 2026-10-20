@@ -85,7 +85,11 @@ from archivey.internal.streams.streamtools import (
     source_size_fact,
     underlying_stream,
 )
-from archivey.internal.streams.streamtools.binaryio import read_blocking, try_readinto
+from archivey.internal.streams.streamtools.binaryio import (
+    read_arrived,
+    read_blocking,
+    try_readinto,
+)
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
@@ -681,6 +685,28 @@ class ArchiveSource(ReadOnlyIOStream):
             chunk = self._full_count_reader().read(missing)
             if chunk:
                 replay.extend(chunk)
+        return bytes(replay[:n])
+
+    def peek_arrived(self, n: int) -> bytes:
+        """Like :meth:`peek`, but makes one read that returns what has arrived.
+
+        When the replay prefix holds fewer than ``n`` bytes, this makes one
+        :func:`read_arrived` of the bytes still missing. That read waits only
+        while nothing has arrived. So the result is longer than the prefix was
+        before the call, or no longer only at the end of the source. A pipe whose
+        writer sent less than ``n`` bytes and keeps the pipe open therefore
+        answers with what it sent, where :meth:`peek` would wait for the writer
+        to close. ``None`` from the source raises ``BlockingIOError``, as it does
+        for :meth:`peek`.
+        """
+        if n < 0:
+            raise ValueError("peek size must be non-negative")
+        replay = self._replay
+        if replay is None:
+            raise io.UnsupportedOperation("peek: the source is seekable; rewind it")
+        missing = n - len(replay)
+        if missing > 0:
+            replay.extend(read_arrived(self._stream(), missing))
         return bytes(replay[:n])
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
