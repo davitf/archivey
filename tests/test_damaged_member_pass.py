@@ -41,7 +41,7 @@ format stores no member checksum, so the damaged bytes come back with no error."
 
 
 def _member_text(name: str) -> bytes:
-    """Member content; the same function as ``scripts/gen_damaged_member_fixtures.py``."""
+    """Member content; ``scripts/gen_damaged_member_fixtures.py`` imports this function."""
     vocab_rng = random.Random("damaged-member-vocab")
     vocab = [
         "".join(
@@ -139,6 +139,7 @@ def _committed(name: str) -> Callable[[], bytes]:
 _NON_SOLID: dict[str, Outcome] = {"a.txt": "ok", "b.txt": "raises", "c.txt": "ok"}
 _SOLID: dict[str, Outcome] = {"a.txt": "ok", "b.txt": "raises", "c.txt": "raises"}
 _UNCHECKED: dict[str, Outcome] = {"a.txt": "ok", "b.txt": "wrong", "c.txt": "ok"}
+# Compressed RAR data needs the ``unrar`` binary; stored RAR data reads without it.
 _UNRAR = (requires_binary("unrar"),)
 
 _CASES = (
@@ -170,6 +171,8 @@ def _outcome(name: str, read: Callable[[], bytes]) -> Outcome:
     try:
         data = read()
     except CorruptionError:
+        # ``TruncatedError`` counts too: a flip inside an LZMA or RAR stream can
+        # legitimately decode short, so either error means the member raised.
         return "raises"
     return "ok" if data == _member_text(name) else "wrong"
 

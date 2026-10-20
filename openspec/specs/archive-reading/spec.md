@@ -795,11 +795,14 @@ caller read that stream: the pass SHALL yield the members after it whenever the 
 the archive's structure can reach them, and SHALL end without raising. Members after the
 damage in the same solid block fail too, each from its own read, as `7z t` and `unrar t`
 fail them; a later solid block reads cleanly. Random `open()` / `read()` give each member
-the same outcome. A format that stores no member checksum (ISO, TAR) returns damaged bytes
-with no error. The pass itself raises only when damage to the archive's structure stops
-that walk (DR-2): a TAR cut inside a member, a compressed TAR whose stream fails, a ZIP
-read from a pipe whose local-header walk loses its place. The members after that point
-are not yielded; resyncing past such damage is out of scope.
+the same outcome; on a solid block `open()` decodes from the block start up to the member,
+so the error MAY be raised from `open()` instead of the first read. A format that stores
+no member checksum (ISO, TAR) returns damaged bytes with no error. Of the damage cases,
+only damage to the archive's structure that stops the walk makes the pass itself raise
+(DR-2): a TAR cut inside a member, a compressed TAR whose stream fails, a ZIP read from a
+pipe whose local-header walk loses its place. The members after that point are not
+yielded; resyncing past such damage is out of scope. (The pass also raises for reasons
+other than damage, such as `ListingLimits` or a diagnostic set to raise.)
 
 A `stream_members()` invocation is an exclusive one-pass/data-path operation in
 both modes. It SHALL NOT overlap random `open()`, materialization, another

@@ -23,7 +23,6 @@ ZIP, TAR and ISO cases are built by the test itself with the standard library an
 from __future__ import annotations
 
 import os
-import random
 import re
 import shutil
 import subprocess
@@ -34,29 +33,21 @@ from dataclasses import dataclass
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT))
+
+# One definition of the member content: the test compares against the same function.
+from tests.test_damaged_member_pass import (  # noqa: E402
+    _MEMBER_SIZE as MEMBER_SIZE,
+)
+from tests.test_damaged_member_pass import (  # noqa: E402
+    _member_text as member_text,
+)
+
 OUT_DIR = REPO_ROOT / "tests" / "fixtures" / "damaged_member"
 
-MEMBER_SIZE = 6000
 _MTIME = (
     1_700_000_000  # fixed, so a rebuild differs from the last one only where it must
 )
-
-
-def member_text(name: str) -> bytes:
-    """The content of member ``name``. Kept in step with the copy in the test."""
-    vocab_rng = random.Random("damaged-member-vocab")
-    vocab = [
-        "".join(
-            vocab_rng.choice("abcdefghijklmnopqrstuvwxyz")
-            for _ in range(vocab_rng.randint(2, 9))
-        )
-        for _ in range(500)
-    ]
-    rng = random.Random(name)
-    out = name[0].upper().encode() * 8
-    while len(out) < MEMBER_SIZE:
-        out += b" " + rng.choice(vocab).encode()
-    return out[:MEMBER_SIZE]
 
 
 @dataclass(frozen=True)
@@ -179,6 +170,9 @@ def _damage(fx: _Fixture, data: bytes, work: Path) -> bytes:
             start + d for step in range(0, 400) for d in ((step * 7), -(step * 7))
         ]
         width = 16
+    # An offset outside the file would wrap (a negative index damages the tail, the
+    # 7z end header) or raise IndexError.
+    candidates = [pos for pos in candidates if 0 <= pos <= len(data) - width]
     for pos in candidates:
         damaged = _flip(data, pos, width)
         probe.write_bytes(damaged)
