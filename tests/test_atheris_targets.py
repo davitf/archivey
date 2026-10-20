@@ -7,7 +7,6 @@ exist to reach: an SFX payload, a ZIP pipe, a UDIF refusal, a filter decode.
 
 from __future__ import annotations
 
-import importlib.util
 import io
 import shutil
 import subprocess
@@ -33,6 +32,7 @@ from tests.atheris_fuzz.targets import (
     sevenzip_open_one,
     zip_open_one,
 )
+from tests.conftest import has_package
 
 _PAYLOAD = b"sfx-member\n"
 
@@ -92,7 +92,7 @@ def test_sevenzip_open_reads_an_uncompressed_header(tmp_path: Path) -> None:
     assert [name for name, _blob, _package in built] == uncompressed_header_spec_names()
     for _name, blob, package in built:
         sevenzip_open_one(blob)
-        if package is not None and importlib.util.find_spec(package) is None:
+        if package is not None and not has_package(package):
             continue
         with open_archive(
             io.BytesIO(blob),

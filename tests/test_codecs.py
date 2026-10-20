@@ -54,7 +54,13 @@ from archivey.internal.streams.codecs.unix_compress_decoder import (
 )
 from archivey.internal.streams.verify import VerifyingStream
 from archivey.types import HashAlgorithm, StreamFormat
-from tests.conftest import requires, requires_binary, requires_zstd, zstd_backend
+from tests.conftest import (
+    has_package,
+    requires,
+    requires_binary,
+    requires_zstd,
+    zstd_backend,
+)
 from tests.corruption_util import (
     is_corruption_not_truncation,
     raises_corruption_not_truncation,
@@ -209,7 +215,7 @@ def test_resolve_backend_without_opening() -> None:
 
 
 @pytest.mark.skipif(
-    importlib.util.find_spec("pyppmd") is not None,
+    has_package("pyppmd"),
     reason="pyppmd is installed; the missing-backend path cannot be exercised",
 )
 def test_ppmd_without_pyppmd_raises() -> None:

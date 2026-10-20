@@ -67,7 +67,7 @@ from archivey.exceptions import (
     StreamNotSeekableError,
 )
 from archivey.types import StreamFormat
-from tests.conftest import ARCHIVEY_TEST_CACHE, has_binary
+from tests.conftest import ARCHIVEY_TEST_CACHE, has_binary, importorskip
 from tests.sample_archives import (
     GENERATOR_VERSION,
     CorpusEntry,
@@ -599,7 +599,7 @@ def test_ppmd_child_decodes_a_7z_nested_in_a_ppmd_7z(tmp_path: Path) -> None:
     """Both 7z levels decode PPMd in a child process: the inner child's input comes
     from the outer child's output, through this process."""
     py7zr = pytest.importorskip("py7zr")
-    pytest.importorskip("pyppmd")
+    importorskip("pyppmd")
     from py7zr.properties import FILTER_PPMD
 
     def ppmd_7z(name: str, data: bytes) -> bytes:
