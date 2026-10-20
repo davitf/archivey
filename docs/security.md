@@ -159,12 +159,13 @@ in the repository measures what each limit costs in time and memory on your mach
 The costs were measured on one 2.8 GHz core.
 
 ??? note "Why 2^25 rounds?"
-    A 7z or RAR archive made by the usual tools costs 2^19 rounds per password for 7z and about 2^16
-    for RAR: RAR5 asks for 2^15, and archivey runs it twice, once for the password check and once
-    for the key that checksums are verified with. A crafted archive can ask for up to 2^24 rounds
-    and repeat that work for each member. Two such 7z members use the whole default and a third is
-    refused; one such RAR member already goes over it. Each password you try costs the same work
-    again.
+    An archive made by the usual tools costs, per password, 2^19 rounds for 7z, 2^18 for RAR3 (a
+    fixed cost the archive does not choose), and 2^16 to 2^17 for RAR5. RAR5 asks for 2^15, and
+    archivey runs that derivation two or three times: once for the password check, and once each
+    for the key checksums are verified with and the key archivey decrypts with, when it needs
+    them. A crafted 7z or RAR5 archive can ask for up to 2^24 rounds and repeat that work for each
+    member. Two such 7z members use the whole default and a third is refused; one such RAR5
+    member already goes over it. Each password you try costs the same work again.
 
 Going over a limit raises `ResourceLimitError`.
 

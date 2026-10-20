@@ -415,7 +415,9 @@ def test_kdf_cache_does_not_answer_for_another_password(name: str) -> None:
 def test_rar5_key_hash_key_and_check_match_one_unrar_chain() -> None:
     """UnRAR reads the AES key, HashKey and PswCheck from one PBKDF2 chain at ``n``,
     ``n + 16`` and ``n + 32`` rounds without resetting the running XOR. Each of
-    ours is its own ``pbkdf2_hmac`` run; walking the chain by hand must agree."""
+    ours is its own ``pbkdf2_hmac`` run; walking the chain by hand must agree.
+    Checked against a mutation: ``rar5_hash_key`` deriving at ``+32`` instead of
+    ``+16`` fails the second assertion."""
     password, salt, shift = "pässwörd", bytes(range(16)), 4
     u = hmac.new(password.encode(), salt + b"\0\0\0\1", hashlib.sha256).digest()
     acc = bytearray(u)
