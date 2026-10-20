@@ -670,7 +670,22 @@ def test_format_text_report_cost_model_section() -> None:
                                 "error": 0.3,
                             }
                         ],
-                    }
+                    },
+                    # A listing miss marks the row too: the open cost comes from it.
+                    "zipfile": {
+                        "fit": fit_row,
+                        "rungs": [],
+                        "checks": [
+                            {
+                                "members": 4,
+                                "member_size": 4 * 1024 * 1024,
+                                "op": "list",
+                                "measured_ms": 0.1,
+                                "predicted_ms": 0.15,
+                                "error": -0.5,
+                            }
+                        ],
+                    },
                 },
             }
         ],
@@ -679,6 +694,8 @@ def test_format_text_report_cost_model_section() -> None:
     assert "## Cost model" in report
     assert "| zip | archivey \\* | 0.40 ms | 8k members/s | 800 MiB/s |" in report
     assert "zip archivey read 64 × 256 KiB" in report
+    assert "| zip | zipfile \\* |" in report
+    assert "zip zipfile list 4 × 4 MiB" in report
 
 
 @pytest.mark.parametrize(

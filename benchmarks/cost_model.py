@@ -17,13 +17,11 @@ other rungs are not used in the fit. Each one gets a prediction and the error ag
 what it measured; a large error means the linear model does not hold for that shape,
 and the fitted numbers should not be quoted for it.
 
-The throughput rung is 256 KiB members rather than the largest ones because the cost
-per byte is not constant at the top. Reading 4 x 4 MiB took about 1.5x as long as
-64 x 256 KiB, the same 16 MiB, on both sides (zipfile 35 ms against 24 ms), most
-likely because a 4 MiB output buffer no longer stays in cache between inflate and the
-CRC pass. Fitting throughput there made every smaller shape look 30-50% faster than
-predicted. The 1 MiB and 4 MiB rungs stay as checks, so the report shows where large
-members leave the model.
+The throughput rung is in the middle of the ladder, so there are check rungs on
+both sides of it: 512 x 16 KiB tests the model between the two fit rungs, and
+16 x 1 MiB and 4 x 4 MiB test it beyond them, where real archives of large members
+sit. With the heap warm (below), the cost per byte stays about the same up to 4 MiB
+members on both sides.
 
 Both sides are fitted the same way: archivey (``open_archive``) and the stdlib peer
 (``zipfile`` / ``tarfile`` read in one forward pass). Both read the same files, so
@@ -42,8 +40,12 @@ rate, not a decode rate.
 Every rung is timed with the heap in the same state. glibc raises its mmap threshold
 after a large block is freed, and from then on smaller output buffers come from the
 heap without page faults: a zipfile read of 64 x 256 KiB took 11.7 ms in a fresh
-process and 6.6 ms after one 4 MiB block had been allocated and freed. So before
-timing anything, the run allocates and frees one block the size of the largest
+process and 6.6 ms after one 4 MiB block had been allocated and freed. The
+threshold has to end up above a request for that request to come off the heap, so a
+block the size of the largest member warms every rung but the largest: the
+4 x 4 MiB read still took about 9000 page faults per pass after a 4 MiB block, and
+about 200 after an 8 MiB one (zipfile 35.5 ms against 25.5 ms). So before timing
+anything, the run allocates and frees one block twice the size of the largest
 member, which puts every rung, and both sides, in the warm state a long-running
 process has.
 
@@ -94,8 +96,9 @@ LADDER: tuple[tuple[int, int], ...] = (
 )
 # The rungs the fit uses (indices into LADDER); the others check it.
 FIT_RUNGS = (0, 2)
-# A check rung whose read time is further than this from the prediction is flagged
-# in the report, and its side's row is marked. A smaller miss passes unflagged, so
+# A check rung whose list or read time is further than this from the prediction is
+# flagged in the report, and its side's row is marked. The listing fit counts too,
+# because the published open cost comes from it. A smaller miss passes unflagged, so
 # the fitted numbers carry about this much slack.
 CHECK_TOLERANCE = 0.25
 MIB = 1024 * 1024
@@ -301,12 +304,13 @@ def measure_ladder(fmt: str, root: Path, *, rounds: int = 9) -> dict[str, Any]:
 
 
 def run_cost_model(root: Path, *, rounds: int = 9) -> list[dict[str, Any]]:
-    """Time both ladders under ``root``. The ladder is a fixed size, about 56 MiB of
-    data per format, whatever ``--scale`` the harness was given."""
+    """Time both ladders under ``root``. The ladder is a fixed size, 72 MiB of member
+    data per format (about 100 MB on disk for both, most of it the uncompressed TAR),
+    whatever ``--scale`` the harness was given."""
     root.mkdir(parents=True, exist_ok=True)
-    # Warm the heap first (module docstring): one block the size of the largest
+    # Warm the heap first (module docstring): one block twice the size of the largest
     # member, allocated and freed.
-    block = bytearray(max(size for _members, size in LADDER))
+    block = bytearray(2 * max(size for _members, size in LADDER))
     del block
     return [measure_ladder(fmt, root, rounds=rounds) for fmt in LADDERS]
 
@@ -347,8 +351,9 @@ def format_cost_model(results: list[dict[str, Any]]) -> list[str]:
         "out. Throughput is the data rate once per-member costs are taken out, on data "
         "that compresses about 4:1; for uncompressed TAR it is a copy rate. Both sides "
         "read the same files, so the comparison between them holds even where the "
-        "absolute numbers move between hosts. A row marked * has a check rung more "
-        f"than {CHECK_TOLERANCE:.0%} off its fit; a smaller miss is not flagged. "
+        "absolute numbers move between hosts. A row marked * has a check rung whose "
+        f"listing or read time is more than {CHECK_TOLERANCE:.0%} off its fit (the "
+        "open cost comes from the listing fit); a smaller miss is not flagged. "
         "Not a gate.",
         "",
         "| format | side | open | reading | throughput |",
@@ -359,11 +364,7 @@ def format_cost_model(results: list[dict[str, Any]]) -> list[str]:
         for side, data in res["sides"].items():
             f = data["fit"]
             thr = f["throughput_mib_s"]
-            misses = [
-                c
-                for c in data["checks"]
-                if c["op"] == "read" and abs(c["error"]) > CHECK_TOLERANCE
-            ]
+            misses = [c for c in data["checks"] if abs(c["error"]) > CHECK_TOLERANCE]
             mark = " \\*" if misses else ""
             lines.append(
                 f"| {res['format']} | {side}{mark} | {f['open_ms']:.2f} ms | "
