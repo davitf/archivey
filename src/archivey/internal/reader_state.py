@@ -50,12 +50,40 @@ for the transition.
 from __future__ import annotations
 
 import enum
+import gc
+import sys
 import threading
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 from archivey.exceptions import ArchiveyUsageError
 from archivey.types import MemberStreams
+
+T = TypeVar("T")
+
+# CPython ends a dropped pass or member stream at once: the generator or stream is
+# freed when its last reference goes (the end of a ``for`` loop left with ``break``,
+# ``reader.open(m).read()``), and its cleanup releases what it held here. Other
+# interpreters (PyPy) free it only at a later collection, so until then the next call
+# would be refused as overlapping something nobody can reach.
+_REFCOUNTED = sys.implementation.name == "cpython"
+
+
+def _retry_after_collecting(attempt: Callable[[], T]) -> T:
+    """``attempt()``; refused on an interpreter without reference counting, ``attempt``
+    again after a collection has run the cleanup of passes and streams already dropped.
+
+    The collection runs only on that refusal, outside the state lock (the cleanup
+    takes it). A refusal that still holds afterwards is a real overlap and raises.
+    """
+    try:
+        return attempt()
+    except ArchiveyUsageError:
+        if _REFCOUNTED:
+            raise
+    gc.collect()
+    return attempt()
+
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -280,6 +308,9 @@ class ReaderState:
         return self._root
 
     def acquire_pass(self, name: str) -> OperationToken:
+        return _retry_after_collecting(lambda: self._acquire_pass_once(name))
+
+    def _acquire_pass_once(self, name: str) -> OperationToken:
         """Acquire a data-pass token: root when free, else a child under an internal owner."""
         with self._lock:
             self._require_admissible_locked(name)
@@ -404,6 +435,9 @@ class ReaderState:
             self._children.discard(child)
 
     def acquire_worker(self, name: str) -> OperationToken:
+        return _retry_after_collecting(lambda: self._acquire_worker_once(name))
+
+    def _acquire_worker_once(self, name: str) -> OperationToken:
         """Short-lived token for random ``open()`` / ``read()`` (D7).
 
         Rejected while a reader-wide root pass is active (unless under library-internal
@@ -513,6 +547,9 @@ class ReaderState:
                 self._materialization_cv.notify_all()
 
     def reserve_live_stream(self) -> LiveStreamReservation:
+        return _retry_after_collecting(self._reserve_live_stream_once)
+
+    def _reserve_live_stream_once(self) -> LiveStreamReservation:
         """Take a live-stream lease before the stream object exists.
 
         Raises :class:`~archivey.exceptions.ArchiveyUsageError` under the same

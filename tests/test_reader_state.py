@@ -8,6 +8,7 @@ library's own errors rather than ``RecursionError`` (S17-K11).
 
 from __future__ import annotations
 
+import contextlib
 import io
 import random
 import tarfile
@@ -15,7 +16,7 @@ import threading
 import time
 import unicodedata
 import zipfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -579,3 +580,83 @@ def test_memoized_terminals_match_a_fresh_walk_per_member(
             fresh._archive_id = member._archive_id
             reader._resolve_link(fresh, {})
             assert member.link_target_member is fresh.link_target_member, member.name
+
+
+def _unreachable_but_alive(obj: object) -> None:
+    """Leave ``obj`` reachable only through a reference cycle, so reference counting
+    never frees it and only a collection does: how PyPy treats every dropped object."""
+    cycle: list[object] = [obj]
+    cycle.append(cycle)
+
+
+@pytest.fixture
+def no_refcounting(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Take the path of an interpreter without reference counting, with the collector
+    paused so that only the refusal path collects."""
+    import gc
+
+    from archivey.internal import reader_state
+
+    monkeypatch.setattr(reader_state, "_REFCOUNTED", False)
+    gc.disable()
+    try:
+        yield
+    finally:
+        gc.enable()
+
+
+@pytest.mark.usefixtures("no_refcounting")
+def test_a_dropped_pass_is_collected_before_a_new_one_is_refused(
+    tmp_path: Path,
+) -> None:
+    with open_archive(_zip_with_files(tmp_path), streaming=True) as reader:
+        passing = iter(reader)
+        next(passing)
+        _unreachable_but_alive(passing)
+        del passing
+        assert len(reader.members_report().members) == 2
+
+
+@pytest.mark.usefixtures("no_refcounting")
+def test_a_dropped_member_stream_is_collected_before_a_new_open_is_refused(
+    tmp_path: Path,
+) -> None:
+    with open_archive(_zip_with_files(tmp_path)) as reader:
+        first, second = reader.members()
+        stream = reader.open(first)
+        _unreachable_but_alive(stream)
+        del stream
+        with reader.open(second) as again:
+            assert again.read()
+
+
+@pytest.mark.usefixtures("no_refcounting")
+def test_a_pass_still_held_is_refused_after_the_collection(tmp_path: Path) -> None:
+    with open_archive(_zip_with_files(tmp_path), streaming=True) as reader:
+        passing = iter(reader)
+        next(passing)
+        with pytest.raises(ArchiveyUsageError, match="already active"):
+            next(iter(reader))
+        passing.close()
+
+
+def test_closing_a_stream_members_pass_closes_the_backend_pass(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The backend's pass can hold a process (unrar for a solid RAR). Closing the
+    # caller's pass closes it at once, even while something else still refers to it,
+    # which is every dropped object until a collection on PyPy.
+    with open_archive(_zip_with_files(tmp_path)) as reader:
+        backend_passes = []
+        real = reader._iter_with_data
+
+        def kept(*args: object, **kwargs: object) -> Iterator[object]:
+            source = real(*args, **kwargs)
+            backend_passes.append(source)
+            return source
+
+        monkeypatch.setattr(reader, "_iter_with_data", kept)
+        with contextlib.closing(reader.stream_members()) as passing:
+            next(iter(passing))
+        (source,) = backend_passes
+        assert source.gi_frame is None
