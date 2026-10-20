@@ -172,6 +172,9 @@ class _Inflater(Protocol):
     @property
     def unconsumed_tail(self) -> bytes: ...
 
+    @property
+    def eof(self) -> bool: ...
+
 
 def _inflate(
     decomp: _Inflater,
