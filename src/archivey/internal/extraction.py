@@ -29,10 +29,10 @@ import posixpath
 import stat
 import tempfile
 import uuid
-from collections.abc import Callable, Collection, Iterator
+from collections.abc import Callable, Collection, Generator, Iterator
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO, assert_never, cast
+from typing import TYPE_CHECKING, BinaryIO, Protocol, assert_never, cast
 
 from archivey.config import ExtractionLimits
 from archivey.exceptions import (
@@ -46,6 +46,7 @@ from archivey.exceptions import (
     NameCollisionError,
     NameRewrittenError,
     _UsageTypeError,
+    exception_detail,
 )
 from archivey.internal.bomb_tracker import (
     AlwaysStopResourceLimitError,
@@ -380,7 +381,7 @@ def _until_listing_damage(
     reader: BaseArchiveReader,
     pairs: Iterator[tuple[ArchiveMember, ArchiveStream | None]],
     found: list[CorruptionError],
-) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
+) -> Generator[tuple[ArchiveMember, ArchiveStream | None], None, None]:
     """``pairs``, ending quietly when the listing's own damage ends them.
 
     That damage is appended to ``found`` for the caller to raise once the members
@@ -394,6 +395,33 @@ def _until_listing_damage(
         if exc is not reader._walk_error:
             raise
         found.append(exc)
+
+
+class _Closable(Protocol):
+    def close(self) -> None: ...
+
+
+@contextlib.contextmanager
+def _closing_pass(passing: _Closable) -> Iterator[None]:
+    """Close ``passing`` on the way out, without letting a failed close hide an error.
+
+    Closing the pass closes its open member stream, which can raise (an ``unrar``
+    exit status maps to a typed error). With an error already leaving the loop, that
+    error is the one the caller catches; the close failure rides on it as a note. On a
+    clean exit, a close failure raises as itself.
+    """
+    try:
+        yield
+    except BaseException as exc:
+        try:
+            passing.close()
+        except Exception as close_exc:  # noqa: BLE001  # kept as a note, not raised
+            exc.add_note(
+                "Closing the member pass also failed: "
+                + exception_detail(close_exc, with_type=True)
+            )
+        raise
+    passing.close()
 
 
 @dataclass
@@ -933,9 +961,12 @@ class ExtractionCoordinator:
         # before it are all written, including the hardlinks the second pass below
         # completes, and then it is raised. A hardlink only points back, so every
         # source the second pass needs is in that prefix.
-        # The pass is not bound to a name: an error out of the loop body then drops
-        # it at once, which closes the open member stream (a held traceback would
-        # otherwise keep it, and an unrar child, alive).
+        # Each pass is closed on the way out, so an error out of the loop body closes
+        # the open member stream (and any unrar child) at once. CPython would close
+        # an unnamed pass as soon as the error left the loop; PyPy closes a dropped
+        # one only when it is collected. Binding the pass to ``pairs`` is safe only
+        # because ``_closing_pass`` closes it: without that, a caller holding the
+        # traceback would keep it (and the unrar child) alive on CPython too.
         listing_damage: list[CorruptionError] = []
         if reader._REVISES_YIELDED_MEMBERS:
             self._stage_then_place(reader, stream_selector, copies, listing_damage)
@@ -947,18 +978,20 @@ class ExtractionCoordinator:
             # ``_handle_member`` and is never recorded here. A streaming pass learns
             # of the later copy only when it arrives; see ``_park_earlier_copies``.
             current_by_name: dict[str, int] = {}
-            for original, stream in _until_listing_damage(
+            pairs = _until_listing_damage(
                 reader, reader._stream_members(stream_selector, copies), listing_damage
-            ):
-                self._handle_member(
-                    original,
-                    stream,
-                    current_by_name=current_by_name,
-                    members_done=members_done,
-                )
-                members_done += 1
-                if selected_total is not None and members_done >= selected_total:
-                    break
+            )
+            with _closing_pass(pairs):
+                for original, stream in pairs:
+                    self._handle_member(
+                        original,
+                        stream,
+                        current_by_name=current_by_name,
+                        members_done=members_done,
+                    )
+                    members_done += 1
+                    if selected_total is not None and members_done >= selected_total:
+                        break
 
         # Core second pass: resolve orphaned hardlinks whose (re-readable) source was
         # excluded. Only populated for a seekable source; forward-only orphans already
@@ -1119,24 +1152,27 @@ class ExtractionCoordinator:
         walk_selector = None if selector is None else _final_members_only(selector)
         staging: list[_Staging] = []
         members_done = 0
-        for original, stream in _until_listing_damage(
+        pairs = _until_listing_damage(
             reader, reader._stream_members(walk_selector, copies), listing_damage
-        ):
-            # A member already final when yielded was selected by ``walk_selector``.
-            entry = _Staging(original, final=original.member_state_final)
-            staging.append(entry)
-            if (
-                not entry.final
-                and selector is not None
-                and not _provisionally_selected(selector, original)
-            ):
-                # The selection is made again on what the member becomes, at
-                # placement. Its data is not staged, and it is not counted as handled.
-                entry.reported = False
-                self._close(stream)
-                continue
-            self._stage_member(entry, stream, len(staging) - 1, members_done)
-            members_done += 1
+        )
+        with _closing_pass(pairs):
+            for original, stream in pairs:
+                # A member already final when yielded was selected by ``walk_selector``.
+                entry = _Staging(original, final=original.member_state_final)
+                staging.append(entry)
+                if (
+                    not entry.final
+                    and selector is not None
+                    and not _provisionally_selected(selector, original)
+                ):
+                    # The selection is made again on what the member becomes, at
+                    # placement. Its data is not staged, and it is not counted as
+                    # handled.
+                    entry.reported = False
+                    self._close(stream)
+                    continue
+                self._stage_member(entry, stream, len(staging) - 1, members_done)
+                members_done += 1
 
         if listing_damage and any(
             listing_damage[0] is error for _, error in reader._failed_at_end
@@ -3132,35 +3168,39 @@ class ExtractionCoordinator:
             [orphans_by_source[source_id][0].source for source_id in needed],
             record=False,
         )
-        for member, stream in reader.stream_members(needed_sources):
-            group = orphans_by_source[member.member_id]
-            self._current = _MemberState()
-            remaining: list[_Orphan] = []
+        # Closed on the way out, so an error out of the loop body closes the open
+        # member stream (and any unrar child) now, not when the pass is collected.
+        passing = reader.stream_members(needed_sources)
+        with _closing_pass(passing):
+            for member, stream in passing:
+                group = orphans_by_source[member.member_id]
+                self._current = _MemberState()
+                remaining: list[_Orphan] = []
 
-            def record(
-                error: ArchiveyError | OSError, failed: ExtractionResult
-            ) -> bool:
-                # One failed source, N failed links: the fan-out is recorded on the
-                # results themselves, so a caller can tell N separate failures from one
-                # failure seen N times without joining against a diagnostic.
-                # Nothing the second pass runs raises FilterRejectionError.
-                assert failed.status is ExtractionStatus.FAILED
-                self._record_failure_group(group, error)
-                return False
+                def record(
+                    error: ArchiveyError | OSError, failed: ExtractionResult
+                ) -> bool:
+                    # One failed source, N failed links: the fan-out is recorded on the
+                    # results themselves, so a caller can tell N separate failures from one
+                    # failure seen N times without joining against a diagnostic.
+                    # Nothing the second pass runs raises FilterRejectionError.
+                    assert failed.status is ExtractionStatus.FAILED
+                    self._record_failure_group(group, error)
+                    return False
 
-            with self._handling(
-                member,
-                kind="orphaned hardlink source",
-                record=record,
-                cleanup=lambda: self._close(stream),
-            ):
-                remaining = self._materialize_orphan_source(member, stream, group)
-            # Each link after the one that took the content is its own attempt: its
-            # failure is that link's, not the source's.
-            self._link_orphan_group(remaining, member.member_id)
-            needed.discard(member.member_id)
-            if not needed:
-                break  # every orphaned source is materialized; stop opening members
+                with self._handling(
+                    member,
+                    kind="orphaned hardlink source",
+                    record=record,
+                    cleanup=lambda: self._close(stream),
+                ):
+                    remaining = self._materialize_orphan_source(member, stream, group)
+                # Each link after the one that took the content is its own attempt: its
+                # failure is that link's, not the source's.
+                self._link_orphan_group(remaining, member.member_id)
+                needed.discard(member.member_id)
+                if not needed:
+                    break  # every orphaned source is materialized; stop opening members
 
         # Any orphan whose source never reappeared (should not happen for a re-readable
         # source) is a per-member failure.

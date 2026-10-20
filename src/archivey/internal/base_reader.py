@@ -3409,11 +3409,13 @@ class BaseArchiveReader(ArchiveReader):
     ) -> Generator[tuple[ArchiveMember, ArchiveStream | None], None, None]:
         token = self._state.acquire_pass("stream_members")
         current: ArchiveStream | None = None
+        source_closer: Callable[[], None] | None = None
         try:
             if self._streaming:
                 self._enter_forward_pass("stream_members()")
             source = self._iter_with_data(copies)
-            self._state.set_pass_closer(token, _closer_of(source))
+            source_closer = _closer_of(source)
+            self._state.set_pass_closer(token, source_closer)
             for m, stream in source:
                 if current is not None:
                     current.close()
@@ -3458,7 +3460,15 @@ class BaseArchiveReader(ArchiveReader):
         finally:
             if current is not None:
                 current.close()
-            self._state.release_pass(token)
+            # The backend's pass is closed here, not left to be dropped: what it holds
+            # (an unrar process for a solid RAR) then ends now, and not only when an
+            # interpreter without reference counting (PyPy) collects it. Once close()
+            # has begun, its stream-shutdown step closes it instead (below).
+            try:
+                if source_closer is not None and self._state.lifecycle_is_open():
+                    source_closer()
+            finally:
+                self._state.release_pass(token)
             # A close() interrupted inside its stream-shutdown step handed the step
             # back with the pass wind-down lease still held. Finish it here, so
             # dropping this iterator still reaches teardown without another close().
