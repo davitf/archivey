@@ -133,8 +133,9 @@ removed at the end.
 returns. Every member is decompressed and checked, but the files it creates stay empty, and nothing
 is written to `out/`. What's already in `out/` is looked at, though: the temporary folder gets an
 empty copy of each file, folder and symlink there that a member's path runs into. That costs a
-listing of each folder of `out/` the extraction goes into, not a copy of everything in it. So the report shows
-what extracting into `out/` as it is now would do, with the path each member would be written to.
+listing of each folder of `out/` the extraction goes into, not a copy of everything in it. So the
+report shows what extracting into `out/` as it is now would do, with the path each member would be
+written to.
 A member that would clash with a file already in `out/` fails under the default `overwrite="error"`,
 as it would for real, and is skipped, replaced or renamed under the other policies.
 

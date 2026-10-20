@@ -570,6 +570,12 @@ _EXISTING_LINK_CASES: dict[
         {"sub": None, "ln": ("sym", "sub")},
         [("ln", "dir", None), ("ln/f", "file", b"f")],
     ),
+    # A file member over a directory of dest that holds entries, reached through
+    # the caller's symlink: REPLACE refuses it, as the directory is not empty.
+    "file-over-full-directory-through-symlink": (
+        {"sub/b/keep.txt": b"mine", "a": ("sym", "sub")},
+        [("a/b", "file", b"theirs")],
+    ),
 }
 
 
@@ -746,6 +752,34 @@ def test_hardlink_to_an_absolute_source_meets_dest_alike(tmp_path: Path) -> None
     )
     assert dry == real
     assert dry[0][1] is ExtractionStatus.BLOCKED
+
+
+def test_matching_an_absolute_target_is_linear_in_its_depth(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A link target's depth is the archive's to choose. Matching it against dest
+    # resolves one short path per component that exists, and nothing past the
+    # first that does not.
+    asked: list[str] = []
+    realpath = os.path.realpath
+
+    def counted(path, *args, **kwargs):
+        asked.append(os.fspath(path))
+        return realpath(path, *args, **kwargs)
+
+    dest = tmp_path / "out"
+    with dry_run_module.scratch_for(dest) as dry:
+        monkeypatch.setattr(os.path, "realpath", counted)
+        missing = "/" + "/".join(f"archivey-no-such-{i}" for i in range(2000))
+        assert dry.target_on_disk(missing) == missing
+        assert asked == []
+        # Every prefix exists: each step resolves the last prefix plus one name.
+        climbing = str(tmp_path) + "/x/.." * 1000 + "/elsewhere"
+        (tmp_path / "x").mkdir()
+        assert dry.target_on_disk(climbing) == climbing
+        monkeypatch.undo()
+    assert len(asked) <= 2001 + len(tmp_path.parts)
+    assert max(len(path) for path in asked) <= len(str(tmp_path)) + 20
 
 
 def test_record_keeps_the_top_when_the_tree_cannot_be_read(

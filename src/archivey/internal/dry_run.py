@@ -228,13 +228,22 @@ class DryRun:
         for spelling in self.dest_spellings:
             if pure.is_relative_to(spelling):
                 return str(self.scratch / pure.relative_to(spelling))
+        # Resolved one component at a time, each onto the prefix resolved before it,
+        # and only while the prefix exists: dest exists, so a prefix that does not
+        # cannot resolve to it. Each step resolves a path no longer than an existing
+        # resolved path plus one component, so the cost is linear in the target's
+        # depth, which the archive chooses (``/tmp/../tmp/..`` repeated included).
         parts = pure.parts
-        for end in range(1, len(parts) + 1):
+        resolved = PurePath(parts[0])
+        for end in range(2, len(parts) + 1):
+            step = os.path.join(resolved, parts[end - 1])
             try:
-                found = os.path.realpath(long_path(PurePath(*parts[:end])))
+                if not os.path.lexists(long_path(step)):
+                    return target
+                resolved = PurePath(plain(os.path.realpath(long_path(step))))
             except (OSError, ValueError):
                 return target
-            if PurePath(plain(found)) == self.dest_spellings[1]:
+            if resolved == self.dest_spellings[1]:
                 return str(self.scratch.joinpath(*parts[end:]))
         return target
 
@@ -377,9 +386,10 @@ class DryRun:
         root it can only come back in by dest's name (``../out/x``), as the scratch
         root is the one entry there named like dest (``scratch_for``).
 
-        With ``leaf``, ``parts`` is a member's own path: when it ends on a directory
-        reached without following a symlink, one entry of it is copied in
-        (``_bring_one``)."""
+        With ``leaf``, ``parts`` is a member's own path: when it ends on a directory,
+        one entry of it is copied in (``_bring_one``). A symlink on the way there is
+        followed as the pass follows it; one at the last component ends the probe,
+        as the pass meets the link itself there."""
         pending = list(reversed(parts))
         current = self.scratch
         above = self.scratch.parent
@@ -408,7 +418,11 @@ class DryRun:
                 ends_on_directory = True
                 continue
             hops += 1
-            leaf = False
+            if not pending:
+                # The path's last component is a symlink: the pass meets the link
+                # there, never a directory to find empty. A symlink on the way to
+                # the last component leaves the probe on (``a -> sub``, ``a/b``).
+                leaf = False
             if not stat.S_ISLNK(st.st_mode) or hops > _MAX_LINK_HOPS:
                 return
             try:

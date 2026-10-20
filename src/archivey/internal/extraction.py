@@ -716,9 +716,10 @@ class ExtractionCoordinator:
         that comes back into ``dest`` through a symlink outside it, or climbs above
         the directory that holds it, is refused where a real run could accept it; an
         absolute target is matched by the leading part of it that resolves to
-        ``dest`` (``DryRun.target_on_disk``) and is not affected. And everything is written to one filesystem, so a hardlink never falls
-        back to a copy: the bytes such a copy counts against ``max_extracted_bytes`` in
-        a ``dest`` that spans a mount point are not counted.
+        ``dest`` (``DryRun.target_on_disk``) and is not affected. And everything is
+        written to one filesystem, so a hardlink never falls back to a copy: the bytes
+        such a copy counts against ``max_extracted_bytes`` in a ``dest`` that spans a
+        mount point are not counted.
         """
         dest = Path(dest)
         if not self._dry_run:
