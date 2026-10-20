@@ -656,6 +656,15 @@ class TarReader(BaseArchiveReader):
             # cut member's recoverable prefix comes before its TruncatedError.
             self._owned_stream = ReadAheadStream(stream, _WALK_BUFFER)
             return self._owned_stream
+        if streaming and not source.seekable():
+            # The buffer fills from what has arrived, not a full 8 KiB, so a short
+            # tar on a pipe whose writer keeps it open opens at once. Its own reads
+            # still gather until they are full, as the walker needs.
+            view = cast("BinaryIO", source.arrived_view())
+            self._owned_stream = cast(
+                "BinaryIO", ensure_bufferedio(self._track_source_seeks(view))
+            )
+            return self._owned_stream
         stream = self._track_source_seeks(source)
         if streaming:
             # Random access buffers each walk's own view instead (_new_walker).

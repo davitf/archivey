@@ -497,7 +497,7 @@ is RAR's, for `unrar`, bounded by `SpoolLimits` and made after detection.
 | A 7z SFX with data after the archive reads the whole 2 MiB window to detect | **archivey** | By choice (§2.2) |
 | A source of 32 774 bytes or more that matches nothing near pays the far peek | **archivey** | The price of running far magic before the probes (§2.3) |
 | `detect_format` on a raw pipe leaves the caller without the bytes it read | **archivey** | By design: `open_archive` and `open_stream` keep them (§4.3) |
-| A TAR or compressed TAR shorter than its backend's read-ahead (8 KiB for TAR, a 64 KiB decoder feed for `.tar.gz`), sent down a pipe the writer keeps open, holds `open_archive` until the writer closes it | **archivey** | Detection answers at once (§4.3); the backend's first-header read at open waits, with `format=` too |
+| A `.tar.gz` shorter than its backend's read-ahead (an 8 KiB walk buffer over a 64 KiB decoder feed), sent down a pipe the writer keeps open, holds `open_archive` until the writer closes it | **archivey** | Detection answers at once (§4.3); the backend's first-header read at open waits, with `format=` too. A plain TAR does not wait: its walk buffer fills from what has arrived (`ArchiveSource.arrived_view`) |
 | A polyglot opens as whichever format comes first | **archivey** | The tie rule (§3.1); pass `format=` |
 | A bzip2- or xz-compressed `.dmg` read from a pipe or as a member stream detects as `BZ2` / `XZ`, with `trailer` in `unavailable_tiers` | **archivey** | Its `koly` block is at the end, and those sources are not seeked there (§2.4, §4.3) |
 
