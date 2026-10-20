@@ -7,7 +7,7 @@ The system SHALL decide where each native decoder runs from
 
 | Value | Runs in a child process | Runs in the caller's process |
 | --- | --- | --- |
-| `KNOWN_CRASHES` (default) | rapidgzip (every codec it decodes); a PPMd member over `max_ppmd_in_process_input` | every other decoder |
+| `KNOWN_CRASHES` (default) | rapidgzip (every codec it decodes); `pyppmd` (every PPMd member) | every other decoder |
 | `NATIVE_DECODERS` | every native decoder: `zlib`, `bz2`, `lzma` (all formats and filter chains), zstd, `lz4` (frame and block), `brotli`, `inflate64`, `pyppmd`, rapidgzip | nothing that decodes compressed data |
 | `NONE` | nothing | every decoder |
 
@@ -38,9 +38,11 @@ without the setting. Under `NATIVE_DECODERS` the caller's process MUST NOT impor
 `pyppmd`, `inflate64`, `brotli` or `rapidgzip`.
 
 A child whose decoder ended without an error from the child MAY be kept and reused for a
-later decoder (any codec but PPMd), so a run of small members does not start a process
-per member. A child MUST NOT be reused after it reported an error, died, or was
-interrupted part-way through a reply, and a PPMd child MUST NOT be reused at all. Idle
+later decoder, so a run of small members does not start a process per member. A child
+MUST NOT be reused after it reported an error, died, or was interrupted part-way through
+a reply. A PPMd child MUST NOT be reused after a member that did not decode to its end,
+nor after the decoder sent the one-symbol decode that stops a worker waiting on input,
+since pyppmd can corrupt its memory there without crashing at once. Idle
 children SHALL be ended when the interpreter exits, MUST NOT outlive it, and a process
 created by `fork` MUST NOT use its parent's idle children.
 
@@ -50,7 +52,8 @@ created by `fork` MUST NOT use its parent's idle children.
 | --- | --- |
 | Two members of one archive read on two threads under `NATIVE_DECODERS` | Two children, decoding at the same time |
 | A ZIP of 1,000 small deflate members read one after another under `NATIVE_DECODERS` | Children reused; far fewer than 1,000 started |
-| A PPMd member under `NATIVE_DECODERS` | Child process at any size; the child is never reused |
+| 1,000 small valid PPMd members read one after another under `KNOWN_CRASHES` | Each in a child process; children reused |
+| A PPMd member that ends early (corrupt or cut) | Child process; that child is not reused |
 
 ### Requirement: A decoder child's end and errors keep the in-process verdicts
 
@@ -71,15 +74,19 @@ error under every value.
 
 ### Requirement: Start failures, NONE and time limits
 
-Under `NATIVE_DECODERS`, where no child process can be started (a frozen application,
+Under `NATIVE_DECODERS`, and for PPMd and rapidgzip `ON` under `KNOWN_CRASHES`, where no
+child process can be started (a frozen application,
 an interpreter without `sys.executable`, an archivey imported from a zip with no worker
 script on disk, a spawn the operating system refuses), opening a decoder SHALL raise
 `ResourceLimitError` naming the reason and `process_isolation`; it MUST NOT decode
-in-process.
+in-process. rapidgzip `AUTO` under `KNOWN_CRASHES` keeps falling back to the standard
+library with one warning.
 
 Under `NONE` no child process SHALL be started for decoding. PPMd SHALL decode
 in-process at any size, a ZIP member with bit 3 set read from a non-seekable source
-included. rapidgzip SHALL NOT be used: `use_rapidgzip=AUTO` and `use_indexed_bzip2=AUTO`
+included: a member up to `max_ppmd_in_process_input` is held and handed to pyppmd whole,
+and a larger one, or one whose size is not known, is fed to it in pieces, which can crash
+the process on corrupt input. That risk is the one `NONE` accepts. rapidgzip SHALL NOT be used: `use_rapidgzip=AUTO` and `use_indexed_bzip2=AUTO`
 SHALL decode with the standard library without the warning that a child that cannot
 start logs, and `ON` is refused at configuration (`archive-reading`, "Explicit
 configuration object").
@@ -91,5 +98,6 @@ The system SHALL NOT bound the time a decoder takes under any value.
 | Case | Expected |
 | --- | --- |
 | `NATIVE_DECODERS`, no child process can be started | `ResourceLimitError` naming `process_isolation`; nothing decoded in-process |
+| 7z PPMd member of 1 KB, default config, no child process can be started | `ResourceLimitError` naming `process_isolation` on the first read |
 | 7z PPMd member of 200 KB compressed, `max_ppmd_in_process_input=1024`, `NONE` | Decoded in-process |
 | gzip stream opened seekable, `use_rapidgzip=AUTO`, `NONE` | Standard library decoder; no warning |

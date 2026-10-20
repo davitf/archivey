@@ -39,9 +39,12 @@ back children wait in a pool (at most four idle) and the next decoder reuses one
 
 A child goes back to the pool only when its decoder never reported an error and never
 died or was interrupted. A decoder that raised on corrupt data may have left the native
-library in a state nobody has tested, so that child is ended. PPMd children are never
-reused: pyppmd's known fault is memory corruption after an early end, which need not
-crash at once. The stdlib, zstd, lz4, brotli and inflate64 decoders have no known fault
+library in a state nobody has tested, so that child is ended. A PPMd child is reused only
+after a member that decoded to its end with no early stop and no quiesce NUL (the
+one-symbol decode `PpmdDecoder` sends at close to stop a worker that may be waiting on
+input): pyppmd's known faults are memory corruption after an early end and a decode after
+the model ended, which need not crash at once. The PPMd decoder marks its lease spent in
+those states. The stdlib, zstd, lz4, brotli and inflate64 decoders have no known fault
 of that kind; a reused child that one of them corrupted silently and that then crashes
 on the next member would charge the wrong member, and that residual risk is accepted.
 
@@ -97,12 +100,17 @@ pooled: one per stream, as today.
 
 Under `NATIVE_DECODERS` the caller asked for a child, so a child that cannot start raises
 `ResourceLimitError` naming the setting (DR-11), at the first decoder that needs one.
-Under `KNOWN_CRASHES` the existing rules stay: rapidgzip `AUTO` falls back with one
-warning, `ON` and PPMd over the threshold raise.
+Under `KNOWN_CRASHES` rapidgzip `AUTO` falls back with one warning and `ON` raises, as
+today. PPMd always needs a child there now (maintainer, 2026-10-20, after
+reports/ppmd-in-process-crash-2026-10-20.md showed the quiesce NUL can crash pyppmd on
+small members too), so a PPMd member raises where no child starts; the message names
+`process_isolation=NONE`.
 
 Under `NONE` the two open points from the report are settled as the most direct reading of
 "everything in the same process": PPMd decodes in-process at any size, including the
-bit-3 ZIP member from a pipe that today is always a child; rapidgzip is not used, because
+bit-3 ZIP member from a pipe that today is always a child. `max_ppmd_in_process_input`
+keeps one job there: a member up to it is held and handed over whole, as today's
+in-process path does; past it, or with no known size, pyppmd is fed in pieces; rapidgzip is not used, because
 in-process rapidgzip needs the guard PR 661 removed (a finalizer that closes it before
 exit, a trap that keeps caller exceptions out of C++); `ON` together with `NONE` is a
 contradiction caught at configuration.
