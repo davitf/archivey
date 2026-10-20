@@ -153,6 +153,7 @@ def test_undeclared_stream_reads_no_table_and_keeps_no_points() -> None:
         (seekable_zstd_table([(10, 10)], descriptor=0x04), "reserved bits"),
         (seekable_zstd_table([(10**6, 10)]), "frames end at offset"),
         (struct.pack("<IBI", 10**8, 0, 0x8F92EAB1), "more than the file can hold"),
+        (seekable_zstd_table([(0, 10)] * 3), "a frame of 0 bytes"),
     ],
 )
 def test_a_table_that_does_not_fit_the_file_degrades_to_sequential(

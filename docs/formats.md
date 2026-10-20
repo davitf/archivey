@@ -30,7 +30,7 @@ images](https://github.com/davitf/archivey/blob/main/dev-docs/formats/dmg.md) an
 | 7z | yes (common codecs) | `[recommended]` for PPMd, Deflate64, Brotli, LZ4, AES, and zstd before Python 3.14 | indexed | solid folders | Native reader; BCJ2 in pure Python |
 | RAR | yes (metadata) | **`unrar` or `rar` binary for compressed data**; `[recommended]` for header crypto and stored encrypted members | native metadata | solid when solid | No write |
 | ISO | no | `[recommended]` (`pycdlib`) | indexed | direct | Seekable source required |
-| `.zst` / `.tar.zst` | 3.14+ core; else `[recommended]` | `[recommended]` → `backports.zstd` | one member; the `.tar` form as `.tar.gz` | rewind seek unless indexed later | |
+| `.zst` / `.tar.zst` | 3.14+ core; else `[recommended]` | `[recommended]` → `backports.zstd` | one member; the `.tar` form as `.tar.gz` | seek by frame with `seekable_members=True`; a one-frame file rewinds | Reads the Seekable Zstandard seek table |
 | `.lz4` / `.tar.lz4` | no | `[recommended]` | one member; the `.tar` form as `.tar.gz` | rewind seek | |
 | `.br` | no | `[recommended]` | one member | rewind seek | No magic; detected by name |
 | `.lz` / `.lzma` / `.zz` | yes | — | one member | seek with `seekable_members=True` | `.lzma` and `.zz` detected by name |

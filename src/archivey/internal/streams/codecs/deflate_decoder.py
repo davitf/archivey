@@ -128,7 +128,12 @@ class GzipDecoder(BaseDecoder):
         self._index = index
         self._collector = collector
         # Source offset just past every byte fed, and output offset just past every
-        # byte produced: the bytes a feed holds are always the last ones fed.
+        # byte produced: the bytes a feed holds are always the last ones fed. Every
+        # reassignment of ``data`` in ``feed`` must keep it a suffix: ``_retained`` or
+        # ``unconsumed_tail`` plus the chunk, ``_resolve_between`` dropping padding
+        # from the front, and ``unused_data`` at a member's end (zlib leaves the same
+        # bytes in ``unconsumed_tail`` there). One that broke it would give seek
+        # points the wrong source offset, which serves wrong bytes rather than raising.
         self._fed_end = start.compressed_offset if start is not None else 0
         self._produced = start.decompressed_offset if start is not None else 0
         # The current member's start, recorded once the member has output: an empty

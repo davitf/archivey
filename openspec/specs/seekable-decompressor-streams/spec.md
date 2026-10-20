@@ -547,6 +547,7 @@ frame (`single_stream`), SHALL keep no points.
 | Multi-frame file, read forward, then seek back | Resumes at the frame start before the target |
 | Skippable frame before each frame (pzstd) | Points at the regular frames only |
 | Stream opened without seek demand | No points kept, no table read |
+| ZIP zstd member (`single_stream`) ending in a seek table, seek declared | No table read; the only point stays at offset 0 |
 
 ### Requirement: zstd reads the Seekable Zstandard seek table
 
@@ -563,7 +564,7 @@ seek-table cap SHALL be thinned and keep the exact total.
 | --- | --- |
 | `seek(0, SEEK_END)` | Total from the table; only the table is read |
 | Seek into frame N | Decoding resumes at frame N's start |
-| Reserved descriptor bits set, or frame sizes that do not reach the table | `SEEK_INDEX_DEGRADED` (scan `zstd_seek_table`); reads decode from the start |
+| Reserved descriptor bits set, a frame of 0 compressed bytes, or frame sizes that do not reach the table | `SEEK_INDEX_DEGRADED` (scan `zstd_seek_table`); reads decode from the start |
 | Zeros after the table | No table found, no diagnostic; reads decode from the start |
 
 ### Requirement: gzip member starts are seek points
@@ -584,8 +585,8 @@ points.
 ### Requirement: BGZF members are walked without decoding
 
 A forward seek past the known points, a `SEEK_END`, or a size query SHALL walk a BGZF
-file's members from the start: each member's `BC` extra subfield gives its size and its
-ISIZE its output. The walk SHALL stop quietly at the first member without one, keeping
+file's members from the start, reading the file once front to back and inflating
+nothing: each member's `BC` extra subfield gives its size and its ISIZE its output. The walk SHALL stop quietly at the first member without one, keeping
 the points before it; the size is known only when it reaches the end of the file. The
 sizes are trusted like the xz and lzip indexes (threat-model O17). A `.gzi` file is not
 read.
@@ -594,7 +595,7 @@ read.
 
 | Case | Expected |
 | --- | --- |
-| `seek(0, SEEK_END)` | Total from the walk; headers and trailers read, nothing decoded |
+| `seek(0, SEEK_END)` | Total from the walk; the file read once in large pieces, nothing inflated |
 | Seek into block N | Decoding resumes at block N's start |
 | BGZF blocks, then a plain member | Points for the blocks; size from decoding to the end |
 | Walk over the seek-table cap | `SEEK_INDEX_DEGRADED` (scan `bgzf_blocks`, `SeekTableThinned`); exact total kept |

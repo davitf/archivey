@@ -58,17 +58,23 @@ def _points(stream: Any) -> list[int]:
 
 
 def test_bgzf_walk_gives_the_size_and_block_points_without_decoding() -> None:
-    data = make_bgzf(PARTS)
-    # Unbuffered, the walk reads a header and then a trailer plus header per block.
-    counting = CountingBytesIO(data)
-    walk_bgzf(counting, len(data))
-    assert counting.bytes_read <= 18 + 26 * (len(PARTS) + 1)
-    with _open(io.BytesIO(data)) as stream:
-        assert stream.seek(0, io.SEEK_END) == len(FULL)
-        assert _points(stream) == STARTS
-        for pos in (STARTS[4] + 7, 3, STARTS[2], len(FULL) - 1):
+    # Enough members that a walk jumping from header to header, one read each, would
+    # make far more reads than one front-to-back pass in 256 KiB pieces.
+    parts = PARTS * 4
+    full = b"".join(parts)
+    starts = [sum(len(p) for p in parts[:i]) for i in range(len(parts))]
+    data = make_bgzf(parts)
+    # A raw source, so the stream puts its read buffer in front, as for a path.
+    source = CountingBytesIO(data)
+    with _open(source) as stream:
+        assert stream.seek(0, io.SEEK_END) == len(full)
+        # The file once, front to back, in a few large reads; nothing inflated.
+        assert source.bytes_read <= len(data) + 8192
+        assert source.read_calls <= len(data) // (1 << 18) + 2
+        assert _points(stream) == starts
+        for pos in (starts[20] + 7, 3, starts[2], len(full) - 1):
             assert stream.seek(pos) == pos
-            assert stream.read(300) == FULL[pos : pos + 300]
+            assert stream.read(300) == full[pos : pos + 300]
 
 
 def test_bgzf_backward_seek_resumes_at_the_block_it_lands_in() -> None:
@@ -169,11 +175,8 @@ def test_bgzf_walk_over_the_cap_is_thinned_and_keeps_the_total(
     parts = [bytes([i]) * (1000 + i) for i in range(20)]
     data = make_bgzf(parts)
     full = b"".join(parts)
-    thinned: list[bool] = []
-    blocks, size = walk_bgzf(
-        io.BytesIO(data), len(data), on_thinned=lambda: thinned.append(True)
-    )
-    assert thinned == [True]
+    blocks, size, thinned = walk_bgzf(io.BytesIO(data), len(data))
+    assert thinned
     assert len(blocks) <= 5
     assert size == len(full)
     collector, seen = _collector()
@@ -192,11 +195,11 @@ def test_bgzf_walk_over_the_cap_is_thinned_and_keeps_the_total(
     [b"", b"\x1f\x8b\x08\x04", BGZF_EOF[:20], gzip.compress(b"x")],
 )
 def test_short_or_plain_input_walks_no_blocks(data: bytes) -> None:
-    assert walk_bgzf(io.BytesIO(data), len(data)) == ([], None)
+    assert walk_bgzf(io.BytesIO(data), len(data)) == ([], None, False)
 
 
 def test_the_eof_marker_alone_is_an_empty_walk_with_size_zero() -> None:
-    blocks, size = walk_bgzf(io.BytesIO(BGZF_EOF), len(BGZF_EOF))
+    blocks, size, _ = walk_bgzf(io.BytesIO(BGZF_EOF), len(BGZF_EOF))
     assert size == 0
     assert [b.decompressed_size for b in blocks] == [0]
 
@@ -210,7 +213,7 @@ def test_a_real_bgzip_file_seeks_by_its_blocks(tmp_path: Any) -> None:
     data = subprocess.run(
         ["bgzip", "-c", str(source)], check=True, capture_output=True
     ).stdout
-    blocks, size = walk_bgzf(io.BytesIO(data), len(data))
+    blocks, size, _ = walk_bgzf(io.BytesIO(data), len(data))
     assert size == len(payload)
     assert len(blocks) > 2
     with _open(io.BytesIO(data)) as stream:

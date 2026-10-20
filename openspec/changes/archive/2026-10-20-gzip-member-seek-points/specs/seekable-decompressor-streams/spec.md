@@ -18,8 +18,8 @@ points.
 ### Requirement: BGZF members are walked without decoding
 
 A forward seek past the known points, a `SEEK_END`, or a size query SHALL walk a BGZF
-file's members from the start: each member's `BC` extra subfield gives its size and its
-ISIZE its output. The walk SHALL stop quietly at the first member without one, keeping
+file's members from the start, reading the file once front to back and inflating
+nothing: each member's `BC` extra subfield gives its size and its ISIZE its output. The walk SHALL stop quietly at the first member without one, keeping
 the points before it; the size is known only when it reaches the end of the file. The
 sizes are trusted like the xz and lzip indexes (threat-model O17). A `.gzi` file is not
 read.
@@ -28,7 +28,7 @@ read.
 
 | Case | Expected |
 | --- | --- |
-| `seek(0, SEEK_END)` | Total from the walk; headers and trailers read, nothing decoded |
+| `seek(0, SEEK_END)` | Total from the walk; the file read once in large pieces, nothing inflated |
 | Seek into block N | Decoding resumes at block N's start |
 | BGZF blocks, then a plain member | Points for the blocks; size from decoding to the end |
 | Walk over the seek-table cap | `SEEK_INDEX_DEGRADED` (scan `bgzf_blocks`, `SeekTableThinned`); exact total kept |

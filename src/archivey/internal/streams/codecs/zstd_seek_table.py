@@ -123,6 +123,9 @@ def read_seek_table(
         left -= n
         for fields in entry.iter_unpack(chunk):
             frame_compressed, frame_decompressed = fields[0], fields[1]
+            if frame_compressed == 0:
+                # No zstd frame is empty: the magic alone is four bytes.
+                raise CorruptionError("zstd seek table lists a frame of 0 bytes")
             kept.add(
                 _FrameBounds(
                     compressed, decompressed, decompressed + frame_decompressed

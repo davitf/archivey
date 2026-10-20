@@ -170,7 +170,11 @@ class FramedDecoder(BaseDecoder):
         self._index = index
         # Source offset just past every byte fed, and output offset just past every
         # byte produced: the bytes a feed holds are always the last ones fed, so a
-        # further stream's start is at ``_fed_end`` minus what is left of them.
+        # further stream's start is at ``_fed_end`` minus what is left of them. Every
+        # reassignment of ``data`` in ``feed`` must keep it a suffix: ``_held`` plus
+        # the chunk, ``_next_stream`` dropping zeros from the front, and
+        # ``unused_data`` at a stream's end. One that broke it would give seek points
+        # the wrong source offset, which serves wrong bytes rather than raising.
         self._fed_end = start.compressed_offset if start is not None else 0
         self._produced = start.decompressed_offset if start is not None else 0
         # The current stream's start, recorded once the stream has output: a stream

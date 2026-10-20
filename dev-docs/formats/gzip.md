@@ -131,8 +131,11 @@ seek point once the member has output, so a backward seek after a forward read r
 the member before the target. An empty member (BGZF's end marker) shares its offset with
 what follows and adds none. A forward seek past the known points, `SEEK_END` or a size
 query walks a BGZF file (`codecs/bgzf_index.py`): each member's `BC` extra subfield names
-its size, and its ISIZE, exact since a member holds at most 64 KiB, its output. One read
-per member takes the ISIZE and the next header, so nothing is decoded. The walk stops
+its size, and its ISIZE, exact since a member holds at most 64 KiB, its output. The walk
+reads the file once, front to back in 256 KiB pieces, and inflates nothing. Jumping from
+header to header reads fewer bytes only on paper: through the stream's 8 KiB read buffer
+each jump refills the buffer, about half a typical `bgzip` member, and on a remote source
+it is one request per member. The walk stops
 quietly at the first member without a `BC` subfield (an ordinary gzip member, trailing
 data, padding) and keeps the points before it; the size is known only when it reaches
 the end of the file, so a BGZF file with NUL padding after it seeks by its blocks and
@@ -600,7 +603,10 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 
 **Building fixtures.** The standard library writes gzip and zlib (`gzip.compress`,
 `zlib.compress`); `tests/streams_util.py::make_bgzf` writes BGZF; `pigz` and `bgzip`
-(package `tabix`) install from the distribution.
+(package `tabix`) install from the distribution. `scripts/setup-dev-env.sh` and the
+Linux `all` CI legs install `tabix`, so
+`tests/test_bgzf_seek.py::test_a_real_bgzip_file_seeks_by_its_blocks` checks the walk
+against the reference writer; on macOS it skips.
 `scripts/bench_rapidgzip_child.py` measures the child's start and round-trip cost.
 
 ## 9. References
