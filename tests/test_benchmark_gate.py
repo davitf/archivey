@@ -604,3 +604,79 @@ def test_main_passes_wall_drift_min_extra_ms_as_milliseconds(
     assert run() == 1  # default floor: 1 ms
     assert run("--wall-drift-min-extra-ms", "1") == 1
     assert run("--wall-drift-min-extra-ms", "5") == 0
+
+
+def test_cost_model_fit_recovers_known_costs() -> None:
+    """The end-rung fit returns the costs a linear model was built from, and
+    predicts the middle rungs exactly when the model holds."""
+    from benchmarks.cost_model import LADDER, MIB, Rung, fit
+
+    open_ms, list_us, read_us, mib_s = 0.4, 12.0, 120.0, 800.0
+
+    def rung(members: int, size: int) -> Rung:
+        return Rung(
+            members,
+            size,
+            list_ms=open_ms + members * list_us / 1e3,
+            read_ms=open_ms
+            + members * read_us / 1e3
+            + members * size / MIB * 1e3 / mib_s,
+        )
+
+    rungs = [rung(n, s) for n, s in LADDER]
+    f = fit(rungs)
+    assert f.open_ms == pytest.approx(open_ms)
+    assert f.list_us_per_member == pytest.approx(list_us)
+    assert f.read_us_per_member == pytest.approx(read_us)
+    assert f.throughput_mib_s == pytest.approx(mib_s)
+    for r in rungs[1:-1]:
+        assert f.predict_read(r.members, r.members * r.member_size) == pytest.approx(
+            r.read_ms
+        )
+
+
+def test_format_text_report_cost_model_section() -> None:
+    """A full-mode payload's cost model renders as a table, flagging a middle rung
+    the fit does not predict."""
+    from benchmarks.harness import format_text_report
+
+    fit_row = {
+        "open_ms": 0.4,
+        "list_us_per_member": 12.0,
+        "read_us_per_member": 120.0,
+        "throughput_mib_s": 800.0,
+    }
+    payload = {
+        "mode": "full",
+        "scale": "realistic",
+        "results": [],
+        "cost_model": [
+            {
+                "format": "zip",
+                "peer": "zipfile",
+                "sides": {
+                    "archivey": {
+                        "fit": fit_row,
+                        "rungs": [],
+                        "checks": [
+                            {
+                                "members": 64,
+                                "member_size": 262144,
+                                "op": "read",
+                                "measured_ms": 40.0,
+                                "predicted_ms": 28.0,
+                                "error": 0.3,
+                            }
+                        ],
+                    }
+                },
+            }
+        ],
+    }
+    report = format_text_report(payload)
+    assert "## Cost model" in report
+    assert (
+        "| zip | archivey | 0.40 ms | 83k members/s | 8k members/s | 800 MiB/s |"
+        in report
+    )
+    assert "zip archivey read 64 × 256 KiB" in report
