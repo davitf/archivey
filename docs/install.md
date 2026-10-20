@@ -92,11 +92,9 @@ isn't counted, because only encrypted members need it.
 ## Python versions and platforms
 
 Archivey needs CPython 3.11 or later. Every change is tested on Linux with 3.11 to 3.14, and on
-macOS and Windows with 3.11 and 3.14. Other platforms aren't tested. PyPy doesn't fully work yet:
-a trial run still fails in places, including some LZMA data. Under PyPy, archivey also doesn't use
-rapidgzip, lz4 or pyppmd, which misread data or crash the interpreter there, and reads as if they
-weren't installed: LZ4 and PPMd data can't be read, and the accelerator behind `[seekable]` is off.
-[How it is built](how-it-is-built.md) has the full test setup.
+macOS and Windows with 3.11 and 3.14. Other platforms aren't tested, and PyPy isn't supported yet
+([PyPy](#pypy) says what works there). [How it is built](how-it-is-built.md) has the full test
+setup.
 
 ## Free-threaded Python
 
@@ -110,3 +108,28 @@ doesn't install at all, because `cryptography` can't be installed there yet, and
 Other optional packages can still be installed. Archivey imports each one only when a file needs it,
 so the GIL comes back the first time you read PPMd, Deflate64 or Brotli data. Free-threaded builds
 are tested on Linux only.
+
+## PyPy
+
+PyPy isn't supported yet. Every change also runs the test suite on PyPy 3.11, but that run is a
+trial: it is allowed to fail, and some tests still fail there, among them reads of some Deflate64
+data in ZIP files. Most of the suite passes.
+
+Under PyPy, archivey doesn't use rapidgzip, lz4 or pyppmd, even when they are installed, because
+there they misread data or crash the interpreter. It reads as if they weren't installed:
+
+- LZ4 files, including `.tar.lz4`, can't be read.
+- PPMd members of ZIP and 7z archives can't be read.
+- The accelerator behind `[seekable]` is off, so seeking backwards in gzip or bzip2 data
+  decompresses more of it again.
+
+Each package's entry in `format_availability()` carries that reason, and `archivey --version -v`
+prints it in place of an install hint.
+
+If you use PyPy, close member streams and passes yourself, with a `with` block or `close()`. On
+CPython, one that nothing refers to any more is closed at once. PyPy closes it only at a later
+garbage collection, and until then it still holds the archive. Unless you opened the archive with
+`concurrent_operations=True`, the next `open` raises `ArchiveyUsageError` because a member stream
+is already open, and an unfinished `stream_members` pass makes the archive's other calls raise. A RAR member read through `unrar` also keeps its
+`unrar` process running until then. [Reading once](reading.md#reading-once) shows the `with` form
+for a pass.
