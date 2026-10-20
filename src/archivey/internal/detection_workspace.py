@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Protocol
 
 from archivey.config import ProcessIsolation
 from archivey.detection_cost import (
@@ -48,6 +48,18 @@ DETECTION_LIMIT = 4096
 # buffering [0, N). 1 MiB covers a second link after a 4- or 5-nibble first block; a
 # 6-nibble first block (up to 16 MiB) is declined (``None`` → cannot disprove).
 PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE = 1 << 20
+
+
+class CandidateView(Protocol):
+    """The callable :meth:`PrefixWorkspace.candidate_view` returns.
+
+    ``view(n)`` returns the candidate's first ``n`` bytes. ``view(n, start)`` returns
+    only bytes ``[start, n)``, so a reader that keeps what it got before asks for the
+    new bytes alone. Without ``start``, a reader that grows its prefix one small read
+    at a time copies the whole prefix on every read.
+    """
+
+    def __call__(self, length: int, start: int = 0, /) -> bytes: ...
 
 
 class PrefixWorkspace:
@@ -253,12 +265,14 @@ class PrefixWorkspace:
         *,
         limit: int | None = None,
         arrived: bool = False,
-    ) -> Callable[[int], bytes]:
+    ) -> CandidateView:
         """A ``peek_more(n)``-shaped callable relative to ``candidate_origin``.
 
         ``peek_more(n)`` returns the first ``n`` bytes of the *candidate*, which are the
         absolute range ``[candidate_origin, candidate_origin + n)``. Served from the
         shared buffer — never a second fetch of bytes already retrieved.
+        ``peek_more(n, start)`` returns only the part from ``start``, and the receipt
+        is charged for that part only (:class:`CandidateView`).
 
         With ``arrived``, a short result does not mean the source has ended: only a
         result no longer than the one before it does. A call that asks for more than
@@ -282,23 +296,29 @@ class PrefixWorkspace:
 
         returned = 0
 
-        def peek_more(length: int) -> bytes:
+        def peek_more(length: int, start: int = 0, /) -> bytes:
             nonlocal returned
+            if start < 0:
+                raise ValueError("start must be non-negative")
             if limit is not None:
                 remaining = max(0, limit - candidate_origin)
                 if length > remaining:
                     self._clamped_view_read = True
                 length = min(length, remaining)
+            wanted = max(0, length - start)
             if not arrived:
-                return self.peek_range(candidate_origin, length)
+                return self.peek_range(candidate_origin + start, wanted)
             held = len(self._buf) - candidate_origin
             if held > returned or held >= length:
                 # Enough is buffered, or more than last time: no read.
-                self._receipt.prefix_bytes += length
-                data = bytes(self._buf[candidate_origin : candidate_origin + length])
+                self._receipt.prefix_bytes += wanted
+                first = candidate_origin + start
+                data = bytes(self._buf[first : first + wanted])
             else:
-                data = self.peek_range(candidate_origin, length, arrived=True)
-            returned = len(data)
+                data = self.peek_range(candidate_origin + start, wanted, arrived=True)
+            # How far into the candidate this call's answer reaches, whatever
+            # ``start`` was.
+            returned = max(0, min(len(self._buf) - candidate_origin, length))
             return data
 
         return peek_more
