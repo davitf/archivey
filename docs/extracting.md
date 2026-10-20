@@ -240,10 +240,10 @@ On a volume that keeps 8.3 short names, `LONGFI~1.TXT` is a second name for `lon
 you use `"strict"` or `"standard"`, a member with such a name collides with the file the run already
 wrote, the same way `README` and `readme` do.
 
-NTFS gives one file at most 1,024 names. When an archive holds more hard links to one file than
-that, each link past the limit is written as a copy of the file. Those copies count toward
-`max_extracted_bytes` and the archive-wide `max_ratio`, since a small archive could otherwise write
-far more than its size.
+NTFS gives one file at most 1,024 names. In the rare case an archive holds more hard links to one
+file than that, archivey writes one copy of the file when it fills up and links the next names to
+the copy, so each 1,024 links cost one copy. The copies count toward `max_extracted_bytes` and the
+archive-wide `max_ratio`, since a small archive could otherwise write far more than its size.
 
 ## Archives you trust
 

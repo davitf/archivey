@@ -20,10 +20,10 @@ decompresses it once.
 
 If your code needs to know whether an archive is solid, `archive.cost` tells you before you read
 anything. Its `access_cost` is `AccessCost.SOLID` when reaching a member means decompressing others
-first, and `AccessCost.DIRECT` when archivey can jump straight to it. Its `listing_cost` says what
+first, and `AccessCost.DIRECT` when a member can be reached directly. Its `listing_cost` says what
 listing the members takes. It's `ListingCost.INDEXED` when the archive keeps a list of its members,
-as ZIP and 7z do when read from a file. It's `ListingCost.REQUIRES_SCANNING` when archivey has to
-jump from one member's header to the next, as in a plain `.tar`, a RAR, or a ZIP read from a pipe.
+as ZIP and 7z do when read from a file. It's `ListingCost.REQUIRES_SCANNING` when listing means
+jumping from one member's header to the next, as in a plain `.tar`, a RAR, or a ZIP read from a pipe.
 It's `ListingCost.REQUIRES_DECOMPRESSION` when the headers are inside compressed data, as in a
 `.tar.gz`. Its `stream_capability` is `StreamCapability.SEEKABLE` when the source you opened can
 seek, and `StreamCapability.FORWARD_ONLY` when it can only be read forward, as a pipe.
