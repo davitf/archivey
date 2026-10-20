@@ -98,7 +98,9 @@ child process can be started (a frozen application,
 an interpreter without `sys.executable`, an archivey imported from a zip with no worker
 script on disk, a spawn the operating system refuses), opening a decoder SHALL raise
 `ResourceLimitError` naming the reason and `process_isolation`; it MUST NOT decode
-in-process. rapidgzip `AUTO` under `KNOWN_CRASHES` keeps falling back to the standard
+in-process. A decoder that needs a fresh child part-way through a member (a re-run, or
+the move past the replay record's bound) SHALL raise the same error the same failure
+raises at open. rapidgzip `AUTO` under `KNOWN_CRASHES` keeps falling back to the standard
 library with one warning.
 
 Under `NONE` no child process SHALL be started for decoding. PPMd SHALL decode
@@ -118,5 +120,6 @@ The system SHALL NOT bound the time a decoder takes under any value.
 | --- | --- |
 | `NATIVE_DECODERS`, no child process can be started | `ResourceLimitError` naming `process_isolation`; nothing decoded in-process |
 | 7z PPMd member of 1 KB, default config, no child process can be started | `ResourceLimitError` naming `process_isolation` on the first read |
+| A decoder needs a fresh child part-way through a member, and none can start / the fresh child cannot allocate the PPMd model | `ResourceLimitError` naming `process_isolation` / `ResourceLimitError` "Decoder limit reached" |
 | 7z PPMd member of 200 KB compressed, `max_ppmd_in_process_input=1024`, `NONE` | Decoded in-process |
 | gzip stream opened seekable, `use_rapidgzip=AUTO`, `NONE` | Standard library decoder; no warning |

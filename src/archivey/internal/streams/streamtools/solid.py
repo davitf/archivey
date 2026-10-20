@@ -117,6 +117,12 @@ class _MemberSlice(ReadOnlyIOStream):
         self._remaining -= len(data)
         return data
 
+    @property
+    def block(self) -> BinaryIO:
+        """The decoded block this member is a range of (shared with its other
+        members): what a check on this member's bytes reports back to."""
+        return self._reader._block
+
     def tell(self) -> int:
         if self.closed:
             raise ValueError("I/O operation on closed file.")

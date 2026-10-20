@@ -443,6 +443,9 @@ class DecoderChild:
     def _request(self, tag: int, arg: int, *parts: bytes) -> bytes:
         """Send one request and return its output, re-running in a fresh child a crash
         or error from a reused one (see the class docstring)."""
+        # Before the bound check: a move to a fresh child must not revive a decoder
+        # that is closed, or one inherited through ``fork``.
+        self._check_usable()
         if (
             self._log is not None
             and self._log_size + sum(len(part) for part in parts) > REPLAY_LIMIT

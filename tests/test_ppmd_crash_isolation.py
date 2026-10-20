@@ -844,3 +844,49 @@ def test_a_model_a_fresh_child_cannot_allocate_part_way_is_a_limit_error(
             child.decode(packed, 600)
     finally:
         child.close()
+
+
+def _solid_ppmd_7z_second_crc_wrong(tmp_path: Path) -> Path:
+    """Two members in one solid PPMd folder, the second's stored CRC flipped and the
+    header re-sealed."""
+    second = b"second member of the folder\n" * 2000
+    (tmp_path / "a.txt").write_bytes(b"first member of the folder\n" * 2000)
+    (tmp_path / "b.txt").write_bytes(second)
+    archive = tmp_path / "solid.7z"
+    result = run_7z(
+        ["a", "-t7z", "-m0=PPMd", "-mhc=off", "-ms=on", str(archive)]
+        + ["a.txt", "b.txt"],
+        cwd=tmp_path,
+    )
+    if result.returncode != 0:
+        pytest.skip("7z cannot write PPMd")
+    raw = bytearray(archive.read_bytes())
+    crc = struct.pack("<I", zlib.crc32(second))
+    assert raw.count(crc) == 1
+    raw = bytearray(raw.replace(crc, struct.pack("<I", zlib.crc32(second) ^ 1)))
+    offset, size = struct.unpack_from("<QQ", raw, 12)
+    struct.pack_into("<I", raw, 28, zlib.crc32(raw[32 + offset : 32 + offset + size]))
+    struct.pack_into("<I", raw, 8, zlib.crc32(raw[12:32]))
+    archive.write_bytes(raw)
+    return archive
+
+
+@requires_binary("7z")
+@pytest.mark.parametrize("how", ["read", "stream_members", "extract_all"])
+def test_a_solid_member_whose_crc_does_not_match_retires_the_folder_child(
+    tmp_path: Path, how: str
+) -> None:
+    """A solid folder's members share one decoder; each way of reading the bad member
+    reaches it (the data pass hands out slices of the folder, not of a decode)."""
+    archive = _solid_ppmd_7z_second_crc_wrong(tmp_path)
+    POOL.close_idle()
+    with open_archive(archive) as ar, raises_corruption_not_truncation():
+        if how == "read":
+            ar.read(next(m for m in ar.members() if m.name == "b.txt"))
+        elif how == "stream_members":
+            for _member, stream in ar.stream_members():
+                if stream is not None:
+                    stream.read()
+        else:
+            ar.extract_all(tmp_path / "out")
+    assert POOL.idle_count() == 0

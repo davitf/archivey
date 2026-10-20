@@ -16,7 +16,12 @@ from pathlib import Path
 
 import pytest
 
-from archivey.exceptions import CorruptionError, ReadError, ResourceLimitError
+from archivey.exceptions import (
+    ArchiveyUsageError,
+    CorruptionError,
+    ReadError,
+    ResourceLimitError,
+)
 from archivey.internal.streams.codecs import decoder_child
 from archivey.internal.streams.codecs.decoder_child import POOL, DecoderChild
 from archivey.internal.streams.codecs.isolated import ISOLATED
@@ -362,3 +367,53 @@ def test_a_forked_process_leaves_its_parents_leased_child_alone() -> None:
         assert first + decomp.decompress(packed[1000:]) == data
     finally:
         decomp.close()
+
+
+def test_a_closed_decoder_refuses_a_call_past_the_replay_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The move to a fresh child comes after the usability check, so a closed decoder
+    raises rather than taking a child nothing would give back."""
+    monkeypatch.setattr(decoder_child, "REPLAY_LIMIT", 1000)
+    child = _reused_zlib_child()
+    child.call("decompress", b"")  # leaves a record behind, as a read part-way does
+    child.close()
+    idle = POOL.idle_count()
+    with pytest.raises(ArchiveyUsageError, match="closed"):
+        child.call("decompress", zlib.compress(os.urandom(5000)))
+    assert child._lease.process is None
+    assert POOL.idle_count() == idle
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="needs os.fork")
+def test_a_forked_process_cannot_move_its_parents_decoder_to_a_child_of_its_own(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A request past the replay limit in the fork raises like any other call there,
+    instead of replaying into a fresh child the fork started."""
+    monkeypatch.setattr(decoder_child, "REPLAY_LIMIT", 1000)
+    child = _reused_zlib_child()
+    data = os.urandom(20_000)
+    packed = zlib.compress(data)
+    try:
+        first = child.call("decompress", packed[:500])
+        read_fd, write_fd = os.pipe()
+        pid = os.fork()
+        if pid == 0:  # pragma: no cover - runs in the forked process
+            status = b"?"
+            try:
+                try:
+                    child.call("decompress", packed[500:5000])
+                    status = b"read"
+                except Exception as exc:  # noqa: BLE001 - reported to the parent
+                    status = type(exc).__name__.encode()
+            finally:
+                os.write(write_fd, status)
+                os._exit(0)
+        os.close(write_fd)
+        os.waitpid(pid, 0)
+        assert os.read(read_fd, 100) == b"ArchiveyUsageError"
+        os.close(read_fd)
+        assert first + child.call("decompress", packed[500:]) == data
+    finally:
+        child.close()

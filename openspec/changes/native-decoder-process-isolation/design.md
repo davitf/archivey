@@ -70,7 +70,8 @@ data is not blamed, since neither child found it bad. Silent damage that yields 
 output and then neither crashes nor errors is caught by the member's check value, like
 any corruption; the PPMd child is not reused after a mismatch. The member stream
 raises that mismatch above the decoder, so it tells every decoder under it
-(`retire_decoder_children`) before the error leaves.
+(`retire_decoder_children`) before the error leaves, through slices of a folder decode
+and the slices a solid folder hands its members.
 
 A PPMd read the caller abandons before the member's end also retires the child: closing
 it sends the quiesce NUL, which is one of the states above. So a password confirmation
