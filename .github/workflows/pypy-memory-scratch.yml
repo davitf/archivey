@@ -47,6 +47,8 @@ jobs:
         if: always()
         run: |
           grep -n "Cannot allocate memory" pytest.out | head -5
-          grep -B25 -m3 "Errno 12" pytest.out | cut -c1-220 | head -120
+          grep -B25 -m1 "Errno 12" pytest.out | cut -c1-220 | head -40
+          echo "== crashes"; grep -n "crashed\|Fatal Python error\|Segmentation" pytest.out | cut -c1-250 | head -20
+          grep -A30 -m3 "Fatal Python error" pytest.out | grep -v site-packages | cut -c1-200 | head -90
       - if: always()
         run: python3 scripts/junit_failure_lines.py extras.xml --width 200 | tail -40
