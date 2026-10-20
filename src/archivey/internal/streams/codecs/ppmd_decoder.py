@@ -22,12 +22,13 @@ from archivey.internal.streams.decompressor_stream import (
 )
 
 # Per-call output request for PPMd8 decodes without a declared size; 64 KiB matches
-# the stream layer's read chunk. The bound avoids pyppmd's ``-1`` path; it is not
-# what keeps an over-request safe. A request past the stream's true output leaves
-# pyppmd 1.3.x's worker waiting for input, and freeing the decoder in that state
-# corrupts the heap (bare pyppmd: +65536 over → 13/20 crashes); ``_quiesce_worker``
-# is what prevents that. PPMd8's end mark stops the worker on valid data; PPMd7 has
-# none, which is why PpmdDecoder refuses to decode it without ``unpack_size``.
+# the stream layer's read chunk. The bound avoids pyppmd's ``-1`` path. On pyppmd
+# 1.3.x a request past the stream's true output leaves the worker waiting for input
+# once it runs past what the range coder's tail lookahead can satisfy, and freeing
+# the decoder in that state corrupts the heap (bare pyppmd, no quiesce: +64/+4096
+# over → 0/20 crashes, +65536 over → 13/20); ``_quiesce_worker`` is what prevents
+# that. PPMd8's end mark stops the worker on valid data; PPMd7 has none, which is
+# why PpmdDecoder refuses to decode it without ``unpack_size``.
 _PPMD_UNSIZED_DECODE_CHUNK = 65536
 
 # Per-call ceiling for extra-NUL recovery and post-NUL empty drains. A single
@@ -123,14 +124,16 @@ class PpmdDecoder(BaseDecoder):
     ``unpack_size`` (the 7z folder / ZIP member size) is passed through as
     ``max_length`` on every ``decode`` call, matching py7zr's
     ``PpmdDecompressor.decompress(..., max_length)``. On pyppmd 1.3.x a request past
-    the true end of stream leaves the native worker thread waiting for input, and
-    freeing the decoder in that state corrupts the heap (Linux ``malloc``
-    abort/SIGSEGV, Windows ``STATUS_HEAP_CORRUPTION``); ``-1`` also runs it on a
-    desynchronised model. Requesting exactly the remaining output keeps a valid member
-    out of that state. A container that overstates ``unpack_size`` cannot be detected
-    before decoding; there the spent-payload stop (:meth:`_note_decoded`) and
-    :meth:`_quiesce_worker` hold (crafted members measured clean), and the remaining
-    risk is the quiesce NUL itself; see ``dev-docs/known-issues.md``.
+    the true end of stream leaves the native worker thread waiting for input once it
+    runs past what the range coder's tail lookahead can satisfy (measured: +64 and
+    +4096 over did not, +65536 over did), and freeing the decoder in that state
+    corrupts the heap (Linux ``malloc`` abort/SIGSEGV, Windows
+    ``STATUS_HEAP_CORRUPTION``); ``-1`` also runs it on a desynchronised model.
+    Requesting exactly the remaining output keeps a valid member out of that state. A
+    container that overstates ``unpack_size`` cannot be detected before decoding;
+    there the spent-payload stop (:meth:`_note_decoded`) and :meth:`_quiesce_worker`
+    hold (crafted members overstated by 64 KiB, 1 MiB and 15 MiB measured clean); see
+    ``dev-docs/known-issues.md``.
 
     Because PPMd7 has no end mark, there is no safe request size without knowing the
     payload length — so ``unpack_size`` is **required** for variant 7 (the 7z header
@@ -771,8 +774,10 @@ class PpmdDecoder(BaseDecoder):
                 # it valgrind shows the Free-time invalid write and a later decoder
                 # in the same process can start from corrupted state. The cost: when
                 # the short return was the model's end rather than a wait for input,
-                # this NUL is a decode after the end, which can crash pyppmd. That is
-                # the open residual in ``dev-docs/known-issues.md``.
+                # this NUL is a decode after the end. It measured clean in isolation
+                # and stays a candidate residual (``dev-docs/known-issues.md``). After
+                # a ``ValueError`` pyppmd reports ``eof``, so the check above returns
+                # without decoding, which matters: a NUL there does crash pyppmd.
                 if not self._exhausted and (
                     decomp.eof or not getattr(decomp, "needs_input", False)
                 ):

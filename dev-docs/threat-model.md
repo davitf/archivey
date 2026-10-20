@@ -1129,7 +1129,10 @@ archivey in a worker they can kill. Public:
 
 The stdlib `zlib`, `bz2` and `lzma` and pyppmd below 16 MiB (handed the member whole, which
 avoids the input pattern known to crash it) run in-process. A crash nobody has found yet
-would abort the process. Both rapidgzip decoders run in a child process;
+would abort the process. For pyppmd the one call left after a short return is the
+single-byte decode that frees a waiting worker at teardown; it has not been seen to crash,
+but on a stream that has ended it is a decode after the end, so it stays a candidate
+([`known-issues.md`](known-issues.md) §Intermittent `pyppmd` native aborts). Both rapidgzip decoders run in a child process;
 `scripts/accelerator_crash_search.py` tells whether they still need to. `MemoryError` is not translated, so
 running out of memory is never mistaken for a damaged archive; the limits above exist to
 keep a hostile archive from getting that far. Public:
