@@ -7,7 +7,8 @@ from pathlib import Path
 import pytest
 
 from archivey import MemberType, open_archive
-from archivey.types import HashAlgorithm, crc32_digest
+from archivey.internal.hashing import crc32_digest
+from archivey.types import HashAlgorithm
 from tests.sample_archives import CORPUS, CorpusEntry, corpus_archive_path
 
 _ORACLE_ENTRY_IDS = {"basic", "encoding", "permissions", "large", "encrypted"}

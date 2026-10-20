@@ -39,7 +39,8 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.internal.backends.single_file_reader import SingleFileReader
-from archivey.types import HashAlgorithm, crc32_digest
+from archivey.internal.hashing import crc32_digest
+from archivey.types import HashAlgorithm
 from tests.conftest import requires, requires_zstd, zstd_backend
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.streams_util import (

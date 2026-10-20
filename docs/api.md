@@ -44,7 +44,6 @@ name](opening.md#members-with-the-same-name).
 ::: archivey.ArchiveMember
 ::: archivey.ArchiveInfo
 ::: archivey.HashAlgorithm
-::: archivey.crc32_digest
 
 ::: archivey.MemberExtra
     options:
