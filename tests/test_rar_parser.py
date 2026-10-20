@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import io
 import struct
 import subprocess
@@ -20,12 +21,15 @@ from archivey.exceptions import (
 )
 from archivey.internal.backends.rar_parser import (
     RarKdfCache,
+    _check_rar5_password,
     _HeaderDecryptStream,
     _rar3_s2k,
     _Rar3Sha1,
     _rar5_dictionary_size,
     parse_rar_archive,
     parse_rar_volumes,
+    rar5_data_key,
+    rar5_hash_key,
 )
 from archivey.internal.backends.sevenzip_aes import SevenZipKeyCache
 from tests.conftest import requires, requires_binary
@@ -406,6 +410,28 @@ def test_kdf_cache_does_not_answer_for_another_password(name: str) -> None:
             else:
                 with pytest.raises((CorruptionError, EncryptionError)):
                     parse_rar_archive(handle, password=password, kdf_cache=cache)
+
+
+def test_rar5_key_hash_key_and_check_match_one_unrar_chain() -> None:
+    """UnRAR reads the AES key, HashKey and PswCheck from one PBKDF2 chain at ``n``,
+    ``n + 16`` and ``n + 32`` rounds without resetting the running XOR. Each of
+    ours is its own ``pbkdf2_hmac`` run; walking the chain by hand must agree."""
+    password, salt, shift = "pässwörd", bytes(range(16)), 4
+    u = hmac.new(password.encode(), salt + b"\0\0\0\1", hashlib.sha256).digest()
+    acc = bytearray(u)
+    chain = {1: bytes(acc)}
+    for rounds in range(2, (1 << shift) + 33):
+        u = hmac.new(password.encode(), u, hashlib.sha256).digest()
+        acc = bytearray(a ^ b for a, b in zip(acc, u, strict=True))
+        chain[rounds] = bytes(acc)
+    n = 1 << shift
+    assert rar5_data_key(password, salt, shift) == chain[n]
+    assert rar5_hash_key(password, salt, shift) == chain[n + 16]
+    pwd_check = bytearray(8)
+    for i, v in enumerate(chain[n + 32]):
+        pwd_check[i & 7] ^= v
+    check_value = bytes(pwd_check) + hashlib.sha256(pwd_check).digest()[:4]
+    assert _check_rar5_password(check_value, shift, salt, password)
 
 
 @requires("cryptography")
