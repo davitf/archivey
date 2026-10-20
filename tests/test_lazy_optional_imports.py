@@ -25,6 +25,7 @@ import pytest
 from archivey.exceptions import ResourceLimitError
 from archivey.internal.config import AcceleratorMode, StreamConfig
 from archivey.internal.streams import codecs
+from tests.conftest import has_package
 
 _GIL_REENABLING = ("pyppmd", "inflate64", "brotli", "rapidgzip")
 
@@ -101,20 +102,20 @@ def test_isolated_decoders_are_not_imported_by_the_caller() -> None:
     """Under ``NATIVE_DECODERS`` brotli, inflate64 and pyppmd decode in a child and the
     caller never imports them; nor pyppmd by default (every PPMd member decodes in a
     child)."""
-    if importlib.util.find_spec("inflate64") is None:
-        pytest.skip("inflate64 is not installed")
+    if not has_package("inflate64"):
+        pytest.skip("inflate64 is not installed, or archivey does not use it here")
     import inflate64
 
     payload = b"isolated " * 100
     deflater = inflate64.Deflater()
     deflate64_data = deflater.deflate(payload) + deflater.flush()
     brotli_data = b""
-    if importlib.util.find_spec("brotli") is not None:
+    if has_package("brotli"):
         import brotli
 
         brotli_data = brotli.compress(payload)
     ppmd_data = b""
-    if importlib.util.find_spec("pyppmd") is not None:
+    if has_package("pyppmd"):
         import pyppmd
 
         encoder = pyppmd.Ppmd7Encoder(6, 16 << 20)
