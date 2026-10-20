@@ -40,6 +40,13 @@ class _TracemallocUnavailable(types.ModuleType):
 if importlib.util.find_spec("_tracemalloc") is None:
     sys.modules["tracemalloc"] = _TracemallocUnavailable("tracemalloc")
 
+# archivey never runs rapidgzip under PyPy, where it misreads valid streams
+# (rapidgzip_child._UNDER_PYPY). The tests then see it as not installed: a ``None`` entry
+# makes ``import rapidgzip`` fail and ``importlib.util.find_spec`` return ``None``, so
+# tests that need it skip and the library reads as it does without it.
+if sys.implementation.name == "pypy":
+    sys.modules["rapidgzip"] = None  # type: ignore[assignment]
+
 # Per-test OS-resource leak oracle (child processes, owning streams, pipe fds).
 pytest_plugins = ("leak_oracle",)
 

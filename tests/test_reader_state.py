@@ -8,6 +8,7 @@ library's own errors rather than ``RecursionError`` (S17-K11).
 
 from __future__ import annotations
 
+import contextlib
 import io
 import random
 import tarfile
@@ -637,3 +638,25 @@ def test_a_pass_still_held_is_refused_after_the_collection(tmp_path: Path) -> No
         with pytest.raises(ArchiveyUsageError, match="already active"):
             next(iter(reader))
         passing.close()
+
+
+def test_closing_a_stream_members_pass_closes_the_backend_pass(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The backend's pass can hold a process (unrar for a solid RAR). Closing the
+    # caller's pass closes it at once, even while something else still refers to it,
+    # which is every dropped object until a collection on PyPy.
+    with open_archive(_zip_with_files(tmp_path)) as reader:
+        backend_passes = []
+        real = reader._iter_with_data
+
+        def kept(*args: object, **kwargs: object) -> Iterator[object]:
+            source = real(*args, **kwargs)
+            backend_passes.append(source)
+            return source
+
+        monkeypatch.setattr(reader, "_iter_with_data", kept)
+        with contextlib.closing(reader.stream_members()) as passing:
+            next(iter(passing))
+        (source,) = backend_passes
+        assert source.gi_frame is None
