@@ -617,7 +617,8 @@ class GzipCodec(_DeflateFamilyCodec):
         # outcomes come from zlib's gzip window; members with nothing between them
         # chain, and NULs end the data as in GNU gzip (GzipDecoder). With declared seek
         # demand, a backward seek resumes at the nearest member or BGZF block start.
-        # Otherwise it decodes again from the start and warns.
+        # Otherwise it decodes again from the start, and warns once the discarded
+        # progress reaches REWIND_REDECODE_WARN_BYTES.
         return _stdlib_gzip(source, config)
 
     def _open_accelerated(

@@ -1125,8 +1125,9 @@ where an ordinary directory lists at about 5 ns, because each signature is check
 swallowed entry ([ZIP §2.2](formats/zip.md#22-open-and-list)). On declared seek demand,
 a forward seek past the known points, a `SEEK_END` or a size query reads a Seekable
 Zstandard seek table or walks a BGZF file's members. Both scans are linear but run one
-Python step per table entry or member, so a file made only of entries or of empty
-members costs about 70-95 ns a byte, about 1.5 minutes a GB: a 4,000,000-entry table
+Python step per table entry or member, and the scan is paid before the table's final
+consistency check can raise. A table whose entries each name a one-byte frame, or a
+file of empty members, costs about 70-95 ns a byte, about 1.5 minutes a GB: a 4,000,000-entry table
 (36 MB) parses in 3.36 s, and 1,000,000 empty BGZF members (28 MB) walk in 1.95 s.
 Memory stays bounded, because the seek-point table is thinned at `MAX_SEEK_POINTS`
 ([seekable-decompressor-streams](../openspec/specs/seekable-decompressor-streams/spec.md)

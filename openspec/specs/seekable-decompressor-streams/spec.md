@@ -57,7 +57,7 @@ it, because every backward seek restarts decryption from the member's start.
 | Declared-seekable DEFLATE-family stream, `use_rapidgzip=ON`, size below threshold | rapidgzip still selected (threshold ignored) |
 | Declared-seekable bzip2 under `AUTO`, known size < `INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE` | rapidgzip not selected; stdlib backend used |
 | Declared-seekable bzip2, `use_indexed_bzip2=ON`, size below that threshold | rapidgzip still selected (threshold ignored) |
-| Declared-seekable gzip without accelerator, caller seeks backward | Seek re-decompresses from the nearest member or BGZF block start before the target, else from the start, and warns/names `[seekable]` accelerator |
+| Declared-seekable gzip without accelerator, caller seeks backward | Seek re-decompresses from the nearest member or BGZF block start before the target, else from the start; reports `STREAM_REWIND_REDECOMPRESSES`, naming the `[seekable]` accelerator, once the discarded progress reaches `REWIND_REDECODE_WARN_BYTES` |
 
 ### Requirement: XZ and lzip use format-native indexes
 

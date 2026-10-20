@@ -112,7 +112,7 @@ def test_a_seek_into_a_misplaced_frame_raises_when_the_decode_reaches_it() -> No
     data = _lying_table_file()
     with _open(io.BytesIO(data)) as stream:
         with pytest.raises(
-            CorruptionError, match="zstd seek table does not match the data"
+            CorruptionError, match="zstd seek table and the data do not agree"
         ):
             stream.seek(STARTS[1] + 5)
             stream.read()

@@ -931,11 +931,13 @@ class DecompressorStream(ReadOnlyIOStream):
         if existing.state is not None and point.state is None:
             return
         # A trusted index (threat-model O17) and the decode, or two index entries, put
-        # one output offset at two places in the input.
+        # one output offset at two places in the input. Two decode-discovered points
+        # cannot collide: a point is recorded only once its unit has output, so they
+        # rise in both coordinates. The index is what can disagree.
         codec = self._codec_name or "compressed"
         index_source = _INDEX_SOURCES.get(codec, f"{codec} seek index")
         raise CorruptionError(
-            f"The {index_source} does not match the data. Output offset "
+            f"The {index_source} and the data do not agree. Output offset "
             f"{point.decompressed_offset} starts at compressed offset "
             f"{existing.compressed_offset} and also at compressed offset "
             f"{point.compressed_offset}. The file is damaged or was made to "
