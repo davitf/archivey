@@ -15,9 +15,10 @@ translate alongside the real ones.
 
 from __future__ import annotations
 
+import importlib
 import lzma
 import zlib
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any, Protocol
 
 from archivey.config import ProcessIsolation
@@ -105,6 +106,10 @@ def _lz4_errors() -> dict[tuple[str, str], type[Exception]]:
 # levels a default compressor picks: what a decoder of an unknown stream most likely
 # allocates.
 _TYPICAL_DECODER_MEMORY = 8 << 20
+# PyPy's own module; no type checker knows it.
+_add_memory_pressure: Callable[[int], None] | None = (
+    importlib.import_module("__pypy__").add_memory_pressure if deps.UNDER_PYPY else None
+)
 
 
 def _note_native_memory(nbytes: int) -> None:
@@ -118,10 +123,8 @@ def _note_native_memory(nbytes: int) -> None:
     that mapping: ``OSError: [Errno 12] Cannot allocate memory`` from ``subprocess``.
     The pressure brings the collection forward, as PyPy's own ``LZMACompressor`` does.
     """
-    if deps.UNDER_PYPY:
-        import __pypy__  # type: ignore[import-not-found]
-
-        __pypy__.add_memory_pressure(nbytes)
+    if _add_memory_pressure is not None:
+        _add_memory_pressure(nbytes)
 
 
 def _lzma_decoder_memory(
