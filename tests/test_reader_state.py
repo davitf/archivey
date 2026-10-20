@@ -15,7 +15,7 @@ import threading
 import time
 import unicodedata
 import zipfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -579,3 +579,61 @@ def test_memoized_terminals_match_a_fresh_walk_per_member(
             fresh._archive_id = member._archive_id
             reader._resolve_link(fresh, {})
             assert member.link_target_member is fresh.link_target_member, member.name
+
+
+def _unreachable_but_alive(obj: object) -> None:
+    """Leave ``obj`` reachable only through a reference cycle, so reference counting
+    never frees it and only a collection does: how PyPy treats every dropped object."""
+    cycle: list[object] = [obj]
+    cycle.append(cycle)
+
+
+@pytest.fixture
+def no_refcounting(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Take the path of an interpreter without reference counting, with the collector
+    paused so that only the refusal path collects."""
+    import gc
+
+    from archivey.internal import reader_state
+
+    monkeypatch.setattr(reader_state, "_REFCOUNTED", False)
+    gc.disable()
+    try:
+        yield
+    finally:
+        gc.enable()
+
+
+@pytest.mark.usefixtures("no_refcounting")
+def test_a_dropped_pass_is_collected_before_a_new_one_is_refused(
+    tmp_path: Path,
+) -> None:
+    with open_archive(_zip_with_files(tmp_path), streaming=True) as reader:
+        passing = iter(reader)
+        next(passing)
+        _unreachable_but_alive(passing)
+        del passing
+        assert len(reader.members_report().members) == 2
+
+
+@pytest.mark.usefixtures("no_refcounting")
+def test_a_dropped_member_stream_is_collected_before_a_new_open_is_refused(
+    tmp_path: Path,
+) -> None:
+    with open_archive(_zip_with_files(tmp_path)) as reader:
+        first, second = reader.members()
+        stream = reader.open(first)
+        _unreachable_but_alive(stream)
+        del stream
+        with reader.open(second) as again:
+            assert again.read()
+
+
+@pytest.mark.usefixtures("no_refcounting")
+def test_a_pass_still_held_is_refused_after_the_collection(tmp_path: Path) -> None:
+    with open_archive(_zip_with_files(tmp_path), streaming=True) as reader:
+        passing = iter(reader)
+        next(passing)
+        with pytest.raises(ArchiveyUsageError, match="already active"):
+            next(iter(reader))
+        passing.close()

@@ -917,9 +917,10 @@ class ExtractionCoordinator:
         # before it are all written, including the hardlinks the second pass below
         # completes, and then it is raised. A hardlink only points back, so every
         # source the second pass needs is in that prefix.
-        # The pass is not bound to a name: an error out of the loop body then drops
-        # it at once, which closes the open member stream (a held traceback would
-        # otherwise keep it, and an unrar child, alive).
+        # The pass is closed on the way out, so an error out of the loop body closes
+        # the open member stream (and any unrar child) at once. Dropping the pass is
+        # not enough: a held traceback keeps it alive, and an interpreter without
+        # reference counting (PyPy) closes it only when it is collected.
         listing_damage: list[CorruptionError] = []
         revises = reader._REVISES_YIELDED_MEMBERS
         # A member the walk can still rename or retype is selected on what it
@@ -930,134 +931,142 @@ class ExtractionCoordinator:
             if stream_selector is None or not revises
             else _final_members_only(stream_selector)
         )
-        for original, stream in _until_listing_damage(
+        pairs = _until_listing_damage(
             reader, reader._stream_members(walk_selector, copies), listing_damage
-        ):
-            member_started = False
-            recorded_index: int | None = None
-            presented_name: str | None = None
-            rewrites: frozenset[NameRewrite] = frozenset()
-            current = self._current = _MemberState()
-            provisional = current.provisional = (
-                revises and not original.member_state_final
-            )
-            transformed: ArchiveMember | None = None
-            if (
-                provisional
-                and stream_selector is not None
-                and not _provisionally_selected(stream_selector, original)
-            ):
-                # The selection is made again on what the member becomes
-                # (``_settle_revised_members``); until then it holds a place, and
-                # is not counted as handled.
-                self._close(stream)
-                self._hold_place(original, selected_later=True)
-                continue
-            # What the member was when handled, if the walk can still change it.
-            before = original.replace() if provisional else None
-
-            def record(_error: object, failed: ExtractionResult) -> bool:
-                nonlocal recorded_index
-                if results and results[-1].member is failed.member:
-                    recorded_index = len(results) - 1
-                    self._set_result(recorded_index, failed)
-                else:
-                    recorded_index = self._append_result(failed)
-                return False
-
-            def cleanup() -> None:
-                self._close(stream)
-                if current.parked:
-                    self._drop_parked_copies(original.name, recorded_index)
-
-            with self._handling(
-                original, kind=original.type.value, record=record, cleanup=cleanup
-            ):
-                self._park_earlier_copies(
-                    original.name, current_by_name.get(original.name)
+        )
+        with contextlib.closing(pairs):
+            for original, stream in pairs:
+                member_started = False
+                recorded_index: int | None = None
+                presented_name: str | None = None
+                rewrites: frozenset[NameRewrite] = frozenset()
+                current = self._current = _MemberState()
+                provisional = current.provisional = (
+                    revises and not original.member_state_final
                 )
-                current_by_name.pop(original.name, None)
-                # User filter sees every selected member (including non-current); the
-                # is_current skip is hardwired after the filter and does not force a write
-                # even if the filter returns the member.
-                transformed, presented_name, rewrites = self._transform(original)
-                if transformed is None:
-                    # Filter returned None: caller-elected exclusion — no ExtractionResult
-                    # (same as a selector exclusion). Still counts as processed for progress.
-                    # A member the walk can still change holds a place until the
-                    # filter has seen what it becomes.
-                    if before is not None:
-                        recorded_index = self._hold_place(original)
-                elif not original.is_current:
-                    recorded_index = self._append_result(
-                        ExtractionResult(
-                            original, None, ExtractionStatus.SUPERSEDED, None
+                transformed: ArchiveMember | None = None
+                if (
+                    provisional
+                    and stream_selector is not None
+                    and not _provisionally_selected(stream_selector, original)
+                ):
+                    # The selection is made again on what the member becomes
+                    # (``_settle_revised_members``); until then it holds a place, and
+                    # is not counted as handled.
+                    self._close(stream)
+                    self._hold_place(original, selected_later=True)
+                    continue
+                # What the member was when handled, if the walk can still change it.
+                before = original.replace() if provisional else None
+
+                def record(_error: object, failed: ExtractionResult) -> bool:
+                    nonlocal recorded_index
+                    if results and results[-1].member is failed.member:
+                        recorded_index = len(results) - 1
+                        self._set_result(recorded_index, failed)
+                    else:
+                        recorded_index = self._append_result(failed)
+                    return False
+
+                def cleanup() -> None:
+                    self._close(stream)
+                    if current.parked:
+                        self._drop_parked_copies(original.name, recorded_index)
+
+                with self._handling(
+                    original, kind=original.type.value, record=record, cleanup=cleanup
+                ):
+                    self._park_earlier_copies(
+                        original.name, current_by_name.get(original.name)
+                    )
+                    current_by_name.pop(original.name, None)
+                    # User filter sees every selected member (including non-current);
+                    # the is_current skip is hardwired after the filter and does not
+                    # force a write even if the filter returns the member.
+                    transformed, presented_name, rewrites = self._transform(original)
+                    if transformed is None:
+                        # Filter returned None: caller-elected exclusion — no
+                        # ExtractionResult (same as a selector exclusion). Still counts
+                        # as processed for progress. A member the walk can still change
+                        # holds a place until the filter has seen what it becomes.
+                        if before is not None:
+                            recorded_index = self._hold_place(original)
+                    elif not original.is_current:
+                        recorded_index = self._append_result(
+                            ExtractionResult(
+                                original, None, ExtractionStatus.SUPERSEDED, None
+                            )
                         )
+                    else:
+                        result_index = recorded_index = self._append_result(
+                            ExtractionResult(
+                                original, None, ExtractionStatus.FAILED, None
+                            )
+                        )
+                        current_by_name[original.name] = result_index
+                        if not original.is_anti:
+                            # Counted only now, once the selector, the filter and the
+                            # universal check have accepted the member: a member skipped
+                            # or rejected before this does not count toward max_entries.
+                            tracker.start_member(original)
+                            member_started = True
+                            if self._on_progress is not None:
+                                # Capture members_done for intra-member reports: members
+                                # fully completed *before* this one. The outcome tallies
+                                # are read live: they change only when a member
+                                # completes, except that this member's REPLACE can
+                                # revise an earlier result first.
+                                done_so_far = members_done
+                                member = original
+
+                                def emit_progress() -> None:
+                                    self._report_progress(
+                                        member, done_so_far, tracker.member_bytes
+                                    )
+
+                                current.emit_progress = emit_progress
+
+                        written = self._write_member(
+                            original, transformed, stream, result_index
+                        )
+                        self._set_result(result_index, written)
+
+                if member_started and recorded_index is not None:
+                    state.counted[recorded_index] = tracker.member_bytes
+                if (
+                    before is not None
+                    and recorded_index is not None
+                    and recorded_index not in state.dropped
+                ):
+                    landed = (
+                        results[recorded_index].status is ExtractionStatus.EXTRACTED
                     )
-                else:
-                    result_index = recorded_index = self._append_result(
-                        ExtractionResult(original, None, ExtractionStatus.FAILED, None)
+                    state.revisable[recorded_index] = (
+                        before,
+                        transformed if landed else None,
                     )
-                    current_by_name[original.name] = result_index
-                    if not original.is_anti:
-                        # Counted only now, once the selector, the filter and the
-                        # universal check have accepted the member: a member skipped or
-                        # rejected before this does not count toward max_entries.
-                        tracker.start_member(original)
-                        member_started = True
-                        if self._on_progress is not None:
-                            # Capture members_done for intra-member reports: members fully
-                            # completed *before* this one. The outcome tallies are read
-                            # live: they change only when a member completes, except that
-                            # this member's REPLACE can revise an earlier result first.
-                            done_so_far = members_done
-                            member = original
 
-                            def emit_progress() -> None:
-                                self._report_progress(
-                                    member, done_so_far, tracker.member_bytes
-                                )
-
-                            current.emit_progress = emit_progress
-
-                    written = self._write_member(
-                        original, transformed, stream, result_index
+                # A portable rewrite is recorded on whatever result this member ended up
+                # with, including a BLOCKED/FAILED one: the rewrite happened before the
+                # outcome.
+                if presented_name is not None and recorded_index is not None:
+                    self._set_result(
+                        recorded_index,
+                        replace(
+                            results[recorded_index],
+                            presented_name=presented_name,
+                            rewrites=rewrites,
+                        ),
                     )
-                    self._set_result(result_index, written)
 
-            if member_started and recorded_index is not None:
-                state.counted[recorded_index] = tracker.member_bytes
-            if (
-                before is not None
-                and recorded_index is not None
-                and recorded_index not in state.dropped
-            ):
-                landed = results[recorded_index].status is ExtractionStatus.EXTRACTED
-                state.revisable[recorded_index] = (
-                    before,
-                    transformed if landed else None,
+                members_done += 1
+                self._report_progress(
+                    original,
+                    members_done,
+                    tracker.member_bytes if member_started else 0,
                 )
-
-            # A portable rewrite is recorded on whatever result this member ended up with,
-            # including a BLOCKED/FAILED one: the rewrite happened before the outcome.
-            if presented_name is not None and recorded_index is not None:
-                self._set_result(
-                    recorded_index,
-                    replace(
-                        results[recorded_index],
-                        presented_name=presented_name,
-                        rewrites=rewrites,
-                    ),
-                )
-
-            members_done += 1
-            self._report_progress(
-                original,
-                members_done,
-                tracker.member_bytes if member_started else 0,
-            )
-            if selected_total is not None and members_done >= selected_total:
-                break
+                if selected_total is not None and members_done >= selected_total:
+                    break
 
         failed_at_end: list[tuple[int, ArchiveyError]] = []
         if state.revisable or reader._failed_at_end:
@@ -3293,35 +3302,39 @@ class ExtractionCoordinator:
             [orphans_by_source[source_id][0].source for source_id in needed],
             record=False,
         )
-        for member, stream in reader.stream_members(needed_sources):
-            group = orphans_by_source[member.member_id]
-            self._current = _MemberState()
-            remaining: list[_Orphan] = []
+        # Closed on the way out, so an error out of the loop body closes the open
+        # member stream (and any unrar child) now, not when the pass is collected.
+        passing = reader.stream_members(needed_sources)
+        with contextlib.closing(passing):
+            for member, stream in passing:
+                group = orphans_by_source[member.member_id]
+                self._current = _MemberState()
+                remaining: list[_Orphan] = []
 
-            def record(
-                error: ArchiveyError | OSError, failed: ExtractionResult
-            ) -> bool:
-                # One failed source, N failed links: the fan-out is recorded on the
-                # results themselves, so a caller can tell N separate failures from one
-                # failure seen N times without joining against a diagnostic.
-                # Nothing the second pass runs raises FilterRejectionError.
-                assert failed.status is ExtractionStatus.FAILED
-                self._record_failure_group(group, error)
-                return False
+                def record(
+                    error: ArchiveyError | OSError, failed: ExtractionResult
+                ) -> bool:
+                    # One failed source, N failed links: the fan-out is recorded on the
+                    # results themselves, so a caller can tell N separate failures from
+                    # one failure seen N times without joining against a diagnostic.
+                    # Nothing the second pass runs raises FilterRejectionError.
+                    assert failed.status is ExtractionStatus.FAILED
+                    self._record_failure_group(group, error)
+                    return False
 
-            with self._handling(
-                member,
-                kind="orphaned hardlink source",
-                record=record,
-                cleanup=lambda: self._close(stream),
-            ):
-                remaining = self._materialize_orphan_source(member, stream, group)
-            # Each link after the one that took the content is its own attempt: its
-            # failure is that link's, not the source's.
-            self._link_orphan_group(remaining, member.member_id)
-            needed.discard(member.member_id)
-            if not needed:
-                break  # every orphaned source is materialized; stop opening members
+                with self._handling(
+                    member,
+                    kind="orphaned hardlink source",
+                    record=record,
+                    cleanup=lambda: self._close(stream),
+                ):
+                    remaining = self._materialize_orphan_source(member, stream, group)
+                # Each link after the one that took the content is its own attempt: its
+                # failure is that link's, not the source's.
+                self._link_orphan_group(remaining, member.member_id)
+                needed.discard(member.member_id)
+                if not needed:
+                    break  # every orphaned source is materialized; stop opening members
 
         # Any orphan whose source never reappeared (should not happen for a re-readable
         # source) is a per-member failure.

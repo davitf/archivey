@@ -16,6 +16,7 @@ import lzma
 import random
 import struct
 import subprocess
+import sys
 import tarfile
 import zlib
 from typing import Any
@@ -379,6 +380,10 @@ def test_xz_head_scans_each_index_by_its_own_size(
     assert scanned <= 2 * len(payload), scanned
 
 
+@pytest.mark.skipif(
+    sys.implementation.name != "cpython",
+    reason="PyPy's lzma cannot compress with this filter chain (LZMA_PROG_ERROR)",
+)
 def test_xz_head_with_filters_ahead_of_lzma2_is_byte_identical() -> None:
     """The clamp's filter allowance holds at a bound past the 4 KiB floor.
 

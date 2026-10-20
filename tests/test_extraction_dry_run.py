@@ -96,6 +96,9 @@ def _normalize(text: str, dest: Path, cwd: Path) -> str:
         text = text.replace(spelling, "<cwd>")
     if not dest.is_absolute():
         text = re.sub(rf"(?<=['\"]){re.escape(str(dest))}(?=['\"/\\])", "<rel>", text)
+    # PyPy keeps the Path an OSError was raised for, so its message shows the repr
+    # where CPython's shows the string.
+    text = re.sub(r"\b(?:Posix|Windows)Path\(('[^']*')\)", r"\1", text)
     # The staging file's random suffix is the one thing two runs never share.
     return _TMP_NAME.sub(".archivey-tmp-*", text)
 

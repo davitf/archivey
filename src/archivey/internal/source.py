@@ -179,6 +179,26 @@ class _GatheringReader:
         return data + read_exact(self._inner, n - got)
 
 
+def _readinto_or_stall(reader: object, view: memoryview) -> int | None:
+    """:func:`try_readinto`, with a 0 into a non-empty buffer confirmed by ``read``.
+
+    A non-blocking stream with nothing ready answers ``readinto`` with ``None``, which
+    raises. PyPy's buffered reader answers 0 instead, the same as at the end, so a 0
+    is asked again with ``read``: ``b""`` is the end, ``None`` a stall (which raises),
+    and bytes that arrived in between are copied in. This costs one call, at the end.
+    """
+    got = try_readinto(reader, view)
+    if got != 0 or not len(view):
+        return got
+    data = read_blocking(cast(BinaryIO, reader), len(view))
+    if len(data) > len(view):
+        raise ValueError(
+            f"inner returned {len(data)} bytes for read({len(view)}): {reader!r}"
+        )
+    view[: len(data)] = data
+    return len(data)
+
+
 class ArchiveSource(ReadOnlyIOStream):
     """A read-only stream over one archive source, carrying every source guarantee.
 
@@ -629,7 +649,7 @@ class ArchiveSource(ReadOnlyIOStream):
         # ``None`` from ``readinto`` is a stall. A missing or refused
         # ``readinto`` falls back to ``read``, which refuses ``None`` too.
         reader = self._reader
-        got = try_readinto(reader, view)
+        got = _readinto_or_stall(reader, view)
         if got is None:
             return super().readinto(b)
         # Full-count, as ``read`` is: a short fill is asked again, so a non-blocking
@@ -648,7 +668,7 @@ class ArchiveSource(ReadOnlyIOStream):
         total = got
         while 0 < got and total < len(view):
             want = len(view) - total
-            got = try_readinto(reader, view[total:])
+            got = _readinto_or_stall(reader, view[total:])
             assert got is not None, f"readinto refused after serving: {reader!r}"
             if got > want:
                 raise ValueError(
