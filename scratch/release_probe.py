@@ -1,46 +1,25 @@
-"""Scratch: what PyPy exposes to free a decoder now, and whether it works."""
+"""Scratch: what a PyPy lzma decoder does when used after its stream is released."""
 
-import bz2
 import lzma
-import struct
+import subprocess
+import sys
 
-import _bz2
-import _lzma
+CASE = sys.argv[1] if len(sys.argv) > 1 else ""
+if CASE:
+    import _lzma
 
-
-def biggest():
-    big = 0
-    total = 0
-    with open("/proc/self/maps") as f:
-        for line in f:
-            parts = line.split()
-            lo, hi = (int(x, 16) for x in parts[0].split("-"))
-            if "w" in parts[1] and parts[1].endswith("p"):
-                total += (hi - lo) >> 20
-                big = max(big, (hi - lo) >> 20)
-    return f"biggest={big}MB private_total={total}MB"
-
-
-print("lzma m memusage:", [n for n in dir(_lzma.m) if "mem" in n])
-print("lzma dec attrs:", [a for a in vars(lzma.LZMADecompressor())])
-print("bz2 module:", [n for n in dir(_bz2) if not n.startswith("__")])
-d = bz2.BZ2Decompressor()
-print("bz2 dec attrs:", [a for a in vars(d)] if hasattr(d, "__dict__") else dir(d))
-
-written = bytearray(lzma.compress(b"hello" * 100, format=lzma.FORMAT_ALONE))
-written[1:5] = struct.pack("<L", 0xFFFFFFFF)
-d = lzma.LZMADecompressor(format=lzma.FORMAT_ALONE)
-print(len(d.decompress(bytes(written))), "alone 4GiB live", biggest())
-_lzma.ffi.release(d.lzs)
-print("after ffi.release", biggest())
-try:
+    data = lzma.compress(b"hello" * 100)
+    d = lzma.LZMADecompressor()
+    d.decompress(data[:20])
     _lzma.ffi.release(d.lzs)
-    print("second release ok")
-except Exception as e:
-    print("second release", repr(e))
-print("memusage" , hasattr(_lzma.m, "lzma_memusage"))
+    if CASE == "null":
+        d.lzs = _lzma.ffi.NULL
+    try:
+        print(CASE, "decompress after release ->", len(d.decompress(data[20:])))
+    except Exception as e:
+        print(CASE, "decompress after release raised", repr(e))
+    sys.exit(0)
 
-b = bz2.compress(b"x" * 1000)
-for i in range(400):
-    bz2.BZ2Decompressor().decompress(b)
-print("400 bz2 dropped", biggest())
+for case in ("plain", "null"):
+    r = subprocess.run([sys.executable, __file__, case], capture_output=True, text=True)
+    print(case, "rc", r.returncode, r.stdout.strip(), r.stderr.strip()[-300:])
