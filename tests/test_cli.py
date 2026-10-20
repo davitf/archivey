@@ -1581,7 +1581,7 @@ def test_test_early_abort_reports_not_tested(
         yielded = False
         for item in real(self, members):
             if yielded:
-                raise ReadError("simulated solid abort")
+                raise ReadError("simulated mid-pass failure")
             yielded = True
             yield item
 
