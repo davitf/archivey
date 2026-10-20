@@ -33,10 +33,10 @@ from archivey.internal.detection_cost_receipt import MutableDetectionCostReceipt
 from archivey.internal.source import ArchiveSource, seek_is_expensive
 from archivey.internal.streams.streamtools import (
     is_seekable,
+    read_arrived,
     read_exact,
     source_byte_size,
 )
-from archivey.internal.streams.streamtools.binaryio import read_arrived
 
 # Default amount detection peeks (``format-detection``'s DETECTION_LIMIT). A peek grows
 # past it on demand — 32 774 bytes when the ISO probe is triggered — so this is the

@@ -198,7 +198,13 @@ class _BoundedPeekReader(ReadOnlyIOStream):
     (``PrefixWorkspace.candidate_view(..., arrived=True)``), and a short peek is not
     the end of the source. A sized read then returns at least one byte unless the
     source has ended, as a raw stream's read does, and ``read(-1)`` keeps peeking to
-    the end or the bound.
+    the end or the bound. Such a view grows by at least one byte per peek unless the
+    source has ended, so a sized read from where the last one stopped takes one
+    peek; it peeks again only after a seek past what the view has returned.
+
+    The seekability reaches the codec only on a random-access source. On a
+    forward-only one, :func:`_probe_inner_tar` hands the codec this reader wrapped
+    in a non-seekable :class:`OneReadEachStream`.
     """
 
     def __init__(
@@ -243,8 +249,10 @@ class _BoundedPeekReader(ReadOnlyIOStream):
         end = self._limit if n < 0 else min(self._offset + n, self._limit)
         if end > len(self._buf):
             self._buf = self._peek_more(end)  # a superset of the current buffer
-            # Peek again while the view is short of what this read must return. A peek
-            # that does not grow the buffer is the end of the source.
+            # Peek again while the view is short of what this read must return: a
+            # drain wants all of it, and a sized read after a seek past the buffer
+            # wants a byte at the offset. A peek that does not grow the buffer is the
+            # end of the source.
             while (
                 self._arrived
                 and len(self._buf) < end
@@ -440,7 +448,10 @@ def _probe_inner_tar(
     # buffer would wait for a whole 64 KiB feed from a pipe. A view that returns
     # what has arrived is handed over as a buffered stream that makes one read per
     # read, so the decoder is fed what is there. The decoder reads until ``b""``, and
-    # a feed split at any byte gives the same output.
+    # a feed split at any byte gives the same output. The wrap cannot seek, so this
+    # path relies on every codec reading a non-seekable input forward (the ones that
+    # can seek check their input first). A codec that seeks anyway raises an
+    # ``OSError``, caught below, and the probe answers "no inner TAR".
     codec_input: BinaryIO = OneReadEachStream(source) if view_arrived else source
     head = b""
     unavailable = False
@@ -450,7 +461,7 @@ def _probe_inner_tar(
             codec_input,
             config=StreamConfig(
                 streaming=True,
-                seekable=True,
+                seekable=not view_arrived,
                 use_rapidgzip=AcceleratorMode.OFF,
                 use_indexed_bzip2=AcceleratorMode.OFF,
                 decoder_limits=DecoderLimits.UNLIMITED,

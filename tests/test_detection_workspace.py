@@ -984,3 +984,152 @@ def test_inner_tar_skip_reason_precedence(
     assert info.format == ArchiveFormat.GZ
     inner = [s for s in info.unavailable_tiers if s.tier == "inner_tar"]
     assert inner == [TierSkip("inner_tar", reason)]
+
+
+class _Installments(io.RawIOBase):
+    """A forward-only raw that hands over at most one queued chunk per read.
+
+    ``None`` in the queue is a stall that lasts. Empty queue: EOF.
+    """
+
+    def __init__(self, *chunks: bytes | None) -> None:
+        super().__init__()
+        self._chunks = list(chunks)
+        self.calls = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def read(self, n: int = -1, /) -> bytes | None:
+        self.calls += 1
+        if not self._chunks:
+            return b""
+        chunk = self._chunks[0]
+        if chunk is None:
+            return None
+        take = len(chunk) if n < 0 else min(n, len(chunk))
+        if take == len(chunk):
+            self._chunks.pop(0)
+        else:
+            self._chunks[0] = chunk[take:]
+        return chunk[:take]
+
+
+def _forward_sources(*chunks: bytes | None) -> list[tuple[str, Callable[[], Any]]]:
+    """The raw stream itself and the ``ArchiveSource`` over it: both forward paths."""
+    from archivey.internal.source import ArchiveSource
+
+    return [
+        ("raw", lambda: _Installments(*chunks)),
+        ("archive-source", lambda: ArchiveSource.for_stream(_Installments(*chunks))),  # type: ignore[arg-type]  # test double
+    ]
+
+
+@pytest.mark.parametrize("kind", ["raw", "archive-source"])
+def test_peek_prefix_until_stops_when_settled_accepts(kind: str) -> None:
+    make = dict(_forward_sources(b"abc", b"def", b"ghi"))[kind]
+    seen: list[bytes] = []
+
+    def settled(head: bytes) -> bool:
+        seen.append(head)
+        return len(head) >= 6
+
+    with PrefixWorkspace(make(), BALANCED_BUDGET) as ws:
+        assert ws.forward_only
+        assert ws.peek_prefix_until(4096, settled) == b"abcdef"
+        assert seen == [b"", b"abc", b"abcdef"]
+        assert ws.remaining_known() is None  # stopped early: the source has not ended
+        receipt = ws.receipt
+    assert receipt.prefix_bytes == 4096  # one request, as peek_prefix charges it
+    assert receipt.unique_bytes_read == 6
+
+
+@pytest.mark.parametrize("kind", ["raw", "archive-source"])
+def test_peek_prefix_until_reads_to_the_end_when_never_settled(kind: str) -> None:
+    make = dict(_forward_sources(b"abc", b"def"))[kind]
+    with PrefixWorkspace(make(), BALANCED_BUDGET) as ws:
+        assert ws.peek_prefix_until(4096, lambda head: False) == b"abcdef"
+        assert ws.remaining_known() == 6  # a read came back empty: the end
+
+
+def test_peek_prefix_until_reads_a_seekable_source_in_one_full_read() -> None:
+    calls: list[bytes] = []
+
+    def settled(head: bytes) -> bool:
+        calls.append(head)
+        return bool(head)
+
+    with PrefixWorkspace(io.BytesIO(b"x" * 5000), BALANCED_BUDGET) as ws:
+        assert not ws.forward_only
+        assert ws.peek_prefix_until(4096, settled) == b"x" * 4096
+    assert calls == [b""]
+
+
+def test_peek_prefix_until_refuses_a_stall() -> None:
+    make = dict(_forward_sources(b"abc", None))["raw"]
+    with PrefixWorkspace(make(), BALANCED_BUDGET) as ws:
+        with pytest.raises(BlockingIOError, match="non-blocking"):
+            ws.peek_prefix_until(4096, lambda head: False)
+
+
+def test_peek_prefix_until_refuses_a_negative_length() -> None:
+    with PrefixWorkspace(io.BytesIO(b"x"), BALANCED_BUDGET) as ws:
+        with pytest.raises(ValueError, match="non-negative"):
+            ws.peek_prefix_until(-1, lambda head: True)
+        assert ws.peek_prefix_until(0, lambda head: True) == b""
+
+
+@pytest.mark.parametrize("kind", ["raw", "archive-source"])
+def test_arrived_candidate_view_serves_the_buffer_before_reading(kind: str) -> None:
+    """A view call longer than its last result gets what is buffered, else one read."""
+    make = dict(_forward_sources(b"abcdef", b"gh", b"ij"))[kind]
+    with PrefixWorkspace(make(), BALANCED_BUDGET) as ws:
+        assert ws.peek_prefix_until(4096, lambda head: len(head) >= 3) == b"abcdef"
+        view = ws.candidate_view(1, arrived=True)
+        assert view(100) == b"bcdef"  # held past what the view returned: no read
+        assert ws.receipt.unique_bytes_read == 6
+        assert view(100) == b"bcdefgh"  # nothing new held: one read
+        assert view(3) == b"bcd"
+        assert view(100) == b"bcdefgh"  # more held than the last result: no read
+        assert view(100) == b"bcdefghij"
+        assert view(100) == b"bcdefghij"  # no growth: the end
+        assert ws.remaining_known() == 10
+
+
+def test_arrived_candidate_view_refuses_a_stall() -> None:
+    make = dict(_forward_sources(b"abc", None))["raw"]
+    with PrefixWorkspace(make(), BALANCED_BUDGET) as ws:
+        view = ws.candidate_view(0, arrived=True)
+        assert view(100) == b"abc"
+        with pytest.raises(BlockingIOError, match="non-blocking"):
+            view(100)
+
+
+def test_bounded_reader_over_an_arrived_view_peeks_again_only_when_it_must() -> None:
+    """A sized read takes one peek; a drain, or a read after a seek past the
+    buffer, peeks until it has a byte or the source ends."""
+    from archivey.internal.detection import _BoundedPeekReader
+
+    def reader() -> tuple[_BoundedPeekReader, _Installments]:
+        raw = _Installments(b"ab", b"cd", b"ef")
+        ws = PrefixWorkspace(raw, BALANCED_BUDGET)
+        return _BoundedPeekReader(
+            ws.candidate_view(0, arrived=True), 100, arrived=True
+        ), raw
+
+    sized, raw = reader()
+    assert sized.read(10) == b"ab"
+    assert raw.calls == 1
+    assert sized.read(10) == b"cd"
+    assert raw.calls == 2
+
+    drain, _ = reader()
+    assert drain.read(-1) == b"abcdef"
+
+    seeking, raw = reader()
+    seeking.seek(3)
+    # The first peek holds only "ab", short of offset 3: one more peek reaches "d".
+    assert seeking.read(10) == b"d"
+    assert raw.calls == 2
+    assert seeking.read(10) == b"ef"
+    assert seeking.read(10) == b""
