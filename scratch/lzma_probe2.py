@@ -25,10 +25,7 @@ def biggest():
 
 import _lzma  # noqa: E402
 
-src = open(_lzma.__file__).read().splitlines() if _lzma.__file__.endswith(".py") else []
-for i, line in enumerate(src):
-    if any(k in line for k in ("ffi.gc", "release", "pressure", "class LZMADecompressor", "def __init__", "lzma_memusage", "def _new_lzma_stream")):
-        print(f"{i + 1}: {line}")
+VARIANT = sys.argv[1]
 
 data = lzma.compress(b"x" * 100)
 
@@ -47,18 +44,11 @@ def run(label, after):
     print(label, "collected", biggest())
 
 
-run("plain", lambda d, w: None)
-if hasattr(sys, "pypy_version_info"):
+if VARIANT == "plain":
+    run("plain", lambda d, w: None)
+elif VARIANT == "pressure8M":
     import __pypy__
 
     run("pressure8M", lambda d, w: w == "pre" and __pypy__.add_memory_pressure(8 << 20))
-    print([a for a in dir(lzma.LZMADecompressor()) if not a.startswith("__")])
-
-    def release(d, w):
-        if w == "post":
-            _lzma.ffi.release(d.lzs)
-
-    try:
-        run("release", release)
-    except Exception as e:
-        print("release failed", repr(e))
+elif VARIANT == "release":
+    run("release", lambda d, w: w == "post" and _lzma.ffi.release(d.lzs))

@@ -9,8 +9,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
       - run: uv python install pypy3.11
-      - run: uv run --python pypy3.11 --no-project python scratch/lzma_probe2.py
-      - run: uv run --python 3.13 --no-project python scratch/lzma_probe2.py
+      - run: for v in plain pressure8M release; do uv run --python pypy3.11 --no-project python scratch/lzma_probe2.py $v; done
   extras:
     if: false
     runs-on: ubuntu-latest
