@@ -2381,8 +2381,10 @@ class ExtractionCoordinator:
         (``_stop_or_log``), unless ``record`` returns True: the caller stops on it
         later. The always-stop errors pass through. Whatever the outcome, ``cleanup``
         runs, and then the links the work may have moved are rechecked
-        (``_recheck_links``). Then an error from the recheck ends the run. A
-        ``_handling`` is never entered inside another, so nothing catches that error.
+        (``_recheck_links``). Unless the run is stopping on the failure, an error from
+        the recheck ends the run; a stopping run ends on the member's error and drops
+        the recheck's. A ``_handling`` is never entered inside another, so nothing
+        catches that error.
         """
         current = self._current
         link_error: ArchiveyError | None = None
