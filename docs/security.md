@@ -42,10 +42,14 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
     ??? note "Why the split at 16 MiB?"
         pyppmd, the PPMd decoder, crashes when it's asked to keep decoding after a damaged stream
         has ended early, and a wrong password or a crafted member gets it there. Handing it the
-        whole member at once avoids that, since nothing more is asked of it afterwards. The cost is
-        memory: archivey holds the whole compressed member, and about as much again while pyppmd
-        copies it. A child process doesn't need that, but it takes time to start for every member,
-        so archivey uses one only for members large enough that the memory matters.
+        whole member at once avoids that, since no more decoding is asked of it afterwards,
+        with one exception: before the decoder is freed, archivey may send it a single byte,
+        so that a decoder still waiting for input doesn't corrupt memory. That byte has not
+        been seen to crash it, but on a stream that has already ended it is one more decode,
+        so it isn't ruled out. The cost of the whole-member hand-over is memory: archivey
+        holds the whole compressed member, and about as much again while pyppmd copies it. A
+        child process doesn't need that, but it takes time to start for every member, so
+        archivey uses one only for members large enough that the memory matters.
 
 - **Running out of memory raises `MemoryError`, not an `ArchiveyError`,** so it's never mistaken for
   a damaged archive. `DecoderLimits` caps the memory an archive can ask one decoder for, 2 GiB by
@@ -175,10 +179,13 @@ in the repository measures what each limit costs in time and memory on your mach
 The costs were measured on one 2.8 GHz core.
 
 ??? note "Why 2^25 rounds?"
-    A 7z or RAR archive made by the usual tools costs 2^19 rounds per password for 7z and about 2^15
-    for RAR. A crafted archive can ask for up to 2^24 rounds and repeat that work for each member,
-    so two such members use the whole default, and a third is refused. Each password you try costs
-    the same work again.
+    An archive made by the usual tools costs, per password, 2^19 rounds for 7z, 2^18 for RAR3 (a
+    fixed cost the archive does not choose), and 2^16 to 2^17 for RAR5. RAR5 asks for 2^15, and
+    archivey runs that derivation two or three times: once for the password check, and once each
+    for the key checksums are verified with and the key archivey decrypts with, when it needs
+    them. A crafted 7z or RAR5 archive can ask for up to 2^24 rounds and repeat that work for each
+    member. Two such 7z members use the whole default and a third is refused; one such RAR5
+    member already goes over it. Each password you try costs the same work again.
 
 Going over a limit raises `ResourceLimitError`.
 
