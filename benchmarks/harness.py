@@ -394,8 +394,10 @@ def _stdlib_gzip_read_all(path: Path) -> None:
 
 
 def _stdlib_targz_read_all(path: Path) -> None:
+    # Iterate rather than getmembers(): listing first decompresses to the end, and
+    # the first extractfile() then seeks back, which restarts the decompression.
     with tarfile.open(path, "r:gz") as tf:
-        for member in tf.getmembers():
+        for member in tf:
             if not member.isfile():
                 continue
             f = tf.extractfile(member)
@@ -404,8 +406,10 @@ def _stdlib_targz_read_all(path: Path) -> None:
 
 
 def _stdlib_tarbz2_read_all(path: Path) -> None:
+    # Iterate rather than getmembers(): listing first decompresses to the end, and
+    # the first extractfile() then seeks back, which restarts the decompression.
     with tarfile.open(path, "r:bz2") as tf:
-        for member in tf.getmembers():
+        for member in tf:
             if not member.isfile():
                 continue
             f = tf.extractfile(member)

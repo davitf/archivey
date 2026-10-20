@@ -110,7 +110,11 @@ ratios are not a PR gate.
 ### `.tar.gz` / `.tar.bz2` accelerators (off vs on)
 
 Same ~16 MiB multi-member corpus on the **4-core** host above. Stdlib peer is
-`tarfile` `r:gz` / `r:bz2` (always stdlib codecs). Archivey forces
+`tarfile` `r:gz` / `r:bz2` (always stdlib codecs), iterated in one forward pass.
+The rows below predate that: the peer then called `getmembers()` first, which
+decompresses to the end, and its first `extractfile()` seeked back and decompressed
+the stream a second time, so its stdlib times are about twice a one-pass read.
+Archivey forces
 `use_rapidgzip` / `use_indexed_bzip2` ON or OFF; ON also sets
 `MemberStreams.SEEKABLE`.
 
