@@ -6,12 +6,16 @@ import base64
 import gzip
 import io
 import lzma
+import shutil
+import sys
+import tarfile
 import tempfile
 import zipfile
 import zlib
 from collections.abc import Callable
 from pathlib import Path
 
+from tests.conftest import run_7z, sevenzip_lists_arm64
 from tests.sample_archives import CORPUS, corpus_archive_path
 
 # Small corpus entry ids that build quickly and cover common layouts.
@@ -85,7 +89,13 @@ def sevenzip_seeds() -> list[bytes]:
         tmp_path = Path(tmp)
         corpus = _corpus_seeds("7z", tmp_path)
         enc = _corpus_seeds("7z", tmp_path, entry_ids=_SEVENZIP_ENC_SEED_ENTRY_IDS)
-        return tiny + corpus + enc + _adversarial_seeds(".7z")
+        return (
+            tiny
+            + corpus
+            + enc
+            + _uncompressed_header_sevenzip_seeds(tmp_path)
+            + _adversarial_seeds(".7z")
+        )
 
 
 def _synthetic_zip_seeds() -> list[bytes]:
@@ -116,7 +126,14 @@ def zip_seeds() -> list[bytes]:
             entry_ids=_ENC_SEED_ENTRY_IDS,
             allow_binaries=True,
         )
-        return tiny + _synthetic_zip_seeds() + corpus + enc + _adversarial_seeds(".zip")
+        return (
+            tiny
+            + _synthetic_zip_seeds()
+            + _zip_layout_seeds()
+            + corpus
+            + enc
+            + _adversarial_seeds(".zip")
+        )
 
 
 def tar_seeds() -> list[bytes]:
@@ -124,6 +141,7 @@ def tar_seeds() -> list[bytes]:
     with tempfile.TemporaryDirectory(prefix="atheris-seed-tar-") as tmp:
         return (
             tiny
+            + _synthetic_tar_seeds()
             + _corpus_seeds("tar", Path(tmp))
             + _corpus_seeds("tar.gz", Path(tmp))
             + _adversarial_seeds(".tar", ".tar.gz", ".tgz")
@@ -177,6 +195,11 @@ def detect_format_seeds() -> list[bytes]:
         except (OSError, RuntimeError, ValueError, ImportError):
             continue
     seeds.extend(decoy_dense_seeds())
+    # UDIF's koly block and a short stub in front of a ZIP. detect_format names both;
+    # the open_detected target is what then opens them.
+    seeds.append(_koly_block())
+    seeds.append(b"BZh9" + b"\x00" * 32 + _koly_block())
+    seeds.append(b"MZ" + b"\x00" * 64 + _synthetic_zip_seeds()[0])
     # Dedup while preserving order.
     seen: set[bytes] = set()
     out: list[bytes] = []
@@ -419,6 +442,314 @@ def deflate64_seeds() -> list[bytes]:
     tiny = [b"", b"not deflate64", b"\x00" * 16, b"\xff" * 64]
     # Prefer any on-disk fixtures that look like Deflate64 ZIP members if present.
     return tiny + _adversarial_seeds(".deflate64")
+
+
+def _koly_block() -> bytes:
+    """A 512-byte UDIF trailer: ``koly``, version 4, header size 512."""
+    block = bytearray(512)
+    block[0:4] = b"koly"
+    block[4:8] = (4).to_bytes(4, "big")
+    block[8:12] = (512).to_bytes(4, "big")
+    return bytes(block)
+
+
+def _synthetic_tar_seeds() -> list[bytes]:
+    """PAX, GNU and ustar archives, including a name that needs an extended header.
+
+    The TAR target recomputes header checksums, so these blocks are the structures
+    a mutation of the type flag or the size can stay inside.
+    """
+    payload = b"atheris tar payload\n" * 4
+    out: list[bytes] = []
+    for fmt in (tarfile.PAX_FORMAT, tarfile.GNU_FORMAT, tarfile.USTAR_FORMAT):
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w", format=fmt) as tf:
+            info = tarfile.TarInfo("dir/nested/file.txt")
+            info.size = len(payload)
+            tf.addfile(info, io.BytesIO(payload))
+            # ustar refuses a name past 100 bytes. PAX and GNU store it in an
+            # extended header, which is the block the checksum fixup must keep valid.
+            if fmt != tarfile.USTAR_FORMAT:
+                long = tarfile.TarInfo("nested/" + ("a" * 180) + ".txt")
+                long.size = 4
+                tf.addfile(long, io.BytesIO(b"long"))
+        out.append(buf.getvalue())
+    return out
+
+
+class _WritablePipe(io.RawIOBase):
+    """A non-seekable buffer ``zipfile`` can write a data-descriptor archive to."""
+
+    def __init__(self) -> None:
+        self._data = bytearray()
+
+    def readable(self) -> bool:
+        return False
+
+    def writable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return False
+
+    def write(self, b: bytes | bytearray | memoryview) -> int:  # type: ignore[override]
+        self._data += b
+        return len(b)
+
+    def tell(self) -> int:
+        # zipfile asks for the offset while it writes a stream it cannot seek.
+        return len(self._data)
+
+    def getvalue(self) -> bytes:
+        return bytes(self._data)
+
+
+def _zip_layout_seeds() -> list[bytes]:
+    """ZIP shapes the stored/deflate seeds do not have.
+
+    A data-descriptor member (sizes live after the payload), a ZIP64 end record on
+    a small archive, and the local headers of a stored archive with the central
+    directory cut off.
+    """
+    out: list[bytes] = []
+    pipe = _WritablePipe()
+    with zipfile.ZipFile(pipe, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("descriptor.txt", _SAMPLE)
+        zf.writestr("empty.txt", b"")
+    out.append(pipe.getvalue())
+
+    previous = zipfile.ZIP_FILECOUNT_LIMIT
+    try:
+        # zipfile emits ZIP64 records once the count limit is already exceeded.
+        zipfile.ZIP_FILECOUNT_LIMIT = 0  # type: ignore[misc]
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as zf:
+            zf.writestr("zip64.txt", b"zip64 seed")
+        out.append(buf.getvalue())
+    finally:
+        zipfile.ZIP_FILECOUNT_LIMIT = previous  # type: ignore[misc]
+
+    stored = _synthetic_zip_seeds()[0]
+    central = stored.find(b"PK\x01\x02")
+    if central > 0:
+        out.append(stored[:central])
+    return out
+
+
+def _x86_like(size: int = 4096) -> bytes:
+    """Bytes with CALL/JMP/Jcc opcodes, so a BCJ2 seed has call and jump streams."""
+    chunk = b"\xe8\x10\x00\x00\x00\xe9\x08\x00\x00\x00\x0f\x84\x04\x00\x00\x00"
+    return (chunk * ((size // len(chunk)) + 1))[:size]
+
+
+# ``-mhc=off`` leaves the next header uncompressed, so a mutated coder field is
+# still a header. Dictionaries stay at 1 MiB, inside the fuzz decoder cap.
+# ``aes`` is the exception: ``-mhe=on`` encrypts that header. It is here for the
+# password path, not because its coder fields are in the clear.
+# Each row is the seed name, the ``7z`` switches, ``"one"`` or ``"both"``
+# members, and the package a decode of that seed needs. ``None`` decodes with
+# no optional package. The seed is still built when the package is absent.
+_UNCOMPRESSED_HEADER_SPECS: tuple[tuple[str, tuple[str, ...], str, str | None], ...] = (
+    ("copy", ("-mhc=off", "-m0=Copy"), "one", None),
+    ("lzma2", ("-mhc=off", "-m0=LZMA2", "-md=1m"), "one", None),
+    ("bcj", ("-mhc=off", "-m0=LZMA2", "-m1=BCJ", "-md=1m"), "one", None),
+    ("delta", ("-mhc=off", "-m0=LZMA2", "-m1=Delta:4", "-md=1m"), "one", None),
+    (
+        "bcj2",
+        (
+            "-mhc=off",
+            "-m0=BCJ2",
+            "-m1=LZMA2",
+            "-m2=LZMA",
+            "-m3=LZMA",
+            "-mb0s0:1",
+            "-mb0s1:2",
+            "-mb0s2:3",
+            "-md=1m",
+        ),
+        "one",
+        None,
+    ),
+    ("arm64", ("-mhc=off", "-m0=ARM64", "-m1=Copy"), "one", None),
+    ("ppmd", ("-mhc=off", "-m0=PPMd:mem=8m"), "one", "pyppmd"),
+    (
+        "aes",
+        ("-mhc=off", "-mhe=on", "-ppassword", "-m0=LZMA2", "-md=1m"),
+        "one",
+        "cryptography",
+    ),
+    ("solid", ("-mhc=off", "-ms=on", "-m0=LZMA2", "-md=1m"), "both", None),
+)
+
+
+def _header_spec_builds(switches: tuple[str, ...], *, arm64: bool) -> bool:
+    """Whether ``switches`` are expected from a ``7z`` with this ARM64 answer.
+
+    ``-m0=ARM64`` is expected only when ``arm64`` is true.
+    """
+    return "-m0=ARM64" not in switches or arm64
+
+
+def uncompressed_header_spec_names() -> list[str]:
+    """Spec names this ``7z`` is expected to build.
+
+    A row whose switches include ``-m0=ARM64`` is required only when
+    :func:`tests.conftest.sevenzip_lists_arm64` is true. Every other spec is
+    required whenever ``7z`` is on PATH.
+    """
+    arm64 = sevenzip_lists_arm64()
+    return [
+        name
+        for name, switches, _which, _package in _UNCOMPRESSED_HEADER_SPECS
+        if _header_spec_builds(switches, arm64=arm64)
+    ]
+
+
+def _uncompressed_header_sevenzip_archives(
+    tmp: Path,
+) -> list[tuple[str, bytes, str | None]]:
+    """``(name, bytes, package)`` for each spec in :func:`uncompressed_header_spec_names`.
+
+    ``package`` is the optional import a decode of that seed needs, or ``None``.
+    A missing ``7z`` returns an empty list. A spec ``7z`` rejects is omitted and
+    its switches and stderr are written to stderr, so the loss is not silent.
+    A row with ``-m0=ARM64`` is not attempted when ``7z i`` does not list that
+    filter, and that skip is written to stderr too.
+    """
+    if shutil.which("7z") is None:
+        return []
+    payload = tmp / "code.bin"
+    payload.write_bytes(_x86_like())
+    other = tmp / "other.bin"
+    other.write_bytes(b"second member\n" * 32)
+    arm64 = sevenzip_lists_arm64()
+    out: list[tuple[str, bytes, str | None]] = []
+    for name, switches, which, package in _UNCOMPRESSED_HEADER_SPECS:
+        if not _header_spec_builds(switches, arm64=arm64):
+            # ``_header_spec_builds`` declines only ``-m0=ARM64``.
+            print(
+                f"7z seed {name} skipped: this 7z does not list the ARM64 filter",
+                file=sys.stderr,
+            )
+            continue
+        archive = tmp / f"{name}.7z"
+        inputs = [payload.name, other.name] if which == "both" else [payload.name]
+        result = run_7z(
+            ["a", "-y", "-bd", *switches, archive.name, *inputs],
+            cwd=tmp,
+            check=False,
+        )
+        if result.returncode == 0 and archive.is_file():
+            out.append((name, archive.read_bytes(), package))
+            continue
+        detail = result.stderr.decode("utf-8", "replace").strip()
+        print(
+            f"7z seed {name} was not built ({result.returncode}): "
+            f"{' '.join(switches)}\n{detail}",
+            file=sys.stderr,
+        )
+    return out
+
+
+def _uncompressed_header_sevenzip_seeds(tmp: Path) -> list[bytes]:
+    """The archives from :func:`_uncompressed_header_sevenzip_archives`, bytes only."""
+    return [
+        blob for _name, blob, _package in _uncompressed_header_sevenzip_archives(tmp)
+    ]
+
+
+def _compressed_tar_seeds() -> list[bytes]:
+    """A PAX tar inside gzip, bzip2 and xz.
+
+    With no file name, only the content probe reports these as compressed tar.
+    The bytes are also a single-file gzip/bzip2/xz.
+    """
+    raw = _synthetic_tar_seeds()[0]
+    out = [gzip.compress(raw)]
+    try:
+        import bz2
+
+        out.append(bz2.compress(raw))
+    except (OSError, RuntimeError, ValueError, ImportError):
+        pass
+    out.extend(_safe_compress(lambda: lzma.compress(raw, format=lzma.FORMAT_XZ)))
+    return out
+
+
+def _take_small(blobs: list[bytes], *, limit: int, max_bytes: int) -> list[bytes]:
+    out: list[bytes] = []
+    for blob in blobs:
+        if not blob or len(blob) > max_bytes:
+            continue
+        out.append(blob)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def open_detected_seeds() -> list[bytes]:
+    """Short real archives, SFX prefixes, UDIF trailers and compressed tars.
+
+    Large fixtures are left to the format's own target. This target's per-input
+    limit has to cover detection plus a bounded read, so a multi-megabyte seed
+    would fail the slice before any mutation.
+    """
+    seeds: list[bytes] = [b"", b"MZ", b"not an archive"]
+    builders = (
+        zip_seeds,
+        tar_seeds,
+        sevenzip_seeds,
+        rar_seeds,
+        iso_seeds,
+        gzip_seeds,
+        bzip2_seeds,
+        xz_seeds,
+        lzip_seeds,
+        lzma_alone_seeds,
+        zlib_seeds,
+        zstd_seeds,
+        brotli_seeds,
+        lz4_seeds,
+        unix_compress_seeds,
+    )
+    for builder in builders:
+        try:
+            seeds.extend(_take_small(builder(), limit=4, max_bytes=48 * 1024))
+        except (OSError, RuntimeError, ValueError, ImportError):
+            continue
+    prefixed: list[bytes] = []
+    for blob in seeds:
+        if blob.startswith((b"PK\x03\x04", b"7z\xbc\xaf'\x1c", b"Rar!")):
+            prefixed.append(b"MZ" + b"\x00" * 128 + blob)
+        if len(prefixed) >= 6:
+            break
+    seeds.extend(prefixed)
+    # Uncompressed-header 7z archives are small and are the coder-graph seeds.
+    # ``_take_small`` on ``sevenzip_seeds`` fills up on the tiny magics first.
+    with tempfile.TemporaryDirectory(prefix="atheris-seed-open-7z-") as tmp:
+        seeds.extend(_uncompressed_header_sevenzip_seeds(Path(tmp)))
+    seeds.append(_koly_block())
+    seeds.append(b"BZh9" + b"\x00" * 64 + _koly_block())
+    seeds.append(b"\xfd7zXZ\x00" + b"\x00" * 64 + _koly_block())
+    seeds.extend(_compressed_tar_seeds())
+    return seeds
+
+
+def filter_seeds() -> list[bytes]:
+    """One seed per filter kind, plus a BCJ2 split with a declared output size.
+
+    Byte 0 selects the filter. The rest is payload, except the BCJ2 seed, whose
+    next twelve bytes are four split weights and an output size. The kind count
+    is the one ``filters_one`` uses.
+    """
+    from tests.atheris_fuzz.targets import FILTER_KIND_COUNT
+
+    sample = _x86_like(2048)
+    seeds = [b"", *(bytes([kind]) + sample for kind in range(FILTER_KIND_COUNT))]
+    weights = b"\x40\x00\x10\x00\x10\x00\x08\x00"
+    unpack = (4096).to_bytes(4, "little")
+    seeds.append(bytes([0]) + weights + unpack + sample)
+    return seeds
 
 
 def write_seed_corpus(directory: Path, seeds: list[bytes]) -> int:

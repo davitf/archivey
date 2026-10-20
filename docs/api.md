@@ -44,7 +44,6 @@ name](opening.md#members-with-the-same-name).
 ::: archivey.ArchiveMember
 ::: archivey.ArchiveInfo
 ::: archivey.HashAlgorithm
-::: archivey.crc32_digest
 
 ::: archivey.MemberExtra
     options:
@@ -149,6 +148,8 @@ subclasses of `ArchiveyError` and unrelated to each other.
 ::: archivey.ArchiveyUsageError
 
 ## Access cost
+
+See [Solid archives](reading.md#solid-archives) for what these mean for your reads.
 
 ::: archivey.CostReceipt
 ::: archivey.ListingCost

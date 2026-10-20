@@ -1579,10 +1579,11 @@ def test_a_planned_index_report_raises_from_the_deferred_seek(wrapper: str) -> N
     from archivey.diagnostics import DiagnosticCode
     from archivey.exceptions import DiagnosticRaisedError
     from archivey.internal.diagnostics_collector import DiagnosticCollector
+    from archivey.internal.hashing import crc32_digest
     from archivey.internal.streams.archive_stream import ArchiveStream
     from archivey.internal.streams.decompressor_stream import TRAILING_DATA_SEARCH
     from archivey.internal.streams.verify import VerifyingStream
-    from archivey.types import HashAlgorithm, crc32_digest
+    from archivey.types import HashAlgorithm
 
     data = random.Random(7).randbytes(2000)
     compressed = make_multi_member_lzip([data]) + b"J" * (TRAILING_DATA_SEARCH + 14)
@@ -1631,9 +1632,10 @@ def test_a_raise_from_seek_leaves_the_member_verifier_in_step(
     the seek jumps rather than decoding the gap through the verifier.
     """
     from archivey.exceptions import DiagnosticRaisedError
+    from archivey.internal.hashing import crc32_digest
     from archivey.internal.streams.archive_stream import ArchiveStream
     from archivey.internal.streams.verify import VerifyingStream
-    from archivey.types import HashAlgorithm, crc32_digest
+    from archivey.types import HashAlgorithm
 
     compressed = make_multi_member_lzip(LZIP_PARTS)
     full = b"".join(LZIP_PARTS)

@@ -95,6 +95,7 @@ from archivey.internal.base_reader import (
     pass_has_data,
 )
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
+from archivey.internal.hashing import crc32_digest
 from archivey.internal.listing_limits import member_metadata_bytes
 from archivey.internal.logs import backends as logger
 from archivey.internal.password import unverified_data_error, wrong_password_error
@@ -132,7 +133,6 @@ from archivey.types import (
     ArchiveMember,
     HashAlgorithm,
     MemberType,
-    crc32_digest,
 )
 
 # Read size when the pass reads through data nobody asked for.

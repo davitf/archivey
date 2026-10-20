@@ -117,7 +117,6 @@ from archivey.types import (
     OnError,
     OverwritePolicy,
     StreamFormat,
-    crc32_digest,
 )
 
 __all__ = [
@@ -174,7 +173,6 @@ __all__ = [
     "CompressionMethod",
     "CreateSystem",
     "HashAlgorithm",
-    "crc32_digest",
     "CostReceipt",
     "ListingCost",
     "AccessCost",

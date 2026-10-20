@@ -22,6 +22,7 @@ from archivey.internal.config import (
     check_decoder_memory,
     probe_lzma_dictionary,
 )
+from archivey.internal.hashing import crc32_digest
 from archivey.internal.streams.archive_stream import ExceptionTranslator, RewindWarning
 from archivey.internal.streams.codecs.base import (
     Codec,
@@ -55,7 +56,6 @@ from archivey.types import (
     HashAlgorithm,
     MagicSignature,
     StreamFormat,
-    crc32_digest,
 )
 
 _ALONE_HEADER_SIZE = 13

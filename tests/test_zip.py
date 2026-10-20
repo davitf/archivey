@@ -41,7 +41,8 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
-from archivey.types import CreateSystem, HashAlgorithm, crc32_digest
+from archivey.internal.hashing import crc32_digest
+from archivey.types import CreateSystem, HashAlgorithm
 from tests.conftest import requires, requires_binary
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.streams_util import NonSeekableBytesIO

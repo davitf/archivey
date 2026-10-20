@@ -95,11 +95,18 @@ jobs:
         if: steps.guard.outputs.run == 'true'
         run: uv python install 3.12
 
-      # RAR open+list target needs RARLAB unrar (header-only target does not). Mirror
-      # ci.yml so the partitioned fuzz job does not silently skip the rar slice.
-      - name: Install unrar
+      # RAR open needs RARLAB unrar. Clear-header 7z seeds need 7z, including ARM64
+      # (7-Zip 21.07+). Mirror ci.yml so neither slice goes quiet when a package
+      # stops providing the binary.
+      - name: Install unrar and p7zip
         if: steps.guard.outputs.run == 'true'
-        run: sudo apt-get update && sudo apt-get install -y unrar
+        run: sudo apt-get update && sudo apt-get install -y unrar p7zip-full
+      - name: Verify 7z on PATH
+        if: steps.guard.outputs.run == 'true'
+        run: |
+          command -v 7z
+          7z i | head -n 3
+          7z i | grep -qw ARM64
 
       # fuzz = atheris; dev = fixture builders (py7zr, …); all = ISO/codecs the targets need.
       # Python 3.12: atheris publishes current wheels here (3.11 is capped at atheris 3.0.x).
@@ -130,6 +137,8 @@ jobs:
             export ARCHIVEY_FUZZ_BUDGET_ISO=1
             export ARCHIVEY_FUZZ_BUDGET_RAR_HEADER=2
             export ARCHIVEY_FUZZ_BUDGET_RAR=1
+            export ARCHIVEY_FUZZ_BUDGET_OPEN_DETECTED=2
+            export ARCHIVEY_FUZZ_BUDGET_FILTERS=2
             export ARCHIVEY_FUZZ_BUDGET_UNIX_COMPRESS=2
             export ARCHIVEY_FUZZ_BUDGET_XZ=1
             export ARCHIVEY_FUZZ_BUDGET_LZIP=1
@@ -155,6 +164,8 @@ jobs:
             export ARCHIVEY_FUZZ_BUDGET_ISO=$((8 * scale))
             export ARCHIVEY_FUZZ_BUDGET_RAR_HEADER=$((30 * scale))
             export ARCHIVEY_FUZZ_BUDGET_RAR=$((15 * scale))
+            export ARCHIVEY_FUZZ_BUDGET_OPEN_DETECTED=$((20 * scale))
+            export ARCHIVEY_FUZZ_BUDGET_FILTERS=$((15 * scale))
             export ARCHIVEY_FUZZ_BUDGET_UNIX_COMPRESS=$((15 * scale))
             export ARCHIVEY_FUZZ_BUDGET_XZ=$((12 * scale))
             export ARCHIVEY_FUZZ_BUDGET_LZIP=$((10 * scale))
