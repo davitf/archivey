@@ -546,12 +546,20 @@ class DecoderLimits:
     whose cost is fixed at ``2**18`` SHA-1 rounds, counts at that
     number; ZIP AES (a fixed 1000 rounds) is not counted.
 
-    ``2**25`` is two derivations at the ``2**24`` maximum, about ten
-    seconds of hashing; 64 at 7-Zip's ``2**19``; 1024 at rar's
-    ``2**15``. Exceeding it raises
+    RAR5 charges one derivation per output it needs from a password:
+    the PswCheck (``2**kdf_count + 32`` rounds), the checksum HashKey
+    (``+ 16``) and, when archivey decrypts a stored member or the
+    headers itself, the AES key (``+ 0``). A RAR5 read through
+    ``unrar`` costs two derivations per password, a stored member three.
+
+    ``2**25`` is about ten seconds of hashing: two 7z derivations at
+    the ``2**24`` maximum, but not one maximum-cost RAR5 member, which
+    needs two or three; 64 passwords at 7-Zip's ``2**19``; about 500 at
+    rar's ``2**15``. Exceeding it raises
     :class:`~archivey.exceptions.ResourceLimitError` before the
     derivation that would cross it starts. Code that opens archives it
-    did not choose may want ``2**24``, one maximum-cost derivation."""
+    did not choose may want ``2**24``, which still admits every
+    archive the usual tools write."""
 
     max_ppmd_in_process_input: int | None = 16 * 2**20
     """Largest PPMd member, in compressed bytes, held and handed to the decoder whole.

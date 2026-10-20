@@ -421,6 +421,11 @@ new tests and new message-formatting code for each of these:
   is `True` whatever the filesystem, and `in` and `sorted()` on paths fold case too. When
   a comparison is about the *spelling*, compare `str(path)` or `path.name`. Only Windows
   CI catches this: on a case-insensitive macOS volume `PosixPath` comparison stays exact.
+- **`os.kill(pid, 0)` is not a liveness probe on Windows.** There `os.kill` calls
+  `TerminateProcess`, so the "probe" kills the process. And a pid is free for reuse as
+  soon as the last handle to it closes, so a bare pid you no longer hold may name an
+  unrelated process. Check a child you own through its `Popen` (`poll()`), never
+  through its pid.
 
 ### Fuzzing
 
