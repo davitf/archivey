@@ -306,9 +306,10 @@ class DecoderChild:
     reused child gave wrong bytes that no later read can take back. Neither child's
     verdict is then charged to the data.
 
-    After the child dies, every later call raises the same error again. After a reply
-    was interrupted (``KeyboardInterrupt`` part-way through), every later call raises
-    ``ArchiveyUsageError``: the rest of the reply is still in the pipe.
+    After the child dies, every later call raises the same error again. After a request
+    or its reply was interrupted (``KeyboardInterrupt`` part-way through), every later
+    call raises ``ArchiveyUsageError``, and the child is ended at close: the rest of the
+    request is still to be read, or the rest of the reply is still in the pipe.
     """
 
     # How a death during a request is reported: the subclass for PPMd keeps the
@@ -423,6 +424,12 @@ class DecoderChild:
             process.send(tag, arg, *parts)
         except (OSError, ValueError):
             raise _Died(process) from None
+        except BaseException:
+            # Interrupted part-way through a request: the child is still reading it,
+            # and would read the next frame as the rest of its payload.
+            self._interrupted = True
+            self._lease.reusable = False
+            raise
         return self._receive_raw()
 
     def _receive_raw(self) -> tuple[int, bytes, bytes]:

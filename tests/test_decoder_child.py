@@ -141,6 +141,41 @@ def test_a_child_is_not_reused_after_an_error() -> None:
     assert POOL.idle_count() == 0
 
 
+def test_a_child_is_not_reused_after_an_interrupted_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    child = DecoderChild("zlib")
+    process = child._lease.process
+    assert process is not None
+    stdin = process.proc.stdin
+    assert stdin is not None
+    written: list[int] = []
+    real_write = stdin.write
+
+    def write_then_interrupt(data: bytes) -> int:
+        # Ctrl-C lands while the payload is being written: the header and part of
+        # the payload are in the pipe, the rest never comes.
+        if written:
+            real_write(bytes(data[:100]))
+            stdin.flush()
+            raise KeyboardInterrupt
+        written.append(len(data))
+        return real_write(data)
+
+    monkeypatch.setattr(stdin, "write", write_then_interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        child.call("decompress", os.urandom(1 << 16))
+    monkeypatch.undo()
+    # Back in the pool, the child would read the next decoder's frames as the rest
+    # of the payload and never reply.
+    assert not child._lease.reusable
+    with pytest.raises(ArchiveyUsageError, match="interrupted"):
+        child.call("decompress", b"")
+    child.close()
+    assert POOL.idle_count() == 0
+    assert _zlib_round_trip(b"after") == b"after"
+
+
 def test_member_b_reads_correctly_after_member_a_damaged_the_child(
     stand_in: Path,
 ) -> None:
