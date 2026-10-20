@@ -42,9 +42,12 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
     ??? note "Why the split at 16 MiB?"
         pyppmd, the PPMd decoder, crashes when it's asked to keep decoding after a damaged stream
         has ended early, and a wrong password or a crafted member gets it there. Handing it the
-        whole member at once avoids that, since nothing more is asked of it afterwards. The cost is
-        memory: archivey holds the whole compressed member, and about as much again while pyppmd
-        copies it. A child process doesn't need that, but it takes time to start for every member,
+        whole member at once avoids most of that, since no more decoding is asked of it
+        afterwards. One call remains: before the decoder is freed, archivey sends it a single
+        byte so that a decoder still waiting for input doesn't corrupt memory, and on a stream
+        that has already ended, that byte can crash it. This is rare, but it is not ruled out.
+        The cost of the whole-member hand-over is memory: archivey holds the whole compressed
+        member, and about as much again while pyppmd copies it. A child process doesn't need that, but it takes time to start for every member,
         so archivey uses one only for members large enough that the memory matters.
 
 - **Running out of memory raises `MemoryError`, not an `ArchiveyError`,** so it's never mistaken for

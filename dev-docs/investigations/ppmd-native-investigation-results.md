@@ -790,7 +790,17 @@ uv run --no-sync pytest -m ppmd_native_stress -k warmup --timeout=600 -o addopts
 "Bounded" is not enough; the bound must be exact. A/B soaks of the `oversized` mode: a
 sized request 65 536 bytes over the true remaining output crashed 13/20 and 10/20 in two
 soaks; 64 or 4096 bytes over, 0/20 each; large multi-chunk members with the exact bound,
-0/20. Hence the decoder contract: unsized PPMd7 is refused at construction (no end mark,
+0/20.
+
+Those soaks free the decoder with its worker still waiting for input, which is the §D
+teardown use-after-free; the request size decides only whether the worker is left
+waiting. Re-measured on 2026-10-20 (pyppmd 1.3.1, CPython 3.11.17): the same bare
+`oversized` shape followed by a single-symbol NUL before the free crashed 0/40 across
+payload kinds, and 8/20 without it. Through archivey, crafted 7z and ZIP members whose
+header overstates `unpack_size` by 64 KiB, 1 MiB or 15 MiB (header CRCs valid, so the
+decoder is reached) gave 0 crashes in 860 fresh children and 0 valgrind errors on 12
+shapes. On a complete pack the worker blocks on input a few hundred to a few thousand
+symbols past the true end whatever the request. The residual that remains is in K.4. Hence the decoder contract: unsized PPMd7 is refused at construction (no end mark,
 no declared size, so no safe request size; the 7z header always gives the folder size),
 and unsized PPMd8 decodes in bounded 64 KiB requests in a drain loop, never `-1`, since its
 end mark stops the worker on valid data. The adversarial shapes a damaged archive can
@@ -825,6 +835,17 @@ is the end; members past `DecoderLimits.max_ppmd_in_process_input` (16 MiB) deco
 child process. Before it, 10 of 10 hostile runs crashed; after it, 0 crashes in 1200
 hostile members across both paths, and 111 valid 7-Zip-written members byte-exact on both
 paths (`tests/test_ppmd_crash_isolation.py`).
+
+One call after the end remains, at teardown (measured 2026-10-20). On a spent payload
+(K.5) `_quiesce_worker` still sends `decode(b"\0", 1)`, up to
+`_PPMD_QUIESCE_MAX_CALLS` times, because pyppmd's flags do not say whether the worker
+waits for input (where the NUL is needed) or the model has ended (where any further decode
+is this route). A spy on archivey's native calls saw that NUL sent at `eof` on 183 of 200
+hostile 7z members and on 20 of 20 overstated text members, up to four calls each. A
+bare-pyppmd stress of that call order crashed 5 and 6 of 100 children for PPMd7 and 60 of
+100 for PPMd8, and 0 of 100 with no NUL after the short return. The end-to-end soak above
+(K.3) did not hit it, so through archivey the rate is low but not zero by construction.
+Candidate fixes are tracked internally.
 
 The same spent-payload state reached password iteration. 7z AES has no password check
 value, so confirmation decodes the folder, and on some wrong keys the garbage stops PPMd
