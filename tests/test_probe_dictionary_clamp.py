@@ -142,6 +142,27 @@ def test_clamped_alone_decode_is_byte_identical() -> None:
         assert s.read(bound) == data[:bound]
 
 
+@pytest.mark.skipif(
+    sys.implementation.name != "cpython",
+    reason="PyPy's lzma cannot write FORMAT_ALONE with a filter chain",
+)
+@pytest.mark.parametrize(
+    "lzma1",
+    [
+        {"dict_size": 1 << 16},
+        {"dict_size": (1 << 20) + (1 << 19)},
+        {"dict_size": 100_000},  # declared as 131072, as liblzma does
+        {"dict_size": 70_000, "lc": 0, "lp": 2, "pb": 0},
+    ],
+)
+def test_lzma_alone_with_filter_matches_cpython(lzma1: dict[str, int]) -> None:
+    lzma1 = {"id": lzma.FILTER_LZMA1, **lzma1}
+    data = bytes(range(256)) * 64 + b"tail"
+    assert lzma_alone_with_filter(data, lzma1) == lzma.compress(
+        data, format=lzma.FORMAT_ALONE, filters=[lzma1]
+    )
+
+
 # --- the LZMA Alone content probe ---------------------------------------------------
 
 

@@ -96,6 +96,8 @@ def test_liblzma_still_words_a_memlimit_refusal_the_same_way() -> None:
         ("Invalid or unsupported options", UnsupportedFeatureError),
         ("Unsupported integrity check", UnsupportedFeatureError),
         ("Memory usage limit exceeded", ResourceLimitError),
+        # PyPy words LZMA_MEMLIMIT_ERROR by its code (British spelling); CPython
+        # words codes it has no message for the American way.
         ("Unrecognised error from liblzma: 6", ResourceLimitError),
         ("Corrupt input data", CorruptionError),
         ("Input format not supported by decoder", CorruptionError),

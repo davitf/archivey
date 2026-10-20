@@ -263,12 +263,18 @@ def lzma_alone_with_filter(data: bytes, lzma1: dict) -> bytes:
     PyPy's ``lzma`` refuses FORMAT_ALONE with a filter chain (NotImplementedError).
     The Alone format is a 13-byte header (properties byte, dictionary size, unknown
     size) before the raw LZMA1 stream, so this writes the header and compresses with
-    FORMAT_RAW. The bytes match what CPython writes.
+    FORMAT_RAW. ``lzma1`` must give ``dict_size``. The bytes match what CPython writes
+    (``test_lzma_alone_with_filter_matches_cpython``): like liblzma's Alone encoder,
+    the header declares ``dict_size`` rounded up to 2^n or 2^n + 2^(n-1).
     """
     lzma1 = {"lc": 3, "lp": 0, "pb": 2, **lzma1}
     props = (lzma1["pb"] * 5 + lzma1["lp"]) * 9 + lzma1["lc"]
     raw = lzma.compress(data, format=lzma.FORMAT_RAW, filters=[lzma1])
-    return bytes([props]) + struct.pack("<LQ", lzma1["dict_size"], 2**64 - 1) + raw
+    declared = lzma1["dict_size"] - 1
+    for shift in (2, 3, 4, 8, 16):
+        declared |= declared >> shift
+    declared = min(declared + 1, 2**32 - 1)
+    return bytes([props]) + struct.pack("<LQ", declared, 2**64 - 1) + raw
 
 
 def make_lzip_member(data: bytes, dict_size_bits: int = 20) -> bytes:
