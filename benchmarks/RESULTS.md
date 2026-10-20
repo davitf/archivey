@@ -120,6 +120,11 @@ portable.
 
 ## Investigation: ZIP “faster than stdlib” and TAR slowdown
 
+> **Superseded.** This investigation dates from July 2026, when archivey read ZIP
+> through the standard library's `zipfile`. Since October 2026 it has its own native ZIP
+> reader and no longer imports `zipfile`, so "we wrap `zipfile`" below no longer holds.
+> The current figures are in "0.2.0 release figures" above.
+
 ### ZIP — yes, caching / methodology artifact
 
 We wrap stdlib `zipfile`, so beating it in steady state is not plausible.
