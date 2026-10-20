@@ -127,6 +127,9 @@ def test_bzip2_auto_falls_back_when_the_child_cannot_import_rapidgzip(
         codecs.deps, "rapidgzip", codecs.deps.LazyOptional("rapidgzip", present=True)
     )
     monkeypatch.setattr(codecs.rapidgzip_select, "_child_fallback_warned", set())
+    # The stub fails at import before any rapidgzip code runs, so PyPy, where archivey
+    # otherwise never starts the child, takes the same path.
+    monkeypatch.setattr(codecs.rapidgzip_child, "_UNDER_PYPY", False)
     data = b"hello bzip2 " * 1000
     auto = StreamConfig(seekable=True)
     assert auto.use_indexed_bzip2 is AcceleratorMode.AUTO

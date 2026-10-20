@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import sys
 from types import ModuleType
 
 from archivey.internal import logs
@@ -55,8 +56,8 @@ class LazyOptional:
 
     def __init__(self, name: str, *, present: bool | None = None) -> None:
         self.name = name
-        # ``present=`` overrides the lookup, for tests: ``False`` stands for an absent
-        # package, ``True`` for an installed one.
+        # ``present=`` overrides the lookup: ``False`` stands for an absent package
+        # (also one archivey does not use here), ``True`` for an installed one (tests).
         self._present = present
         self._module: ModuleType | None = None
         self._import_failed = False
@@ -101,10 +102,17 @@ class LazyOptional:
 
 
 zstd = _optional_zstd()
-lz4_frame = _optional("lz4.frame")
-lz4_block = _optional("lz4.block")
+# Packages archivey does not use under PyPy; it reads as if they were absent, and the
+# error says why (UNUSABLE_UNDER_PYPY_NOTE). python-lz4 crashes PyPy: its frame decoder
+# segfaults on an ordinary frame (seen with PyPy 3.11), and the crash surfaces later at
+# unrelated places. pyppmd uses its cffi build there, which ends a valid member early
+# (the PPMd decoder relies on how the C build reports its end, ppmd_decoder.py).
+UNDER_PYPY = sys.implementation.name == "pypy"
+UNUSABLE_UNDER_PYPY_NOTE = "archivey does not use it under PyPy, where it misbehaves."
+lz4_frame = None if UNDER_PYPY else _optional("lz4.frame")
+lz4_block = None if UNDER_PYPY else _optional("lz4.block")
 brotli = LazyOptional("brotli")
-pyppmd = LazyOptional("pyppmd")
+pyppmd = LazyOptional("pyppmd", present=False if UNDER_PYPY else None)
 inflate64 = LazyOptional("inflate64")
 # rapidgzip runs in a child process for every codec it decodes (gzip, zlib, raw deflate
 # and bzip2), so this process only needs to know it is installed. bzip2 uses rapidgzip's

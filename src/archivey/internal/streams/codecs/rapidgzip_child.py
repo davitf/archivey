@@ -35,6 +35,7 @@ import builtins
 import io
 import os
 import subprocess
+import sys
 import tempfile
 import weakref
 from pathlib import Path
@@ -171,10 +172,21 @@ def _start_error(reason: str) -> RapidgzipChildStartError:
     )
 
 
+# rapidgzip under PyPy refuses valid gzip streams ("Failed to detect a valid file
+# format"), reads a bzip2 stream as empty, and aborts the process when it reads a Python
+# file object (seen with rapidgzip 0.16 on PyPy 3.11). An empty read is wrong data, not a
+# crash a fallback can catch, so no child runs it there.
+_UNDER_PYPY = sys.implementation.name == "pypy"
+_PYPY_REASON = "rapidgzip does not decode correctly under PyPy"
+
+
 def rapidgzip_child_unavailable_reason() -> str | None:
     """Why no Python child process can be started to run the worker script, or ``None``
     when one can (see :func:`~archivey.internal.streams.child_process.unavailable_reason`).
+    Under PyPy, where rapidgzip misreads valid streams, there is always a reason.
     """
+    if _UNDER_PYPY:
+        return _PYPY_REASON
     return unavailable_reason(_WORKER, "rapidgzip")
 
 

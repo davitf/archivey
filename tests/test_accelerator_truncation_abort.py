@@ -1086,6 +1086,22 @@ def test_without_a_child_auto_uses_stdlib_and_on_refuses(
         open_codec_stream(codec, str(path), config=_ON)
 
 
+def test_under_pypy_on_is_refused_with_the_reason(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """rapidgzip misreads valid streams under PyPy, so no child runs it there and ON
+    says why."""
+    monkeypatch.setattr(rapidgzip_child, "_UNDER_PYPY", True)
+    assert rapidgzip_child.rapidgzip_child_unavailable_reason() == (
+        "rapidgzip does not decode correctly under PyPy"
+    )
+    path = _write(tmp_path, "valid.gz", gzip.compress(_payload()))
+    with pytest.raises(
+        ResourceLimitError, match=r"\(rapidgzip does not decode .*PyPy\)"
+    ):
+        open_codec_stream(Codec.GZIP, str(path), config=_ON)
+
+
 def _refuse(*args: object, **kwargs: object) -> NoReturn:
     raise OSError(11, "Resource temporarily unavailable")
 
