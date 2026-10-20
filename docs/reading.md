@@ -22,13 +22,13 @@ If your code needs to know whether an archive is solid, `archive.cost` tells you
 anything. Its `access_cost` is `AccessCost.SOLID` when reaching a member means decompressing others
 first, and `AccessCost.DIRECT` when archivey can jump straight to it. Its `listing_cost` says what
 listing the members takes. It's `ListingCost.INDEXED` when the archive keeps a list of its members,
-as ZIP and 7z do. It's `ListingCost.REQUIRES_SCANNING` when archivey has to jump from one member's
-header to the next, as in a plain `.tar` or a RAR. It's `ListingCost.REQUIRES_DECOMPRESSION` when
-the headers are inside compressed data, as in a `.tar.gz`. Its `stream_capability` is
-`StreamCapability.SEEKABLE` when the source you opened can seek, and
-`StreamCapability.FORWARD_ONLY` when it can only be read forward, as a pipe. `archive.cost` is
-worked out once, when the archive opens. It describes what each kind of read costs, but it never
-allows or refuses one: the options below do that.
+as ZIP and 7z do when read from a file. It's `ListingCost.REQUIRES_SCANNING` when archivey has to
+jump from one member's header to the next, as in a plain `.tar`, a RAR, or a ZIP read from a pipe.
+It's `ListingCost.REQUIRES_DECOMPRESSION` when the headers are inside compressed data, as in a
+`.tar.gz`. Its `stream_capability` is `StreamCapability.SEEKABLE` when the source you opened can
+seek, and `StreamCapability.FORWARD_ONLY` when it can only be read forward, as a pipe.
+`archive.cost` is worked out once, when the archive opens. It describes what each kind of read
+costs, but it never allows or refuses one: the options below do that.
 
 ## Reading once
 
@@ -62,7 +62,8 @@ A ZIP keeps the full details of its members, such as permissions, symlinks and c
 index at its end. From a pipe, archivey finds each member by the short header in front of it, and
 gives you the member with what that header says: no permissions, and a symlink looks like a file.
 When the pass reaches the index, archivey fills in the rest on the members you already have.
-Until then `member.member_state_final` is `False`.
+Until then `member.member_state_final` is `False`. From a pipe, the pass reaches a ZIP's index only
+when the sender closes the pipe, so the loop doesn't finish while the sender keeps it open.
 
 ??? note "Why can't the others come from a pipe?"
     7z keeps its index at the end of the file, and reading an ISO means jumping between places in

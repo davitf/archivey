@@ -239,8 +239,8 @@ yielded.
   directory's conventional value, is no digest; when that CRC was the entry's only check
   (unencrypted or ZipCrypto), ``DIGEST_UNVERIFIABLE`` says the bytes come back
   unchecked, while a WinZip AES entry (AE-1 or AE-2) has its HMAC check the bytes, so
-  nothing is reported for it.
-  `DiagnosticPolicy.STRICT` refuses an archive with such a directory. A directory declaring size 0 over a body larger than
+  nothing is reported for it. `DiagnosticPolicy.STRICT` refuses an archive with a
+  directory entry that declares data. A directory declaring size 0 over a body larger than
   an empty one of its method is reported too (``read()`` has nothing to return for it);
   the Java ``jar`` tool's deflated empty directory body (compressed size 2, size 0) is
   not.
@@ -269,8 +269,8 @@ yielded.
   bytes are valid UTF-8, and otherwise uses the `encoding=` you passed to `open_archive`, or without
   one a configurable legacy encoding (`ArchiveyConfig.zip_unflagged_fallback_encoding`, default
   `cp437`). When UTF-8 is inferred for an unflagged name, a `member_name_encoding_inferred`
-  diagnostic records it, and `DiagnosticPolicy.STRICT` refuses it. So `encoding=` decodes only the unflagged names that are not valid UTF-8,
-  unlike Python's `zipfile` `metadata_encoding` or `unzip -O`, which apply to every unflagged name.
+  diagnostic records it, and `DiagnosticPolicy.STRICT` refuses it. So `encoding=` decodes
+  only the unflagged names that are not valid UTF-8, unlike Python's `zipfile` `metadata_encoding` or `unzip -O`, which apply to every unflagged name.
   Comments decode the same way: a member comment follows its name's flag (a flag the name's bytes
   refute counts as unset for the comment too), and the archive comment, which has no flag, decodes
   as an unflagged name. A byte the chosen encoding does not define stays in the comment as a
@@ -524,8 +524,8 @@ yielded.
   `unar` 1.10 or later if it is installed; see the next item. `unrar` gets passwords as bare `-p`
   with the secret on stdin (not in argv). `unrar` reads that password as one line and drops
   anything after a line break or a NUL character, so a password containing either raises
-  `UnsupportedFeatureError` instead of being cut short. Archivey passes a password to `unrar` or `unar` only when
-  the read needs it: the member is encrypted, the headers are, or an encrypted member comes before
+  `UnsupportedFeatureError` instead of being cut short. Archivey passes a password to
+  `unrar` or `unar` only when the read needs it: the member is encrypted, the headers are, or an encrypted member comes before
   it in a solid archive. A stored, encrypted member split across volumes, and any member encrypted
   with the RAR 2.0 cipher (archives from RAR 2.0 to 2.8), still need `unrar` or `unar`: each part of
   a split member has its own encryption record, and archivey does not implement the old cipher.

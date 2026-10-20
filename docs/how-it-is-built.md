@@ -75,9 +75,9 @@ others miss.
   Every copy must open, list, read back and extract safely. Hand-built hostile archives sit beside
   them: path traversal, links that point outside the destination, decompression bombs, and forged
   sizes and counts.
-- **Other libraries as a reference.** Tests check what archivey reads against zipfile, py7zr,
-  rarfile and `unrar`. Archivey never imports zipfile, py7zr or rarfile when it runs; `unrar` is also the program it uses
-  to decompress RAR data.
+- - **Other libraries as a reference.** Tests check what archivey reads against zipfile, py7zr,
+  rarfile and `unrar`. Archivey never imports zipfile, py7zr or rarfile when it runs; `unrar` is
+  also the program it uses to decompress RAR data.
 - **Fuzzing.** Every test archive is cut short, bit-flipped, zeroed and padded, and reading it must
   either succeed or raise an `ArchiveyError`. A coverage-guided fuzzer (Atheris) runs over every
   format's parser and every decoder, briefly on each pull request and for longer every night. It

@@ -214,8 +214,8 @@ member.
 If the damage is in the list of members itself, such as a TAR, RAR or ZIP cut short, the members
 before it are written and the call then raises, with either `on_error`, and returns no report. If a
 ZIP's central directory is damaged, archivey also finds the members after the damage from the header
-in front of each one's data, and writes those too before it raises. A damaged 7z index fails `open_archive` before anything is
-written.
+in front of each one's data, and writes those too before it raises. A damaged 7z index fails
+`open_archive` before anything is written.
 
 A process killed during an extraction can leave a file named `.archivey-tmp-` followed by random
 characters in the destination. It's safe to delete.
