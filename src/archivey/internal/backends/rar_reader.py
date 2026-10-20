@@ -1544,8 +1544,11 @@ class RarReader(BaseArchiveReader):
         """Why a program cannot read this member: the file ends inside its packed data.
 
         Decided from the listing, as :meth:`_missing_data_error` is. The callers ask
-        only for a member a program would decode; a stored plaintext member that
-        archivey slices itself reads up to the cut and then raises. ``unrar`` cannot
+        only for a member a program would decode, and that set differs between them.
+        :meth:`_open_member` asks after it has sliced a stored plaintext member and
+        decrypted a stored encrypted one itself; both read up to the cut and then
+        raise. The solid pass asks for every member it does not slice directly, so
+        there a stored encrypted member is refused before any byte. ``unrar`` cannot
         say why it failed on such a member. It exits 3, which for an encrypted member
         that wrote nothing is also its RAR4 answer to a wrong password, and the bytes
         it writes for the gap can fail the digest as corruption before its exit code
@@ -1563,9 +1566,17 @@ class RarReader(BaseArchiveReader):
             return None
         if end <= size:
             return None
+        if self._volume_set_size() > 1:
+            # Offsets in a volume set are in the volumes laid end to end, which
+            # locate nothing in any one file.
+            where = "its packed data runs past the end of the set's volumes"
+        else:
+            where = (
+                f"its packed data ends at byte {end}, past the end of the file "
+                f"({size} bytes)"
+            )
         return TruncatedError(
-            f"RAR member {quoted(member.name)} is cut short: its packed data ends at "
-            f"byte {end}, past the end of the file ({size} bytes).",
+            f"RAR member {quoted(member.name)} is cut short: {where}.",
             archive_name=self._archive_name,
             member_name=member.name,
             source_format=ArchiveFormat.RAR,
@@ -2100,6 +2111,10 @@ class RarReader(BaseArchiveReader):
             and member._raw.is_payload_file()
             and member.is_file
             and _member_stream_size(member) > 0
+            # A member whose data is cut or in a missing volume fails to decode
+            # with every candidate, so it cannot judge them.
+            and self._cut_data_error(member, member._raw) is None
+            and self._missing_data_error(member, member._raw) is None
         ]
         if not encrypted:
             return None
@@ -3344,20 +3359,25 @@ class RarReader(BaseArchiveReader):
                     raise error
 
                 slot = _refused
-            elif (
-                not self._can_direct_read(raw)
-                and self._cut_data_error(member, raw) is not None
-            ):
-                # The file ends inside this member's data, so it is the last member
-                # listed and takes no offset a later member needs.
-                def _cut() -> BinaryIO:
-                    error = self._cut_data_error(member, raw)
-                    assert error is not None
-                    raise error
-
-                slot = _cut
             else:
                 slot = plan(member, raw, size, bool(hashes))
+                # The pass has no native-decrypt or unsettled-plaintext branch: every
+                # member it does not slice directly is served from the program's
+                # output, stored encrypted ones included. So this one test is the
+                # whole of "a member a program would decode". ``plan`` still runs
+                # for a cut member, so the offsets of any member listed after it
+                # do not move.
+                if (
+                    not self._can_direct_read(raw)
+                    and self._cut_data_error(member, raw) is not None
+                ):
+
+                    def _cut() -> BinaryIO:
+                        error = self._cut_data_error(member, raw)
+                        assert error is not None
+                        raise error
+
+                    slot = _cut
             open_fn: Callable[[], BinaryIO]
             if isinstance(slot, int):
                 offset = slot

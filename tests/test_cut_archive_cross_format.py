@@ -28,6 +28,7 @@ import pytest
 from archivey import ArchiveFormat, open_archive
 from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import TruncatedError
+from archivey.internal.backends.rar_parser import RarMemberInfo
 from archivey.reader import ArchiveReader
 from tests.conftest import requires_binary
 from tests.sample_archives import CORPUS, corpus_archive_path, skip_unless_runnable
@@ -166,6 +167,32 @@ def _marker_missing(reader: ArchiveReader) -> bool:
     return counts.get(DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING, 0) > 0
 
 
+def _silent_read_allowed(
+    data: bytes, password: list[str] | None, scratch_file: Path
+) -> Callable[[int], bool]:
+    """Whether a cut at an offset may read whole with nothing reported.
+
+    A cut past the last nonzero byte loses only zeros: ISO padding, the TAR end
+    blocks, which those formats may accept without a word. RAR 1.5-4 writers may
+    omit the end block, so a RAR4 cut between two members' blocks leaves an archive
+    no reader can tell from a complete one; unrar lists it and exits 0
+    (dev-docs/formats/rar.md). A RAR4 cut inside a member's header or packed data
+    is not that case, and must be reported.
+    """
+    if not data.startswith(_RAR4_SIGNATURE):
+        content_end = len(data.rstrip(b"\0"))
+        return lambda cut: cut >= content_end
+    scratch_file.write_bytes(data)
+    with open_archive(scratch_file, password=password) as reader:
+        spans = [
+            (raw.header_offset, raw.data_offset + raw.compress_size)
+            for member in reader.members()
+            if isinstance(raw := member._raw, RarMemberInfo)
+        ]
+    assert spans
+    return lambda cut: not any(start < cut < end for start, end in spans)
+
+
 def _check_every_cut(
     data: bytes,
     key: str,
@@ -183,15 +210,8 @@ def _check_every_cut(
     if key in _FORWARD_ONLY:
         modes["stream_members from a pipe"] = _mode_pipe
         modes["extract_all from a pipe"] = _mode_pipe_extract
-    # A cut past the last nonzero byte loses only zeros: ISO padding, the TAR end
-    # blocks, which those formats may accept without a word.
-    content_end = len(data.rstrip(b"\0"))
-    # RAR 1.5-4 writers may omit the end block, so a cut between two headers leaves
-    # an archive no reader can tell from a complete one; unrar lists it and exits 0
-    # (dev-docs/formats/rar.md). Such a cut reads whole and reports nothing.
-    if data.startswith(_RAR4_SIGNATURE):
-        content_end = 0
     cut_path = tmp_path / f"cut{suffix}"
+    silent_ok = _silent_read_allowed(data, password, cut_path)
     failures: list[str] = []
     truncated = 0
     for cut in _cuts(_SIGNATURE_LENGTH.get(key, 1), len(data), count):
@@ -205,7 +225,7 @@ def _check_every_cut(
             except Exception as exc:  # noqa: BLE001  # the failure names any type
                 failures.append(f"cut {cut}, {name}: {type(exc).__name__}: {exc}")
                 continue
-            if not reported and cut < content_end:
+            if not reported and not silent_ok(cut):
                 failures.append(f"cut {cut}, {name}: read whole, nothing reported")
     assert not failures, "\n".join(failures)
     assert truncated > 0
@@ -264,3 +284,45 @@ def test_a_cut_rar_read_through_unrar_is_truncated(name: str, tmp_path: Path) ->
     fixtures run where the ``rar`` builder is absent."""
     data = (_RAR_FIXTURES / name).read_bytes()
     _check_every_cut(data, "rar", ".rar", ["password"], tmp_path, count=4)
+
+
+@requires_binary("unrar")
+def test_a_cut_rar4_member_does_not_judge_the_password_candidates(
+    tmp_path: Path,
+) -> None:
+    """A RAR4 candidate list is judged by decoding one encrypted member for the whole
+    archive, in a nonsolid archive the smallest. A member whose data the file cuts
+    fails to decode with every candidate, so it is not chosen; the intact member
+    still reads with two candidates, and the cut one raises ``TruncatedError``.
+
+    Built from ``encryption__rar4.rar`` with its two member blocks swapped, so the
+    smaller member is last and the cut lands inside its packed data."""
+    data = (_RAR_FIXTURES / "encryption__rar4.rar").read_bytes()
+    source = tmp_path / "source.rar"
+    source.write_bytes(data)
+    with open_archive(source, password="password") as reader:
+        first, second = (member._raw for member in reader.members())
+    assert isinstance(first, RarMemberInfo) and isinstance(second, RarMemberInfo)
+
+    def block(raw: RarMemberInfo) -> bytes:
+        return data[raw.header_offset : raw.data_offset + raw.compress_size]
+
+    swapped = (
+        data[: first.header_offset]
+        + block(second)
+        + block(first)
+        + data[second.data_offset + second.compress_size :]
+    )
+    cut_at = swapped.index(block(first)) + (first.data_offset - first.header_offset)
+    cut = tmp_path / "cut.rar"
+    cut.write_bytes(swapped[: cut_at + first.compress_size // 2])
+
+    with open_archive(cut, password=["wrong", "password"]) as reader:
+        intact, short = reader.members_report().members
+        assert short.size < intact.size  # the smallest, as the judge is chosen
+        reference = reader._unchecked_reference_member()  # noqa: SLF001
+        assert reference is not None and reference.name == intact.name
+        with reader.open(intact) as stream:
+            assert stream.read() == b"This is also secret"
+        with pytest.raises(TruncatedError), reader.open(short) as stream:
+            stream.read()
