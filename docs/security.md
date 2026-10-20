@@ -144,17 +144,33 @@ what your archives look like, lower the limits to fit them. They're set in `Arch
 [`scripts/measure_limit_costs.py`](https://github.com/davitf/archivey/blob/main/scripts/measure_limit_costs.py)
 in the repository measures what each limit costs in time and memory on your machine.
 
-| Setting | Default | What it caps | Rough cost |
-|---|---|---|---|
-| `extraction_limits.max_extracted_bytes` | 2 GiB | Bytes one extraction writes | Disk space, plus 5-10 ms per MiB written, 10-20 s at the default |
-| `extraction_limits.max_entries` | 262,144 | Members one extraction writes | About 0.6 ms per file written, under 3 minutes at the default |
-| `extraction_limits.max_ratio` | 1000 | How much a member, or the whole archive, expands. It's checked as data is written, and for a member whose size and compressed size the archive records, before any of it is written. Outputs under 5 MiB, or 256 MiB for a whole archive read from a pipe, aren't checked | None of its own |
-| `listing_limits.max_members` | 262,144 | Members an archive can list | About 25-50 µs and 1.5 KiB of memory per member, under 15 s and 384 MiB at the default |
-| `listing_limits.max_metadata_bytes` | 64 MiB | Text kept for names, comments and link targets. A ZIP read from a pipe also keeps up to this much of its small members' data, in case they are links, on top of the text | About 1.7 MiB of memory per MiB counted, 110 MiB at the default; up to 64 MiB more for a ZIP read from a pipe |
-| `decoder_limits.max_decoder_memory` | 2 GiB | Memory an archive can ask a decoder for, and the memory of rapidgzip's process for gzip, zlib and DEFLATE | The memory itself |
-| `decoder_limits.max_key_derivation_rounds` | 2^25 | Password-hashing work per open archive | 0.2-0.7 µs per round, 7-25 s at the default |
-| `decoder_limits.max_ppmd_in_process_input` | 16 MiB | Largest PPMd member decoded in your process rather than a child process | Up to twice the limit in memory while a PPMd member decodes, 32 MiB at the default |
-| `spool_limits.max_bytes` | 1 GiB | Temporary disk space for RAR archives. `unrar` and `unar` need the archive as a file, so a RAR opened from a file object is copied, and so are volumes archivey can't link into its temporary folder and, for `unar`, an archive with data before it. A pass over a solid RAR also keeps the members that later file copies repeat | The disk space itself |
+- **`extraction_limits.max_extracted_bytes`**, default 2 GiB, caps the bytes one extraction writes.
+  It costs disk space, plus 5-10 ms per MiB written, 10-20 s at the default.
+- **`extraction_limits.max_entries`**, default 262,144, caps the members one extraction writes. It
+  costs about 0.6 ms per file written, under 3 minutes at the default.
+- **`extraction_limits.max_ratio`**, default 1000, caps how much a member, or the whole archive,
+  expands. It's checked as data is written, and for a member whose size and compressed size the
+  archive records, before any of it is written. Outputs under 5 MiB, or 256 MiB for a whole archive
+  read from a pipe, aren't checked. It has no cost of its own.
+- **`listing_limits.max_members`**, default 262,144, caps the members an archive can list. It costs
+  about 25-50 µs and 1.5 KiB of memory per member, under 15 s and 384 MiB at the default.
+- **`listing_limits.max_metadata_bytes`**, default 64 MiB, caps the text kept for names, comments
+  and link targets. A ZIP read from a pipe also keeps up to this much of its small members' data, in
+  case they are links, on top of the text. It costs about 1.7 MiB of memory per MiB counted, 110 MiB
+  at the default, and up to 64 MiB more for a ZIP read from a pipe.
+- **`decoder_limits.max_decoder_memory`**, default 2 GiB, caps the memory an archive can ask a
+  decoder for, and the memory of rapidgzip's process for gzip, zlib and DEFLATE. It costs the memory
+  itself.
+- **`decoder_limits.max_key_derivation_rounds`**, default 2^25, caps the password-hashing work per
+  open archive. It costs 0.2-0.7 µs per round, 7-25 s at the default.
+- **`decoder_limits.max_ppmd_in_process_input`**, default 16 MiB, caps the largest PPMd member
+  decoded in your process rather than a child process. It costs up to twice the limit in memory
+  while a PPMd member decodes, 32 MiB at the default.
+- **`spool_limits.max_bytes`**, default 1 GiB, caps the temporary disk space for RAR archives.
+  `unrar` and `unar` need the archive as a file, so a RAR opened from a file object is copied, and
+  so are volumes archivey can't link into its temporary folder and, for `unar`, an archive with data
+  before it. A pass over a solid RAR also keeps the members that later file copies repeat. It costs
+  the disk space itself.
 
 The costs were measured on one 2.8 GHz core.
 
