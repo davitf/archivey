@@ -164,6 +164,25 @@ def test_a_forward_read_that_contradicts_the_table_drops_it() -> None:
     assert len(_degraded(seen)) == 1
 
 
+def test_a_lie_about_the_last_frame_is_caught_by_the_decoded_size() -> None:
+    """No frame follows the last, so only the total can contradict the table."""
+    zstd = zstd_backend()
+    frames = [zstd.compress(p) for p in PARTS]
+    sizes = [(len(f), len(p)) for f, p in zip(frames, PARTS, strict=True)]
+    sizes[-1] = (sizes[-1][0], 100)
+    data = b"".join(frames) + seekable_zstd_table(sizes)
+    collector, seen = _collector()
+    with _open(io.BytesIO(data), collector=collector) as stream:
+        assert stream.seek(0, io.SEEK_END) == STARTS[-1] + 100
+        stream.seek(0)
+        assert stream.read() == FULL
+        report = _contradicted(seen)
+        assert "output size" in report.message
+        assert stream.seek(0, io.SEEK_END) == len(FULL)
+        stream.seek(STARTS[-1] + 200)
+        assert stream.read(10) == FULL[STARTS[-1] + 200 : STARTS[-1] + 210]
+
+
 def test_a_size_from_a_contradicted_table_is_forgotten() -> None:
     collector, seen = _collector()
     with _open(io.BytesIO(_frame_0_size_lie()), collector=collector) as stream:

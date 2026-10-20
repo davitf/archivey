@@ -484,8 +484,11 @@ A point an index scan gave (the xz index, lzip trailers, the zstd seek table, th
 BGZF walk), and a point recorded by a decode that resumed at such a point, SHALL be
 marked as the index's. When two points name the same compressed offset with the same
 resume state but different decompressed offsets, and either is the index's, the index
-is wrong. The stream SHALL then drop every point that is the index's, forget a size the
-index gave (or a decode that resumed at an index point reached), and emit
+is wrong; so is it when a decode reaches the end with another total than the index
+gave. Only points the seek table holds SHALL be compared, so the check costs no more
+memory than the table. The stream SHALL then drop every point that is the index's,
+forget a size the index gave (or a decode that resumed at an index point reached), and
+emit
 `SEEK_INDEX_DEGRADED` (scan `decode_check`, failure type `SeekIndexContradicted`), once
 per stream. Later seeks SHALL resume only from points a decode from the origin found,
 and a later size query SHALL decode to the end. A decoder that resumed at an index
@@ -628,3 +631,4 @@ cost one read buffer's worth before the walk stops. A `.gzi` file is not read.
 | BGZF blocks, then a plain member | Points for the blocks; size from decoding to the end |
 | Walk over the seek-table cap | `SEEK_INDEX_DEGRADED` (scan `bgzf_blocks`, `SeekTableThinned`); exact total kept |
 | A member's `BSIZE` covers the next member too; size query, then a read from the start | Size first the walk's; the read is right; `SEEK_INDEX_DEGRADED` (scan `decode_check`); then size and seeks are the decode's |
+| The member hidden that way is the last data member | As above: the size query, then the read to the end, which reports once. A read to the end first: the decoded size, no walk, no report |

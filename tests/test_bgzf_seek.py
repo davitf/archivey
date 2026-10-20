@@ -170,21 +170,71 @@ def test_bgzf_seek_into_the_lying_block_raises_at_its_trailer() -> None:
             stream.read()
 
 
-def _bgzf_hiding_a_member(sizes: list[int]) -> tuple[bytes, bytes]:
-    """BGZF members of ``sizes`` bytes; member 0's ``BSIZE`` also covers member 1.
+def _bgzf_hiding_a_member(sizes: list[int], hider: int = 0) -> tuple[bytes, bytes]:
+    """BGZF members of ``sizes`` bytes; member ``hider``'s ``BSIZE`` also covers the
+    member after it.
 
-    The walk takes member 1's ISIZE for member 0's and never sees member 1, so every
-    later point and the total are short by member 0's size. Returns the file and its
-    real output.
+    The walk takes the hidden member's ISIZE for the hider's and never sees the hidden
+    member, so every later point and the total are short by the hider's size. Returns
+    the file and its real output.
     """
     parts = [bytes([65 + i]) * n for i, n in enumerate(sizes)]
     blocks = [make_bgzf_block(p) for p in parts]
-    first = bytearray(blocks[0])
+    block = bytearray(blocks[hider])
     # make_bgzf_block writes the BC subfield first: XLEN, then SI1 SI2 SLEN BSIZE.
-    assert first[12:16] == b"BC\x02\x00"
-    struct.pack_into("<H", first, 16, len(blocks[0]) + len(blocks[1]) - 1)
-    blocks[0] = bytes(first)
+    assert block[12:16] == b"BC\x02\x00"
+    struct.pack_into("<H", block, 16, len(blocks[hider]) + len(blocks[hider + 1]) - 1)
+    blocks[hider] = bytes(block)
     return b"".join(blocks) + BGZF_EOF, b"".join(parts)
+
+
+@pytest.mark.parametrize("size_first", [True, False])
+def test_a_walk_that_hides_the_last_member_is_caught_by_the_decoded_size(
+    size_first: bool,
+) -> None:
+    """Member 2's ``BSIZE`` covers member 3, so the walk's points are all right and
+    only its total is short: no member start contradicts it.
+
+    Decoding to the end gives the real total, which contradicts the walk's. Asked
+    first, the size is the walk's (threat-model O17), and the read that proves it wrong
+    reports once. Asked after a read to the end, the size is the decoded one, and the
+    walk is never read, so there is nothing to report. Either way every later answer
+    is the real size.
+    """
+    sizes = [40_000, 10_000, 33_000, 20_000]
+    data, full = _bgzf_hiding_a_member(sizes, hider=2)
+    collector, seen = _collector()
+    with _open(io.BytesIO(data), collector=collector) as stream:
+        if size_first:
+            assert stream.seek(0, io.SEEK_END) == len(full) - sizes[2]
+            stream.seek(0)
+        assert stream.read() == full
+        assert stream.seek(0, io.SEEK_END) == len(full)
+        stream.seek(45_000)
+        assert stream.read(10) == full[45_000:45_010]
+        assert stream.seek(0, io.SEEK_END) == len(full)
+        assert _engine(stream).try_get_size() == len(full)
+    degraded = _degraded(seen)
+    assert len(degraded) == (1 if size_first else 0)
+    if size_first:
+        assert degraded[0].context.error_type == "SeekIndexContradicted"
+        assert "output size" in degraded[0].message
+
+
+def test_a_walk_that_hides_the_last_member_is_caught_by_a_bounded_read() -> None:
+    """The same file, read in pieces after a size query: the piece that reaches the
+    end reports, and the size is the decoded one from then on."""
+    data, full = _bgzf_hiding_a_member([40_000, 10_000, 33_000, 20_000], hider=2)
+    collector, seen = _collector()
+    with _open(io.BytesIO(data), collector=collector) as stream:
+        stream.seek(0, io.SEEK_END)
+        stream.seek(0)
+        pieces = []
+        while chunk := stream.read(7_000):
+            pieces.append(chunk)
+        assert b"".join(pieces) == full
+        assert stream.seek(0, io.SEEK_END) == len(full)
+    assert len(_degraded(seen)) == 1
 
 
 def test_a_forward_read_that_contradicts_the_walk_drops_it() -> None:
@@ -252,6 +302,13 @@ def test_bgzf_walk_over_the_cap_is_thinned_and_keeps_the_total(
         for pos in (5, len(full) // 3, len(full) - 3):
             stream.seek(pos)
             assert stream.read(1500) == full[pos : pos + 1500]
+        # The contradiction check holds only the points the table holds, so a read
+        # past every member keeps it within the cap too.
+        stream.seek(0)
+        assert stream.read() == full
+        claims = _engine(stream)._claims
+        assert claims is not None
+        assert len(claims) <= decompressor_stream.MAX_SEEK_POINTS
 
 
 @pytest.mark.parametrize(

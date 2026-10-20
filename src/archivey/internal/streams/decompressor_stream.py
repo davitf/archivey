@@ -235,7 +235,11 @@ class SeekPoint:
     # from a decode that resumed at such a point and counted its offsets from it. Only
     # a decode from the origin, through points like it, proves an offset; the stream
     # drops every point that has this flag when the index and the decode disagree
-    # (``DecompressorStream._drop_index``).
+    # (``DecompressorStream._drop_index``). One index source is left unmarked: xz's
+    # per-stream scan during a forward read (``XzDecoder._progressive_stream_points``)
+    # reads block records but emits them as decoded points. That is safe because the
+    # check never fires for xz: a block point's state holds its own output offset, so
+    # two xz points with the same state are at the same offset.
     from_index: bool = field(default=False, compare=False)
 
 
@@ -781,8 +785,10 @@ class DecompressorStream(ReadOnlyIOStream):
         # (0 until then); see _thin_seek_table.
         self._min_spacing = 0
         self._table_thinned = False
-        # What each point says, by compressed offset, kept while the table holds index
-        # points, to find where the index and the decode disagree (_contradicts).
+        # The table's points by compressed offset, kept while the table holds index
+        # points, to find where the index and the decode disagree (_contradicts). It
+        # holds only points the table holds (_note_kept), so it is bounded like the
+        # table.
         self._claims: dict[int, SeekPoint] | None = None
         # The index was dropped (_drop_index): later index points are refused.
         self._index_dropped = False
@@ -793,6 +799,9 @@ class DecompressorStream(ReadOnlyIOStream):
         # The index was dropped while the decoder counted from it: the operation
         # restarts it from a decoded point before it returns (_restart_at_position).
         self._restart_pending = False
+        # The output offset of the decoder's next byte, whoever reads it: the size a
+        # decode reaches the end with (_publish_size).
+        self._decoder_pos = 0
         self._make_decoder = make_decoder
         try:
             if isinstance(path, (str, os.PathLike)):
@@ -882,12 +891,20 @@ class DecompressorStream(ReadOnlyIOStream):
                     or origin.state is not point.state
                 )
             ):
+                self._note_kept(origin, point)
                 self._seek_points[0] = point
                 continue
             if not self._index_enabled:
                 continue
-            if self._claims is not None and self._contradicts(point):
-                self._drop_index(point)
+            held = self._contradicts(point)
+            if held is not None:
+                low, high = sorted(
+                    (held.decompressed_offset, point.decompressed_offset)
+                )
+                self._drop_index(
+                    f"Compressed offset {point.compressed_offset} starts at output "
+                    f"offset {low} and also at output offset {high}."
+                )
                 if point.from_index:
                     continue
             if self._min_spacing and self._too_close(point):
@@ -898,38 +915,51 @@ class DecompressorStream(ReadOnlyIOStream):
                     self._resolve_same_offset_collision(i, point)
                     continue
                 self._seek_points.insert(i, point)
+                self._note_kept(None, point)
             elif self._seek_points[-1] == point:
                 self._resolve_same_offset_collision(len(self._seek_points) - 1, point)
                 continue
             else:
                 self._seek_points.append(point)
+                self._note_kept(None, point)
             if len(self._seek_points) > MAX_SEEK_POINTS:
                 self._thin_seek_table()
 
-    def _contradicts(self, point: SeekPoint) -> bool:
-        """Whether ``point`` and an index point say different things about one unit.
+    def _contradicts(self, point: SeekPoint) -> SeekPoint | None:
+        """The table's point that ``point`` proves the index wrong against, if any.
 
         Two points with the same ``compressed_offset`` and resume ``state`` resume the
         same decode, so they must be at the same output offset. When they are not, and
         either is an index point, the index is wrong: the unit before has another size
-        than it says. Records ``point`` as what is known at its offset, a decoded
-        point in place of an index one.
+        than it says. Only points the table still holds are compared, so after a
+        thinning a point dropped from the table, or refused as too close to another,
+        is no longer compared with anything.
         """
-        assert self._claims is not None
+        if self._claims is None:
+            return None
         held = self._claims.get(point.compressed_offset)
-        if held is None:
-            self._claims[point.compressed_offset] = point
-            return False
-        if not _same_state(held.state, point.state):
-            return False
-        if held.decompressed_offset != point.decompressed_offset:
-            return held.from_index or point.from_index
-        if held.from_index and not point.from_index:
-            self._claims[point.compressed_offset] = point
-        return False
+        if (
+            held is not None
+            and _same_state(held.state, point.state)
+            and held.decompressed_offset != point.decompressed_offset
+            and (held.from_index or point.from_index)
+        ):
+            return held
+        return None
 
-    def _drop_index(self, point: SeekPoint) -> None:
-        """Drop every index point after the decode contradicted one, and say so.
+    def _note_kept(self, old: SeekPoint | None, new: SeekPoint) -> None:
+        """Keep ``_claims`` in step with the table: ``new`` was added, in place of
+        ``old`` when one is given."""
+        claims = self._claims
+        if claims is None:
+            return
+        if old is not None and claims.get(old.compressed_offset) is old:
+            del claims[old.compressed_offset]
+        claims[new.compressed_offset] = new
+
+    def _drop_index(self, disagreement: str) -> None:
+        """Drop every index point and size after the decode contradicted the index,
+        and say so (``disagreement`` says how).
 
         The index is only an accelerator, and the file decodes: seeks go on from the
         points a decode from the origin records, and the size is the decoded one. A
@@ -937,24 +967,20 @@ class DecompressorStream(ReadOnlyIOStream):
         decoder that resumed at an index point is restarted before the operation
         returns (:meth:`_restart_at_position`).
         """
-        assert self._claims is not None
-        held = self._claims[point.compressed_offset]
         self._claims = None
         self._index_dropped = True
         self._seek_points[:] = [p for p in self._seek_points if not p.from_index]
         self._forget_index_size()
         if self._decode_from_index:
             self._restart_pending = True
-        offsets = sorted((held.decompressed_offset, point.decompressed_offset))
         codec = self._codec_name or "compressed"
         index_source = _INDEX_SOURCES.get(codec, f"{codec} seek index")
         resolve_collector(self._diagnostics_collector).emit(
             code=DiagnosticCode.SEEK_INDEX_DEGRADED,
             message=(
-                f"The {index_source} and the data do not agree. Compressed offset "
-                f"{point.compressed_offset} starts at output offset {offsets[0]} and "
-                f"also at output offset {offsets[1]}. The index is no longer used: "
-                "seeks resume only from points found by decoding"
+                f"The {index_source} and the data do not agree. {disagreement} The "
+                "index is no longer used: seeks resume only from points found by "
+                "decoding, and the size is the decoded one"
             ),
             context=SeekIndexContext(
                 codec=self._codec_name,
@@ -965,6 +991,9 @@ class DecompressorStream(ReadOnlyIOStream):
         )
 
     def _forget_index_size(self) -> None:
+        # _index_built is cleared too. Once the index has been tried its only reader is
+        # xz's per-stream scan (the ``index_built`` closure in xz_decoder), which then
+        # runs again; _ensure_index_built is gated by _index_build_attempted.
         if self._size_from_index:
             self._size = None
             self._size_from_index = False
@@ -999,7 +1028,7 @@ class DecompressorStream(ReadOnlyIOStream):
             self._seek_points, lambda p: p.decompressed_offset, self._min_spacing
         )
         if self._claims is not None:
-            # Bounded like the table: the check keeps what the table keeps.
+            # The points the table dropped are no longer compared (_contradicts).
             self._claims = {p.compressed_offset: p for p in self._seek_points}
         message = (
             f"{self._codec_name} seek table passed {MAX_SEEK_POINTS} entries; kept "
@@ -1037,6 +1066,7 @@ class DecompressorStream(ReadOnlyIOStream):
                 not point.from_index
                 or point.compressed_offset > existing.compressed_offset
             ):
+                self._note_kept(existing, point)
                 self._seek_points[index] = point
             return
         if existing.compressed_offset == point.compressed_offset and _same_state(
@@ -1046,6 +1076,7 @@ class DecompressorStream(ReadOnlyIOStream):
         if point.compressed_offset >= existing.compressed_offset and _same_state(
             existing.state, point.state
         ):
+            self._note_kept(existing, point)
             self._seek_points[index] = point
             return
         # Prefer a non-None resume state over a progressive placeholder (XZ: block
@@ -1053,6 +1084,7 @@ class DecompressorStream(ReadOnlyIOStream):
         # prior build_index). Same-offset with only one side carrying state is the
         # legitimate multi-stream path; keep the richer point.
         if existing.state is None and point.state is not None:
+            self._note_kept(existing, point)
             self._seek_points[index] = point
             return
         if existing.state is not None and point.state is None:
@@ -1134,6 +1166,7 @@ class DecompressorStream(ReadOnlyIOStream):
         old_decoder.close()
         self._decoder = old_decoder.recreate(point, self._inner)
         self._decode_from_index = point.from_index
+        self._decoder_pos = point.decompressed_offset
         self._decoder.clear_pending_error()
         self._spent = None
         self._surplus = None
@@ -1142,6 +1175,7 @@ class DecompressorStream(ReadOnlyIOStream):
         self._pos = point.decompressed_offset
 
     def _ingest_decode(self, out: DecodeOut) -> bytes:
+        self._decoder_pos += len(out.data)
         if out.points:
             points = out.points
             if self._decode_from_index:
@@ -1151,7 +1185,21 @@ class DecompressorStream(ReadOnlyIOStream):
 
     def _publish_size(self, size: int) -> None:
         """Record the size a decode reached the end with (the index's, if it resumed at
-        an index point)."""
+        an index point).
+
+        A size the index gave that differs is a contradiction like two points that
+        disagree: it catches a lie in the last unit, which no index point follows.
+        """
+        if (
+            self._size_from_index
+            and not self._index_dropped
+            and self._size is not None
+            and self._size != size
+        ):
+            self._drop_index(
+                f"The index gives the output size as {self._size}, and decoding to "
+                f"the end gives {size}."
+            )
         self._size = size
         self._size_from_index = self._decode_from_index
 
@@ -1203,7 +1251,7 @@ class DecompressorStream(ReadOnlyIOStream):
             # truncated (pending_error alone is insufficient — unix-compress can be
             # finished=True with leftover-bits truncation).
             if self._decoder.pending_error is None and self._decoder.finished:
-                self._publish_size(self._pos + len(self._buffer) + len(leftover))
+                self._publish_size(self._decoder_pos)
                 self._index_built = True  # a forward scan to EOF is a complete index
             return leftover
         data = self._ingest_decode(
@@ -1281,7 +1329,7 @@ class DecompressorStream(ReadOnlyIOStream):
             return data
         if not self._eof:
             self._eof = True
-            self._publish_size(self._pos + len(self._buffer) + len(data))
+            self._publish_size(self._decoder_pos)
             self._index_built = True
         if self._report_trailing_data and not self._trailing_reported:
             self._trailing_reported = True
