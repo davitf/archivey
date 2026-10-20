@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import io
 import os
-import re
 import sys
 import tempfile
 from collections.abc import Callable
@@ -32,10 +31,10 @@ from archivey.internal.streams.streamtools import (
     resolve_seek,
     source_name,
 )
+from tests.conftest import CPYTHON
 from tests.streams_util import CountingBytesIO, NonSeekableBytesIO
 
 # Messages are compared with io.BytesIO only on CPython, whose wording archivey copies.
-_CPYTHON = sys.implementation.name == "cpython"
 
 DATA = b"0123456789abcdefghijklmnopqrstuvwxyz"
 
@@ -1146,10 +1145,10 @@ class TestResolveSeek:
         reference: Callable[..., int] = io.BytesIO().seek
         with pytest.raises(TypeError) as expected:
             reference(*args)
-        # The message is CPython's: PyPy's io.BytesIO words it differently.
-        message = re.escape(str(expected.value)) if _CPYTHON else None
-        with pytest.raises(TypeError, match=message):
+        with pytest.raises(TypeError) as excinfo:
             resolve(*args, pos=4, end=self._end)
+        if CPYTHON:  # PyPy's io.BytesIO words it differently
+            assert str(excinfo.value) == str(expected.value)
         assert self.end_calls == 0
 
     def test_int_subclass_is_its_int_value(self) -> None:
@@ -1194,7 +1193,7 @@ class TestCheckReadSize:
             io.BytesIO(b"abc").read(bad)
         with pytest.raises(OverflowError) as excinfo:
             check_read_size(bad)
-        if _CPYTHON:  # PyPy words it differently
+        if CPYTHON:  # PyPy words it differently
             assert str(excinfo.value) == str(expected.value)
 
     @pytest.mark.parametrize("edge", [sys.maxsize, -sys.maxsize - 1])
@@ -1209,5 +1208,5 @@ class TestCheckReadSize:
             io.BytesIO(b"abc").read(bad)  # type: ignore[arg-type]
         with pytest.raises(TypeError) as excinfo:
             check(bad)
-        if _CPYTHON:  # PyPy words it differently
+        if CPYTHON:  # PyPy words it differently
             assert str(excinfo.value) == str(expected.value)

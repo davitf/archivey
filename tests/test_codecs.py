@@ -54,7 +54,13 @@ from archivey.internal.streams.codecs.unix_compress_decoder import (
 )
 from archivey.internal.streams.verify import VerifyingStream
 from archivey.types import HashAlgorithm, StreamFormat
-from tests.conftest import requires, requires_binary, requires_zstd, zstd_backend
+from tests.conftest import (
+    CPYTHON,
+    requires,
+    requires_binary,
+    requires_zstd,
+    zstd_backend,
+)
 from tests.corruption_util import (
     is_corruption_not_truncation,
     raises_corruption_not_truncation,
@@ -909,7 +915,7 @@ def test_unix_compress_repeated_longest_code_decodes_exactly() -> None:
 
 def _lzw_table_bytes(state: LzwState) -> int:
     """Bytes held by an ``LzwState``'s dictionary, links included, each object once."""
-    if sys.implementation.name == "pypy":
+    if not CPYTHON:
         pytest.skip("sys.getsizeof has no answer on PyPy")
     seen: set[int] = set()
     total = 0

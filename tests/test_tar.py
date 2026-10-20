@@ -10,7 +10,6 @@ import io
 import logging
 import os
 import random
-import sys
 import tarfile
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -50,7 +49,7 @@ from archivey.internal.backends import tar_reader as tar_reader_module
 from archivey.internal.backends.tar_parser import READ_STEP, TarWalker
 from archivey.internal.backends.tar_reader import _WALK_BUFFER
 from archivey.internal.streams.streamtools import DEFAULT_UNKNOWN_LENGTH_READ_STEP
-from tests.conftest import requires_zstd, zstd_backend
+from tests.conftest import CPYTHON, requires_zstd, zstd_backend
 from tests.corruption_util import (
     is_corruption_not_truncation,
     raises_corruption_not_truncation,
@@ -3421,7 +3420,7 @@ def test_ascii_header_fields_ignore_an_encoding_that_reads_ascii_differently(
 _UTF7_REFUSES = pytest.param(
     "utf-7",
     marks=pytest.mark.skipif(
-        sys.implementation.name != "cpython",
+        not CPYTHON,
         reason="PyPy's utf-7 codec decodes a bad '+' shift instead of refusing it",
     ),
 )
@@ -4134,8 +4133,10 @@ def test_a_pass_keeps_no_parsed_entries(streaming: bool) -> None:
         span = members[-1]._raw
         assert type(span) is TarSpan
         holders = [type(r).__name__ for r in gc.get_referrers(span)]
-    if sys.implementation.name != "cpython":
-        # PyPy also lists this frame, which holds ``span``, and a tuple of its own.
+    if not CPYTHON:
+        # PyPy also lists this frame, which holds ``span``, and a tuple of its own:
+        # at most one of each, so a second tuple holding the span still fails.
+        assert holders.count("frame") <= 1 and holders.count("tuple") <= 1
         holders = [h for h in holders if h not in ("frame", "tuple")]
     assert len(members) == count
     assert (entries, headers) == (0, 0)

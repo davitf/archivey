@@ -178,13 +178,7 @@ def test_gzip_stored_filename_non_ascii_is_latin1(tmp_path: Path) -> None:
     # "café.txt" as the bytes b"caf\xe9.txt"; decoding those as UTF-8 would mangle them
     # (0xE9 is not valid UTF-8), so the decoded value must use Latin-1.
     path = tmp_path / "archive.gz"
-    # GzipFile does not close a file object it was given: closed here, it is flushed
-    # before the read, also on PyPy, which would close it only when collected.
-    with (
-        open(path, "wb") as raw,
-        gzip.GzipFile(filename="café.txt", mode="wb", fileobj=raw, mtime=0) as gz,
-    ):
-        gz.write(b"payload")
+    path.write_bytes(_gzip_bytes(b"payload", filename="café.txt"))
     with open_archive(path) as ar:
         member = ar.members()[0]
         assert member.raw_name == b"caf\xe9.txt"  # verbatim stored bytes
