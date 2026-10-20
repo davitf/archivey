@@ -12,8 +12,11 @@ which pastes back into a pytest command. That needs the ``file`` attribute, whic
 writes only with ``-o junit_family=xunit1``; without it the dotted class name is printed.
 A line cut to ``--width`` ends in "…".
 
-``--detail N`` also prints the last N lines of each failure's traceback, for a run made
-with ``--tb=short`` or longer.
+``--detail N`` also prints the last N lines of each failure's text. With ``--tb=no`` that
+text still holds the assertion's diff lines but no traceback; ``--tb=short`` or longer
+adds one.
+
+A missing or unreadable report (the test step did not run) prints one line and exits 0.
 """
 
 from __future__ import annotations
@@ -67,31 +70,35 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--detail", type=int, default=0)
     args = parser.parse_args(argv)
 
-    root = ET.parse(args.report).getroot()
+    try:
+        root = ET.parse(args.report).getroot()
+    except (OSError, ET.ParseError) as exc:
+        print(f"No readable report at {args.report} (did the test step run?): {exc}")
+        return 0
     counts: collections.Counter[str] = collections.Counter()
-    totals: collections.Counter[str] = collections.Counter()
     for case in root.iter("testcase"):
-        totals["tests"] += 1
         for kind in ("failure", "error"):
             node = case.find(kind)
             if node is None:
                 continue
-            totals[kind] += 1
             message = _first_line(node.get("message") or node.text or "")
             print(_cut(f"{kind.upper()} {_node_id(case)} - {message}", args.width))
             if args.detail and node.text:
                 for line in node.text.splitlines()[-args.detail :]:
                     print(_cut(f"    {line}", args.width))
             counts[_count_key(message)] += 1
-        if case.find("skipped") is not None:
-            totals["skipped"] += 1
 
     print()
     print("Counts by message:")
     for message, count in counts.most_common():
         print(f"{count:5d}  {message}")
     print()
-    print(", ".join(f"{key} {value}" for key, value in sorted(totals.items())))
+    # pytest's own totals; its "skipped" also counts xfails.
+    totals = dict.fromkeys(("tests", "failures", "errors", "skipped"), 0)
+    for suite in root.iter("testsuite"):
+        for key in totals:
+            totals[key] += int(suite.get(key, "0"))
+    print(", ".join(f"{key} {value}" for key, value in totals.items()))
     return 0
 
 
