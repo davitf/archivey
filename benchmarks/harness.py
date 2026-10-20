@@ -1629,6 +1629,10 @@ def format_text_report(payload: dict[str, Any]) -> str:
     cost_model = payload.get("cost_model")
     if cost_model:
         lines.extend(format_cost_model(cost_model))
+    elif payload.get("cost_model_error"):
+        lines.extend(
+            ["", "## Cost model", "", f"Not measured: {payload['cost_model_error']}"]
+        )
 
     lines.extend(
         [
@@ -1827,8 +1831,14 @@ def main(argv: list[str] | None = None) -> int:
     # Stamp when ratios were actually timed (nightly skip re-publish preserves this).
     if args.mode == "full":
         # Per-member cost and throughput from a ladder of archive shapes, next to
-        # the per-fixture ratios. Informational: no gate reads it.
-        payload["cost_model"] = run_cost_model(fixtures.root / "ladder")
+        # the per-fixture ratios. Informational: no gate reads it, so a failure here
+        # is reported in its section and must not lose the run's results. The ladder
+        # is the same at every scale, so it lives beside the scale directories.
+        try:
+            payload["cost_model"] = run_cost_model(fixtures.root.parent / "ladder")
+        except Exception as exc:  # noqa: BLE001 - see above
+            payload["cost_model_error"] = f"{type(exc).__name__}: {exc}"
+
         payload.update(measurement_provenance())
     report = format_text_report(payload)
     if args.json_out is not None:

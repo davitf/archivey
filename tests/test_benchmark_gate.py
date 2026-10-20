@@ -608,8 +608,8 @@ def test_main_passes_wall_drift_min_extra_ms_as_milliseconds(
 
 def test_cost_model_fit_recovers_known_costs() -> None:
     """The end-rung fit returns the costs a linear model was built from, and
-    predicts the middle rungs exactly when the model holds."""
-    from benchmarks.cost_model import LADDER, MIB, Rung, fit
+    predicts the check rungs exactly when the model holds."""
+    from benchmarks.cost_model import FIT_RUNGS, LADDER, MIB, Rung, fit
 
     open_ms, list_us, read_us, mib_s = 0.4, 12.0, 120.0, 800.0
 
@@ -629,14 +629,14 @@ def test_cost_model_fit_recovers_known_costs() -> None:
     assert f.list_us_per_member == pytest.approx(list_us)
     assert f.read_us_per_member == pytest.approx(read_us)
     assert f.throughput_mib_s == pytest.approx(mib_s)
-    for r in rungs[1:-1]:
+    for r in (r for i, r in enumerate(rungs) if i not in FIT_RUNGS):
         assert f.predict_read(r.members, r.members * r.member_size) == pytest.approx(
             r.read_ms
         )
 
 
 def test_format_text_report_cost_model_section() -> None:
-    """A full-mode payload's cost model renders as a table, flagging a middle rung
+    """A full-mode payload's cost model renders as a table, flagging a check rung
     the fit does not predict."""
     from benchmarks.harness import format_text_report
 
@@ -675,7 +675,7 @@ def test_format_text_report_cost_model_section() -> None:
     }
     report = format_text_report(payload)
     assert "## Cost model" in report
-    assert "| zip | archivey | 0.40 ms | 8k members/s | 800 MiB/s |" in report
+    assert "| zip | archivey \\* | 0.40 ms | 8k members/s | 800 MiB/s |" in report
     assert "zip archivey read 64 × 256 KiB" in report
 
 
@@ -689,34 +689,62 @@ def test_format_text_report_cost_model_section() -> None:
 def test_compressed_tar_peers_read_the_file_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, peer
 ) -> None:
-    """The tar.gz / tar.bz2 stdlib peers decompress the stream once.
+    """The tar.gz / tar.bz2 stdlib peers decompress the stream once, and read every
+    member's data.
 
     ``getmembers()`` before ``extractfile()`` reads the compressed file twice: listing
     decompresses to the end, and the first seek back restarts from byte zero. That
     made the peer about twice as slow as a one-pass read and the published ratios
-    flattered archivey.
+    flattered archivey. A peer that stopped reading member data would also read the
+    file once, so the data read is counted too.
     """
     import io
     import tarfile
 
     from benchmarks.fixtures import SCALES, build_tar
 
+    scale = SCALES["ci"]
     path = tmp_path / f"peer.tar.{mode[2:]}"
-    build_tar(path, SCALES["ci"], mode=mode)
-    read = 0
+    build_tar(path, scale, mode=mode)
+    compressed_read = 0
+    data_read = 0
+    opened: list[io.FileIO] = []
 
     class CountingFile(io.FileIO):
         def readinto(self, b):  # type: ignore[override]
-            nonlocal read
+            nonlocal compressed_read
             n = super().readinto(b)
-            read += n or 0
+            compressed_read += n or 0
             return n
 
     real_open = tarfile.open
+    real_extractfile = tarfile.TarFile.extractfile
 
     def counting_open(name, mode="r", **kwargs):  # type: ignore[no-untyped-def]
-        return real_open(fileobj=io.BufferedReader(CountingFile(name)), mode=mode)
+        raw = CountingFile(name)
+        opened.append(raw)
+        return real_open(fileobj=io.BufferedReader(raw), mode=mode, **kwargs)
+
+    class CountingMember:
+        def __init__(self, inner) -> None:  # type: ignore[no-untyped-def]
+            self._inner = inner
+
+        def read(self, n: int = -1) -> bytes:
+            nonlocal data_read
+            data = self._inner.read(n)
+            data_read += len(data)
+            return data
+
+    def counting_extractfile(self, member):  # type: ignore[no-untyped-def]
+        inner = real_extractfile(self, member)
+        return None if inner is None else CountingMember(inner)
 
     monkeypatch.setattr(harness.tarfile, "open", counting_open)
-    peer(path)
-    assert read <= path.stat().st_size * 1.05
+    monkeypatch.setattr(harness.tarfile.TarFile, "extractfile", counting_extractfile)
+    try:
+        peer(path)
+    finally:
+        for raw in opened:
+            raw.close()
+    assert compressed_read <= path.stat().st_size * 1.05
+    assert data_read == scale.common_members * scale.common_member_size

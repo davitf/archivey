@@ -9,18 +9,43 @@ ladder of archives, from many tiny members to a few large ones, and fits
     list_ms = open_ms + members x list_us
     read_ms = open_ms + members x read_us + MiB / throughput
 
-``open_ms`` and ``list_us`` come from listing the two end rungs. ``read_us`` and the
-throughput come from reading the same two rungs with ``open_ms`` held fixed. The two
-ends hold the same 16 MiB in 2048 and in 4 members, so their difference fixes the
-per-member cost, and the large rung, where members cost almost nothing, fixes the
-throughput. The middle rungs are not used in the fit. Each one gets a prediction and the error against what it measured; a large error
-means the linear model does not hold for that format, and the fitted numbers should
-not be quoted.
+``open_ms`` and ``list_us`` come from listing the two fit rungs, 2048 x 8 KiB and
+64 x 256 KiB. ``read_us`` and the throughput come from reading the same two rungs with
+``open_ms`` held fixed: both hold 16 MiB, so their difference fixes the per-member
+cost, and the 256 KiB rung, where members cost little, fixes the throughput. The
+other rungs are not used in the fit. Each one gets a prediction and the error against
+what it measured; a large error means the linear model does not hold for that shape,
+and the fitted numbers should not be quoted for it.
+
+The throughput rung is 256 KiB members rather than the largest ones because the cost
+per byte is not constant at the top. Reading 4 x 4 MiB took about 1.5x as long as
+64 x 256 KiB, the same 16 MiB, on both sides (zipfile 35 ms against 24 ms), most
+likely because a 4 MiB output buffer no longer stays in cache between inflate and the
+CRC pass. Fitting throughput there made every smaller shape look 30-50% faster than
+predicted. The 1 MiB and 4 MiB rungs stay as checks, so the report shows where large
+members leave the model.
 
 Both sides are fitted the same way: archivey (``open_archive``) and the stdlib peer
-(``zipfile`` / ``tarfile`` read in one forward pass). Throughput depends on the codec
-and on how well the data compresses, so it is one number per ladder, here DEFLATE ZIP
-and uncompressed TAR on the harness's semi-compressible payload.
+(``zipfile`` / ``tarfile`` read in one forward pass). Both read the same files, so
+the comparison between them is fair even where the absolute numbers move from host
+to host.
+
+Throughput depends on the codec and on how well the data compresses, so it is one
+number per ladder: DEFLATE ZIP and uncompressed TAR. The ladder builds its own
+archives (its shapes are not ``fixtures.Scale``s) from its own payload, in which
+every 4 KiB block is 1 KiB of seeded random bytes and 3 KiB of zeros. That keeps
+the compression ratio near 4:1 at every member size; the harness corpus repeats one
+4 KiB pattern, so its large members compress about 250:1 and the per-byte work would
+change with member size. Uncompressed TAR runs no codec, so its throughput is a copy
+rate, not a decode rate.
+
+Every rung is timed with the heap in the same state. glibc raises its mmap threshold
+after a large block is freed, and from then on smaller output buffers come from the
+heap without page faults: a zipfile read of 64 x 256 KiB took 11.7 ms in a fresh
+process and 6.6 ms after one 4 MiB block had been allocated and freed. So before
+timing anything, the run allocates and frees one block the size of the largest
+member, which puts every rung, and both sides, in the warm state a long-running
+process has.
 
 The report shows the open cost, the reading rate and the throughput. The reading rate
 is members per second through a ``stream_members()`` pass with the byte cost taken
@@ -45,7 +70,9 @@ report and a ``cost_model`` key to its JSON. Nothing here is a gate.
 from __future__ import annotations
 
 import argparse
+import io
 import json
+import random
 import tarfile
 import tempfile
 import time
@@ -56,18 +83,20 @@ from pathlib import Path
 from typing import Any
 
 from archivey import open_archive
-from benchmarks.fixtures import _payload
 
-# (members, member size) from many tiny members to a few large ones. The ends drive
-# the fit; the middle rungs check it.
+# (members, member size) from many small members to a few large ones.
 LADDER: tuple[tuple[int, int], ...] = (
     (2048, 8 * 1024),
     (512, 16 * 1024),
     (64, 256 * 1024),
+    (16, 1024 * 1024),
     (4, 4 * 1024 * 1024),
 )
-# A middle rung whose measured time is further than this from the prediction is
-# flagged in the report.
+# The rungs the fit uses (indices into LADDER); the others check it.
+FIT_RUNGS = (0, 2)
+# A check rung whose read time is further than this from the prediction is flagged
+# in the report, and its side's row is marked. A smaller miss passes unflagged, so
+# the fitted numbers carry about this much slack.
 CHECK_TOLERANCE = 0.25
 MIB = 1024 * 1024
 
@@ -101,8 +130,8 @@ class Fit:
 
 
 def fit(rungs: list[Rung]) -> Fit:
-    """Fit the model on the first and last rungs of ``rungs``."""
-    tiny, large = rungs[0], rungs[-1]
+    """Fit the model on the ``FIT_RUNGS`` of ``rungs`` (one per ``LADDER`` entry)."""
+    tiny, large = rungs[FIT_RUNGS[0]], rungs[FIT_RUNGS[1]]
     # Listing: two points, two unknowns.
     list_ms_per_member = (tiny.list_ms - large.list_ms) / (tiny.members - large.members)
     open_ms = tiny.list_ms - tiny.members * list_ms_per_member
@@ -122,6 +151,17 @@ def fit(rungs: list[Rung]) -> Fit:
     )
 
 
+def _payload(i: int, size: int) -> bytes:
+    """Member ``i``'s data: 1 KiB of seeded random bytes then 3 KiB of zeros, per
+    4 KiB block, so it compresses about 4:1 whatever ``size`` is."""
+    rng = random.Random(i)
+    out = bytearray()
+    while len(out) < size:
+        out += rng.randbytes(1024)
+        out += bytes(3072)
+    return bytes(out[:size])
+
+
 def _build_zip(path: Path, members: int, size: int) -> None:
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for i in range(members):
@@ -129,8 +169,6 @@ def _build_zip(path: Path, members: int, size: int) -> None:
 
 
 def _build_tar(path: Path, members: int, size: int) -> None:
-    import io
-
     with tarfile.open(path, "w") as tf:
         for i in range(members):
             data = _payload(i, size)
@@ -199,7 +237,7 @@ def _best_ms(fns: dict[str, Callable[[], None]], rounds: int) -> dict[str, float
     """The fastest of ``rounds`` timings of each function, alternating their order.
 
     The minimum, not the median: the fit subtracts rung times from each other, and
-    the minimum is the least noisy estimate of a cost with only upward noise.
+    once the heap is warm (``run_cost_model``) what is left of the noise is upward.
     """
     for fn in fns.values():
         fn()  # warm the page cache and imports
@@ -237,7 +275,7 @@ def measure_ladder(fmt: str, root: Path, *, rounds: int = 9) -> dict[str, Any]:
     for side, rungs in (("archivey", ours), (spec["peer"], theirs)):
         f = fit(rungs)
         checks = []
-        for r in rungs[1:-1]:
+        for r in (r for i, r in enumerate(rungs) if i not in FIT_RUNGS):
             nbytes = r.members * r.member_size
             for op, measured, predicted in (
                 ("list", r.list_ms, f.predict_list(r.members)),
@@ -263,7 +301,13 @@ def measure_ladder(fmt: str, root: Path, *, rounds: int = 9) -> dict[str, Any]:
 
 
 def run_cost_model(root: Path, *, rounds: int = 9) -> list[dict[str, Any]]:
+    """Time both ladders under ``root``. The ladder is a fixed size, about 56 MiB of
+    data per format, whatever ``--scale`` the harness was given."""
     root.mkdir(parents=True, exist_ok=True)
+    # Warm the heap first (module docstring): one block the size of the largest
+    # member, allocated and freed.
+    block = bytearray(max(size for _members, size in LADDER))
+    del block
     return [measure_ladder(fmt, root, rounds=rounds) for fmt in LADDERS]
 
 
@@ -272,6 +316,10 @@ def _fmt_size(n: int) -> str:
         if n >= scale:
             return f"{n // scale} {unit}"
     return f"{n} B"
+
+
+def _fmt_rung(rung: tuple[int, int]) -> str:
+    return f"{rung[0]} × {_fmt_size(rung[1])}"
 
 
 def _fmt_rate(us_per_member: float) -> str:
@@ -291,11 +339,17 @@ def format_cost_model(results: list[dict[str, Any]]) -> list[str]:
         "",
         "## Cost model",
         "",
-        "Fitted from the end rungs of a ladder "
-        + ", ".join(f"{n} × {_fmt_size(s)}" for n, s in LADDER)
-        + " (see `benchmarks/cost_model.py`). Reading is members per second through "
-        "a `stream_members()` pass, listing included, with the byte cost taken out; "
-        "throughput is the data rate once per-member costs are taken out. Not a gate.",
+        f"Fitted from {_fmt_rung(LADDER[FIT_RUNGS[0]])} and "
+        f"{_fmt_rung(LADDER[FIT_RUNGS[1]])}, checked against "
+        + ", ".join(_fmt_rung(r) for i, r in enumerate(LADDER) if i not in FIT_RUNGS)
+        + " (see `benchmarks/cost_model.py`). Reading is members per second "
+        "through a `stream_members()` pass, listing included, with the byte cost taken "
+        "out. Throughput is the data rate once per-member costs are taken out, on data "
+        "that compresses about 4:1; for uncompressed TAR it is a copy rate. Both sides "
+        "read the same files, so the comparison between them holds even where the "
+        "absolute numbers move between hosts. A row marked * has a check rung more "
+        f"than {CHECK_TOLERANCE:.0%} off its fit; a smaller miss is not flagged. "
+        "Not a gate.",
         "",
         "| format | side | open | reading | throughput |",
         "| --- | --- | ---: | ---: | ---: |",
@@ -305,29 +359,34 @@ def format_cost_model(results: list[dict[str, Any]]) -> list[str]:
         for side, data in res["sides"].items():
             f = data["fit"]
             thr = f["throughput_mib_s"]
+            misses = [
+                c
+                for c in data["checks"]
+                if c["op"] == "read" and abs(c["error"]) > CHECK_TOLERANCE
+            ]
+            mark = " \\*" if misses else ""
             lines.append(
-                f"| {res['format']} | {side} | {f['open_ms']:.2f} ms | "
+                f"| {res['format']} | {side}{mark} | {f['open_ms']:.2f} ms | "
                 f"{_fmt_rate(f['read_us_per_member'])} | "
                 + (f"{thr:.0f} MiB/s |" if thr else "too fast to fit |")
             )
-            for c in data["checks"]:
-                if c["op"] == "read" and abs(c["error"]) > CHECK_TOLERANCE:
-                    flagged.append(
-                        f"- {res['format']} {side} {c['op']} "
-                        f"{c['members']} × {_fmt_size(c['member_size'])}: measured "
-                        f"{c['measured_ms']:.2f} ms, predicted {c['predicted_ms']:.2f} ms "
-                        f"({c['error']:+.0%})"
-                    )
+            for c in misses:
+                flagged.append(
+                    f"- {res['format']} {side} {c['op']} "
+                    f"{c['members']} × {_fmt_size(c['member_size'])}: measured "
+                    f"{c['measured_ms']:.2f} ms, predicted {c['predicted_ms']:.2f} ms "
+                    f"({c['error']:+.0%})"
+                )
     lines.append("")
     if flagged:
         lines.append(
-            f"Middle rungs off the fit by more than {CHECK_TOLERANCE:.0%} "
-            "(treat the fitted numbers for these with care):"
+            f"Check rungs off the fit by more than {CHECK_TOLERANCE:.0%} "
+            "(the rows marked *; treat their numbers with care):"
         )
         lines.extend(flagged)
     else:
         lines.append(
-            f"Every middle rung is within {CHECK_TOLERANCE:.0%} of the fit's prediction."
+            f"Every check rung is within {CHECK_TOLERANCE:.0%} of the fit's prediction."
         )
     return lines
 
