@@ -34,8 +34,9 @@ and each change will be listed here. No major changes are expected.
 - **Automatic format detection** from the file's content, with the extension as the last
   signal, so a misnamed file still opens.
 - **Native readers.** archivey parses ZIP, TAR, 7z and RAR headers itself, without
-  `zipfile`, `tarfile` or any third-party package, so listing any of them needs no
-  extra install. 7z data decodes without external tools, BCJ2 included. RAR data needs
+  `zipfile`, `tarfile` or any third-party package, so listing them needs no extra
+  install unless a TAR's compression is outside the standard library (zstd before Python
+  3.14, lz4). 7z data decodes without external tools, BCJ2 included. RAR data needs
   RARLAB `unrar` or `rar`, or `unar`.
 - **Encrypted archives:** ZipCrypto and WinZip AES in ZIP, AES in 7z (headers too),
   and RAR3/RAR5 encryption, with one password or a list of candidates.
@@ -88,7 +89,7 @@ the targets in [`VISION.md`](VISION.md); the full table is in `benchmarks/RESULT
 - **Per-member cost is the main gap.** Once a member is open, archivey reads ZIP data at
   about the same rate as `zipfile` (about 370 MiB/s on both sides), but it gets through
   about 5 000 members a second where `zipfile` gets through 50 000. For plain TAR it is
-  11 000 against `tarfile`'s 37 000.
+  11 000 against `tarfile`'s 37 000, for small members.
 - **Reads:** single-stream gzip about 0.9× `gzip`, and `.tar.bz2` about 1.1× `tarfile`,
   both within the 1.3× band. Reading every member of a ZIP is about 2× `zipfile` and of
   a `.tar.gz` about 1.7× `tarfile`, above 1.3×. Plain TAR reads (about 2.9× `tarfile`)

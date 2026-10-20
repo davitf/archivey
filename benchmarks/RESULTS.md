@@ -77,8 +77,17 @@ because the nightly has no `rar` writer. The `tarfile` peers for `.tar.gz` and
 | `rar_many_open_list` | 27.7 ms | 14.1 ms | 1.96× | above native parity (~1.25×) |
 | `rar_nonsolid_open_list` | 7.9 ms | 3.7 ms | 2.16× | above native parity (~1.25×) |
 
-Cost model from the same run (`benchmarks/cost_model.py`; not a gate). Rows marked \*
-have a check rung more than 25% and 0.5 ms off the fit.
+Cost model from the same run, as the report prints it: fitted from 2048 × 8 KiB and 64 ×
+256 KiB, checked against 512 × 16 KiB, 16 × 1 MiB and 4 × 4 MiB
+(`benchmarks/cost_model.py`). Reading is members per second through a `stream_members()`
+pass, listing included, with the byte cost taken out; it is the per-member term, which
+is why it shows a larger gap than `zip_read_all` above. Throughput is the data rate once
+per-member costs are taken out, on data that compresses about 4:1. Uncompressed TAR
+shows no throughput (no codec): its byte cost is a small remainder of the fit, and its
+large check rungs are expected to miss. "Not resolved" means the `tarfile` open-cost fit
+came out at zero. Both sides read the same files, so the comparison between them holds
+even where the absolute numbers move between hosts. A row marked \* has a check rung
+more than 25% and at least 0.5 ms off its fit. Not a gate.
 
 | format | side | open | reading | throughput |
 | --- | --- | ---: | ---: | ---: |
@@ -86,6 +95,17 @@ have a check rung more than 25% and 0.5 ms off the fit.
 | zip | zipfile | 0.06 ms | 50k members/s | 378 MiB/s |
 | tar | archivey \* | 0.39 ms | 11k members/s | no codec |
 | tar | tarfile \* | not resolved | 37k members/s | no codec |
+
+Check rungs off the fit (the starred rows; expected for uncompressed TAR at multi-MiB
+members, so the TAR member rates describe small members):
+
+- tar archivey read 16 × 1 MiB: measured 3.31 ms, predicted 4.21 ms (−27%)
+- tar archivey read 4 × 4 MiB: measured 1.87 ms, predicted 3.09 ms (−65%)
+- tar `tarfile` read 4 × 4 MiB: measured 1.06 ms, predicted 1.57 ms (−48%)
+
+`tar_open_list` and `tar_read_all` vary between runs. The nightlies of 2026-10-15,
+-16 and -18 gave 2.3–2.6× and 2.7–3.0×, so the figures above are typical; the 1.49× and
+2.08× this file quoted from the 2026-10-19 run were one fast night.
 
 Against the older tables below: the native ZIP reader replaced `zipfile`, rapidgzip now
 runs in its own process (about 45 ms to start, `docs/security.md`), so forcing the gzip
