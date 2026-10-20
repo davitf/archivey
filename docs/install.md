@@ -92,11 +92,9 @@ isn't counted, because only encrypted members need it.
 ## Python versions and platforms
 
 Archivey needs CPython 3.11 or later. Every change is tested on Linux with 3.11 to 3.14, and on
-macOS and Windows with 3.11 and 3.14. Other platforms aren't tested. PyPy doesn't fully work yet:
-a trial run still fails in places, including some LZMA data. Under PyPy, archivey also doesn't use
-rapidgzip, lz4 or pyppmd, which misread data or crash the interpreter there, and reads as if they
-weren't installed: LZ4 and PPMd data can't be read, and the accelerator behind `[seekable]` is off.
-[How it is built](how-it-is-built.md) has the full test setup.
+macOS and Windows with 3.11 and 3.14. Other platforms aren't tested, and PyPy isn't supported yet
+([PyPy](#pypy) says what works there). [How it is built](how-it-is-built.md) has the full test
+setup.
 
 ## Free-threaded Python
 
@@ -110,3 +108,34 @@ doesn't install at all, because `cryptography` can't be installed there yet, and
 Other optional packages can still be installed. Archivey imports each one only when a file needs it,
 so the GIL comes back the first time you read PPMd, Deflate64 or Brotli data. Free-threaded builds
 are tested on Linux only.
+
+## PyPy
+
+PyPy isn't supported yet. Every change also runs the test suite on PyPy 3.11, but that run is a
+trial: it is allowed to fail, and some tests still fail there, among them reads of some Deflate64
+data in ZIP files. Most of the suite passes.
+
+Under PyPy, archivey doesn't use rapidgzip, lz4 or pyppmd, even when they are installed, because
+there they misread data or crash the interpreter. It reads as if they weren't installed:
+
+- LZ4 files, including `.tar.lz4`, and LZ4 members of 7z archives can't be read.
+- PPMd members of ZIP and 7z archives can't be read.
+- The accelerator behind `[seekable]` is off, so seeking backwards in gzip, zlib or bzip2 data, or
+  in a DEFLATE member of a ZIP or 7z archive, decompresses more of it again.
+
+If you read data that needs lz4 or pyppmd, the error says why archivey doesn't use the package, in
+place of an install hint, and so do `format_availability()` and `archivey --version -v`. rapidgzip
+only speeds up seeking, so neither lists it, and you see its reason only if you ask for it outright
+by setting `use_rapidgzip` or `use_indexed_bzip2` to `AcceleratorMode.ON`.
+
+If you use PyPy, close member streams and passes yourself, with a `with` block or `close()`. On
+CPython, one that nothing refers to any more is closed at once. PyPy closes it only at a later
+garbage collection, and until then it still holds the archive. When a call finds the archive held,
+archivey runs a garbage collection and tries once more, so a stream or pass you dropped doesn't
+block it. One you still refer to does: unless you opened the archive with
+`concurrent_operations=True`, the next `open` raises `ArchiveyUsageError` because a member stream
+is already open, and an unfinished `stream_members` pass makes the archive's other calls raise. A
+RAR member read through `unrar` also keeps its `unrar` process running until the collection, and
+so does a decoder's child process where one is in use
+([Decoders in a child process](security.md#decoders-in-a-child-process)).
+[Reading once](reading.md#reading-once) shows the `with` form for a pass.
