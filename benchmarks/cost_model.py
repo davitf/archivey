@@ -10,10 +10,10 @@ ladder of archives, from many tiny members to a few large ones, and fits
     read_ms = open_ms + members x read_us + MiB / throughput
 
 ``open_ms`` and ``list_us`` come from listing the two end rungs. ``read_us`` and the
-throughput come from reading the same two rungs with ``open_ms`` held fixed: the tiny
-rung has almost no bytes, so it fixes the per-member cost, and the large rung has
-almost no members, so it fixes the throughput. The middle rungs are not used in the
-fit. Each one gets a prediction and the error against what it measured; a large error
+throughput come from reading the same two rungs with ``open_ms`` held fixed. The two
+ends hold the same 16 MiB in 2048 and in 4 members, so their difference fixes the
+per-member cost, and the large rung, where members cost almost nothing, fixes the
+throughput. The middle rungs are not used in the fit. Each one gets a prediction and the error against what it measured; a large error
 means the linear model does not hold for that format, and the fitted numbers should
 not be quoted.
 
@@ -21,6 +21,18 @@ Both sides are fitted the same way: archivey (``open_archive``) and the stdlib p
 (``zipfile`` / ``tarfile`` read in one forward pass). Throughput depends on the codec
 and on how well the data compresses, so it is one number per ladder, here DEFLATE ZIP
 and uncompressed TAR on the harness's semi-compressible payload.
+
+The report shows the open cost, the reading rate and the throughput. The reading rate
+is members per second through a ``stream_members()`` pass with the byte cost taken
+out, so it includes listing each member; the listing fit is kept in the JSON only.
+
+The smallest members are 8 KiB, not a few bytes, because of TAR. Its reader takes an
+8 KiB block per header read, so headers of members under about 7.5 KiB come several
+to a read, and such an archive lists and reads faster per member than one with larger
+members, where every header costs its own seek and read. With 16-byte members at the
+tiny end, the fit took the cheap case as the per-member cost and every middle rung
+came out slower than predicted. Archives of very small TAR members do better than the
+fitted rate.
 
 Run::
 
@@ -49,7 +61,7 @@ from benchmarks.fixtures import _payload
 # (members, member size) from many tiny members to a few large ones. The ends drive
 # the fit; the middle rungs check it.
 LADDER: tuple[tuple[int, int], ...] = (
-    (4096, 16),
+    (2048, 8 * 1024),
     (512, 16 * 1024),
     (64, 256 * 1024),
     (4, 4 * 1024 * 1024),
@@ -281,11 +293,12 @@ def format_cost_model(results: list[dict[str, Any]]) -> list[str]:
         "",
         "Fitted from the end rungs of a ladder "
         + ", ".join(f"{n} × {_fmt_size(s)}" for n, s in LADDER)
-        + " (see `benchmarks/cost_model.py`). Reading includes listing; throughput "
-        "is the data rate once per-member costs are taken out. Not a gate.",
+        + " (see `benchmarks/cost_model.py`). Reading is members per second through "
+        "a `stream_members()` pass, listing included, with the byte cost taken out; "
+        "throughput is the data rate once per-member costs are taken out. Not a gate.",
         "",
-        "| format | side | open | listing | reading | throughput |",
-        "| --- | --- | ---: | ---: | ---: | ---: |",
+        "| format | side | open | reading | throughput |",
+        "| --- | --- | ---: | ---: | ---: |",
     ]
     flagged: list[str] = []
     for res in results:
@@ -294,12 +307,11 @@ def format_cost_model(results: list[dict[str, Any]]) -> list[str]:
             thr = f["throughput_mib_s"]
             lines.append(
                 f"| {res['format']} | {side} | {f['open_ms']:.2f} ms | "
-                f"{_fmt_rate(f['list_us_per_member'])} | "
                 f"{_fmt_rate(f['read_us_per_member'])} | "
                 + (f"{thr:.0f} MiB/s |" if thr else "too fast to fit |")
             )
             for c in data["checks"]:
-                if abs(c["error"]) > CHECK_TOLERANCE:
+                if c["op"] == "read" and abs(c["error"]) > CHECK_TOLERANCE:
                     flagged.append(
                         f"- {res['format']} {side} {c['op']} "
                         f"{c['members']} × {_fmt_size(c['member_size'])}: measured "

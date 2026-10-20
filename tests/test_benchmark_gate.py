@@ -675,10 +675,7 @@ def test_format_text_report_cost_model_section() -> None:
     }
     report = format_text_report(payload)
     assert "## Cost model" in report
-    assert (
-        "| zip | archivey | 0.40 ms | 83k members/s | 8k members/s | 800 MiB/s |"
-        in report
-    )
+    assert "| zip | archivey | 0.40 ms | 8k members/s | 800 MiB/s |" in report
     assert "zip archivey read 64 × 256 KiB" in report
 
 
