@@ -1535,15 +1535,21 @@ _CODECS_PACKAGE = "archivey.internal.streams.codecs."
 
 
 def release_decoder(decoder: object) -> None:
-    """Give back ``decoder``'s child process now, when it runs in one.
+    """Give back the child process ``decoder`` holds now, and end it now when it is an
+    in-process liblzma decoder (``native_memory.end_lzma_decoder``).
 
-    For a native decoder its owner drops part-way (a finished xz stream, lzip member,
-    gzip member or frame, a probe's block decoder). CPython frees the dropped child
-    proxy at once and its finalizer gives the child back then; PyPy frees it at a later
-    collection, and the child stays leased until that runs.
+    For a native decoder, or a codec-layer wrapper of one, that its owner is done with
+    while it goes on: CPython frees a dropped child proxy at once and its finalizer
+    gives the child back then, but PyPy frees it at a later collection, and the child
+    stays leased until that runs. A wrapper (the lz4 picker, the clamped Alone header)
+    is looked through as :func:`release_decoder_children` does.
     """
     if getattr(type(decoder), "holds_decoder_child", False):
         cast(Any, decoder).close()
+    elif type(decoder) is lzma.LZMADecompressor:
+        end_lzma_decoder(decoder)
+    elif type(decoder).__module__.startswith(_CODECS_PACKAGE):
+        release_decoder_children(decoder)
 
 
 def release_decoder_children(holder: object, depth: int = 3) -> None:

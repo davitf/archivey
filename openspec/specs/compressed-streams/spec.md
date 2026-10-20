@@ -736,6 +736,7 @@ inherited decoder leaves the parent's child alone, and a call on one SHALL raise
 | --- | --- |
 | Two members of one archive read on two threads under `NATIVE_DECODERS` | Two children, decoding at the same time |
 | A ZIP of 1,000 small deflate members read one after another under `NATIVE_DECODERS` | Children reused; far fewer than 1,000 started |
+| A two-stream `.xz`, two-member gzip or two-frame zstd or lz4 file read under `NATIVE_DECODERS`, every finished decoder kept referenced | The first stream's child is back in the pool before the next stream's decoder takes one; at most one child is leased at a time |
 | 1,000 small valid PPMd members read one after another under `KNOWN_CRASHES` | Each in a child process; children reused |
 | A PPMd member that ends early (corrupt or cut) | Child process; that child is not reused |
 | Member A leaves its reused child damaged without crashing; member B's decode then crashes in that child | B re-runs in a fresh child and reads correctly; nothing is charged to B |
