@@ -9,6 +9,7 @@ import hashlib
 import importlib
 import importlib.util
 import io
+import lzma
 import random
 import re
 import shutil
@@ -16,7 +17,7 @@ import sys
 import sysconfig
 import types
 import zlib
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Literal
 
@@ -3204,3 +3205,74 @@ def test_zstd_frame_needing_a_dictionary_is_unsupported() -> None:
     with open_codec_stream(Codec.ZSTD, io.BytesIO(data)) as stream:
         with pytest.raises(UnsupportedFeatureError, match="dictionary"):
             stream.read()
+
+
+def _outcome(open_and_read: Callable[[], bytes]) -> tuple[str, str]:
+    """What a route did: the bytes it read, or the error type and message it raised."""
+    try:
+        return ("data", open_and_read().hex())
+    except Exception as exc:  # noqa: BLE001 - the outcome is compared, not handled
+        return (type(exc).__name__, str(exc))
+
+
+_GZIP_HELLO = gzip.compress(b"hello" * 50)
+
+
+@pytest.mark.parametrize(
+    ("codec", "data", "params"),
+    [
+        (Codec.GZIP, _GZIP_HELLO, None),
+        (Codec.GZIP, b"not a gzip stream at all", None),
+        (Codec.GZIP, _GZIP_HELLO[:-12], None),
+        (Codec.DEFLATE, zlib.compress(b"hello" * 50)[2:-4], None),
+        (Codec.DEFLATE, b"\xff\xff\xff\xff", None),
+        (Codec.BZIP2, b"BZh9" + b"\x00" * 20, None),
+        (Codec.XZ, b"\xfd7zXZ\x00" + b"\x00" * 20, None),
+        (Codec.STORED, b"stored bytes", None),
+        # An LZMA1 header ``lc`` out of range: the decoder refuses it at open.
+        (
+            Codec.LZMA,
+            bytes(20),
+            CodecParams(filters=[{"id": lzma.FILTER_LZMA1, "lc": 9}]),
+        ),
+    ],
+    ids=[
+        "gzip",
+        "gzip-garbage",
+        "gzip-cut",
+        "deflate",
+        "deflate-bad",
+        "bzip2",
+        "xz",
+        "stored",
+        "lzma-bad-header",
+    ],
+)
+def test_open_codec_raw_raises_what_open_codec_stream_raises(
+    codec: Codec, data: bytes, params: CodecParams | None
+) -> None:
+    """A member stream around ``open_codec_raw`` answers as the codec's own stream does.
+
+    ``open_codec_raw`` opens the codec bare, for a ZIP member stream that carries the
+    codec's translator itself. Every outcome, an open failure, a read failure or the
+    bytes, must match ``open_codec_stream``'s.
+    """
+    from archivey.internal.streams.archive_stream import ArchiveStream
+    from archivey.internal.streams.codecs import open_codec_raw
+
+    kwargs = {} if params is None else {"params": params}
+
+    def via_stream() -> bytes:
+        with open_codec_stream(codec, io.BytesIO(data), **kwargs) as stream:
+            return stream.read()
+
+    def via_raw() -> bytes:
+        opened = open_codec_raw(codec, io.BytesIO(data), **kwargs)
+        with ArchiveStream(
+            lambda: opened.stream,
+            translate=opened.translate,
+            rewind_warning=opened.rewind_warning,
+        ) as stream:
+            return stream.read()
+
+    assert _outcome(via_raw) == _outcome(via_stream)
