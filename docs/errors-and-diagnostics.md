@@ -81,7 +81,9 @@ as a dictionary would.
 
 `members()` raises if the archive is damaged partway through its list of members, and gives you
 nothing. Iterating over the reader, or over `stream_members()`, gives you the members before the
-damage, then raises. `members_report()` gives you both at once:
+damage, then raises. On a ZIP whose central directory is damaged partway, you also get the members
+after the damage, found from the header in front of each one's data, before the exception.
+`members_report()` gives you both at once:
 
 ```python
 with archivey.open_archive("damaged.tar") as archive:

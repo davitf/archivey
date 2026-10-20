@@ -211,10 +211,11 @@ archive expanding too much, stops the extraction even with `on_error="continue"`
 that the whole archive is hostile. A single member that expands too much fails like any other
 member.
 
-If the damage is in the list of members itself, such as a TAR, RAR or ZIP cut short or a damaged
-ZIP central directory, the members before it are written and the call then raises, with either
-`on_error`, and returns no report. A damaged 7z index fails `open_archive` before anything is
-written.
+If the damage is in the list of members itself, such as a TAR, RAR or ZIP cut short, the members
+before it are written and the call then raises, with either `on_error`, and returns no report. If a
+ZIP's central directory is damaged, archivey also finds the members after the damage from the header
+in front of each one's data, and writes those too before it raises. A damaged 7z index fails
+`open_archive` before anything is written.
 
 A process killed during an extraction can leave a file named `.archivey-tmp-` followed by random
 characters in the destination. It's safe to delete.
@@ -238,6 +239,11 @@ is off.
 On a volume that keeps 8.3 short names, `LONGFI~1.TXT` is a second name for `longfilename.txt`. If
 you use `"strict"` or `"standard"`, a member with such a name collides with the file the run already
 wrote, the same way `README` and `readme` do.
+
+NTFS gives one file at most 1,024 names. In the rare case an archive holds more hard links to one
+file than that, archivey writes one copy of the file when it fills up and links the next names to
+the copy, so each 1,024 links cost one copy. The copies count toward `max_extracted_bytes` and the
+archive-wide `max_ratio`, since a small archive could otherwise write far more than its size.
 
 ## Archives you trust
 

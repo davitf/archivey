@@ -45,7 +45,7 @@ Three options to `open_archive` allow ways of reading that are off by default:
 
 | To do this | zipfile | tarfile | py7zr | rarfile | archivey |
 | --- | --- | --- | --- | --- | --- |
-| Seek in a member | Allowed; a seek back decompresses again from the start | Allowed; the same | No member streams | Allowed; the same | `seekable_members=True`; with the [`seekable` extra](reading.md#seeking-inside-a-member), seeks in bzip2 and large gzip data restart near their target |
+| Seek in a member | Allowed; a seek back decompresses again from the start | Allowed; the same | No member streams | Allowed; the same | `seekable_members=True`; with the [`seekable` extra](reading.md#seeking-inside-a-member), seeks in bzip2 and large DEFLATE data (gzip files and most ZIP members) restart near their target |
 | Keep several members open at once | Allowed | Allowed | No member streams | Allowed | `concurrent_operations=True` |
 | Read from a pipe | Not possible | One pass, with mode `"r\|*"` | Not possible | Not possible | One pass, with `streaming=True`, for TAR, ZIP and single compressed files |
 
