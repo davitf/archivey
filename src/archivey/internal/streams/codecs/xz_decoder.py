@@ -50,7 +50,6 @@ from archivey.internal.streams.codecs.isolated import (
     IN_PROCESS,
     Decompressor,
     Natives,
-    release_decoder,
 )
 from archivey.internal.streams.decompressor_stream import (
     TRAILING_DATA_CANDIDATES,
@@ -65,6 +64,7 @@ from archivey.internal.streams.decompressor_stream import (
     damaged_stream_error,
     emit_index_thinned,
     near_stream_magic,
+    release_decoder,
     truncated_message,
 )
 

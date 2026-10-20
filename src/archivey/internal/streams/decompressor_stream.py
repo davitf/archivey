@@ -52,7 +52,6 @@ from archivey.internal.diagnostics_collector import (
     resolve_collector,
 )
 from archivey.internal.logs import streams as logger
-from archivey.internal.streams.codecs.isolated import release_decoder
 from archivey.internal.streams.resume import (
     ResumeReachedStreamEnd,
     hold_for_planned_seek,
@@ -1530,12 +1529,43 @@ def report_trailing_data(
     )
 
 
+class _HoldsChild(Protocol):
+    def close(self) -> None: ...
+
+
+_CODECS_PACKAGE = "archivey.internal.streams.codecs."
+
+
+def release_decoder(decoder: object, depth: int = 3) -> None:
+    """Give back now the child process of a decoder that ``Natives``
+    (codecs/isolated.py) built, when it has one; a no-op for an in-process decoder or
+    ``None``.
+
+    The child proxy may be ``decoder`` itself (``holds_decoder_child``) or sit in an
+    attribute of a codec-layer wrapper (the clamped Alone header, the lz4 picker), so
+    this looks through those attributes a few levels down. Call it before a decoder
+    is dropped or replaced (the next gzip member, xz stream or zstd frame). Otherwise
+    the child stays leased until the collector frees the proxy: at once on CPython,
+    but on PyPy only at a later collection, and until then every new decoder starts a
+    process of its own.
+    """
+    if getattr(type(decoder), "holds_decoder_child", False):
+        cast("_HoldsChild", decoder).close()
+    elif (
+        depth > 0
+        and type(decoder).__module__.startswith(_CODECS_PACKAGE)
+        and not isinstance(decoder, io.IOBase)
+    ):
+        for value in list(getattr(decoder, "__dict__", {}).values()):
+            release_decoder(value, depth - 1)
+
+
 def release_decoder_children(holder: object) -> None:
     """Give back every decoder process ``holder`` holds now, not when GC frees it.
 
     A decoder keeps its native object in an attribute, sometimes inside a small helper
     of its own (the xz and lzip state, the clamped Alone header, the lz4 picker), so
-    this hands each attribute to ``release_decoder`` (codecs/isolated.py), which looks a few levels down for a child proxy. An archive reader can sit in a
+    this hands each attribute to :func:`release_decoder`, which looks a few levels down for a child proxy. An archive reader can sit in a
     reference cycle, and without this its decoders' child processes would stay leased
     until the cycle collector ran.
     """

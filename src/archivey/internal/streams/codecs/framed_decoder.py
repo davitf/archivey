@@ -15,7 +15,6 @@ from archivey.internal.streams.codecs.bzip2_resume import (
     Bzip2Resume,
     Bzip2ResumeDecoder,
 )
-from archivey.internal.streams.codecs.isolated import release_decoder
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
     DecodeOut,
@@ -24,6 +23,7 @@ from archivey.internal.streams.decompressor_stream import (
     SeekPoint,
     damaged_stream_error,
     near_stream_magic,
+    release_decoder,
 )
 
 if TYPE_CHECKING:

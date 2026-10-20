@@ -41,7 +41,6 @@ from archivey.internal.streams.codecs.isolated import (
     IN_PROCESS,
     Natives,
     ZlibDecompressor,
-    release_decoder,
 )
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
@@ -50,6 +49,7 @@ from archivey.internal.streams.decompressor_stream import (
     SeekPoint,
     _inflate,
     _inflate_rest,
+    release_decoder,
 )
 from archivey.internal.streams.resume import ResumeReachedStreamEnd
 

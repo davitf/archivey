@@ -35,7 +35,6 @@ from archivey.internal.streams.codecs.isolated import (
     IN_PROCESS,
     Natives,
     natives_for,
-    release_decoder,
 )
 from archivey.internal.streams.codecs.stdlib_takeover import (
     _DRAIN_CHUNK,
@@ -48,6 +47,7 @@ from archivey.internal.streams.codecs.stdlib_takeover import (
 from archivey.internal.streams.decompressor_stream import (
     _StreamChecksumError,
     input_after_end_error,
+    release_decoder,
     zlib_error,
 )
 from archivey.internal.streams.resume import ask_resume_offset

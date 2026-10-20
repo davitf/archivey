@@ -21,7 +21,6 @@ from archivey.internal.streams.codecs.deflate_resume import (
 from archivey.internal.streams.codecs.isolated import (
     IN_PROCESS,
     Natives,
-    release_decoder,
 )
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
@@ -32,6 +31,7 @@ from archivey.internal.streams.decompressor_stream import (
     _inflate,
     _inflate_rest,
     gzip_error,
+    release_decoder,
     truncated_message,
     zlib_error,
 )

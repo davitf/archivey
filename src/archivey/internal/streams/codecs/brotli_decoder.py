@@ -10,13 +10,13 @@ from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.streams.codecs.isolated import (
     IN_PROCESS,
     Natives,
-    release_decoder,
 )
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
     DecodeOut,
     DecompressorStream,
     SeekPoint,
+    release_decoder,
 )
 
 

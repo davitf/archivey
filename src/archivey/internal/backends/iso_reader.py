@@ -119,8 +119,8 @@ from archivey.internal.streams.codecs.isolated import (
     IN_PROCESS,
     Natives,
     natives_for,
-    release_decoder,
 )
+from archivey.internal.streams.decompressor_stream import release_decoder
 from archivey.internal.streams.streamtools import (
     DelegatingStream,
     LockedStream,

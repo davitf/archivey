@@ -54,7 +54,6 @@ from archivey.internal.streams.codecs.isolated import (
     IN_PROCESS,
     Decompressor,
     Natives,
-    release_decoder,
 )
 from archivey.internal.streams.codecs.xz_decoder import lzma_error_to_archivey
 from archivey.internal.streams.decompressor_stream import (
@@ -69,6 +68,7 @@ from archivey.internal.streams.decompressor_stream import (
     build_index_backwards,
     damaged_stream_error,
     near_stream_magic,
+    release_decoder,
 )
 
 _MAGIC = b"LZIP"
