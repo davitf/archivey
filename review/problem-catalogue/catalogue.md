@@ -2259,9 +2259,9 @@ at most one documented synthetic byte is injected, bounded, and anything still m
 reported as truncation rather than pumped in a loop. The variant with no end marker is
 *rejected at construction* when no size is declared, since there is then no safe request
 size and no correct output boundary either. A parked worker is driven to completion before
-the decoder is disposed so teardown cannot resume it. **Residual:** a crafted header that
-inflates the declared size ≳64 KiB past the member's true content puts the one bounded
-decode back into the crashy class, and cannot be detected before decoding
+the decoder is disposed so teardown cannot resume it. **Residual:** no crash confirmed in
+process. A crafted header that overstates the declared size measured clean; the candidate
+left is the single-byte teardown decode on a stream that has already ended
 (`known-issues.md`).
 
 **Sources.** `known-issues.md` §Intermittent `pyppmd` native aborts, §exit-after-green;
