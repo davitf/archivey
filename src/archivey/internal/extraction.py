@@ -2385,6 +2385,9 @@ class ExtractionCoordinator:
 
         Directories are structural (parents recur, entries merge) and are never claimed
         in the map, so a directory member landing on a real directory merges into it.
+        A non-directory member landing on a directory this run wrote or created as a
+        parent still collides with it (``_run_directory_at``): ``collided_with`` and the
+        abort apply, and the policy then meets the directory as it would any other.
         One landing on an entry that is not a real directory (a file or a symlink) goes
         through the same resolution as any other member: under every policy it collides
         with a claim this run holds there, so ``collided_with``, the abort and a REPLACE
@@ -2418,19 +2421,55 @@ class ExtractionCoordinator:
             if prior is not None and self._policy is not ExtractionPolicy.TRUSTED
             else None
         )
+        if (
+            collided is None
+            and transformed.type != MemberType.DIRECTORY
+            and self._policy is not ExtractionPolicy.TRUSTED
+        ):
+            collided = self._run_directory_at(requested)
         if collided is not None:
-            assert prior is not None
-            self._check_collision_abort(original, transformed, prior)
+            self._check_collision_abort(original, collided)
         if self._overwrite is OverwritePolicy.RENAME:
             if prior is not None or self._occupied(requested):
                 is_dir = transformed.type == MemberType.DIRECTORY
                 free = self._derive_free_name(requested, is_dir=is_dir)
                 return free, None, collided
             return requested, None, None
-        if collided is not None:
-            assert prior is not None
+        if prior is not None and collided is not None:
             return prior.physical, prior, collided
-        return requested, None, None
+        # A directory of this run (``collided``, set) is met where it is, by name.
+        return requested, None, collided
+
+    def _run_directory_at(self, path: Path) -> Path | None:
+        """The directory this run wrote or created as a parent at ``path``, under any
+        spelling that reaches it (``_is_run_directory``), or ``None``.
+
+        Returned as the directory member's result reports it when one wrote it, so a
+        caller joins ``collided_with`` to that result by path; a directory the run
+        only created as a parent has no result, and is returned as ``path``."""
+        state = self._state
+        # Every directory the run wrote or created is in ``run_dirs``: a run that made
+        # none under this key pays no ``lstat``.
+        if not state.run_dirs.get(self._physical_key(path)):
+            return None
+        try:
+            st = os.lstat(long_path(path))
+        except (OSError, ValueError):
+            return None
+        if not stat.S_ISDIR(st.st_mode) or not self._is_run_directory(path, st):
+            return None
+        # The key is casefolded, so on a case-sensitive filesystem it can also cover
+        # another directory (``X/`` beside ``x/``): only the same directory counts.
+        for index in reversed(state.written_dirs.get(self._collision_key(path), ())):
+            written = state.results[index].path
+            if written is None:
+                continue
+            if written == path:
+                return written
+            with contextlib.suppress(OSError, ValueError):
+                if os.path.samestat(st, os.lstat(long_path(written))):
+                    return written
+        return path
 
     def _callers_parent(self, path: Path) -> Path | None:
         """The parent of ``path`` under the destination that the caller holds as an
@@ -2637,9 +2676,7 @@ class ExtractionCoordinator:
         # archivey/cli/logging_config.py matches this format string literally.
         logger.warning("Skipping %s %r: %s", kind, name, error)
 
-    def _check_collision_abort(
-        self, original: ArchiveMember, transformed: ArchiveMember, prior: _Claim
-    ) -> None:
+    def _check_collision_abort(self, original: ArchiveMember, prior: Path) -> None:
         """Abort on a collision event if the caller asked to be stopped by one.
 
         Fires on **every** non-TRUSTED collision whatever resolution follows — replaced,
@@ -2652,7 +2689,7 @@ class ExtractionCoordinator:
         raise _AbortExtraction(
             NameCollisionError(
                 f"Name collision with already-written "
-                f"{display_path(self._shown(prior.path))}",
+                f"{display_path(self._shown(prior))}",
                 member_name=original.name,
             )
         )
@@ -3934,9 +3971,10 @@ class ExtractionCoordinator:
                 # Its member's metadata has no directory left to go on.
                 self._drop_pending_dir(dest_path)
                 self._current.removed_existing = True
-                # A directory member of this run that wrote it no longer has it. This is
-                # not a collision event (directories are never claimed), so only the
-                # result is revised; ``collided_with`` is untouched. Only under REPLACE:
+                # A directory member of this run that wrote it no longer has it, so its
+                # result is revised (directories are never claimed, so there is no
+                # claim to hand over; ``_resolve_collision`` set this member's
+                # ``collided_with`` from ``_run_directory_at``). Only under REPLACE:
                 # RENAME reaches this arm only after a filesystem race, with nothing of
                 # this run's here, and OVERWRITTEN is a REPLACE outcome.
                 if self._overwrite is OverwritePolicy.REPLACE:

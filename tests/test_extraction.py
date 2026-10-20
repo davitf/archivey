@@ -4198,15 +4198,12 @@ def test_replace_file_over_an_empty_directory_this_run_wrote_revises_it(
 ) -> None:
     """REPLACE: a file member that removes an empty directory this run wrote revises
     that directory's result to OVERWRITTEN, instead of leaving it reporting EXTRACTED
-    at a path that now holds a file. Directories are not collision claims, so this is
-    not a collision event and ``collided_with`` stays ``None``."""
+    at a path that now holds a file. The file collided with that directory, so
+    ``collided_with`` names it, which joins to the directory's ``requested_path``."""
     archive = build([("dir", "x/", None), ("file", "x", b"file")])
     dest = tmp_path / "out"
     report = open_and_extract(
-        io.BytesIO(archive),
-        dest,
-        overwrite=OverwritePolicy.REPLACE,
-        abort_on={AbortOn.NAME_COLLISION},  # not a collision event: no abort
+        io.BytesIO(archive), dest, overwrite=OverwritePolicy.REPLACE
     )
 
     directory, member = report.results
@@ -4215,8 +4212,86 @@ def test_replace_file_over_an_empty_directory_this_run_wrote_revises_it(
     assert directory.requested_path == dest / "x"
     assert member.status is ExtractionStatus.EXTRACTED
     assert member.path == dest / "x"
-    assert member.collided_with is None
+    assert member.collided_with == dest / "x"
     assert (dest / "x").read_bytes() == b"file"
+
+
+_DIRECTORY_THEN_FILE = {
+    "explicit": [("dir", "x/", None), ("file", "x/f", b"in"), ("file", "x", b"file")],
+    "implicit": [("file", "x/f", b"in"), ("file", "x", b"file")],
+}
+
+
+@pytest.mark.parametrize("build", [_tar_bytes, _zip_bytes], ids=["tar", "zip"])
+@pytest.mark.parametrize("shape", list(_DIRECTORY_THEN_FILE))
+@pytest.mark.parametrize(
+    ("overwrite", "status"),
+    [
+        (OverwritePolicy.ERROR, ExtractionStatus.FAILED),
+        (OverwritePolicy.SKIP, ExtractionStatus.NOT_OVERWRITTEN),
+        # The directory holds ``x/f``, so REPLACE does not remove it.
+        (OverwritePolicy.REPLACE, ExtractionStatus.FAILED),
+        (OverwritePolicy.RENAME, ExtractionStatus.EXTRACTED),
+    ],
+)
+def test_file_over_a_directory_this_run_wrote_records_the_collision(
+    tmp_path: Path,
+    build,
+    shape: str,
+    overwrite: OverwritePolicy,
+    status: ExtractionStatus,
+) -> None:
+    """A file member landing on a directory this run made, from a directory entry or
+    as the parent of an earlier member, collided with it under every policy:
+    ``collided_with`` names the directory, as it names a file this run wrote. The
+    directory and what it holds are kept."""
+    dest = tmp_path / "out"
+    report = open_and_extract(
+        io.BytesIO(build(_DIRECTORY_THEN_FILE[shape])),
+        dest,
+        overwrite=overwrite,
+        on_error=OnError.CONTINUE,
+    )
+
+    member = report.results[-1]
+    assert member.member.name == "x"
+    assert member.status is status
+    assert member.requested_path == dest / "x"
+    assert member.collided_with == dest / "x"
+    if status is ExtractionStatus.EXTRACTED:
+        assert member.path == dest / "x (1)"
+    assert (dest / "x" / "f").read_bytes() == b"in"
+
+
+@pytest.mark.parametrize("shape", list(_DIRECTORY_THEN_FILE))
+def test_file_over_a_directory_this_run_wrote_is_no_collision_under_trusted(
+    tmp_path: Path, shape: str
+) -> None:
+    """TRUSTED reports no collision event, for a directory as for a file."""
+    report = open_and_extract(
+        io.BytesIO(_tar_bytes(_DIRECTORY_THEN_FILE[shape])),
+        tmp_path / "out",
+        policy=ExtractionPolicy.TRUSTED,
+        overwrite=OverwritePolicy.SKIP,
+    )
+    member = report.results[-1]
+    assert member.status is ExtractionStatus.NOT_OVERWRITTEN
+    assert member.collided_with is None
+
+
+def test_file_over_a_directory_already_there_is_no_collision(tmp_path: Path) -> None:
+    """A directory that was in ``dest`` before the run is not this run's: the file
+    meets it under SKIP with ``collided_with`` left ``None``."""
+    dest = tmp_path / "out"
+    (dest / "x").mkdir(parents=True)
+    report = open_and_extract(
+        io.BytesIO(_tar_bytes([("file", "x", b"file")])),
+        dest,
+        overwrite=OverwritePolicy.SKIP,
+    )
+    (member,) = report.results
+    assert member.status is ExtractionStatus.NOT_OVERWRITTEN
+    assert member.collided_with is None
 
 
 def test_replace_revises_a_directory_reached_through_the_archives_symlink(
@@ -4736,6 +4811,40 @@ def test_abort_on_name_collision_fires_for_a_directory_member(
         )
     assert excinfo.value.member_name == "x/"
     assert (dest / "x").read_bytes() == b"A"
+
+
+@pytest.mark.parametrize(
+    "overwrite",
+    [
+        OverwritePolicy.REPLACE,
+        OverwritePolicy.SKIP,
+        OverwritePolicy.ERROR,
+        OverwritePolicy.RENAME,
+    ],
+)
+@pytest.mark.parametrize("parent", ["explicit", "implicit"])
+def test_abort_on_name_collision_fires_for_a_file_over_a_run_directory(
+    tmp_path: Path, overwrite: OverwritePolicy, parent: str
+) -> None:
+    """A file member landing on a directory this run wrote, or created as a parent,
+    is a collision too, under every resolution. The abort comes before the policy
+    touches the directory, so an empty one is not removed under REPLACE."""
+    entries = [("file", "x", b"B")]
+    if parent == "explicit":
+        entries.insert(0, ("dir", "x/", None))
+    else:
+        entries.insert(0, ("file", "x/f", b"A"))
+    dest = tmp_path / "out"
+    with pytest.raises(NameCollisionError) as excinfo:
+        open_and_extract(
+            io.BytesIO(_tar_bytes(entries)),
+            dest,
+            overwrite=overwrite,
+            on_error=OnError.CONTINUE,
+            abort_on={AbortOn.NAME_COLLISION},
+        )
+    assert excinfo.value.member_name == "x"
+    assert (dest / "x").is_dir()
 
 
 def test_abort_on_name_collision_not_triggered_by_a_directory_under_trusted(

@@ -1566,7 +1566,11 @@ class ExtractionResult:
     with, whatever ``overwrite`` then did. ``None`` when no member of this run held the
     name: an entry already on disk before the run started is not counted, and stays in
     ``requested_path``. The member it collided with is the result whose ``path`` equals
-    this, or whose ``requested_path`` does once that result is ``OVERWRITTEN``."""
+    this, or whose ``requested_path`` does once that result is ``OVERWRITTEN``.
+
+    A directory this run wrote, or created as the parent of an earlier member, holds
+    its name too: a file landing on it records the directory's path. A directory that
+    was only created as a parent has no result of its own."""
 
     kept_mode: int | None = None
     """On a ``DIRECTORY`` result whose directory existed before the run, such as the
