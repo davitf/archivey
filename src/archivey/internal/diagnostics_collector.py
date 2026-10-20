@@ -9,8 +9,8 @@ is capped at ``max_retained``. Exact counts are kept as a small fixed per-code `
 Ranged snapshots are computed by differencing a cheap :class:`DiagnosticWatermark` (a
 sequence number plus a per-code count snapshot) against the live counters, and an
 operation's snapshot (a member stream's, an extraction's) comes from its
-:class:`DiagnosticScope`, which its owner holds: a per-code ``Counter`` of its own, and a
-tag on the retained entries. So nothing grows with the number of emitted diagnostics, and
+:class:`DiagnosticScope`, which its owner holds: a per-code count of its own, and a tag on
+the retained entries. So nothing grows with the number of emitted diagnostics, and
 a scope lives as long as its stream or a retained entry that names it.
 """
 

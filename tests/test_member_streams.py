@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gc
 import io
+import sys
 import weakref
 from pathlib import Path
 
@@ -251,7 +252,20 @@ def test_dropped_stream_is_collected_without_reader_close(tmp_path: Path) -> Non
     assert ref() is None
 
 
-@pytest.mark.parametrize("cycle", [False, True], ids=["refcount", "cycle"])
+@pytest.mark.parametrize(
+    "cycle",
+    [
+        pytest.param(
+            False,
+            id="refcount",
+            marks=pytest.mark.skipif(
+                sys.implementation.name == "pypy",
+                reason="PyPy frees an unreferenced object only at its next collection",
+            ),
+        ),
+        pytest.param(True, id="cycle"),
+    ],
+)
 @pytest.mark.parametrize("fmt", ["dir", "zip"])
 def test_dropped_stream_releases_its_lease(
     tmp_path: Path, fmt: str, cycle: bool

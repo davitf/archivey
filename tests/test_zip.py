@@ -3141,8 +3141,8 @@ def test_relative_seek_before_0_after_a_deferred_seek_clamps() -> None:
 
 @pytest.mark.parametrize(
     "method",
-    [zipfile.ZIP_DEFLATED, zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA],
-    ids=["deflate", "bzip2", "lzma"],
+    [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED, zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA],
+    ids=["stored", "deflate", "bzip2", "lzma"],
 )
 def test_member_decoder_config_matches_the_codec_openers_own(
     monkeypatch: pytest.MonkeyPatch, method: int
@@ -3152,7 +3152,9 @@ def test_member_decoder_config_matches_the_codec_openers_own(
     The reader builds the per-member config in one copy, filling the input size
     itself where the opener would. It must equal what the opener derives from the
     reader's base config: an LZMA member's header read moves the body, and the
-    opener then measures the rest, not the whole body.
+    opener then measures the rest, not the whole body. A stored member gets the
+    reader's base member config itself, not a copy: the openers do no config work
+    for a stored stream source.
     """
     import archivey.internal.backends.zip_reader as zip_reader
     from archivey.internal.streams.codecs import open_codec_raw
@@ -3167,6 +3169,10 @@ def test_member_decoder_config_matches_the_codec_openers_own(
     with open_archive(io.BytesIO(buf.getvalue()), format=ArchiveFormat.ZIP) as ar:
 
         def capture(codec: Any, body: Any, *, config: Any, params: Any) -> Any:
+            if method == zipfile.ZIP_STORED:
+                base = ar._member_decoder_config  # type: ignore[attr-defined]
+                seen.append((base, config))
+                return open_codec_raw(codec, body, config=config, params=params)
             expected = _decoder_config(
                 codec,
                 fix_stream_start_position(body),
@@ -3185,4 +3191,7 @@ def test_member_decoder_config_matches_the_codec_openers_own(
         with ar.open("a.txt") as stream:
             assert stream.read() == b"hello" * 100
     ((expected, got),) = seen
-    assert got == expected
+    if method == zipfile.ZIP_STORED:
+        assert got is expected
+    else:
+        assert got == expected

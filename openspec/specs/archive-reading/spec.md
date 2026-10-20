@@ -979,7 +979,7 @@ Lease/token/teardown once-guards and dual-failure `ExceptionGroup` rules:
 | Several open streams + `reader.close()` | All are closed; teardown runs once, after the last |
 | `close()` raises (executing pass/worker) | Reader stays open; member streams untouched |
 | `close()` while a pass is suspended at a yield | Reader closed; yielded stream closed; resuming the pass → `ArchiveyUsageError` |
-| Stream dropped without close | Finalizer reclaims it; the stream must not be kept alive by its own finalizer |
+| Stream dropped without close | `IOBase.__del__` closes it, which releases its lease; nothing the reader or the stream holds may keep it alive |
 | Caller-supplied `BinaryIO`, all closed | Library does not call `close()` on that source |
 | `open_archive()` context exits | Reader closed; any member stream still open is closed with it, then the backend is released |
 | Op after reader close | `ArchiveyUsageError` |
