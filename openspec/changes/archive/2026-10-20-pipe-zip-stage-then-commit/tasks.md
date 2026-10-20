@@ -69,12 +69,12 @@
 
 ## 6. Verify
 
-- [ ] 6.1 Every scenario row in the three delta specs has a test; the changed rows fail
+- [x] 6.1 Every scenario row in the three delta specs has a test; the changed rows fail
       on `main` (`scripts/review_prep.py red-on-base`).
-- [ ] 6.2 `./scripts/check.sh`, `./scripts/test.sh` and `./scripts/test.sh --all-configs`.
-- [ ] 6.3 `openspec validate --strict pipe-zip-stage-then-commit`.
-- [ ] 6.4 Dry-run the archive: apply it on a scratch tree, read the **diff** of
+- [x] 6.2 `./scripts/check.sh`, `./scripts/test.sh` and `./scripts/test.sh --all-configs`.
+- [x] 6.3 `openspec validate --strict pipe-zip-stage-then-commit`.
+- [x] 6.4 Dry-run the archive: apply it on a scratch tree, read the **diff** of
       `openspec/specs/` (not the modified count, which cannot tell an intended edit from
       a deletion), then reset. Every delta here replaces a whole requirement block.
-- [ ] 6.5 `openspec archive pipe-zip-stage-then-commit` in the implementing PR, as its
+- [x] 6.5 `openspec archive pipe-zip-stage-then-commit` in the implementing PR, as its
       last task.

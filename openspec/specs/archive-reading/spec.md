@@ -1163,7 +1163,10 @@ pass keeping the sources of file copies) SHALL keep it in memory only up to a co
 the format spec states, and SHALL charge anything written to temporary storage to the
 same `spool_limits` budget. Such a keep is optional: when the budget has no room it SHALL
 be declined, the read SHALL fall back to decoding again, and nothing SHALL be refused.
-Caller's own buffering of a returned stream is unrestricted.
+Caller's own buffering of a returned stream is unrestricted. This requirement does not
+reach extraction output: the member data `extract_all` stages in the destination for a
+ZIP read from a non-seekable source (`safe-extraction`) is output of the extraction,
+bounded by `ExtractionLimits`, not by `spool_limits`.
 
 #### Scenario: bounded storage matrix
 
@@ -1355,7 +1358,9 @@ has been offered to the selector:
 - `stream_members()` reports at the end of a pass that reached the last member. A pass
   that the caller stops early SHALL NOT report, because a later member could match.
 - `extract_all()` reports before it writes any member when the member list is available
-  without a scan, and otherwise at the end of the pass. Under a `RAISE` disposition the
+  without a scan, and otherwise at the end of the pass. A ZIP read from a non-seekable
+  source has its member list once its central directory has been read, before any
+  member is placed (`safe-extraction`), so it reports then, as the first case does. Under a `RAISE` disposition the
   first case refuses the call before the destination is created. In the second case
   the members already written stay on disk and `DiagnosticRaisedError` replaces the
   report.
@@ -1372,13 +1377,14 @@ again at the end of the pass, on what each member became once the central direct
 was read (its name, where a DOS host makes `\` a separator, and its type). During the
 pass a `str` entry SHALL match every name a member can end with (with `\` as a
 separator or not, with or without a folder's trailing `/`), so the data of any member
-it may select is written while the stream holds it; at the end it selects for good,
-what it no longer takes is removed with no result, and no entry counts as matched
-before then. A member a predicate or the filter left out during the pass SHALL be
-asked about again at the end; taken then, it is written when it needs no bytes the
-stream has passed (a link, a folder, an empty file) and otherwise fails with
+it may select is staged while the stream holds it (`safe-extraction`); at the end it
+selects for good, what it no longer takes is not placed and gets no result, and no
+entry counts as matched before then. A member a predicate left out during the pass
+SHALL be asked about again at the end; taken then, it is placed when it needs no bytes
+the stream has passed (a link, a folder, an empty file) and otherwise fails with
 `ExtractionError`. A predicate is therefore called twice for every member, and reads
-`member_state_final` as `False` on the first call.
+`member_state_final` as `False` on the first call. The `filter` SHALL NOT run during
+the pass: it is called once per member, at placement, on the final member.
 
 #### Scenario: selector matrix
 
@@ -1393,8 +1399,9 @@ stream has passed (a link, a folder, an empty file) and otherwise fails with
 | `ArchiveMember` from another reader | Nothing selected; `MEMBER_SELECTOR_UNMATCHED` with `entry_kind="member"` |
 | `extract_all(members=["typo.txt"])` on ZIP with `MEMBER_SELECTOR_UNMATCHED` set to `RAISE` | `DiagnosticRaisedError` before any member is written |
 | `extract_all(members=["docs/r.txt"])` on a ZIP from a pipe whose DOS-host entry stores `docs\r.txt` | `docs/r.txt` extracted, as from a file; `members=["docs\\r.txt"]` selects nothing, as from a file |
-| `extract_all(filter=...)` taking only names under `docs/`, the same archive from a pipe, on POSIX | `docs/r.txt` `FAILED` with `ExtractionError`: the filter saw `docs\r.txt` during the pass, and its data has gone by at the end |
+| `extract_all(filter=...)` taking only names under `docs/`, the same archive from a pipe | `docs/r.txt` extracted, as from a file: the filter sees only the final name |
 | `extract_all(members=["a.txt", "typo.txt"])` on TAR with the code set to `RAISE` | `a.txt` written, then `DiagnosticRaisedError`; no report |
+| The same call on a ZIP from a pipe | `DiagnosticRaisedError` before any member is placed, as from a file; nothing of the run in the destination |
 | `extract_all(members=["typo.txt", "a.txt"])` on a listing that ends in damage after `a.txt`, code set to `RAISE` | `a.txt` written, then the listing's error; no `MEMBER_SELECTOR_UNMATCHED` |
 
 ### Requirement: Honour detection payload_offset at open

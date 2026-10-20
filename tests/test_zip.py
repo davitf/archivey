@@ -923,8 +923,8 @@ def test_trusted_applies_the_directory_owner_from_a_pipe(
     piped: bool,
 ) -> None:
     # Runs without root: it records what extraction hands to the metadata step, the
-    # one that chowns as root. From a pipe the write carries no owner and the end of
-    # the pass carries the directory's, so the last owner applied is a file read's.
+    # one that chowns as root. From a pipe the member is placed once the directory
+    # is read, so the only owner applied is the directory's, as from a file.
     from archivey.internal.extraction import ExtractionCoordinator
 
     applied: list[tuple[int | None, int | None]] = []
@@ -940,9 +940,7 @@ def test_trusted_applies_the_directory_owner_from_a_pipe(
     source = NonSeekableBytesIO(data) if piped else io.BytesIO(data)
     with open_archive(source, streaming=piped) as ar:
         ar.extract_all(tmp_path / "out", policy=ExtractionPolicy.TRUSTED)
-    if piped:
-        assert applied[0] == (None, None)
-    assert applied[-1] == owner
+    assert applied == [owner]
 
 
 @pytest.mark.skipif(
