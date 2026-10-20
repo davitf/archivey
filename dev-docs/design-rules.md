@@ -725,6 +725,8 @@ breaks no one ("no need to delay until after release", 2026-09-27).
 - `extract_all(config=)` dropped because the reader already has a config.
 - The seven string enums became `StrEnum` (PR 639).
 - Leftover compressed input raises before 0.2.0 rather than after (DR-3).
+- `crc32_digest` made private: callers only read `member.hashes`, and comparing their
+  own CRC is `zlib.crc32(data).to_bytes(4, "big")` (2026-10-20, PR 896).
 
 In several of these the maintainer went further than the recommendation, toward
 removal.

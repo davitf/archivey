@@ -48,13 +48,8 @@ from archivey.exceptions import (
     TruncatedError,
 )
 from archivey.internal.base_reader import BaseArchiveReader
-from archivey.internal.extraction import (
-    _CHUNK,
-    BombTracker,
-    ExtractionCoordinator,
-    _AlwaysStopExtractionError,
-    _AlwaysStopResourceLimitError,
-)
+from archivey.internal.bomb_tracker import AlwaysStopResourceLimitError, BombTracker
+from archivey.internal.extraction import _CHUNK, ExtractionCoordinator
 from archivey.internal.filters import (
     POLICY_TRANSFORMS,
     apply_name_policy,
@@ -63,6 +58,7 @@ from archivey.internal.filters import (
     transform_standard,
     transform_strict,
 )
+from archivey.internal.link_watch import LinkWatch
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.types import ArchiveFormat, ArchiveInfo, ArchiveMember, MemberType
 from tests.conftest import case_sensitive
@@ -428,7 +424,7 @@ def test_cumulative_byte_limit() -> None:
     t = BombTracker(max_bytes=100, max_ratio=1e9)
     t.start_member(_member("f"))
     t.count(60)
-    with pytest.raises(_AlwaysStopResourceLimitError):
+    with pytest.raises(AlwaysStopResourceLimitError):
         t.count(50)  # crosses 100
 
 
@@ -437,7 +433,7 @@ def test_per_member_ratio() -> None:
     t.start_member(_member("f").replace(compressed_size=1))
     with pytest.raises(ResourceLimitError) as ei:
         t.count(20)  # member_bytes 20 > floor 10, ratio 20:1 > 2
-    assert not isinstance(ei.value, _AlwaysStopResourceLimitError)  # skippable
+    assert not isinstance(ei.value, AlwaysStopResourceLimitError)  # skippable
     assert not isinstance(ei.value, ExtractionError)
 
 
@@ -458,7 +454,7 @@ def test_archive_wide_ratio() -> None:
         ),
     )
     t.start_member(_member("f"))  # no per-member compressed_size
-    with pytest.raises(_AlwaysStopResourceLimitError):
+    with pytest.raises(AlwaysStopResourceLimitError):
         t.count(30)  # total 30 > floor 10, 30/10 = 3 > 2
 
 
@@ -475,7 +471,7 @@ def test_archive_wide_ratio_live_denominator() -> None:
         live_ratio_activation_threshold=10,
     )
     t.start_member(_member("f"))
-    with pytest.raises(_AlwaysStopResourceLimitError):
+    with pytest.raises(AlwaysStopResourceLimitError):
         t.count(30)  # total 30 > floor 10, live 30/10 = 3 > 2
 
 
@@ -495,7 +491,7 @@ def test_live_ratio_waits_for_its_own_floor() -> None:
     t.count(90)  # 90:10 is 9:1, but output is still under the live floor
     source.compressed_bytes_consumed = 60  # the data after the blank start arrives
     t.count(20)  # past the floor: 110:60 is under 2:1
-    with pytest.raises(_AlwaysStopResourceLimitError, match="Live decompression"):
+    with pytest.raises(AlwaysStopResourceLimitError, match="Live decompression"):
         t.count(30)  # 140:60 is over 2:1
 
 
@@ -522,7 +518,7 @@ def test_live_ratio_default_floor() -> None:
         )
         t.start_member(_member("f"))
         if trips:
-            with pytest.raises(_AlwaysStopResourceLimitError, match="Live"):
+            with pytest.raises(AlwaysStopResourceLimitError, match="Live"):
                 t.count(output)
         else:
             t.count(output)
@@ -549,7 +545,7 @@ def test_recorded_size_refuses_a_member_before_its_data() -> None:
     t.start_member(_member("f").replace(size=21, compressed_size=10))
     with pytest.raises(ResourceLimitError, match="from recorded sizes") as ei:
         t.check_recorded_size()
-    assert not isinstance(ei.value, _AlwaysStopResourceLimitError)
+    assert not isinstance(ei.value, AlwaysStopResourceLimitError)
     assert t.total_bytes == 0
 
 
@@ -582,7 +578,7 @@ def test_recorded_size_leaves_the_archive_wide_ratio_to_count() -> None:
     )
     t.start_member(_member("f").replace(size=1000))
     t.check_recorded_size()
-    with pytest.raises(_AlwaysStopResourceLimitError, match="Archive-wide"):
+    with pytest.raises(AlwaysStopResourceLimitError, match="Archive-wide"):
         t.count(1000)
 
 
@@ -590,18 +586,15 @@ def test_max_entries_guard() -> None:
     t = BombTracker(max_bytes=10**12, max_ratio=1e9, max_entries=2)
     t.start_member(_member("a"))
     t.start_member(_member("b"))
-    with pytest.raises(_AlwaysStopResourceLimitError):
+    with pytest.raises(AlwaysStopResourceLimitError):
         t.start_member(_member("c"))
 
 
 def test_entry_count_independent_of_bytes() -> None:
     t = BombTracker(max_bytes=10**12, max_ratio=1e9, max_entries=1)
     t.start_member(_member("a"))
-    with pytest.raises(_AlwaysStopResourceLimitError):
+    with pytest.raises(AlwaysStopResourceLimitError):
         t.start_member(_member("b"))  # trips on count, not bytes
-
-    # Alias still resolves for older imports.
-    assert _AlwaysStopExtractionError is _AlwaysStopResourceLimitError
 
 
 def test_bomb_tracker_member_bytes_mirrors_count() -> None:
@@ -2545,7 +2538,7 @@ def test_copied_bytes_count_toward_the_byte_cap_but_not_the_ratio() -> None:
     t.count_copy(4000, at_link_limit=False)  # copied: would be ratio 400 if counted
     t.count(1)  # the next decoded chunk re-checks the ratio on decoded bytes only
     assert t.total_bytes == 4016
-    with pytest.raises(_AlwaysStopResourceLimitError, match="max_extracted_bytes"):
+    with pytest.raises(AlwaysStopResourceLimitError, match="max_extracted_bytes"):
         t.count_copy(1000, at_link_limit=False)
 
 
@@ -2563,7 +2556,7 @@ def test_link_limit_copies_count_toward_the_archive_wide_ratio() -> None:
     t.start_member(_member("link").replace(compressed_size=1))
     t.count_copy(15, at_link_limit=True)  # ratio 1.5 archive-wide; 15:1 per member
     with pytest.raises(
-        _AlwaysStopResourceLimitError,
+        AlwaysStopResourceLimitError,
         match=r"\(0 bytes decoded, plus 25 bytes copied for hard links",
     ):
         t.count_copy(10, at_link_limit=True)
@@ -2889,6 +2882,42 @@ def test_orphan_first_link_skipped_writes_to_next(tmp_path: Path) -> None:
         dest / "L2.txt"
     ).read_bytes() == b"hello world"  # content moved to next link
     assert not (dest / "A.txt").exists()  # excluded source never materialized by name
+
+
+def test_orphan_link_failing_after_the_content_was_placed_fails_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The second pass writes the excluded source's content at L1, then links L2 to
+    # it. A failure linking L2 is L2's own: L1's content is on disk, so L1 stays
+    # EXTRACTED and no failure group joins the two.
+    src = _orphan_tar(tmp_path, ["L1.txt", "L2.txt"])
+    dest = tmp_path / "out"
+    calls: list[str] = []
+    resolve = ExtractionCoordinator._resolve_collision
+
+    def fail_in_second_pass(
+        self: ExtractionCoordinator, original: ArchiveMember, *args: object
+    ) -> object:
+        # L2's destination is resolved once in each pass.
+        calls.append(original.name)
+        if original.name == "L2.txt" and calls.count("L2.txt") == 2:
+            raise OSError(errno.EIO, "injected")
+        return resolve(self, original, *args)
+
+    monkeypatch.setattr(
+        ExtractionCoordinator, "_resolve_collision", fail_in_second_pass
+    )
+    with open_archive(src) as r:
+        results = r.extract_all(
+            dest, members=["L1.txt", "L2.txt"], on_error=OnError.CONTINUE
+        ).results
+
+    by_name = {res.member.name: res for res in results}
+    assert by_name["L1.txt"].status is ExtractionStatus.EXTRACTED
+    assert (dest / "L1.txt").read_bytes() == b"hello world"
+    assert calls.count("L2.txt") == 2
+    assert by_name["L2.txt"].status is ExtractionStatus.FAILED
+    assert by_name["L2.txt"].failure_group_id is None
 
 
 def test_orphan_all_links_skipped_writes_nothing(tmp_path: Path) -> None:
@@ -4994,6 +5023,10 @@ def test_anti_delete_releases_the_collision_claim(tmp_path: Path) -> None:
         dest=dest,
         dest_root=dest.resolve(),
         tracker=BombTracker(None, None),
+        # An anti-item does not read the reader. It writes to the link watch only
+        # when it removes a symlink, and these remove none, so a fresh one is enough.
+        reader=cast("BaseArchiveReader", SimpleNamespace()),
+        links=LinkWatch(dest.resolve(), None),
         written_paths=written_paths,
         collision_map=collision_map,
     )
@@ -5023,6 +5056,10 @@ def test_anti_no_op_leaves_an_unrelated_claim_alone(tmp_path: Path) -> None:
         dest=dest,
         dest_root=dest.resolve(),
         tracker=BombTracker(None, None),
+        # An anti-item does not read the reader. It writes to the link watch only
+        # when it removes a symlink, and these remove none, so a fresh one is enough.
+        reader=cast("BaseArchiveReader", SimpleNamespace()),
+        links=LinkWatch(dest.resolve(), None),
         written_paths=set(),
         collision_map=collision_map,
     )
@@ -5057,6 +5094,10 @@ def test_anti_item_finds_a_case_variant_through_the_collision_map(
         dest=dest,
         dest_root=dest.resolve(),
         tracker=BombTracker(None, None),
+        # An anti-item does not read the reader. It writes to the link watch only
+        # when it removes a symlink, and these remove none, so a fresh one is enough.
+        reader=cast("BaseArchiveReader", SimpleNamespace()),
+        links=LinkWatch(dest.resolve(), None),
         written_paths=written_paths,
         collision_map=collision_map,
     )
@@ -5092,6 +5133,10 @@ def test_anti_item_is_exact_under_trusted(tmp_path: Path) -> None:
         dest=dest,
         dest_root=dest.resolve(),
         tracker=BombTracker(None, None),
+        # An anti-item does not read the reader. It writes to the link watch only
+        # when it removes a symlink, and these remove none, so a fresh one is enough.
+        reader=cast("BaseArchiveReader", SimpleNamespace()),
+        links=LinkWatch(dest.resolve(), None),
         written_paths=written_paths,
         collision_map=collision_map,
     )
@@ -5128,6 +5173,10 @@ def test_anti_item_prefers_the_exact_directory_it_names(tmp_path: Path) -> None:
         dest=dest,
         dest_root=dest.resolve(),
         tracker=BombTracker(None, None),
+        # An anti-item does not read the reader. It writes to the link watch only
+        # when it removes a symlink, and these remove none, so a fresh one is enough.
+        reader=cast("BaseArchiveReader", SimpleNamespace()),
+        links=LinkWatch(dest.resolve(), None),
         written_paths=written_paths,
         collision_map=collision_map,
     )

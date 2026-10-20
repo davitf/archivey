@@ -338,7 +338,15 @@ def step_over_directory(
             header = fixed(pos, 12)
             if len(header) != 12:
                 return None, pos
-            pos += 12 + struct.unpack_from("<Q", header, 4)[0]
+            declared = struct.unpack_from("<Q", header, 4)[0]
+            # The field is how many bytes follow these twelve. A value that does not
+            # fit is the stream ending inside the record, which
+            # ``missing_end_record_error`` reports. Stepping to it would seek an
+            # offset the stream does not have, and a value past 2**63-1 does not
+            # fit in a seek.
+            if declared > file_size - pos - 12:
+                return None, pos
+            pos += 12 + declared
         elif sig == ZIP64_LOCATOR_SIGNATURE:
             pos += ZIP64_LOCATOR_SIZE
         else:

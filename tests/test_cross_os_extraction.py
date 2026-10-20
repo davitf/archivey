@@ -21,6 +21,8 @@ import tempfile
 import zipfile
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -38,7 +40,9 @@ from archivey.exceptions import (
     ResourceLimitError,
 )
 from archivey.internal import extraction, long_paths
+from archivey.internal.base_reader import BaseArchiveReader
 from archivey.internal.filters import apply_name_policy
+from archivey.internal.link_watch import LinkWatch
 from archivey.types import ArchiveMember, MemberType
 from tests.extract_util import lock_directories_at_once, open_and_extract
 
@@ -609,8 +613,8 @@ def test_anti_item_removes_a_read_only_file_this_run_wrote(
 ) -> None:
     """Driven on the coordinator, as the anti-item tests in test_extraction.py are: no
     test archive of ours carries an anti-item after a read-only file."""
+    from archivey.internal.bomb_tracker import BombTracker
     from archivey.internal.extraction import (
-        BombTracker,
         ExtractionCoordinator,
         _Claim,
         _RunState,
@@ -627,6 +631,9 @@ def test_anti_item_removes_a_read_only_file_this_run_wrote(
         dest=dest,
         dest_root=dest.resolve(),
         tracker=BombTracker(None, None),
+        # An anti-item does not read the reader.
+        reader=cast("BaseArchiveReader", SimpleNamespace()),
+        links=LinkWatch(dest.resolve(), None),
         written_paths={written},
         collision_map={"f": _Claim(written, 0, written)},
     )
@@ -702,8 +709,8 @@ def test_anti_item_removes_a_read_only_directory_this_run_wrote(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Driven on the coordinator, as the file case above is."""
+    from archivey.internal.bomb_tracker import BombTracker
     from archivey.internal.extraction import (
-        BombTracker,
         ExtractionCoordinator,
         _RunState,
     )
@@ -718,6 +725,9 @@ def test_anti_item_removes_a_read_only_directory_this_run_wrote(
         dest=dest,
         dest_root=dest.resolve(),
         tracker=BombTracker(None, None),
+        # An anti-item does not read the reader.
+        reader=cast("BaseArchiveReader", SimpleNamespace()),
+        links=LinkWatch(dest.resolve(), None),
         written_paths={written},
     )
     anti = ArchiveMember(type=MemberType.ANTI, name="d")

@@ -191,6 +191,21 @@ def test_member_streams_is_demoted_from_the_surface(tmp_path) -> None:
         assert not hasattr(ar, "member_streams")
 
 
+def test_crc32_digest_is_internal() -> None:
+    """The CRC encoder for ``member.hashes`` left the public surface before 0.2.0.
+
+    Callers only read ``hashes``; comparing their own CRC is
+    ``zlib.crc32(data).to_bytes(4, "big")``. 0.2.0rc1 exported it from the root and
+    ``archivey.types``; neither may again.
+    """
+    from archivey.internal.hashing import crc32_digest
+
+    assert crc32_digest(0x1234) == b"\x00\x00\x12\x34"
+    assert "crc32_digest" not in archivey.__all__
+    assert not hasattr(archivey, "crc32_digest")
+    assert not hasattr(archivey.types, "crc32_digest")
+
+
 def test_io_measurement_is_not_public() -> None:
     """IO counters serve the benchmark harness and the CLI's ``--track-io`` only.
 

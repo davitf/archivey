@@ -1,4 +1,4 @@
-"""The extraction coordinator and decompression-bomb tracker.
+"""The extraction coordinator.
 
 ``ExtractionCoordinator`` is a **pull-based sink**: it drives the reader
 (``members_report_if_available()``, ``_iter_with_data()``, ``compressed_source_size``) and
@@ -26,13 +26,12 @@ import errno
 import io
 import os
 import posixpath
-import shutil
 import stat
 import tempfile
 import uuid
 from collections.abc import Callable, Collection, Iterator
 from dataclasses import dataclass, field, replace
-from pathlib import Path, PurePath
+from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, assert_never, cast
 
 from archivey.config import ExtractionLimits
@@ -46,10 +45,15 @@ from archivey.exceptions import (
     LinkTargetNotFoundReason,
     NameCollisionError,
     NameRewrittenError,
-    ResourceLimitError,
     _UsageTypeError,
 )
 from archivey.internal.base_reader import MAX_LINK_TARGET_BYTES
+from archivey.internal.bomb_tracker import (
+    AlwaysStopResourceLimitError,
+    BombTracker,
+    CopyCounter,
+)
+from archivey.internal.dry_run import DryRun, scratch_for
 from archivey.internal.file_copy_pass import FileCopyPass
 from archivey.internal.filters import (
     POLICY_TRANSFORMS,
@@ -106,10 +110,6 @@ _TMP_PREFIX = ".archivey-tmp-"
 
 # The fields ``_apply_metadata`` puts on disk.
 _APPLIED_METADATA = ("uid", "gid", "mode", "modified")
-
-# Prefix of the private scratch directory a dry run extracts into (see
-# ``ExtractionCoordinator.run``). Removed when the run ends, like the temp files above.
-_DRY_RUN_PREFIX = "archivey-dry-run-"
 
 
 # A module attribute, not ``os.name`` at each use, so a test can take the Windows path
@@ -271,69 +271,9 @@ def _is_regular_file(path: Path) -> bool:
         return False
 
 
-def _scratch_tree(
-    root: Path,
-) -> tuple[tuple[tuple[str, bool], ...], tuple[tuple[str, str], ...]] | None:
-    """Every entry under ``root``, as (its path relative to ``root`` with ``/``
-    separators, whether it is a directory and not a symlink), and every symlink, as
-    (that path, its target), each sorted; ``None`` when part of the tree could not be
-    read.
-
-    Directories are listed without following links. A directory that cannot be listed,
-    or a link that cannot be read, makes the whole record ``None`` rather than leaving
-    it out: the CLI's hoist keeps a tree it could not fully walk, and a partial record
-    would let the prediction move it.
-    """
-    found = []
-    links = []
-    pending = [root]
-    try:
-        while pending:
-            directory = pending.pop()
-            # Listed in the long-path form, so a deep directory can be read; each
-            # entry's path is named plain again to be placed under ``root``.
-            with os.scandir(long_path(directory)) as entries:
-                for entry in entries:
-                    path = Path(plain(entry.path))
-                    rel = path.relative_to(root).as_posix()
-                    is_dir = entry.is_dir(follow_symlinks=False)
-                    found.append((rel, is_dir))
-                    if entry.is_symlink():
-                        links.append((rel, plain(os.readlink(entry.path))))
-                    elif is_dir:
-                        pending.append(path)
-    except OSError:
-        return None
-    return tuple(sorted(found)), tuple(sorted(links))
-
-
 def _file_identity(st: os.stat_result) -> tuple[int, int, int, int]:
     """What says a file is still the one this run wrote: its inode, size and mtime."""
     return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
-
-
-def _remove_scratch(root: Path) -> None:
-    """Remove a dry run's scratch directory, whatever modes the archive gave its entries.
-
-    A stored mode can leave a directory unwritable (or unreadable), and a file read-only,
-    which Windows refuses to unlink. Each real entry is opened up first; symlinks are
-    skipped, never followed. A failure is logged rather than raised: the run's own
-    outcome is what the caller needs to see.
-    """
-    try:
-        # In the long-path form throughout, so the walk can reach a deep entry.
-        top = long_path(root)
-        os.chmod(top, 0o700)
-        for parent, dirnames, filenames in os.walk(top):
-            for name in (*dirnames, *filenames):
-                path = os.path.join(parent, name)
-                if not os.path.islink(path):
-                    os.chmod(path, 0o700 if name in dirnames else 0o600)
-        shutil.rmtree(top)
-    except OSError as exc:
-        logger.warning(
-            "Could not remove dry-run scratch directory %r: %s", str(root), exc
-        )
 
 
 def _open_new_file(path: Path, mode: int) -> int:
@@ -385,264 +325,6 @@ class _PassedData(io.RawIOBase):
 def _passed_data(error: ArchiveyError) -> BinaryIO:
     """A ``_PassedData`` that raises ``error``, as the member stream it stands in for."""
     return cast("BinaryIO", _PassedData(error))
-
-
-class _AlwaysStopResourceLimitError(ResourceLimitError):
-    """A cumulative/global bomb guard: halts extraction even under ``OnError.CONTINUE``.
-
-    A subclass of ``ResourceLimitError`` so callers catching that type (or
-    ``ArchiveyError``) still catch it; the coordinator uses the type to distinguish it
-    from a *skippable* per-member ratio failure.
-    """
-
-
-# Backward-compatible alias used by older tests/imports.
-_AlwaysStopExtractionError = _AlwaysStopResourceLimitError
-
-
-class _CopyCounter:
-    """Counts the chunks ``_copy_to_fileobj`` writes as a copy of bytes this run
-    already wrote (``BombTracker.count_copy``), not as decoded output."""
-
-    __slots__ = ("_tracker",)
-
-    def __init__(self, tracker: BombTracker) -> None:
-        self._tracker = tracker
-
-    def count(self, chunk_bytes: int) -> None:
-        self._tracker.count_copy(chunk_bytes, at_link_limit=False)
-
-
-class BombTracker:
-    """Cumulative byte / per-member ratio / archive-wide ratio / entry-count guards.
-
-    Constructed once per extraction call. ``start_member()`` is called (with the
-    **original** member) before each member; ``count()`` is called with each chunk
-    written.
-    """
-
-    def __init__(
-        self,
-        max_bytes: int | None,
-        max_ratio: float | None,
-        # The defaults come from ExtractionLimits, the one place the limits are set.
-        ratio_activation_threshold: int = ExtractionLimits.ratio_activation_threshold,
-        max_entries: int | None = ExtractionLimits.max_entries,
-        *,
-        source: BaseArchiveReader | None = None,
-        live_ratio_activation_threshold: int = (
-            ExtractionLimits.live_ratio_activation_threshold
-        ),
-    ) -> None:
-        self._max_bytes = max_bytes
-        self._max_ratio = max_ratio
-        self._ratio_floor = ratio_activation_threshold
-        self._live_ratio_floor = live_ratio_activation_threshold
-        # Archive-wide ratio denominators, taken from the reader so the coordinator just
-        # hands over the source: the static outer compressed size when it is cheaply known
-        # (captured once), otherwise a LIVE sample of the compressed bytes consumed from the
-        # source (read fresh on each count(), since it grows as extraction proceeds).
-        self._source = source
-        self._compressed_source_size = (
-            source.compressed_source_size if source is not None else None
-        )
-        self._max_entries = max_entries
-        self._entry_count = 0
-        self._total_bytes = 0  # decoded output, cumulative across all members
-        # Bytes copied from a file this run already wrote (the hardlink copy fallback).
-        # They count toward the byte cap. The part copied at the filesystem's link-count
-        # limit also counts toward the archive-wide ratio (``count_copy``).
-        self._copied_bytes = 0
-        self._link_limit_copied_bytes = 0
-        self._member_bytes = 0  # output bytes for the current member
-        self._member: ArchiveMember | None = None
-        # Output of members a streaming pass wrote and then took back as superseded (see
-        # ``refund``). Subtracted for the byte cap only.
-        self._refunded_bytes = 0
-
-    @property
-    def total_bytes(self) -> int:
-        """Every byte written to the destination, decoded or copied."""
-        return self._total_bytes + self._copied_bytes
-
-    @property
-    def member_bytes(self) -> int:
-        return self._member_bytes
-
-    def start_member(self, member: ArchiveMember) -> None:
-        # Called with the ORIGINAL member (not a filter copy), so compressed_size and any
-        # late-bound fields are accurate. Increments the entry-count guard, which — like
-        # the cumulative byte guard — halts even under OnError.CONTINUE.
-        self._member = member
-        self._member_bytes = 0
-        self._entry_count += 1
-        if self._max_entries is not None and self._entry_count > self._max_entries:
-            raise _AlwaysStopResourceLimitError(
-                f"Entry-count limit reached: max_entries={self._max_entries} "
-                f"(would write entry {self._entry_count})"
-            )
-
-    def refund(self, member_bytes: int) -> None:
-        """Stop counting one member that a streaming pass took back as superseded.
-
-        Random access never writes a shadowed duplicate, so it never counts one
-        (``safe-extraction``: no bomb-limit counting for the skip). A streaming pass
-        wrote it before it could know, and its entry is gone from the destination once
-        the later copy replaces it, so the entry count stops counting it. Its bytes are
-        gone too unless a hardlink made to it still holds them, so the caller passes
-        ``member_bytes`` as 0 in that case and the byte cap keeps them. The archive-wide
-        ratio counts them either way: those bytes were decoded, and a name repeated many
-        times must not decode for free. ``total_bytes``, which progress reports, is not
-        reduced: it counts what was written.
-        """
-        self._entry_count -= 1
-        self._refunded_bytes += member_bytes
-
-    def check_recorded_size(self) -> None:
-        """Refuse the current member before its data is read, when its recorded size
-        is over the per-member ratio.
-
-        Called once the member is about to be decoded, after every check that could
-        still skip it, so a member that would not be decoded is never refused here.
-        A member's output never passes its recorded size: the member stream refuses
-        a byte past it (``CorruptionError``). So a member whose recorded size is over
-        the per-member ratio is one ``count()`` would refuse after decoding past the
-        activation threshold, and it is refused now instead, with the same skippable
-        error. The one difference is a member whose data stops short of its recorded
-        size: ``count()`` might never refuse it, and the read would fail as damaged
-        instead. Both fail that member alone.
-
-        The archive-wide ratios are left to ``count()``. Refusing early on the archive's
-        recorded sizes would stop the whole run on a size nothing has verified, losing
-        the intact members after a damaged one; and ``count()`` already stops at the
-        chunk that crosses the archive-wide limit, so an early check would save little.
-        ``count()`` still runs on every chunk.
-        """
-        member = self._member
-        if self._max_ratio is None or member is None:
-            return
-        size = member.size
-        cs = member.compressed_size
-        if size is None or not cs or cs <= 0:
-            return
-        if size > max(self._ratio_floor, self._max_ratio * cs):
-            raise ResourceLimitError(
-                f"Decompression ratio {size / cs:.0f}:1 exceeds limit "
-                f"max_ratio={self._max_ratio:.0f}:1 (from recorded sizes: "
-                f"{size} bytes from {cs} compressed)",
-                member_name=member.name,
-            )
-
-    def count(self, chunk_bytes: int) -> None:
-        """Count a chunk that is about to be written; raise instead if it may not be."""
-        self._check_cumulative_bytes(chunk_bytes)
-        self._total_bytes += chunk_bytes
-        self._member_bytes += chunk_bytes
-
-        # Per-member ratio: activates on THIS member's output; a per-member failure
-        # (skippable under OnError.CONTINUE).
-        member = self._member
-        cs = member.compressed_size if member is not None else None
-        if (
-            self._max_ratio is not None
-            and member is not None
-            and self._member_bytes > self._ratio_floor
-            and cs
-            and cs > 0
-        ):
-            ratio = self._member_bytes / cs
-            if ratio > self._max_ratio:
-                raise ResourceLimitError(
-                    f"Decompression ratio {ratio:.0f}:1 exceeds limit "
-                    f"max_ratio={self._max_ratio:.0f}:1",
-                    member_name=member.name,
-                )
-        self._check_archive_ratio()
-
-    def count_copy(self, chunk_bytes: int, *, at_link_limit: bool) -> None:
-        """Count bytes copied from a file this run already wrote, not decoded.
-
-        A hard link that cannot be made writes a second full copy of content already
-        on disk: across a device boundary, or past the filesystem's link-count limit.
-        Those bytes land on the filesystem, so they count toward ``max_extracted_bytes``
-        like any other write.
-
-        A copy made at the link-count limit (``at_link_limit``) also counts toward the
-        archive-wide ratio. The archive drives it: one that declares enough links to
-        one member makes a copy per limit's worth of links, so a small archive could
-        otherwise write far more than its size while staying under the byte cap, which
-        is the case the ratio exists for (maintainer ruling, 2026-10-07). A
-        cross-device copy does not: whether it happens depends on where the caller
-        extracts to, not on the archive. Neither counts toward the per-member ratio,
-        since a link member's compressed size says nothing about the copy's size.
-
-        A streaming pass that writes a member again from its own earlier copy, once
-        the archive's directory changed the member (``_redo_revised_member``), counts
-        it here too: nothing is decoded a second time.
-        """
-        self._check_cumulative_bytes(chunk_bytes)
-        self._copied_bytes += chunk_bytes
-        if at_link_limit:
-            self._link_limit_copied_bytes += chunk_bytes
-            self._check_archive_ratio()
-
-    def _check_cumulative_bytes(self, chunk_bytes: int) -> None:
-        """Cumulative byte guard (always-stop), checked before ``chunk_bytes`` is written.
-
-        Both callers count a chunk before they write it, so a refused chunk never
-        reaches the destination and is not counted. The message says what is on disk
-        and what the refused write would have made it.
-        """
-        written = self.total_bytes - self._refunded_bytes
-        would_be = written + chunk_bytes
-        if self._max_bytes is not None and would_be > self._max_bytes:
-            raise _AlwaysStopResourceLimitError(
-                f"Extraction limit reached: max_extracted_bytes={self._max_bytes} "
-                f"(written {written} bytes; the next {chunk_bytes}-byte chunk would "
-                f"make {would_be})"
-            )
-
-    def _check_archive_ratio(self) -> None:
-        # Archive-wide ratio: activates on CUMULATIVE output; a whole-archive bomb signal
-        # (always-stop). Uses the static outer compressed size when it is cheaply known,
-        # otherwise a LIVE denominator — the compressed bytes consumed from the source so
-        # far — which works for a streaming/pipe source whose total size is unknown. The two
-        # are mutually exclusive (static when known, live otherwise), so the ratio is never
-        # counted twice.
-        css = self._compressed_source_size
-        # Decoded output plus the copies made at the link-count limit (``count_copy``).
-        output = self._total_bytes + self._link_limit_copied_bytes
-        # Says which part was not decoded, so a trip on a store-only archive with many
-        # hard links is not read as a decompression bomb.
-        copies = self._link_limit_copied_bytes
-        detail = (
-            f" ({self._total_bytes} bytes decoded, plus {copies} bytes copied for hard "
-            f"links past the filesystem's link-count limit)"
-            if copies
-            else ""
-        )
-        if self._max_ratio is not None and output > self._ratio_floor:
-            if css and css > 0:
-                if output / css > self._max_ratio:
-                    raise _AlwaysStopResourceLimitError(
-                        f"Archive-wide decompression ratio "
-                        f"{output / css:.0f}:1 exceeds limit "
-                        f"max_ratio={self._max_ratio:.0f}:1{detail}"
-                    )
-            elif self._source is not None and output > self._live_ratio_floor:
-                # The live denominator is what has been read so far, so a blank run at
-                # the start of the source reads far above the ratio it will end at once
-                # the data after it arrives. Waiting for the live floor lets such a start
-                # pass as it does when the whole size is known; once a pipe is read to
-                # its end, ``consumed`` is that whole size and this check matches the
-                # static one (codec-layer re-reads elsewhere only make it larger).
-                consumed = self._source.compressed_bytes_consumed
-                if consumed and consumed > 0 and output / consumed > self._max_ratio:
-                    raise _AlwaysStopResourceLimitError(
-                        f"Live decompression ratio "
-                        f"{output / consumed:.0f}:1 exceeds limit "
-                        f"max_ratio={self._max_ratio:.0f}:1{detail}"
-                    )
 
 
 def _report_stored_spelling(
@@ -730,7 +412,7 @@ class _Orphan:
     the on-disk identity (mode, timestamps) when the source's content is materialized at
     this link's path (see the ``safe-extraction`` "copy supplies the identity" rule).
     ``spelled_from`` is ``transformed`` before its disk spelling, when that differs, so
-    an error names it as the first pass would (``_report_stored_spelling``).
+    an error names it as the first pass would (``_MemberState.spelled_from``).
     """
 
     result_index: int
@@ -740,19 +422,12 @@ class _Orphan:
     source: ArchiveMember
     spelled_from: ArchiveMember | None = None
 
-    def report_stored_spelling(self, exc: ArchiveyError | OSError) -> None:
-        if isinstance(exc, ArchiveyError) and self.spelled_from is not None:
-            _report_stored_spelling(exc, self.transformed, self.spelled_from)
-
 
 @dataclass(frozen=True)
 class _Claim:
-    """A destination claimed by a member written this run.
-
-    The path alone was enough while a collision only had to be *detected*; recording the
-    claiming member's result index as well is what lets a later ``REPLACE`` collision
-    revise the earlier result to ``OVERWRITTEN`` instead of leaving two members both
-    reporting ``EXTRACTED`` at one path.
+    """A destination claimed by a member written this run, with the index of that
+    member's result. A later ``REPLACE`` onto the destination revises that result to
+    ``OVERWRITTEN``.
 
     ``physical`` is where the claimed file was when it was claimed, with every parent
     resolved. The key is taken from it, and a collision is routed to it. ``path`` can
@@ -775,10 +450,10 @@ class _RunState:
     dest: Path
     dest_root: Path
     tracker: BombTracker
-    # The reader being extracted from, for the one read ``_transform`` makes on it:
-    # an accepted link's target.
-    reader: BaseArchiveReader | None = None
-    forward_only: bool = False
+    reader: BaseArchiveReader
+    # The symlinks this run created and the paths each one's resolution depends on,
+    # so a later member that changes such a path gets them rechecked.
+    links: LinkWatch
     # Progress totals; see ``_run``.
     members_total: int | None = None
     total_estimate: int | None = None
@@ -866,9 +541,6 @@ class _RunState:
     # for (a selector or filter excluded them): member id -> whether the policy would
     # refuse it.
     refusals: dict[int, bool] = field(default_factory=dict)
-    # The symlinks this run created and the paths each one's resolution depends on,
-    # so a later member that changes such a path gets them rechecked.
-    links: LinkWatch | None = None
     # Where the platform has two kinds of symlink (``_DIRECTORY_LINKS``): each symlink
     # this run created -> the target it was created with and whether it was made a
     # directory link, so the end of the run can remake one whose target turned out
@@ -924,8 +596,8 @@ class _RunState:
 class _MemberState:
     """What the member being handled shares with its write path, in both directions.
 
-    ``_run_pass`` builds a new one per member, and one for the orphan second pass,
-    so nothing carries over.
+    The pass builds a new one per member, and the second pass one per orphaned
+    source and one per link, so nothing carries over.
     """
 
     # The destination the member asked for, published so the per-member error
@@ -964,134 +636,6 @@ class _MemberState:
     parked: dict[Path, int] = field(default_factory=dict)
 
 
-@dataclass
-class _DryRun:
-    """Where a dry run extracts, and how its paths are shown under the caller's dest.
-
-    Built by ``ExtractionCoordinator.run`` for the length of one dry run.
-    """
-
-    # The directory the pass extracts into, inside a private scratch directory, and
-    # the destination the caller named, which every path the run reports is
-    # translated back to (``shown``).
-    scratch: Path
-    shown_dest: Path
-    # The scratch directory spelled as the pass is handed it, and where a path under
-    # its ``os.path.abspath`` spelling is shown. A real run reports paths built from
-    # ``dest`` as given, but an OSError about a staging file names it as ``tempfile``
-    # spells it, through ``os.path.abspath``: absolute, ``..`` collapsed, symlinks
-    # kept. Where those two spellings of dest differ, the pass is handed a spelling
-    # of the scratch directory that differs from its own ``abspath`` the same way, so
-    # each path can be shown in the spelling a real run would give it.
-    # (``dest.resolve()`` spells nothing a real run reports; it is only for matching
-    # link targets, ``dest_spellings``.)
-    scratch_given: Path
-    shown_abspath: Path
-    # The caller's destination as the absolute path they gave and as it resolves,
-    # which an absolute link target is matched against (``target_on_disk``).
-    dest_spellings: tuple[PurePath, PurePath]
-    # Where FILE bodies go instead of the file (``os.devnull``).
-    sink: BinaryIO
-
-    def target_on_disk(self, target: str) -> str:
-        """The target a link is created with: an absolute target that names a path
-        under dest is rewritten to the same path under the scratch copy.
-
-        Matched by name against dest as given and as it resolves, not resolved itself,
-        so ``..`` components and symlinks on the way are left for the checks that
-        resolve the link. Any other target is returned as it is.
-        """
-        pure = PurePath(target)
-        if not pure.anchor:
-            return target
-        if not pure.drive:
-            # Windows root-relative (a target like \x): pathlib joins it onto the
-            # link's own drive, which is dest's. A no-op elsewhere, where drive is "".
-            pure = PurePath(self.dest_spellings[0].drive + target)
-        for spelling in self.dest_spellings:
-            if pure.is_relative_to(spelling):
-                return str(self.scratch / pure.relative_to(spelling))
-        return target
-
-    def shown(self, path: Path) -> Path:
-        """``path`` as the caller sees it: a scratch path under their dest, spelled as
-        a real run would spell it (see ``scratch_given``)."""
-        for scratch, shown in (
-            (self.scratch_given, self.shown_dest),
-            (self.scratch, self.shown_abspath),
-        ):
-            try:
-                return shown / path.relative_to(scratch)
-            except ValueError:
-                continue
-        return path
-
-    def rebase_result(self, result: ExtractionResult) -> ExtractionResult:
-        if isinstance(result.error, OSError):
-            self.rebase_os_error(result.error)
-        return replace(
-            result,
-            path=None if result.path is None else self.shown(result.path),
-            requested_path=(
-                None
-                if result.requested_path is None
-                else self.shown(result.requested_path)
-            ),
-            collided_with=(
-                None
-                if result.collided_with is None
-                else self.shown(result.collided_with)
-            ),
-        )
-
-    def rebase_os_error(self, exc: OSError) -> None:
-        """Point a filesystem error's file names at the caller's dest, in place."""
-        for attr in ("filename", "filename2"):
-            value = getattr(exc, attr, None)
-            if isinstance(value, str):
-                setattr(exc, attr, str(self.shown(Path(value))))
-
-    def check_creatable(self) -> None:
-        """Raise what ``mkdir(parents=True)`` would raise for the absent ``shown_dest``,
-        without creating it.
-
-        The pass itself writes into the scratch directory, which exists already. Here
-        the nearest part of dest that exists gets the questions ``mkdir`` would answer:
-        that it can be resolved, is a directory, and can be written to. Each raises
-        the error ``mkdir`` raises, naming the path it names. Whether it can be written
-        to is asked with ``os.access``, which is a prediction, not the write: it checks
-        the real user and group ids where ``mkdir`` uses the effective ones, the
-        directory can change after it is asked, and on Windows it is not asked.
-        """
-        dest = self.shown_dest
-        child, ancestor = dest, dest.parent
-        while not os.path.lexists(long_path(ancestor)) and ancestor != ancestor.parent:
-            child, ancestor = ancestor, ancestor.parent
-        try:
-            st = os.stat(long_path(ancestor))
-        except OSError as exc:
-            if exc.errno == errno.ENOENT:
-                # A dangling symlink: mkdir meets it as an existing entry.
-                raise FileExistsError(
-                    errno.EEXIST, os.strerror(errno.EEXIST), str(ancestor)
-                ) from None
-            # ELOOP and the like, met while resolving dest itself.
-            raise OSError(exc.errno, exc.strerror, str(dest)) from None
-        if not stat.S_ISDIR(st.st_mode):
-            raise NotADirectoryError(
-                errno.ENOTDIR, os.strerror(errno.ENOTDIR), str(dest)
-            )
-        if os.name == "nt":
-            # os.access there reads the read-only attribute, which does not stop
-            # creating entries in a directory.
-            return
-        if not os.access(long_path(ancestor), os.X_OK):
-            raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(dest))
-        if not os.access(long_path(ancestor), os.W_OK):
-            # The first directory mkdir creates is the one it is refused.
-            raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(child))
-
-
 class ExtractionCoordinator:
     """Drives a single forward pass over a reader's members, writing them safely to disk."""
 
@@ -1120,14 +664,13 @@ class ExtractionCoordinator:
         self._selector = selector
         self._filter = filter
         self._limits = limits if limits is not None else ExtractionLimits()
-        # Placeholders until ``run()`` builds the run's state, so the attribute is never
-        # None and helpers read it unguarded. A test that drives a helper directly
-        # installs its own ``_RunState``.
-        self._state = _RunState(Path(), Path(), BombTracker(None, None))
+        # Built by each ``run()``. A test that drives a helper directly installs its
+        # own.
+        self._state: _RunState
         # The state of the member being handled; each pass replaces it per member.
         self._current = _MemberState()
         # Set for the length of a dry run; ``None`` on a real run.
-        self._dry: _DryRun | None = None
+        self._dry: DryRun | None = None
         # Set by a dry run, from its scratch tree; see ExtractionReport.
         self.dry_run_top_level: tuple[tuple[str, bool], ...] | None = None
         self.dry_run_links: tuple[tuple[str, str], ...] | None = None
@@ -1168,63 +711,20 @@ class ExtractionCoordinator:
             except OSError as exc:
                 _plain_os_error(exc)
                 raise
-        given = Path(os.path.abspath(dest))
-        try:
-            resolved = resolve_or_raise_on_loop(given)
-        except OSError:
-            resolved = given
-        # Resolved, so a path built from the resolved root (``dest_root``) and one built
-        # from ``dest`` translate the same way (macOS's /var -> /private/var). The pass
-        # extracts into a directory named like dest, one level down, so a relative link
-        # target that climbs out of dest by name (``../out/x``) comes back in.
-        scratch = Path(tempfile.mkdtemp(prefix=_DRY_RUN_PREFIX)).resolve()
-        work = scratch / (resolved.name or "dest")
-        work_given = work
-        detour: Path | None = None
-        if str(dest) != str(given):
-            if not dest.is_absolute():
-                with contextlib.suppress(ValueError):  # Windows: on another drive
-                    work_given = Path(os.path.relpath(work))
-            else:
-                # Spelled with ``..``: so is the scratch directory, through a sibling.
-                detour = scratch / ("_" if work.name != "_" else "__")
-                work_given = detour / ".." / work.name
-        try:
-            with open(os.devnull, "wb") as sink:
-                dry = self._dry = _DryRun(
-                    scratch=work,
-                    shown_dest=dest,
-                    scratch_given=work_given,
-                    shown_abspath=given if work_given != work else dest,
-                    dest_spellings=(given, resolved),
-                    sink=sink,
-                )
-                try:
-                    os.mkdir(long_path(work))
-                    if detour is not None:
-                        os.mkdir(long_path(detour))
-                    results = self._run(reader, work_given)
-                except OSError as exc:
-                    _plain_os_error(exc)
-                    dry.rebase_os_error(exc)
-                    raise
-            with contextlib.suppress(OSError):
-                with os.scandir(long_path(work)) as entries:
-                    self.dry_run_top_level = tuple(
-                        sorted(
-                            (entry.name, entry.is_dir(follow_symlinks=False))
-                            for entry in entries
-                        )
-                    )
-                if len(self.dry_run_top_level) == 1:
-                    # What the CLI's hoist prediction walks; see ExtractionReport.
-                    tree = _scratch_tree(work)
-                    if tree is not None:
-                        self.dry_run_entries, self.dry_run_links = tree
+        with scratch_for(dest) as dry:
+            self._dry = dry
+            try:
+                results = self._run(reader, dry.scratch_given)
+            except OSError as exc:
+                dry.rebase_os_error(exc)
+                raise
+            finally:
+                self._dry = None
+            record = dry.record()
+            self.dry_run_top_level = record.top_level
+            self.dry_run_entries = record.entries
+            self.dry_run_links = record.links
             return [dry.rebase_result(result) for result in results]
-        finally:
-            self._dry = None
-            _remove_scratch(scratch)
 
     @property
     def _on_disk(self) -> Callable[[str], str] | None:
@@ -1232,7 +732,7 @@ class ExtractionCoordinator:
         return self._dry.target_on_disk if self._dry is not None else None
 
     def _link_target_on_disk(self, target: str) -> str:
-        """The target a link is created with (see ``_DryRun.target_on_disk``).
+        """The target a link is created with (see ``DryRun.target_on_disk``).
 
         On Windows each ``/`` is written as ``\\`` first. A symlink's target is stored
         as given, and Windows resolves it with ``\\`` as the only separator, so
@@ -1245,7 +745,7 @@ class ExtractionCoordinator:
         return target if self._dry is None else self._dry.target_on_disk(target)
 
     def _shown(self, path: Path) -> Path:
-        """``path`` as the caller sees it (see ``_DryRun.shown``)."""
+        """``path`` as the caller sees it (see ``DryRun.shown``)."""
         return path if self._dry is None else self._dry.shown(path)
 
     def _rebase_os_error(self, exc: OSError) -> None:
@@ -1256,7 +756,6 @@ class ExtractionCoordinator:
             self._dry.rebase_os_error(exc)
 
     def _run(self, reader: BaseArchiveReader, dest: Path) -> list[ExtractionResult]:
-        forward_only = reader._streaming
         tracker = BombTracker(
             self._limits.max_extracted_bytes,
             self._limits.max_ratio,
@@ -1307,7 +806,6 @@ class ExtractionCoordinator:
             dest=dest,
             dest_root=dest_root,
             reader=reader,
-            forward_only=forward_only,
             tracker=tracker,
             members_total=members_total,
             total_estimate=self._estimate_total_bytes(all_members),
@@ -1440,7 +938,6 @@ class ExtractionCoordinator:
             presented_name: str | None = None
             rewrites: frozenset[NameRewrite] = frozenset()
             current = self._current = _MemberState()
-            link_error: ArchiveyError | None = None
             provisional = current.provisional = (
                 revises and not original.member_state_final
             )
@@ -1458,7 +955,24 @@ class ExtractionCoordinator:
                 continue
             # What the member was when handled, if the walk can still change it.
             before = original.replace() if provisional else None
-            try:
+
+            def record(_error: object, failed: ExtractionResult) -> bool:
+                nonlocal recorded_index
+                if results and results[-1].member is failed.member:
+                    recorded_index = len(results) - 1
+                    self._set_result(recorded_index, failed)
+                else:
+                    recorded_index = self._append_result(failed)
+                return False
+
+            def cleanup() -> None:
+                self._close(stream)
+                if current.parked:
+                    self._drop_parked_copies(original.name, recorded_index)
+
+            with self._handling(
+                original, kind=original.type.value, record=record, cleanup=cleanup
+            ):
                 self._park_earlier_copies(
                     original.name, current_by_name.get(original.name)
                 )
@@ -1486,12 +1000,9 @@ class ExtractionCoordinator:
                     )
                     current_by_name[original.name] = result_index
                     if not original.is_anti:
-                        # Entry-count guard + ratio bookkeeping. Counted only once the
-                        # selector and user filter have accepted the member (and the
-                        # universal check inside _transform has passed), immediately before
-                        # writing begins — so selector-skipped, filter-skipped, and rejected
-                        # members create nothing on disk and do not count toward max_entries
-                        # (resolved 2026-07 decision).
+                        # Counted only now, once the selector, the filter and the
+                        # universal check have accepted the member: a member skipped or
+                        # rejected before this does not count toward max_entries.
                         tracker.start_member(original)
                         member_started = True
                         if self._on_progress is not None:
@@ -1513,38 +1024,6 @@ class ExtractionCoordinator:
                         original, transformed, stream, result_index
                     )
                     self._set_result(result_index, written)
-            except (_AlwaysStopResourceLimitError, DiagnosticRaisedError):
-                raise
-            except (ArchiveyError, OSError) as exc:
-                spelled_from = current.spelled_from
-                if isinstance(exc, ArchiveyError) and spelled_from is not None:
-                    _report_stored_spelling(
-                        exc, disk_spelled(spelled_from), spelled_from
-                    )
-                error, status = self._classify(exc, original.name)
-                result = ExtractionResult(
-                    original,
-                    None,
-                    status,
-                    error,
-                    requested_path=current.requested_path,
-                    collided_with=current.collided_with,
-                )
-                if results and results[-1].member is original:
-                    recorded_index = len(results) - 1
-                    self._set_result(recorded_index, result)
-                else:
-                    recorded_index = self._append_result(result)
-                self._stop_or_log(
-                    exc, error, status, kind=original.type.value, name=original.name
-                )
-            finally:
-                self._close(stream)
-                if current.parked:
-                    self._drop_parked_copies(original.name, recorded_index)
-                link_error = self._recheck_links()
-            if link_error is not None:
-                raise link_error
 
             if member_started and recorded_index is not None:
                 state.counted[recorded_index] = tracker.member_bytes
@@ -1602,9 +1081,6 @@ class ExtractionCoordinator:
         # excluded. Only populated for a seekable source; forward-only orphans already
         # failed at the link during the main pass.
         if state.orphans:
-            # Its own member state: none of the first pass's carries over, and it
-            # reports no intra-member progress.
-            self._current = _MemberState()
             self._resolve_orphans(reader)
         if listing_damage:
             raise listing_damage[0]
@@ -1695,6 +1171,16 @@ class ExtractionCoordinator:
             member_bytes = state.counted.pop(index)
             state.tracker.refund(0 if content_kept else member_bytes)
         state.orphans[:] = [o for o in state.orphans if o.result_index != index]
+
+    @contextlib.contextmanager
+    def _taking_back(self, index: int) -> Iterator[None]:
+        """Run a take-back of result ``index`` outside the handling of any member: it
+        gets its own member state, and the copies it parks are removed when it ends."""
+        self._current = _MemberState()
+        try:
+            yield
+        finally:
+            self._drop_parked_copies(self._state.results[index].member.name, None)
 
     def _open_parked_copy(self, path: Path) -> BinaryIO:
         """Open the parked copy at ``path`` to write its member again, from a temporary
@@ -1793,7 +1279,6 @@ class ExtractionCoordinator:
         """
         state = self._state
         reader = state.reader
-        assert reader is not None
         # ``state.revisable`` keeps the members not settled yet, so a run that stops
         # part way takes back what of theirs may be a link (``_run``).
         revisable = state.revisable
@@ -1862,7 +1347,6 @@ class ExtractionCoordinator:
         """
         state = self._state
         reader = state.reader
-        assert reader is not None
         failures: list[tuple[int, ArchiveyError]] = []
         for index in indices:
             result = state.results[index]
@@ -1876,12 +1360,8 @@ class ExtractionCoordinator:
                 and not refused_before_write
                 and not result.member.is_current
             ):
-                self._current = _MemberState()
-                try:
+                with self._taking_back(index):
                     self._supersede_written_copy(index)
-                finally:
-                    if self._current.parked:
-                        self._drop_parked_copies(result.member.name, None)
         failing = {id(member): error for member, error in reader._failed_at_end}
         for index in indices:
             result = state.results[index]
@@ -1943,12 +1423,8 @@ class ExtractionCoordinator:
         """Take back what result ``index`` wrote, and record it ``FAILED``."""
         state = self._state
         prior = state.results[index]
-        self._current = _MemberState()
-        try:
+        with self._taking_back(index):
             self._take_back_written(index)
-        finally:
-            if self._current.parked:
-                self._drop_parked_copies(prior.member.name, None)
         self._set_result(
             index,
             ExtractionResult(
@@ -1967,13 +1443,9 @@ class ExtractionCoordinator:
         folders created for it go too, once empty: random access never wrote it."""
         state = self._state
         path = state.results[index].path
-        self._current = _MemberState()
-        try:
+        with self._taking_back(index):
             self._take_back_written(index)
             self._hold_place_at(index)
-        finally:
-            if self._current.parked:
-                self._drop_parked_copies(state.results[index].member.name, None)
         # One whose own member the selection also drops is removed when its turn
         # comes, which is after everything inside it.
         self._remove_created_parents(path)
@@ -2283,8 +1755,40 @@ class ExtractionCoordinator:
         member_started = False
         presented_name: str | None = None
         rewrites: frozenset[NameRewrite] = frozenset()
-        link_error: ArchiveyError | None = None
-        try:
+
+        def record(error: ArchiveyError | OSError, failed: ExtractionResult) -> bool:
+            state.dropped.discard(index)
+            self._set_result(index, failed)
+            if (
+                failures is not None
+                and failed.status is ExtractionStatus.FAILED
+                and isinstance(error, ArchiveyError)
+            ):
+                failures.append((index, error))
+                return True
+            return False
+
+        def cleanup() -> None:
+            self._close(held)
+            if current.recopy_from is not None:
+                self._remove_recopy_source(current.recopy_from, member.name)
+            if current.parked:
+                self._drop_parked_copies(member.name, index)
+
+        def remove_parents() -> None:
+            if written and old_path is not None and old_path not in state.written_paths:
+                # What an EXTRACTED result wrote is gone (a parked file only now): the
+                # folders made for it alone go too, while empty. Random access makes
+                # them only if the member is written there, and then they stay.
+                self._remove_created_parents(old_path)
+
+        with self._handling(
+            member,
+            kind=member.type.value,
+            record=record,
+            cleanup=cleanup,
+            after=remove_parents,
+        ):
             # A BLOCKED result wrote nothing, and is released all the same: what it
             # was charged, if anything, is refunded rather than charged twice.
             self._take_back_written(index)
@@ -2331,49 +1835,6 @@ class ExtractionCoordinator:
                 self._set_result(
                     index, self._write_member(member, transformed, held, index)
                 )
-        except (_AlwaysStopResourceLimitError, DiagnosticRaisedError):
-            raise
-        except (ArchiveyError, OSError) as exc:
-            spelled_from = current.spelled_from
-            if isinstance(exc, ArchiveyError) and spelled_from is not None:
-                _report_stored_spelling(exc, disk_spelled(spelled_from), spelled_from)
-            error, status = self._classify(exc, member.name)
-            state.dropped.discard(index)
-            self._set_result(
-                index,
-                ExtractionResult(
-                    member,
-                    None,
-                    status,
-                    error,
-                    requested_path=current.requested_path,
-                    collided_with=current.collided_with,
-                ),
-            )
-            if (
-                failures is not None
-                and status is ExtractionStatus.FAILED
-                and isinstance(error, ArchiveyError)
-            ):
-                failures.append((index, error))
-            else:
-                self._stop_or_log(
-                    exc, error, status, kind=member.type.value, name=member.name
-                )
-        finally:
-            self._close(held)
-            if current.recopy_from is not None:
-                self._remove_recopy_source(current.recopy_from, member.name)
-            if current.parked:
-                self._drop_parked_copies(member.name, index)
-            link_error = self._recheck_links()
-        if written and old_path is not None and old_path not in state.written_paths:
-            # What an EXTRACTED result wrote is gone (a parked file only now): the
-            # folders made for it alone go too, while empty. Random access makes
-            # them only if the member is written there, and then they stay.
-            self._remove_created_parents(old_path)
-        if link_error is not None:
-            raise link_error
         if member_started:
             state.counted[index] = state.tracker.member_bytes
         if presented_name is not None:
@@ -2408,16 +1869,13 @@ class ExtractionCoordinator:
 
         A hard link to a symlink is a second name for the symlink itself, which is what
         GNU tar creates. So the member is written as a symlink with the same target, read
-        from its own directory, and goes through the same checks as any symlink.
-        Following the chain instead looked the target up by member name, which fails
-        when the symlink's target passes through another symlinked directory. It runs
+        from its own directory, and goes through the same checks as any symlink. It runs
         after the caller's filter, which sees the HARDLINK the archive lists, and only
         when the filter kept it a HARDLINK.
         """
         if (
             original.type is not MemberType.HARDLINK
             or transformed.type is not MemberType.HARDLINK
-            or self._state.reader is None
         ):
             return transformed
         direct = self._hardlink_chain_end(self._state.reader, original)
@@ -2539,7 +1997,7 @@ class ExtractionCoordinator:
                 link_target=original.link_target,
             )
         reader = self._state.reader
-        if reader is not None and self._needs_target_read(original, transformed):
+        if self._needs_target_read(original, transformed):
             # A symlink whose target the format keeps in member data and nothing has
             # read yet (`read_link_targets=False`), or one whose read failed and was
             # reported as damaged, which leaves it unresolved: this read raises the
@@ -2615,35 +2073,29 @@ class ExtractionCoordinator:
         """Whether the member a HARDLINK gets its bytes from was refused, so the link
         is refused too.
 
-        A hard link's target string is a member name and never becomes a path, so it
-        gets no path check of its own (``check_universal``). What it can do is put a
-        refused member's content on disk under the link's name: the second pass
-        writes an unwritten source's bytes at the link's path. So a link is refused
-        when its source is, in both access modes and at every policy.
+        A hard link's target is a member name, never a path, so it gets no path check
+        of its own (``check_universal``); but the second pass can write a refused
+        source's bytes under the link's name. So a link is refused when its source is,
+        in both access modes and at every policy.
 
         The source is ``link_target_member``, the end of the link chain (symlinks
-        included), which is the member ``_write_hardlink`` links against or the second
-        pass reads. A refused link in the middle of the chain does not refuse this
-        one: its name was the unsafe part, and this link does not use that name. The
-        chain ends at a SYMLINK only when that symlink has no target, and then
-        nothing is refused: the link copies no bytes, and ``_write_hardlink`` fails it
-        as a link to a non-file whatever happened to the symlink's own name. (A
-        symlink with a target is not a source: ``_as_written`` wrote the link as that
-        symlink.) Hard links point only backward, so this run has already reached the
-        source. When it recorded a result for it, the result decides: ``BLOCKED`` is
-        a refusal, and anything else passed the checks, under the name the caller's
-        filter gave it. A filter that renames a source to an unsafe name thus refuses
-        its links too, and one that rescues an unsafe source lets them through. A
-        source with no result was excluded by the selector or the filter. The
-        caller's filter is not run on it, since a selector-excluded member was never
-        meant to reach it; instead the policy's own steps run on the source as listed
-        (``_policy_refuses``). A refused source's links are refused; any other
-        excluded source is recovered by the second pass, or fails the link on a
+        included). A refused link in the middle of the chain does not refuse this one,
+        which does not use that link's name. A chain that ends at a SYMLINK refuses
+        nothing: that symlink has no target (``_as_written`` wrote the link as any
+        symlink that has one), the link copies no bytes, and ``_write_hardlink`` fails
+        it as a link to a non-file. Hard links point only backward, so this run has
+        already reached the source. When it recorded a result for it, ``BLOCKED`` is a
+        refusal and anything else is not: the caller's filter decides through the name
+        it gave the source. A source with no result was left out by the selector or the
+        filter, and the policy's own steps run on it as listed (``_policy_refuses``).
+        The caller's filter does not run on it, since a member the selector left out
+        was never meant to reach the filter. A refused source's links are refused; any
+        other source left out is recovered by the second pass, or fails the link on a
         forward-only stream (``_write_hardlink``).
         """
         state = self._state
         source = link.link_target_member
-        if state.reader is None or source is None or source._member_id is None:
+        if source is None or source._member_id is None:
             # No source: `_write_hardlink` fails the link as not found.
             return False
         if source.type is MemberType.SYMLINK:
@@ -2740,12 +2192,10 @@ class ExtractionCoordinator:
                 original, transformed, stream, dest_path, result_index
             )
         except (ArchiveyError, OSError):
-            # The write failed *after* clearing the destination to make room for it (only
-            # reachable on the non-atomic DIR/SYMLINK/HARDLINK paths). The earlier
-            # member's content is gone either way, so its result must stop advertising a
-            # live path — reporting EXTRACTED for bytes that no longer exist is exactly
-            # the defect this change exists to remove. This member's own FAILED result is
-            # recorded by the caller's handler.
+            # A write that failed after clearing the destination (only the non-atomic
+            # landings clear it first) has still removed the earlier member's content,
+            # so that member's result must stop reporting it EXTRACTED. This member's
+            # own result is recorded by the caller's handler.
             if self._current.removed_existing:
                 self._mark_overwritten(prior)
             raise
@@ -2874,14 +2324,12 @@ class ExtractionCoordinator:
             )
         if result.status is ExtractionStatus.EXTRACTED and result.path is not None:
             written_paths.add(result.path)
-            links = self._state.links
             if (
                 transformed.type == MemberType.SYMLINK
-                and links is not None
                 and transformed.link_target is not None
             ):
                 on_disk = self._link_target_on_disk(transformed.link_target)
-                links.track(result.path, on_disk, result_index)
+                self._state.links.track(result.path, on_disk, result_index)
                 if on_disk != transformed.link_target:
                     # An error names the target as stored, not with the separators
                     # or dry-run path written to disk.
@@ -2931,11 +2379,9 @@ class ExtractionCoordinator:
 
         ``collided_with`` is the prior path whenever a collision *event* occurred, which
         is the wider set: RENAME collides and then avoids the destination, so it reports
-        a path here while reporting no redirection. It is set under exactly the condition
-        the removed ``EXTRACTION_NAME_COLLISION`` diagnostic fired on — a claim held by
-        this run, outside TRUSTED — so the result carries the fact the diagnostic used to
-        carry. A pre-existing on-disk obstacle is not a collision event and reports
-        ``None``, as the diagnostic was also silent for it.
+        a path here while reporting no redirection. A collision event is a claim held by
+        this run, outside TRUSTED. A pre-existing on-disk obstacle is not one, and
+        reports ``None``.
 
         Directories are structural (parents recur, entries merge) and are never claimed
         in the map, so a directory member landing on a real directory merges into it.
@@ -3082,6 +2528,58 @@ class ExtractionCoordinator:
             if renamed is not None:
                 return renamed / requested.relative_to(ancestor)
         return requested
+
+    @contextlib.contextmanager
+    def _handling(
+        self,
+        member: ArchiveMember,
+        *,
+        kind: str,
+        record: Callable[[ArchiveyError | OSError, ExtractionResult], bool],
+        cleanup: Callable[[], None] | None = None,
+        after: Callable[[], None] | None = None,
+    ) -> Iterator[None]:
+        """Run the work on ``member`` in either pass, and deal with its failure.
+
+        A per-member failure (``ArchiveyError`` or ``OSError``) is named as listed,
+        typed (``_classify``) and handed to ``record`` with the result it gives
+        ``member``, for the caller to record. The run then stops on it or logs it
+        (``_stop_or_log``), unless ``record`` returns True: the caller stops on it
+        later. The always-stop errors pass through. Whatever the outcome, ``cleanup``
+        runs, and then the links the work may have moved are rechecked
+        (``_recheck_links``). Unless the run is stopping on the failure, ``after``
+        runs next, and then an error from the recheck ends the run. A ``_handling``
+        is never entered inside another, so nothing catches that error.
+        """
+        current = self._current
+        link_error: ArchiveyError | None = None
+        try:
+            yield
+        except (AlwaysStopResourceLimitError, DiagnosticRaisedError):
+            raise
+        except (ArchiveyError, OSError) as exc:
+            spelled_from = current.spelled_from
+            if isinstance(exc, ArchiveyError) and spelled_from is not None:
+                _report_stored_spelling(exc, disk_spelled(spelled_from), spelled_from)
+            error, status = self._classify(exc, member.name)
+            failed = ExtractionResult(
+                member,
+                None,
+                status,
+                error,
+                requested_path=current.requested_path,
+                collided_with=current.collided_with,
+            )
+            if not record(error, failed):
+                self._stop_or_log(exc, error, status, kind=kind, name=member.name)
+        finally:
+            if cleanup is not None:
+                cleanup()
+            link_error = self._recheck_links()
+        if after is not None:
+            after()
+        if link_error is not None:
+            raise link_error
 
     def _stops_on_failure(self) -> bool:
         """Whether ``OnError`` halts on a member failure.
@@ -3276,11 +2774,11 @@ class ExtractionCoordinator:
         """The collision-map key of the entry at ``path``: where it physically is.
 
         The parent is resolved, so two members that reach one file by different names
-        collide: ``s/f`` through the archive's own ``s -> d`` is ``d/f``. Keying on the
-        name alone let both report ``EXTRACTED`` for one file. The final component is
-        not followed, as a member's own destination never is. A parent that does not
-        resolve inside the destination (it was checked when the member was accepted,
-        so only a later change can do that) falls back to the name as written.
+        collide: ``s/f`` through the archive's own ``s -> d`` is ``d/f``. The final
+        component is not followed, as a member's own destination never is. A parent
+        that does not resolve inside the destination (it was checked when the member
+        was accepted, so only a later change can do that) falls back to the name as
+        written.
         """
         rel = self._physical_rel(path)
         if rel is None:
@@ -3408,7 +2906,7 @@ class ExtractionCoordinator:
             # is already past that data, so the content is out of reach: fail the member
             # rather than write an empty file for one the archive carries in full.
             reader = state.reader
-            if reader is None or reader._streaming:
+            if reader._streaming:
                 raise ExtractionError(
                     f"{quoted(original.name)} is flagged as a link but its data is a "
                     "file's content, which a streaming pass cannot go back for",
@@ -3522,10 +3020,10 @@ class ExtractionCoordinator:
             # target this read could not produce. A data-stored target has been looked
             # for by now, either while listing or by `_transform` on request, so it is
             # out of reach: compressed, split across volumes, encrypted, or refused as
-            # too long. Reporting that as the status above would claim success while
-            # dropping a member the archive describes in full, so it stays the
-            # per-member failure it was before that status existed. The reason is the
-            # backend's to report: `BaseArchiveReader._emit_link_target_unavailable`.
+            # too long. The status above would claim success while dropping a member
+            # the archive describes in full, so this is a per-member failure. The
+            # reason is the backend's to report:
+            # `BaseArchiveReader._emit_link_target_unavailable`.
             raise LinkTargetNotFoundError(
                 "Symlink has no target",
                 reason=LinkTargetNotFoundReason.UNREADABLE,
@@ -3556,24 +3054,17 @@ class ExtractionCoordinator:
             raise self._already_exists(dest_path, transformed) from exc
         self._resolutions_changed()
 
-        # Re-validate the symlink target AFTER creating it, resolving through the real
-        # filesystem. check_universal already rejected an escaping target at
-        # planning time, but that check resolves the target lexically against the tree as it
-        # looked *then*. The authoritative question — where does this link actually point? —
-        # can only be answered against the filesystem as it is now, because an *earlier*
-        # extracted member may have planted a symlink on one of this target's path
-        # components that redirects it outside dest (a "chained symlink": e.g. member 1 is
-        # `sub -> /tmp/evil`, member 2 is `sub/link -> x`, so `sub/link` resolves to
-        # `/tmp/evil/x`). Path.resolve() follows those on-disk links, so it catches the
-        # escape the planning check cannot see. We can't do this "just before" creating the
-        # link because there is no link to resolve until it exists; and resolving the *bare
-        # target string* would only repeat check_universal. So: create, resolve, and unlink
-        # if it escaped. A link that cannot be resolved, a symlink loop included on
-        # every Python version, also counts as an escape (fail safe rather than crash).
-        # This is the third of the three defense-in-depth layers named in the
-        # `safe-extraction` spec ("Symlink Escape Re-Validated at Extraction Time");
-        # layers 1-2 are in check_universal. A *later* member can still change what
-        # this link resolves to; the caller records the link in ``links`` for that.
+        # Resolve the link now that it exists, through the real filesystem, and remove
+        # it if it escapes. check_universal checked the target against the tree as it
+        # was; an earlier member's symlink on the target's path can still lead out
+        # (`sub -> /tmp/evil`, then `sub/link -> x`). This cannot move before
+        # os.symlink: until the link exists there is nothing to resolve, and resolving
+        # the bare target string only repeats check_universal. A link that cannot be
+        # resolved, a loop included on every Python version, counts as an escape: fail
+        # safe rather than crash. This is the third layer of the `safe-extraction`
+        # spec's "Symlink Escape Re-Validated at Extraction Time".
+        # A later member can still change what this link resolves to; the caller
+        # records the link in ``links`` for that.
         problem = _symlink_problem(dest_path, on_disk, self._state.dest_root)
         if problem is not None:
             try:
@@ -3721,9 +3212,8 @@ class ExtractionCoordinator:
             # `link_target_member` is the end of the link chain, so anything but a
             # file here (a directory, a device) cannot share an inode. A hard link to
             # a symlink whose target is known never gets here: `_as_written` writes it
-            # as a symlink. Only a FILE source is recorded in `source_paths`. Without
-            # this check, the member went down the branches below for a source that
-            # was not written, and the error said the source was excluded.
+            # as a symlink. Only a FILE source is recorded in `source_paths`, so the
+            # branches below would report this source as excluded.
             reason = (
                 "a directory, and a hard link to a directory cannot be created"
                 if source.type is MemberType.DIRECTORY
@@ -3751,7 +3241,7 @@ class ExtractionCoordinator:
         # crafted/non-TAR-ordered archive) it simply appears later in archive order. The
         # second pass distinguishes the two: a source written later in this same pass is
         # just linked against; a truly excluded one is re-read and materialized.
-        if self._state.forward_only:
+        if self._state.reader._streaming:
             # Forward-only: the source's bytes already streamed past — unrecoverable. Per
             # spec this is a per-member ExtractionError handled by OnError.
             raise ExtractionError(
@@ -3805,32 +3295,30 @@ class ExtractionCoordinator:
         )
         for member, stream in reader.stream_members(needed_sources):
             group = orphans_by_source[member.member_id]
-            link_error: ArchiveyError | None = None
-            try:
-                self._materialize_orphan_source(member, stream, group)
-            except (_AlwaysStopResourceLimitError, DiagnosticRaisedError):
-                raise
-            except (ArchiveyError, OSError) as exc:
+            self._current = _MemberState()
+            remaining: list[_Orphan] = []
+
+            def record(
+                error: ArchiveyError | OSError, failed: ExtractionResult
+            ) -> bool:
                 # One failed source, N failed links: the fan-out is recorded on the
                 # results themselves, so a caller can tell N separate failures from one
-                # failure seen N times without joining against a diagnostic. The second
-                # pass records FAILED, so only OnError can stop it.
-                error, status = self._classify(exc, member.name)
+                # failure seen N times without joining against a diagnostic.
                 # Nothing the second pass runs raises FilterRejectionError.
-                assert status is ExtractionStatus.FAILED
+                assert failed.status is ExtractionStatus.FAILED
                 self._record_failure_group(group, error)
-                self._stop_or_log(
-                    exc,
-                    error,
-                    status,
-                    kind="orphaned hardlink source",
-                    name=member.name,
-                )
-            finally:
-                self._close(stream)
-                link_error = self._recheck_links()
-            if link_error is not None:
-                raise link_error
+                return False
+
+            with self._handling(
+                member,
+                kind="orphaned hardlink source",
+                record=record,
+                cleanup=lambda: self._close(stream),
+            ):
+                remaining = self._materialize_orphan_source(member, stream, group)
+            # Each link after the one that took the content is its own attempt: its
+            # failure is that link's, not the source's.
+            self._link_orphan_group(remaining, member.member_id)
             needed.discard(member.member_id)
             if not needed:
                 break  # every orphaned source is materialized; stop opening members
@@ -3929,7 +3417,11 @@ class ExtractionCoordinator:
         source_member: ArchiveMember,
         stream: BinaryIO | None,
         group: list[_Orphan],
-    ) -> None:
+    ) -> list[_Orphan]:
+        """Write the source's content at the first link of ``group`` that takes it, and
+        return the links after that one, for the caller to link against it. None remain
+        when every link's destination already exists under SKIP: then nothing was
+        written either."""
         # Count the recovered source bytes toward the cumulative/ratio guards too.
         self._state.tracker.start_member(source_member)
 
@@ -3941,27 +3433,24 @@ class ExtractionCoordinator:
         # inode, so the metadata must be applied to the file that carries the content. Each
         # link's destination is O2-collision-resolved against the map the main pass built
         # (a deferred link's key may have been claimed after it was orphaned).
-        remaining: list[_Orphan] = []
         for index, orphan in enumerate(group):
-            try:
-                resolved, prior, collided_with = self._resolve_collision(
-                    orphan.original, orphan.transformed, orphan.dest_path
+            # An error names the link as listed (the caller's ``_handling``).
+            self._current.spelled_from = orphan.spelled_from
+            resolved, prior, collided_with = self._resolve_collision(
+                orphan.original, orphan.transformed, orphan.dest_path
+            )
+            result = self._make_room(
+                orphan.original, orphan.transformed, resolved, atomic=True
+            )
+            if result is None:
+                self._write_file_atomic(stream, resolved, orphan.transformed)
+                self._state.written_paths.add(resolved)
+                self._state.source_paths.setdefault(source_member.member_id, []).append(
+                    resolved
                 )
-                result = self._make_room(
-                    orphan.original, orphan.transformed, resolved, atomic=True
+                result = ExtractionResult(
+                    orphan.original, resolved, ExtractionStatus.EXTRACTED, None
                 )
-                if result is None:
-                    self._write_file_atomic(stream, resolved, orphan.transformed)
-                    self._state.written_paths.add(resolved)
-                    self._state.source_paths.setdefault(
-                        source_member.member_id, []
-                    ).append(resolved)
-                    result = ExtractionResult(
-                        orphan.original, resolved, ExtractionStatus.EXTRACTED, None
-                    )
-            except (ArchiveyError, OSError) as exc:
-                orphan.report_stored_spelling(exc)
-                raise
             result = self._settle_placement(
                 result,
                 requested=orphan.dest_path,
@@ -3973,11 +3462,8 @@ class ExtractionCoordinator:
             )
             self._revise_result(orphan.result_index, result)
             if result.status is ExtractionStatus.EXTRACTED:
-                remaining = group[index + 1 :]
-                break
-        # Nothing remains when every link's destination already exists under SKIP:
-        # then nothing was written either.
-        self._link_orphan_group(remaining, source_member.member_id)
+                return group[index + 1 :]
+        return []
 
     def _link_orphan_group(self, group: list[_Orphan], source_id: int) -> None:
         """Link each orphan in ``group`` against the source content already on disk
@@ -3986,23 +3472,26 @@ class ExtractionCoordinator:
         ``OnError``. A link can replace a symlink or a directory, so the symlinks it
         may have moved are rechecked after each one, whatever its outcome."""
         for orphan in group:
-            try:
-                self._link_orphan(orphan, source_id)
-            finally:
-                link_error = self._recheck_links()
-            if link_error is not None:
-                raise link_error
+            self._link_orphan(orphan, source_id)
 
     def _link_orphan(self, orphan: _Orphan, source_id: int) -> None:
-        """One link of ``_link_orphan_group``, which rechecks symlinks after it."""
-        try:
+        """One link of ``_link_orphan_group``."""
+        current = self._current = _MemberState(
+            requested_path=orphan.dest_path, spelled_from=orphan.spelled_from
+        )
+
+        def record(_error: object, failed: ExtractionResult) -> bool:
+            # Nothing the second pass runs raises FilterRejectionError.
+            assert failed.status is ExtractionStatus.FAILED
+            # A single link's failure, not a source fan-out: no group id.
+            self._revise_result(orphan.result_index, failed)
+            return False
+
+        with self._handling(orphan.original, kind="hardlink", record=record):
             resolved, prior, collided_with = self._resolve_collision(
                 orphan.original, orphan.transformed, orphan.dest_path
             )
-        except (ArchiveyError, OSError) as exc:
-            orphan.report_stored_spelling(exc)
-            raise
-        try:
+            current.collided_with = collided_with
             # Taken before ``_make_room``, as in ``_write_hardlink``. An earlier link
             # of the group that failed after its ``_make_room`` can have taken the
             # last path; ``_place_link`` then fails this link as well. No archive
@@ -4018,39 +3507,16 @@ class ExtractionCoordinator:
                 result = ExtractionResult(
                     orphan.original, resolved, ExtractionStatus.EXTRACTED, None
                 )
-        except (_AlwaysStopResourceLimitError, DiagnosticRaisedError):
-            raise
-        except (ArchiveyError, OSError) as exc:
-            orphan.report_stored_spelling(exc)
-            # FAILED, as for an orphaned source.
-            error, status = self._classify(exc, orphan.original.name)
-            # Nothing the second pass runs raises FilterRejectionError.
-            assert status is ExtractionStatus.FAILED
-            self._revise_result(
-                orphan.result_index,
-                ExtractionResult(
-                    orphan.original,
-                    None,
-                    ExtractionStatus.FAILED,
-                    error,
-                    requested_path=orphan.dest_path,
-                    collided_with=collided_with,
-                ),
+            result = self._settle_placement(
+                result,
+                requested=orphan.dest_path,
+                target=orphan.dest_path,
+                prior=prior,
+                collided_with=collided_with,
+                transformed=orphan.transformed,
+                result_index=orphan.result_index,
             )
-            # A single link's failure, not a source fan-out: no group id.
-            name = orphan.original.name
-            self._stop_or_log(exc, error, status, kind="hardlink", name=name)
-            return
-        result = self._settle_placement(
-            result,
-            requested=orphan.dest_path,
-            target=orphan.dest_path,
-            prior=prior,
-            collided_with=collided_with,
-            transformed=orphan.transformed,
-            result_index=orphan.result_index,
-        )
-        self._revise_result(orphan.result_index, result)
+            self._revise_result(orphan.result_index, result)
 
     @contextlib.contextmanager
     def _readonly_cleared(self, path: Path, *, ours: bool = False) -> Iterator[None]:
@@ -4139,8 +3605,7 @@ class ExtractionCoordinator:
     def _note_link_change(self, path: Path) -> None:
         """Report a symlink or directory at ``path`` replaced or removed this member."""
         self._resolutions_changed()
-        if self._state.links is not None:
-            self._state.links.note_change(path)
+        self._state.links.note_change(path)
 
     def _recheck_links(self) -> ArchiveyError | None:
         """Remove the links this run created that the member just handled made escape.
@@ -4155,7 +3620,7 @@ class ExtractionCoordinator:
         """
         state = self._state
         links = state.links
-        if links is None or not links.has_changes:
+        if not links.has_changes:
             return None
         dest_root = state.dest_root
         # The recheck asks a yes/no question; the reason is kept here, per link path,
@@ -4204,7 +3669,7 @@ class ExtractionCoordinator:
                 )
             logger.warning("Removed symlink %r: %s", prior.member.name, error)
         if outcome.unchecked:
-            return _AlwaysStopResourceLimitError(
+            return AlwaysStopResourceLimitError(
                 f"Symlink recheck limit reached: max_entries={self._limits.max_entries}"
             )
         if first is not None and AbortOn.BLOCKED_MEMBER in self._abort_on:
@@ -4273,7 +3738,7 @@ class ExtractionCoordinator:
     def _ensure_dest_root(self, dest: Path) -> bool:
         """Ensure ``dest`` is a directory to extract into, creating it if absent; under
         ``dry_run``, only refuse a ``dest`` a real run would refuse
-        (``_DryRun.check_creatable``). Returns whether this call created it, or under
+        (``DryRun.check_creatable``). Returns whether this call created it, or under
         ``dry_run`` whether a real run would have.
 
         A dest that resolves to a directory — a real directory or a symlink pointing at
@@ -4531,7 +3996,7 @@ class ExtractionCoordinator:
                 self._copy_to_fileobj(
                     stream,
                     dst if self._dry is None else self._dry.sink,
-                    _CopyCounter(self._state.tracker)
+                    CopyCounter(self._state.tracker)
                     if self._current.recopy
                     else self._state.tracker,
                     emit_progress=self._current.emit_progress,
@@ -4559,7 +4024,7 @@ class ExtractionCoordinator:
     def _copy_to_fileobj(
         stream: BinaryIO | None,
         dst: BinaryIO,
-        tracker: BombTracker | _CopyCounter | None,
+        tracker: BombTracker | CopyCounter | None,
         emit_progress: Callable[[], None] | None = None,
     ) -> None:
         """Copy ``stream`` into the already-open ``dst`` in chunks, counting each toward the
@@ -4571,12 +4036,9 @@ class ExtractionCoordinator:
         callback. Pass ``None`` (the default) for the zero-cost path.
         """
         if stream is None:
-            # A FILE reaching the writer with no data stream is a backend bug, not a valid
-            # empty file (a zero-byte FILE still yields a real, empty stream). Silently
-            # writing an empty file here would mask that bug, so raise instead. Both FILE
-            # write paths (the main pass and the orphaned-source second pass) funnel through
-            # here, so this one guard covers them; it surfaces as a per-member failure via
-            # the coordinator's OnError handling, attributed to the member being written.
+            # A backend bug, not an empty file: a zero-byte FILE still has a stream.
+            # Both FILE write paths come through here, so this fails the member in
+            # either pass rather than writing an empty file.
             raise ExtractionError(
                 "FILE member has no data stream to extract (backend returned stream=None)"
             )
@@ -4721,8 +4183,9 @@ class ExtractionCoordinator:
         copy does not count (``_occupied``); the other landings removed it in
         ``_prepare_destination``. ``os.makedirs(exist_ok=True)`` never raises for an
         existing directory, so a ``FileExistsError`` there means a non-directory. So
-        anything a landing is refused over appeared after the check. Under the other policies a landing that fails this way is not
-        handled: its error goes out as it is."""
+        anything a landing is refused over appeared after the check. Under the other
+        policies a landing that fails this way is not handled: its error goes out as it
+        is."""
         if self._overwrite is not OverwritePolicy.ERROR:
             return False
         return self._occupied(dest) if atomic else os.path.lexists(long_path(dest))
@@ -4736,12 +4199,8 @@ class ExtractionCoordinator:
         file onto another of its own names (a hard link listed twice, or one REPLACE
         routes onto a link to the same file). ``dest`` then already names the right
         file, so only the temp name is left, and it is removed here. After a real
-        rename the temp name is gone and the unlink finds nothing.
-
-        On Windows the same call does not fail: the tests for this case
-        (``test_link_onto_a_name_of_the_same_file_leaves_no_temp``) pass there. Whether
-        Windows really renames or leaves the temp as POSIX does is not pinned; the
-        unlink below covers both.
+        rename the temp name is gone and the unlink finds nothing. The unlink covers
+        Windows either way.
 
         Any error from the unlink is ignored: ``os.replace`` has already put the member
         in place, and a temp name left behind is a stray the docs call safe to delete,

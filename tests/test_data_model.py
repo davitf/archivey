@@ -17,6 +17,7 @@ from datetime import UTC
 
 import pytest
 
+from archivey.internal.hashing import crc32_digest
 from archivey.types import (
     EXTRA_IS_JUNCTION,
     ArchiveFormat,
@@ -30,7 +31,6 @@ from archivey.types import (
     MemberExtra,
     MemberType,
     StreamFormat,
-    crc32_digest,
 )
 
 # ---------------------------------------------------------------------------

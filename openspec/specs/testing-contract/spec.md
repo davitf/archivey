@@ -95,13 +95,14 @@ least one **directional mark** case proving it is *not* rejected:
 
 ### Requirement: Cross-validate native readers against reference oracles
 
-The system SHALL validate native 7z and RAR readers against reference implementations
-used only as test oracles: `py7zr` for 7z, `rarfile` and `unrar` for RAR. The `7z` CLI
-builds 7z fixtures but is not an oracle: its output is not compared, except for the
-two codecs named below. For representative corpora, native member metadata and
-decompressed bytes MUST match the oracle. Oracle libraries are dev-group dependencies
-only and SHALL NOT be required at runtime. Oracle-backed tests SHALL skip, not fail,
-when the oracle library or CLI is unavailable.
+The system SHALL validate its native ZIP, TAR, 7z and RAR readers against reference
+implementations used only as test oracles: `zipfile` for ZIP, `tarfile` for TAR, `py7zr`
+for 7z, `rarfile` and `unrar` for RAR. The `7z` CLI builds 7z fixtures but is not an
+oracle: its output is not compared, except for the two codecs named below. For
+representative corpora, native member metadata and decompressed bytes MUST match the
+oracle. Oracle libraries are dev-group dependencies only (`zipfile` and `tarfile` are
+the standard library) and the library SHALL NOT import any of them at runtime.
+Oracle-backed tests SHALL skip, not fail, when the oracle library or CLI is unavailable.
 
 The 7z corpus MUST cover core codecs supported without extras (LZMA1, LZMA2, simple
 BCJ filters other than ARM64, Delta, BZip2, Deflate, STORED), optional PPMd /
@@ -128,6 +129,9 @@ cross-check metadata and bytes against rarfile/`unrar`.
 
 | Case | Expected |
 | --- | --- |
+| ZIP fixture or corpus entry that `zipfile` opens, parsed natively and by `zipfile` | Central-directory fields match field by field; deliberate divergences are pinned by their own tests |
+| Unencrypted members found by the native local-header walk | Bytes match `zipfile.read` |
+| Well-formed TAR corpus entry, or GNU tar archive, walked natively and by `tarfile` | Member fields and bytes match, except where archivey follows GNU tar on purpose (DR-6), each pinned by its own test; GNU tar cases skipped if GNU tar is absent |
 | 7z corpus entry read by native reader and `py7zr` | Metadata and bytes match; skipped if oracle unavailable |
 | RAR corpus entry read by native reader and `rarfile`/`unrar` | Metadata and bytes match; skipped if oracle unavailable |
 | 7z entry uses BCJ2 | Bytes match `7z x`; `py7zr` is not consulted |
@@ -338,37 +342,44 @@ own per-input timeout and RSS limit rather than a Python alarm, which cannot
 interrupt native code.
 
 For CRC/checksum-gated targets (native 7z header parse at minimum; ZIP member
-headers/payloads when the ZIP read path is exercised; RAR headers; other formats
-when their interesting paths sit behind a header CRC), the harness SHALL apply a
-**mutate-then-fixup** step that recomputes and patches valid CRC fields before
-invoking the parser/reader, so coverage guidance reaches post-CRC logic. It MUST
-NOT rely on unaided libFuzzer CMP feedback to solve CRC32. A minority of inputs
-(or a small dedicated budget) SHALL retain broken CRCs so the reject path stays
-exercised.
+headers/payloads when the ZIP read path is exercised; RAR headers; TAR header
+checksums; other formats when their interesting paths sit behind a header CRC or
+checksum), the harness SHALL apply a **mutate-then-fixup** step that recomputes
+and patches valid CRC or checksum fields before invoking the parser/reader, so
+coverage guidance reaches post-check logic. It MUST NOT rely on unaided libFuzzer
+CMP feedback to solve CRC32 or the TAR header checksum. A minority of inputs (or
+a small dedicated budget) SHALL retain broken CRCs or checksums so the reject
+path stays exercised. TAR zero blocks MUST be left unchanged: they are the end
+marker.
 
 The default main-branch / nightly run SHALL partition wall-clock budget across the
 targets below (exact seconds MAY be env-overridable). The partition MUST size the
 total budget to include every required stream/codec target — there is no hard short
 ceiling that permits dropping those slices. `workflow_dispatch` MAY lengthen
-budgets further.
+budgets further. A target that reads archive members or a filter payload MUST
+use a per-input wall-clock kill timeout.
 
 | Target | Role |
 | --- | --- |
-| Native 7z header parse | Deep coverage of the pure-Python header parser |
-| 7z `open_archive` + member list/materialize | Reader/spine path after parse |
-| `detect_format` over arbitrary/prefix seeds | Magic/peek-replay entry point |
-| ZIP `open_archive` + member list + bounded member `open`/`read` | Wrapper + native codec/AES read path; mutate local/CD headers and compressed content with CRC fixup |
-| TAR `open_archive` + member list | Shallow wrapper/translation coverage |
-| ISO `open_archive` + member list | Shallow; MUST use a hard wall-clock kill timeout |
+| Native 7z header parse | Deep coverage of the pure-Python header parser. Seeds MUST include archives whose next header is not compressed, so a mutation of a coder field is still a header |
+| 7z `open_archive` + member list + bounded member `open`/`read` | Reader/spine path after parse, including the coder pipeline, solid folders, AES and branch/Delta filters. MUST pass password candidates |
+| `detect_format` over arbitrary/prefix seeds | Magic/peek-replay entry point. Each input MUST also be offered to the ZIP, RAR and 7z SFX hit validators, once with a known remaining length and once with an unknown length |
+| ZIP `open_archive` + member list + bounded member `open`/`read` | Wrapper + native codec/AES read path; mutate local/CD headers and compressed content with CRC fixup. A second open MUST use a non-seekable source and `streaming=True`, so the forward reader walks local headers and data descriptors |
+| TAR `open_archive` + member list + bounded member read | Header checksum mutate-then-fixup, then the walk, including PAX/GNU extended headers and sparse maps when the seed has them |
+| ISO `open_archive` + member list + bounded file read | Shallow; MUST use a hard wall-clock kill timeout |
 | Native RAR header parse | Deep coverage of the pure-Python RAR3/RAR5 metadata parser (CRC mutate-then-fixup) |
-| RAR `open_archive` + member list | Reader/spine path after parse |
+| RAR `open_archive` + member list + bounded member read | Reader/spine path after parse, including the external decoder. MUST pass password candidates |
+| `open_archive` with format detection, then a bounded member read | SFX payload offset, the single-file reader, compressed tar, and UDIF refusal. A pipe pass MUST run when the detected format can be read from a non-seekable source |
+| Filter decoders (BCJ2, ARM64, Delta, liblzma branch filters) | Hostile payloads for filters a container mutation does not assemble |
 | Stream/codec: unix-compress, xz, lzip, gzip, bzip2, lzma-alone, zlib | Direct `open_codec_stream` hostile input per standalone archivey-owned codec; seekable indexing on when the codec supports it; MUST use a per-input wall-clock kill timeout when hang classes are known |
 | Stream/codec optional extras (zstd, brotli, lz4, deflate64) | Same pattern when the backend is installed; skip-clean when absent |
 | Accelerators: gzip, zlib, raw DEFLATE (rapidgzip), bzip2 (rapidgzip's bzip2 decoder) | Accelerator `ON` against `OFF` on the same input; skip-clean when the accelerator cannot run |
 
 The Atheris CI workflow SHALL install RARLAB `unrar` on Linux so the RAR
 open+list target is not skipped solely for missing decompressor binary. RAR
-targets MAY still skip cleanly when the RAR backend is not registered.
+targets MAY still skip cleanly when the RAR backend is not registered. The
+workflow SHALL install `7z` and check that `7z i` lists ARM64, so the
+clear-header 7z seeds, including the ARM64 coder, are built.
 
 Full member **extract** remains out of scope for this harness (covered by the
 mutation harness). Filter-only codecs (BCJ, Delta) are not required as standalone
@@ -404,7 +415,11 @@ installed only via the CI `fuzz` dependency group (`packaging-and-extras`).
 | RAR backend present + `unrar` installed (Atheris CI) | RAR open+list target runs (not skipped for missing binary) |
 | Fuzzer finds a crashing input | Job fails; repro bytes uploaded; re-run command printed |
 | 7z / RAR header target with fixup enabled | Most iterations present a matching header CRC and enter post-CRC parse |
-| ZIP target with fixup + bounded read | Post-CRC / post-local-header path reaches archivey codec or AES+codec stream; typed errors only |
+| TAR target with checksum fixup | Most iterations present a matching header checksum and enter post-checksum parse; a zero block stays a zero block |
+| ZIP target with fixup + bounded read | Post-CRC / post-local-header path reaches archivey codec or AES+codec stream; the forward reader runs on the same bytes; typed errors only |
+| 7z / RAR / ISO open target | Bounded member reads run; typed errors only |
+| Auto-detect open target | A prefixed archive opens at the payload; a UDIF image is refused with a typed error; a compressed tar is read as tar and as a single-file stream |
+| Filter target | BCJ2, ARM64, Delta and a liblzma branch filter each run; typed errors only |
 | Each required stream/codec target | Hostile inputs exercise decode (and seek-index when enabled) without raw exceptions; hang → slice failure with artifact |
 | Optional stream extra backend absent | That codec's target skipped; required stream targets still run |
 | Accelerator target, accelerated bytes differ from `OFF` at an offset, or a clean end where `OFF` raised | Slice failure with artifact |

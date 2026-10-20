@@ -14,6 +14,8 @@ import io
 import os
 import tarfile
 from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -25,8 +27,9 @@ from archivey import (
     ResourceLimitError,
 )
 from archivey.internal import link_watch
+from archivey.internal.base_reader import BaseArchiveReader
+from archivey.internal.bomb_tracker import BombTracker
 from archivey.internal.extraction import (
-    BombTracker,
     ExtractionCoordinator,
     _RunState,
     _symlink_problem,
@@ -553,6 +556,8 @@ def test_an_anti_item_deleting_a_symlink_rechecks(tmp_path: Path) -> None:
         dest=root,
         dest_root=root.resolve(),
         tracker=BombTracker(None, None),
+        # An anti-item does not read the reader.
+        reader=cast("BaseArchiveReader", SimpleNamespace()),
         written_paths={root / "x"},
         links=watch,
     )

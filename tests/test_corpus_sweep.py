@@ -26,7 +26,8 @@ from archivey import (
     OnError,
     open_archive,
 )
-from archivey.types import HashAlgorithm, crc32_digest
+from archivey.internal.hashing import crc32_digest
+from archivey.types import HashAlgorithm
 from tests.sample_archives import (
     CORPUS,
     CorpusEntry,

@@ -27,7 +27,7 @@ from archivey.exceptions import (
     ExtractionError,
     FilterRejectionError,
 )
-from archivey.internal.extraction import BombTracker
+from archivey.internal.bomb_tracker import BombTracker
 from archivey.types import (
     AbortOn,
     ArchiveMember,

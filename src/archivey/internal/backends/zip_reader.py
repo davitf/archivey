@@ -139,6 +139,7 @@ from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
+from archivey.internal.hashing import crc32_digest
 from archivey.internal.logs import backends as logger
 from archivey.internal.naming import (
     emit_member_name_normalized,
@@ -204,7 +205,6 @@ from archivey.types import (
     MemberExtra,
     MemberStreams,
     MemberType,
-    crc32_digest,
 )
 
 _new_tuple = tuple.__new__
@@ -1437,7 +1437,7 @@ class ZipReader(BaseArchiveReader):
                 if walked.error is None:
                     # The walk got past the members, so the step ran from there.
                     assert stopped is not None
-                    walked.error = self._missing_end_record(walked, stopped)
+                    walked.error = self._missing_end_record(walked, stopped, file_size)
                 if walked.offsets:
                     self._list_walked_members(walked)
                     return
@@ -1485,13 +1485,18 @@ class ZipReader(BaseArchiveReader):
         return True
 
     def _missing_end_record(
-        self, walked: _WalkedMembers, stopped: int
+        self, walked: _WalkedMembers, stopped: int, file_size: int
     ) -> ArchiveyError:
         """Why no end record follows the members the walk passed, in the words a read
         from a pipe uses (``missing_end_record_error``); ``stopped`` is where the step
         over the directory after them stopped."""
         return missing_end_record_error(
-            self._read_at, walked.members_end, walked.after, stopped, whole=True
+            self._read_at,
+            walked.members_end,
+            walked.after,
+            stopped,
+            whole=True,
+            file_size=file_size,
         ) or CorruptionError(NO_END_RECORD_MSG)
 
     def _list_walked_members(self, walked: _WalkedMembers) -> None:

@@ -20,7 +20,10 @@ from archivey import (
     ExtractionResult,
     ExtractionStatus,
     MemberPass,
+    MissingComponent,
     OverwritePolicy,
+    format_availability,
+    list_known_formats,
     open_archive,
 )
 from archivey.cli import test_cmd
@@ -32,6 +35,7 @@ from archivey.cli.exit_codes import (
     EXIT_USAGE,
 )
 from archivey.cli.extract_cmd import _report_extraction
+from archivey.cli.format import format_format_label
 from archivey.cli.info_cmd import _can_reread
 from archivey.cli.main import _inject_default_list, _parse_cli_args, build_parser, main
 from archivey.diagnostics import DiagnosticSummary
@@ -140,6 +144,42 @@ def test_version_verbose_lists_formats(capsys: pytest.CaptureFixture[str]) -> No
     assert "dmg: none — recognised, not readable" in out
     assert main(["-v", "--version"]) == EXIT_OK
     assert "formats:" in capsys.readouterr().out
+
+
+def test_version_verbose_names_each_install_hint_once() -> None:
+    """Missing packages that one command installs share one hint, in first-seen order."""
+    hint = "pip install archivey[recommended]"
+    missing = [
+        MissingComponent("pyppmd", hint, ("ppmd",)),
+        MissingComponent("unrar", "install RARLAB unrar", ("rar",)),
+        MissingComponent("brotli", hint, ("brotli",)),
+    ]
+    from archivey.cli import main as main_mod
+
+    assert main_mod._format_missing_components(missing) == (
+        f"pyppmd, brotli ({hint}); unrar (install RARLAB unrar)"
+    )
+
+
+def test_version_verbose_never_repeats_an_install_hint(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Each format's printed line names each of its install hints exactly once.
+
+    Vacuous on a full install (nothing is missing); real on the core-only legs, where
+    the recommended-extra packages must share one hint. Hints are free text (unrar's
+    is a whole refusal with ``;`` and parentheses), so count them, don't parse them.
+    """
+    assert main(["--version", "-v"]) == EXIT_OK
+    lines = capsys.readouterr().out.splitlines()
+    for fmt in list_known_formats():
+        hints = {m.install_hint for m in format_availability(fmt).missing}
+        if not hints:
+            continue
+        prefix = f"  {format_format_label(fmt)}: "
+        line = next(ln for ln in lines if ln.startswith(prefix))
+        for hint in hints:
+            assert line.count(hint) == 1, line
 
 
 def test_default_list_dispatch(

@@ -93,6 +93,7 @@ from archivey.internal.config import (
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
+from archivey.internal.hashing import crc32_digest
 from archivey.internal.listing_limits import check_metadata_bytes, text_bytes
 from archivey.internal.logs import backends as backends_logger
 from archivey.internal.logs import integrity as integrity_logger
@@ -149,7 +150,6 @@ from archivey.types import (
     MemberStreams,
     MemberType,
     SpecialFileType,
-    crc32_digest,
 )
 
 _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = 0x400

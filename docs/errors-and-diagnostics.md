@@ -49,6 +49,15 @@ Errors that aren't about the archive also pass through as themselves. A missing 
 catch `OSError` next to `ArchiveyError` if your program cares about both. Any other exception type
 from inside archivey is a bug, and we'd like to hear about it.
 
+??? note "Why not turn every error into an `ArchiveyError`?"
+    Archivey translates the library errors it knows about, such as those for damaged data, a wrong
+    password or a source that can't seek, and lets any other error through unchanged. Converting
+    every error would let a single `except ArchiveyError` handle everything, but it would hide the
+    cases nobody has looked at yet. A library failing in a way we didn't know
+    about, or a bug in archivey itself, would look like a damaged archive. You might discard a good
+    file, and we would never hear about the problem. When the unknown error comes through as itself,
+    it gets noticed and reported, and we can then translate it properly.
+
 Exception messages are safe to print. Control characters from the archive, such as a member name
 built to move the terminal cursor, are escaped in the message. Attributes like `e.member_name` keep
 the raw value.
@@ -72,7 +81,9 @@ as a dictionary would.
 
 `members()` raises if the archive is damaged partway through its list of members, and gives you
 nothing. Iterating over the reader, or over `stream_members()`, gives you the members before the
-damage, then raises. `members_report()` gives you both at once:
+damage, then raises. On a ZIP whose central directory is damaged partway, you also get the members
+after the damage, found from the header in front of each one's data, before the exception.
+`members_report()` gives you both at once:
 
 ```python
 with archivey.open_archive("damaged.tar") as archive:
