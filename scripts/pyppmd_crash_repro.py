@@ -68,7 +68,8 @@ Examples::
     python scripts/pyppmd_crash_repro.py 30 --mode hostile-tail
     python scripts/pyppmd_crash_repro.py 100 --mode spent-quiesce-nul --cycles 20
     python scripts/pyppmd_crash_repro.py 100 --mode nul-after-error --cycles 20
-    PPMD_REPRO_VARIANT=7 python scripts/pyppmd_crash_repro.py 100 --mode nul-after-error --cycles 20
+    PPMD_REPRO_VARIANT=7 python scripts/pyppmd_crash_repro.py 100 \\
+        --mode nul-after-error --cycles 20
 
     pip install 'pyppmd==1.2.0'
     pip install 'pyppmd==1.3.1'
