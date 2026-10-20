@@ -679,10 +679,12 @@ any spelling that reaches it (through a directory symlink the archive created, u
 policy, or a case variant on a case-insensitive filesystem, under `STRICT` and `STANDARD`),
 that member's result SHALL be revised to `OVERWRITTEN`. Under `TRUSTED` the coordinator keys
 on the exact path and defers to the local OS (see the O2 collision requirement), so a case
-variant there is not recognized and the earlier result is not revised. The replacing
-member collided with that directory (see the O2 collision requirement), so its
-`collided_with` names it and `AbortOn.NAME_COLLISION` fires before the directory is
-removed.
+variant there is not recognized and the earlier result is not revised. Outside
+`TRUSTED`, the replacing member collided with that directory (see the O2 collision
+requirement), so its `collided_with` names it and `AbortOn.NAME_COLLISION` fires before
+the directory is removed. Under `TRUSTED` there is no collision event: `collided_with`
+stays `None` and the abort does not fire, while the earlier result is still revised when
+the replacing member spells the directory's path exactly.
 
 A DIRECTORY member whose destination is a directory that was there before the run (the
 destination root, for a `./` member, when the call did not create it, or any directory
@@ -741,7 +743,7 @@ name-safety requirement.
 | Existing symlink under `REPLACE` | Symlink entry itself is replaced; bytes never follow the old link |
 | `REPLACE` fails mid-stream | Existing file remains unchanged; temp is discarded |
 | `REPLACE` clears a this-run destination and then fails | The earlier member is revised to `OVERWRITTEN`; no result claims `EXTRACTED` at the emptied path |
-| `REPLACE` removes an empty directory this run wrote | The directory member is revised to `OVERWRITTEN`; the replacing member's `collided_with` names the directory |
+| `REPLACE` removes an empty directory this run wrote | The directory member is revised to `OVERWRITTEN`; outside `TRUSTED` the replacing member's `collided_with` names the directory, and under `TRUSTED` it is `None` |
 | Dangling symlink under `ERROR` or `SKIP` | Treated as existing; no write-through to target |
 | `foo/x` with no `foo/` entry, the caller's file at `foo`, under `ERROR` | `foo/x` `FAILED` with `ExtractionError` ("Destination already exists"); the file is kept |
 | The same under `SKIP` | `foo/x` `NOT_OVERWRITTEN`; the file is kept |
@@ -1435,7 +1437,8 @@ earlier member (`x/f` and then `x`), collides with that directory under every
 when one wrote it), `AbortOn.NAME_COLLISION` fires, and the policy then meets the
 directory where it is: `ERROR` fails the member, `SKIP` records `NOT_OVERWRITTEN`,
 `REPLACE` removes it only when it is empty, and `RENAME` writes the member under a
-derived name. A directory that was there before the run is not a collision event. On a
+derived name. A directory that was there before the run is not a collision event, even
+when a DIRECTORY member of this run merged into it. On a
 case-sensitive filesystem a file `Foo` and a
 directory `foo/` do not share an entry, so they do not collide. `REPLACE`
 SHALL NOT silently merge distinct members on case-insensitive filesystems: the earlier

@@ -4279,6 +4279,30 @@ def test_file_over_a_directory_this_run_wrote_is_no_collision_under_trusted(
     assert member.collided_with is None
 
 
+@pytest.mark.skipif(not hasattr(os, "symlink") or os.name == "nt", reason="POSIX")
+def test_file_over_a_run_directory_names_the_directory_as_its_member_spelled_it(
+    tmp_path: Path,
+) -> None:
+    """The only directory member reached ``d/x`` as ``s/x`` through the archive's own
+    ``s -> d``. ``collided_with`` is that member's ``path``, so it joins to its
+    result, not the spelling the file member used."""
+    archive = _tar_bytes(
+        [
+            ("dir", "d/", None),
+            ("sym", "s", "d"),
+            ("dir", "s/x/", None),
+            ("file", "d/x", b"file"),
+        ]
+    )
+    dest = tmp_path / "out"
+    report = open_and_extract(io.BytesIO(archive), dest, overwrite=OverwritePolicy.SKIP)
+    directory, member = report.results[2:]
+    assert directory.path == dest / "s" / "x"
+    assert member.status is ExtractionStatus.NOT_OVERWRITTEN
+    assert member.requested_path == dest / "d" / "x"
+    assert member.collided_with == directory.path
+
+
 def test_file_over_a_directory_already_there_is_no_collision(tmp_path: Path) -> None:
     """A directory that was in ``dest`` before the run is not this run's: the file
     meets it under SKIP with ``collided_with`` left ``None``."""
@@ -4290,6 +4314,27 @@ def test_file_over_a_directory_already_there_is_no_collision(tmp_path: Path) -> 
         overwrite=OverwritePolicy.SKIP,
     )
     (member,) = report.results
+    assert member.status is ExtractionStatus.NOT_OVERWRITTEN
+    assert member.collided_with is None
+
+
+def test_file_over_a_directory_already_there_is_no_collision_after_a_merge(
+    tmp_path: Path,
+) -> None:
+    """A directory member that merges into a directory already in ``dest`` reports
+    it, but the directory is still the caller's: a file landing on it afterwards
+    gets ``collided_with`` ``None``, and ``NAME_COLLISION`` does not fire."""
+    dest = tmp_path / "out"
+    (dest / "x").mkdir(parents=True)
+    report = open_and_extract(
+        io.BytesIO(_tar_bytes([("dir", "x/", None), ("file", "x", b"file")])),
+        dest,
+        overwrite=OverwritePolicy.SKIP,
+        abort_on={AbortOn.NAME_COLLISION},
+    )
+    directory, member = report.results
+    assert directory.status is ExtractionStatus.EXTRACTED
+    assert directory.path == dest / "x"
     assert member.status is ExtractionStatus.NOT_OVERWRITTEN
     assert member.collided_with is None
 
@@ -4319,6 +4364,7 @@ def test_replace_revises_a_directory_reached_through_the_archives_symlink(
     assert top.status is ExtractionStatus.EXTRACTED
     assert link.status is ExtractionStatus.EXTRACTED
     assert member.status is ExtractionStatus.EXTRACTED
+    assert member.collided_with == direct.requested_path == dest / "d" / "sub"
     assert (dest / "d" / "sub").read_bytes() == b"file"
 
 
@@ -4343,6 +4389,7 @@ def test_replace_keeps_a_case_variant_directory_that_is_still_there(
     assert upper.status is ExtractionStatus.EXTRACTED
     assert (dest / "X").is_dir()
     assert member.status is ExtractionStatus.EXTRACTED
+    assert member.collided_with == lower.requested_path == dest / "x"
 
 
 @pytest.mark.parametrize("build", [_tar_bytes, _zip_bytes], ids=["tar", "zip"])
@@ -4844,6 +4891,7 @@ def test_abort_on_name_collision_fires_for_a_file_over_a_run_directory(
             abort_on={AbortOn.NAME_COLLISION},
         )
     assert excinfo.value.member_name == "x"
+    assert "with a directory this run created at" in str(excinfo.value)
     assert (dest / "x").is_dir()
 
 

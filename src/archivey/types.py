@@ -1535,10 +1535,11 @@ class ExtractionResult:
     member, or a directory it is in, was renamed (``dd/f`` written at ``dd (1)/f``).
     After a collision settled by ``SKIP`` or ``ERROR``, this is set and ``path`` is
     ``None``. On an ``OVERWRITTEN`` result it keeps the path this member wrote to, which
-    a later member then took over. When this member wrote a file, the later member's
-    ``collided_with`` equals this path. A directory is never recorded as a collision, so
-    no result names the member that replaced one, and on a case-insensitive file system
-    that member's ``path`` can differ from this one in case. ``None`` for a member
+    a later member then took over. That later member's ``collided_with`` equals this
+    path, whether this member wrote a file or a directory (outside
+    ``ExtractionPolicy.TRUSTED``), so join the two through ``collided_with``: the later
+    member's own ``path`` can differ from this one in case on a case-insensitive file
+    system, or in spelling through a symlink of the archive's. ``None`` for a member
     refused or failed before its destination was settled."""
 
     presented_name: str | None = None
@@ -1568,9 +1569,11 @@ class ExtractionResult:
     ``requested_path``. The member it collided with is the result whose ``path`` equals
     this, or whose ``requested_path`` does once that result is ``OVERWRITTEN``.
 
-    A directory this run wrote, or created as the parent of an earlier member, holds
-    its name too: a file landing on it records the directory's path. A directory that
-    was only created as a parent has no result of its own."""
+    A directory this run created on disk, from a ``DIRECTORY`` member or as the parent
+    of an earlier member, holds its name too: a file landing on it records the
+    directory's path. A directory that was only created as a parent has no result of its
+    own. A directory that was already in ``dest`` is not counted, even when a
+    ``DIRECTORY`` member of this run merged into it and reports it."""
 
     kept_mode: int | None = None
     """On a ``DIRECTORY`` result whose directory existed before the run, such as the

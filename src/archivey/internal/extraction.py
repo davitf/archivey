@@ -2428,7 +2428,7 @@ class ExtractionCoordinator:
         ):
             collided = self._run_directory_at(requested)
         if collided is not None:
-            self._check_collision_abort(original, collided)
+            self._check_collision_abort(original, collided, directory=prior is None)
         if self._overwrite is OverwritePolicy.RENAME:
             if prior is not None or self._occupied(requested):
                 is_dir = transformed.type == MemberType.DIRECTORY
@@ -2448,8 +2448,10 @@ class ExtractionCoordinator:
         caller joins ``collided_with`` to that result by path; a directory the run
         only created as a parent has no result, and is returned as ``path``."""
         state = self._state
-        # Every directory the run wrote or created is in ``run_dirs``: a run that made
-        # none under this key pays no ``lstat``.
+        # Every directory the run created on disk is in ``run_dirs``: a run that made
+        # none under this key pays no ``lstat``. A directory that was already in
+        # ``dest`` is not there, even when a DIRECTORY member of this run merged into
+        # it and reports it: it is the caller's, so landing on it is no collision.
         if not state.run_dirs.get(self._physical_key(path)):
             return None
         try:
@@ -2676,8 +2678,13 @@ class ExtractionCoordinator:
         # archivey/cli/logging_config.py matches this format string literally.
         logger.warning("Skipping %s %r: %s", kind, name, error)
 
-    def _check_collision_abort(self, original: ArchiveMember, prior: Path) -> None:
-        """Abort on a collision event if the caller asked to be stopped by one.
+    def _check_collision_abort(
+        self, original: ArchiveMember, collided: Path, *, directory: bool
+    ) -> None:
+        """Abort on a collision event with ``collided`` if the caller asked to be
+        stopped by one. ``directory`` says that ``collided`` is a directory this run
+        made (``_run_directory_at``), which no member may have written: one created
+        only as a parent is at the name the aborting member asked for.
 
         Fires on **every** non-TRUSTED collision whatever resolution follows — replaced,
         skipped, errored or renamed — because the trigger is the collision itself, not its
@@ -2686,10 +2693,10 @@ class ExtractionCoordinator:
         """
         if AbortOn.NAME_COLLISION not in self._abort_on:
             return
+        what = "a directory this run created at" if directory else "already-written"
         raise _AbortExtraction(
             NameCollisionError(
-                f"Name collision with already-written "
-                f"{display_path(self._shown(prior))}",
+                f"Name collision with {what} {display_path(self._shown(collided))}",
                 member_name=original.name,
             )
         )
@@ -3959,7 +3966,7 @@ class ExtractionCoordinator:
                     if next(entries, None) is not None:
                         raise ExtractionError(
                             f"Destination is a directory that is not empty: "
-                            f"{display_path(dest_path)}",
+                            f"{display_path(self._shown(dest_path))}",
                             member_name=member.name,
                         )
                 self._note_link_change(dest_path)
