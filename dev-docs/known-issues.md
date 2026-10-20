@@ -324,12 +324,12 @@ scenarios with it. Adversarial unfinished-decoder tests run in subprocess childr
 [`ppmd-native-investigation-results.md`](investigations/ppmd-native-investigation-results.md)
 §D, §I and §K.5.
 
-## PyPy: rapidgzip, python-lz4 and pyppmd misbehave (open)
+## PyPy: rapidgzip, python-lz4, pyppmd and inflate64 misbehave (open)
 
 **Symptom.** Under PyPy 3.11 (the allowed-to-fail `pypy3.11` CI job). The versions below
 are what that job resolved on 2026-10-20, not floors: rapidgzip 0.16.0, lz4 4.4.5, pyppmd
-1.3.1. The job's install step prints the versions each run resolves, so check a newer run
-before assuming a later release still fails.
+1.3.1, inflate64 1.0.4. The job's install step prints the versions each run resolves, so
+check a newer run before assuming a later release still fails.
 
 - rapidgzip refuses valid gzip streams ("Failed to detect a valid file format"), reads a
   bzip2 stream as empty, and aborts the process when it reads a Python file object.
@@ -338,24 +338,31 @@ before assuming a later release still fails.
 - pyppmd runs its cffi build, which ends a valid PPMd member early: the decoder relies on
   how the C extension reports the end of data (`ppmd_decoder.py`), and the cffi build
   reports it sooner, so the read returns data cut short.
+- inflate64: a Deflate64 member of a bit-3 ZIP read from a stream that cannot seek raises
+  `CorruptionError: Error reading deflate64 stream … error code is -3` in
+  `tests/test_zip_walk_codec_end.py::test_a_codec_member_ends_where_its_codec_ends[signed-deflate64]`
+  and `[unsigned-deflate64]` (run 39477059217). Whether the decoder or the test's own
+  Deflate64 compression is at fault is not established. archivey still uses inflate64
+  under PyPy.
 
-**What archivey does.** It treats all three as absent under PyPy, whether installed or not
-(`deps.unused_reason` in `internal/streams/codecs/deps.py`; `rapidgzip_child` refuses to
-start the child). `MissingComponent.reason` carries why, and every report of a missing
-package (the `PackageNotInstalledError` of a read, `format_availability()`, the registry's
-refusal and `archivey --version -v`) shows it in place of the install advice. LZ4 and PPMd
-data cannot be read there; `AUTO` decodes gzip, zlib, deflate and bzip2 with the standard
-library, and `ON` raises. The tests treat the three as not installed under PyPy
-(`UNUSED_UNDER_PYPY` in `tests/conftest.py`).
+**What archivey does.** It treats rapidgzip, python-lz4 and pyppmd as absent under PyPy,
+whether installed or not (`deps.unused_reason` in `internal/streams/codecs/deps.py`;
+`rapidgzip_child` refuses to start the child). `MissingComponent.reason` carries why, and
+every report of a missing package (the `PackageNotInstalledError` of a read,
+`format_availability()`, the registry's refusal and `archivey --version -v`) shows it in
+place of the install advice. LZ4 and PPMd data cannot be read there; `AUTO` decodes gzip,
+zlib, deflate and bzip2 with the standard library, and `ON` raises. The tests treat the
+three as not installed under PyPy (`UNUSED_UNDER_PYPY` in `tests/conftest.py`).
 
 **What remains.** PPMd reads under PyPy need either a pure-Python PPMd decoder or a
 workaround for how pyppmd's cffi build reports the end. LZ4 needs a python-lz4 that runs
-under PyPy. rapidgzip needs upstream support for PyPy.
+under PyPy. rapidgzip needs upstream support for PyPy. The inflate64 failure needs
+diagnosing first.
 
-**Upstream.** Not filed with rapidgzip, python-lz4 or pyppmd.
+**Upstream.** Not filed with rapidgzip, python-lz4, pyppmd or inflate64.
 
 **Evidence.** The `pypy3.11` job logs in CI; PyPy is not a supported interpreter
-([`docs/install.md`](../docs/install.md) §Python versions and platforms).
+([`docs/install.md`](../docs/install.md) §PyPy).
 
 ## Intermittent Linux full-suite heap corruption (`[all]` / Hypothesis late crash)
 
