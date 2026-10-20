@@ -80,7 +80,11 @@ def test_corrupt_xz_data_is_still_corruption(tmp_path: Path) -> None:
 
 
 def test_liblzma_still_words_a_memlimit_refusal_the_same_way() -> None:
-    with pytest.raises(lzma.LZMAError, match="^Memory usage limit"):
+    # PyPy has no message for LZMA_MEMLIMIT_ERROR and gives its number instead.
+    with pytest.raises(
+        lzma.LZMAError,
+        match="^(Memory usage limit|Unrecognised error from liblzma: 6$)",
+    ):
         lzma.LZMADecompressor(format=lzma.FORMAT_XZ, memlimit=1024).decompress(
             lzma.compress(_PAYLOAD, format=lzma.FORMAT_XZ)
         )
@@ -92,6 +96,7 @@ def test_liblzma_still_words_a_memlimit_refusal_the_same_way() -> None:
         ("Invalid or unsupported options", UnsupportedFeatureError),
         ("Unsupported integrity check", UnsupportedFeatureError),
         ("Memory usage limit exceeded", ResourceLimitError),
+        ("Unrecognised error from liblzma: 6", ResourceLimitError),
         ("Corrupt input data", CorruptionError),
         ("Input format not supported by decoder", CorruptionError),
         ("Unrecognized error from liblzma: 42", CorruptionError),

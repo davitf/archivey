@@ -46,6 +46,7 @@ from archivey.types import CompressionAlgorithm
 from tests.conftest import requires, requires_binary, requires_zstd, zstd_backend
 from tests.streams_util import (
     NonSeekableBytesIO,
+    lzma_alone_with_filter,
     make_lzip_member,
     make_multiblock_xz,
     xz_cli_available,
@@ -612,7 +613,7 @@ def test_lzma_alone_declaring_four_gib_is_refused(tmp_path: Path) -> None:
 def _alone_stream(data: bytes, dict_size: int) -> bytes:
     """An Alone stream whose header declares ``dict_size``; the data needs 64 KiB."""
     lzma1 = {"id": lzma.FILTER_LZMA1, "dict_size": 1 << 16}
-    written = bytearray(lzma.compress(data, format=lzma.FORMAT_ALONE, filters=[lzma1]))
+    written = bytearray(lzma_alone_with_filter(data, lzma1))
     written[1:5] = struct.pack("<L", dict_size)
     return bytes(written)
 

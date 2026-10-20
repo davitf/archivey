@@ -257,12 +257,27 @@ class ReadSizeRecorder(io.RawIOBase):
         return self._inner.tell()
 
 
+def lzma_alone_with_filter(data: bytes, lzma1: dict) -> bytes:
+    """``lzma.compress(data, format=FORMAT_ALONE, filters=[lzma1])``, also on PyPy.
+
+    PyPy's ``lzma`` refuses FORMAT_ALONE with a filter chain (NotImplementedError).
+    The Alone format is a 13-byte header (properties byte, dictionary size, unknown
+    size) before the raw LZMA1 stream, so this writes the header and compresses with
+    FORMAT_RAW. The bytes match what CPython writes.
+    """
+    lzma1 = {"lc": 3, "lp": 0, "pb": 2, **lzma1}
+    props = (lzma1["pb"] * 5 + lzma1["lp"]) * 9 + lzma1["lc"]
+    raw = lzma.compress(data, format=lzma.FORMAT_RAW, filters=[lzma1])
+    return bytes([props]) + struct.pack("<LQ", lzma1["dict_size"], 2**64 - 1) + raw
+
+
 def make_lzip_member(data: bytes, dict_size_bits: int = 20) -> bytes:
     """Build one lzip member from ``data`` using stdlib ``lzma``.
 
-    lzip omits the 13-byte LZMA_ALONE header from its raw stream; compress with
-    FORMAT_ALONE (which includes it), strip the header, then wrap in the lzip
-    header/trailer.
+    lzip's stream is the raw LZMA1 stream an Alone file carries after its 13-byte
+    header; compress with FORMAT_RAW, then wrap in the lzip header/trailer. Not
+    FORMAT_ALONE with the header stripped: PyPy's ``lzma`` refuses FORMAT_ALONE with
+    a filter chain (NotImplementedError), and the raw bytes are the same.
     """
     filters: list[dict] = [
         {
@@ -273,8 +288,7 @@ def make_lzip_member(data: bytes, dict_size_bits: int = 20) -> bytes:
             "pb": 2,
         }
     ]
-    compressed_alone = lzma.compress(data, format=lzma.FORMAT_ALONE, filters=filters)
-    lzma_raw = compressed_alone[13:]
+    lzma_raw = lzma.compress(data, format=lzma.FORMAT_RAW, filters=filters)
     header = b"LZIP" + bytes([1, dict_size_bits])
     member_total = len(header) + len(lzma_raw) + 20
     trailer = struct.pack(
