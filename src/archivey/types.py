@@ -408,7 +408,7 @@ class HashAlgorithm(StrEnum):
     """Digest algorithms that may appear as keys in :attr:`ArchiveMember.hashes`."""
 
     CRC32 = "crc32"
-    """CRC-32, as four big-endian bytes (see :func:`crc32_digest`)."""
+    """CRC-32, as four big-endian bytes."""
     BLAKE2SP = "blake2sp"
     """BLAKE2sp, 32 bytes. Only RAR5 stores it."""
 
