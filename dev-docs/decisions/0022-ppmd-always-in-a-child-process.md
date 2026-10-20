@@ -67,7 +67,7 @@ The reasons were:
   the quiesce decode after an early end, and empty drains on a member that is declared
   complete but corrupt. Since pyppmd does not expose the state that would make a call
   sequence safe by construction, the in-process path rests on test results, not on a
-  rule that can be checked. `known-issues.md` described the remaining risk as an
+  rule that can be checked. `known-issues.md` describes the remaining risk as an
   oversized `unpack_size`; measured, that shape is the free-while-parked route, which
   quiescing already handles. PR #905 corrects that entry.
 - **A child no longer costs a process start per member.** The native-decoder isolation
