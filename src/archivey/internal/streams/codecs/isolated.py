@@ -28,6 +28,7 @@ from archivey.internal.streams.codecs.decoder_child import (
     decoder_child_unavailable_reason,
     isolation_error,
 )
+from archivey.internal.streams.native_memory import note_native_memory
 
 
 class Decompressor(Protocol):
@@ -99,6 +100,51 @@ def _zstd_errors() -> dict[tuple[str, str], type[Exception]]:
 def _lz4_errors() -> dict[tuple[str, str], type[Exception]]:
     block = deps.lz4_block
     return _known(getattr(block, "LZ4BlockError", None)) if block is not None else {}
+
+
+# What a decoder of an unknown stream most likely holds outside PyPy's heap
+# (``native_memory`` has why it matters and which decoders report). liblzma: the
+# dictionary of the default preset (6). zstd: the largest window of the levels a
+# default compressor picks.
+_TYPICAL_DECODER_MEMORY = 8 << 20
+# libbz2: the default (and largest) 900 kB block size.
+_BZ2_DECODER_MEMORY = 3600 << 10
+# brotli: the ring buffer of the default 22-bit window.
+_BROTLI_DECODER_MEMORY = 4 << 20
+
+
+def _lzma_decoder_memory(
+    memlimit: int | None, filters: list[dict[str, Any]] | None
+) -> int:
+    """What a liblzma decoder most likely allocates: the dictionary a raw filter chain
+    names, else the default one, never more than ``memlimit``."""
+    estimate = _TYPICAL_DECODER_MEMORY
+    if filters is not None:
+        estimate = max(
+            (
+                int(f.get("dict_size", _TYPICAL_DECODER_MEMORY))
+                for f in filters
+                if f.get("id") in (lzma.FILTER_LZMA1, lzma.FILTER_LZMA2)
+            ),
+            default=_TYPICAL_DECODER_MEMORY,
+        )
+    return estimate if memlimit is None else min(estimate, memlimit)
+
+
+def _zstd_decoder_memory(options: Mapping[int, int] | None) -> int:
+    """What a zstd decoder most likely holds: the typical window, never more than the
+    ``window_log_max`` it is given.
+
+    A frame can declare a window up to that cap (2 GiB under the default
+    ``max_decoder_memory``), and nothing frees it before a collection. Reporting the
+    cap would force a major collection per decoder, so the estimate stays typical.
+    """
+    zstd = deps.zstd
+    assert zstd is not None
+    log_max = (options or {}).get(zstd.DecompressionParameter.window_log_max)
+    if log_max is None:
+        return _TYPICAL_DECODER_MEMORY
+    return min(_TYPICAL_DECODER_MEMORY, 1 << int(log_max))
 
 
 class _ChildProxy:
@@ -247,7 +293,9 @@ class Natives:
         if not self.isolated:
             import bz2
 
-            return bz2.BZ2Decompressor()
+            decoder = bz2.BZ2Decompressor()
+            note_native_memory(decoder, _BZ2_DECODER_MEMORY)
+            return decoder
         return ChildDecompressor(self._child("bz2"))
 
     def lzma_decompressor(
@@ -257,9 +305,11 @@ class Natives:
         filters: list[dict[str, Any]] | None = None,
     ) -> Decompressor:
         if not self.isolated:
-            return lzma.LZMADecompressor(
+            decoder = lzma.LZMADecompressor(
                 format=format, memlimit=memlimit, filters=filters
             )
+            note_native_memory(decoder, _lzma_decoder_memory(memlimit, filters))
+            return decoder
         kwargs: dict[str, object] = {"format": format}
         if memlimit is not None:
             kwargs["memlimit"] = memlimit
@@ -274,7 +324,9 @@ class Natives:
         if not self.isolated:
             zstd = deps.zstd
             assert zstd is not None
-            return zstd.ZstdDecompressor(options=options)
+            decoder = zstd.ZstdDecompressor(options=options)
+            note_native_memory(decoder, _zstd_decoder_memory(options))
+            return decoder
         # The option keys are ``DecompressionParameter`` members, an ``IntEnum`` that
         # ``marshal`` does not carry; the decoder takes their integer values too.
         kwargs: dict[str, object] = {}
@@ -308,7 +360,9 @@ class Natives:
         if not self.isolated:
             brotli = deps.brotli.load()
             assert brotli is not None
-            return brotli.Decompressor()
+            decoder = brotli.Decompressor()
+            note_native_memory(decoder, _BROTLI_DECODER_MEMORY)
+            return decoder
         child = self._child("brotli", known=_BROTLI_ERRORS)
         if child.has("can_accept_more_data"):
             return ChildBrotliDecompressorWithLimit(child)

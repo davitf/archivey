@@ -8,6 +8,7 @@ exactly that shape and stay silent when the password was checked against a diges
 
 from __future__ import annotations
 
+import contextlib
 import subprocess
 from pathlib import Path
 
@@ -318,11 +319,13 @@ def test_rar4_seek_then_read_to_eof_is_not_reported() -> None:
 def test_rar4_solid_pass_partial_read_is_reported() -> None:
     # The solid pass demultiplexes one ``unrar p`` run; its members are watched too.
     with open_archive(_RAR4_SOLID, password=_RAR4_SOLID_LEAKING_WRONG) as reader:
-        for member, stream in reader.stream_members():
-            assert stream is not None
-            head = stream.read(4)
-            assert len(head) == 4 and head != b"This"
-            break
+        # Closed, not dropped: PyPy would close a dropped pass only when collected.
+        with contextlib.closing(reader.stream_members()) as passing:
+            for member, stream in passing:
+                assert stream is not None
+                head = stream.read(4)
+                assert len(head) == 4 and head != b"This"
+                break
         (context,) = _unverified(reader)
         assert context.member_name == "a.txt"
         assert context.check == "no_password_check"

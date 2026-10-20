@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import bisect
 import io
+import lzma
 import os
 import zlib
 from collections.abc import Callable, Container, Sequence
@@ -52,6 +53,7 @@ from archivey.internal.diagnostics_collector import (
     resolve_collector,
 )
 from archivey.internal.logs import streams as logger
+from archivey.internal.streams.native_memory import end_lzma_decoder
 from archivey.internal.streams.resume import (
     ResumeReachedStreamEnd,
     hold_for_planned_seek,
@@ -1547,10 +1549,13 @@ def release_decoder(decoder: object, depth: int = 3) -> None:
     is dropped or replaced (the next gzip member, xz stream or zstd frame). Otherwise
     the child stays leased until the collector frees the proxy: at once on CPython,
     but on PyPy only at a later collection, and until then every new decoder starts a
-    process of its own.
+    process of its own. An in-process liblzma decoder is ended at once, which frees
+    its buffers on PyPy (``native_memory.end_lzma_decoder``).
     """
     if getattr(type(decoder), "holds_decoder_child", False):
         cast("_HoldsChild", decoder).close()
+    elif type(decoder) is lzma.LZMADecompressor:
+        end_lzma_decoder(decoder)
     elif (
         depth > 0
         and type(decoder).__module__.startswith(_CODECS_PACKAGE)
@@ -1565,9 +1570,11 @@ def release_decoder_children(holder: object) -> None:
 
     A decoder keeps its native object in an attribute, sometimes inside a small helper
     of its own (the xz and lzip state, the clamped Alone header, the lz4 picker), so
-    this hands each attribute to :func:`release_decoder`, which looks a few levels down for a child proxy. An archive reader can sit in a
-    reference cycle, and without this its decoders' child processes would stay leased
-    until the cycle collector ran.
+    this hands each attribute to :func:`release_decoder`, which looks a few levels down
+    for a child proxy. An archive reader can sit in a reference cycle, and without this
+    its decoders' child processes would stay leased until the cycle collector ran. It
+    also ends the in-process liblzma decoders it finds, which matters on PyPy only
+    (``native_memory.end_lzma_decoder``).
     """
     for value in list(getattr(holder, "__dict__", {}).values()):
         release_decoder(value)
