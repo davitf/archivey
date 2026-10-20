@@ -592,6 +592,8 @@ def test_main_passes_wall_drift_min_extra_ms_as_milliseconds(
     )
     monkeypatch.setattr(harness, "run_cases", lambda *_a, **_k: [current])
     monkeypatch.setattr(harness, "_structural_checks", lambda *_a, **_k: [])
+    # Full mode also times the cost-model ladder, which this test does not need.
+    monkeypatch.setattr(harness, "run_cost_model", lambda *_a, **_k: [])
     baseline = tmp_path / "prev.json"
     baseline.write_text(
         json.dumps({"results": [{"case": "zip_read_all", "wall_ratio": 1.0}]})
