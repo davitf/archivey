@@ -20,6 +20,7 @@ handle (bounded by the Brotli chain-walk link cap); those restores are not
 from __future__ import annotations
 
 import bz2
+import contextlib
 import gzip
 import io
 import os
@@ -57,6 +58,7 @@ from tests.detection_cost_util import trailer_allowance, within_budget
 from tests.streams_util import (
     MemberSeek,
     NonSeekableBytesIO,
+    QueuedChunks,
     assert_no_member_tail_seek,
     spy_member_seeks,
 )
@@ -986,42 +988,13 @@ def test_inner_tar_skip_reason_precedence(
     assert inner == [TierSkip("inner_tar", reason)]
 
 
-class _Installments(io.RawIOBase):
-    """A forward-only raw that hands over at most one queued chunk per read.
-
-    ``None`` in the queue is a stall that lasts. Empty queue: EOF.
-    """
-
-    def __init__(self, *chunks: bytes | None) -> None:
-        super().__init__()
-        self._chunks = list(chunks)
-        self.calls = 0
-
-    def readable(self) -> bool:
-        return True
-
-    def read(self, n: int = -1, /) -> bytes | None:
-        self.calls += 1
-        if not self._chunks:
-            return b""
-        chunk = self._chunks[0]
-        if chunk is None:
-            return None
-        take = len(chunk) if n < 0 else min(n, len(chunk))
-        if take == len(chunk):
-            self._chunks.pop(0)
-        else:
-            self._chunks[0] = chunk[take:]
-        return chunk[:take]
-
-
 def _forward_sources(*chunks: bytes | None) -> list[tuple[str, Callable[[], Any]]]:
     """The raw stream itself and the ``ArchiveSource`` over it: both forward paths."""
     from archivey.internal.source import ArchiveSource
 
     return [
-        ("raw", lambda: _Installments(*chunks)),
-        ("archive-source", lambda: ArchiveSource.for_stream(_Installments(*chunks))),  # type: ignore[arg-type]  # test double
+        ("raw", lambda: QueuedChunks(*chunks)),
+        ("archive-source", lambda: ArchiveSource.for_stream(QueuedChunks(*chunks))),  # type: ignore[arg-type]  # test double
     ]
 
 
@@ -1110,26 +1083,28 @@ def test_bounded_reader_over_an_arrived_view_peeks_again_only_when_it_must() -> 
     buffer, peeks until it has a byte or the source ends."""
     from archivey.internal.detection import _BoundedPeekReader
 
-    def reader() -> tuple[_BoundedPeekReader, _Installments]:
-        raw = _Installments(b"ab", b"cd", b"ef")
-        ws = PrefixWorkspace(raw, BALANCED_BUDGET)
-        return _BoundedPeekReader(
-            ws.candidate_view(0, arrived=True), 100, arrived=True
-        ), raw
+    with contextlib.ExitStack() as workspaces:
 
-    sized, raw = reader()
-    assert sized.read(10) == b"ab"
-    assert raw.calls == 1
-    assert sized.read(10) == b"cd"
-    assert raw.calls == 2
+        def reader() -> tuple[_BoundedPeekReader, QueuedChunks]:
+            raw = QueuedChunks(b"ab", b"cd", b"ef")
+            ws = workspaces.enter_context(PrefixWorkspace(raw, BALANCED_BUDGET))
+            return _BoundedPeekReader(
+                ws.candidate_view(0, arrived=True), 100, arrived=True
+            ), raw
 
-    drain, _ = reader()
-    assert drain.read(-1) == b"abcdef"
+        sized, raw = reader()
+        assert sized.read(10) == b"ab"
+        assert raw.calls == 1
+        assert sized.read(10) == b"cd"
+        assert raw.calls == 2
 
-    seeking, raw = reader()
-    seeking.seek(3)
-    # The first peek holds only "ab", short of offset 3: one more peek reaches "d".
-    assert seeking.read(10) == b"d"
-    assert raw.calls == 2
-    assert seeking.read(10) == b"ef"
-    assert seeking.read(10) == b""
+        drain, _ = reader()
+        assert drain.read(-1) == b"abcdef"
+
+        seeking, raw = reader()
+        seeking.seek(3)
+        # The first peek holds only "ab", short of offset 3: one more peek reaches "d".
+        assert seeking.read(10) == b"d"
+        assert raw.calls == 2
+        assert seeking.read(10) == b"ef"
+        assert seeking.read(10) == b""

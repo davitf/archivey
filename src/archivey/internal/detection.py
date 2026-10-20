@@ -374,11 +374,12 @@ def _probe_inner_tar(
     the source (:class:`_BoundedPeekReader` over ``peek_more``), so it pulls exactly as much
     compressed input as it needs to reach the TAR header region and no more.
 
-    Accelerators are forced ``OFF``: ``seekable=True`` must not flip AUTO rapidgzip /
-    IndexedBzip2File on for a short detection peek. Decoder limits are lifted for the
-    same reason the codec content probes lift them (``_PROBE_STREAM_CONFIG`` in
-    ``codecs/base.py``): a capped probe would call a ``.tar.xz`` with a large dictionary a
-    bare ``.xz`` even for a caller who opened it with ``DecoderLimits.UNLIMITED``. The
+    Accelerators are forced ``OFF`` on both paths: a declared seek demand must not flip
+    AUTO rapidgzip / IndexedBzip2File on for a short detection peek. Decoder limits are
+    lifted for the same reason the codec content probes lift them
+    (``_PROBE_STREAM_CONFIG`` in ``codecs/base.py``): a capped probe would call a
+    ``.tar.xz`` with a large dictionary a bare ``.xz`` even for a caller who opened it
+    with ``DecoderLimits.UNLIMITED``. The
     open that follows applies the caller's limits. ``probe_read_bound`` keeps the probe
     from reserving what the archive declares: the LZMA family (``.xz``, ``.lzma``,
     ``.lz``) decodes the 512 bytes with a 4 KiB dictionary, which gives the same bytes,
@@ -451,7 +452,10 @@ def _probe_inner_tar(
     # a feed split at any byte gives the same output. The wrap cannot seek, so this
     # path relies on every codec reading a non-seekable input forward (the ones that
     # can seek check their input first). A codec that seeks anyway raises an
-    # ``OSError``, caught below, and the probe answers "no inner TAR".
+    # ``OSError``, caught below, and the probe answers "no inner TAR". A drain
+    # (``read(-1)``, or ``read1()`` with no size) would read to the bound or to the
+    # end of the source and wait on a held-open pipe, so this path also relies on
+    # every codec reading sized chunks.
     codec_input: BinaryIO = OneReadEachStream(source) if view_arrived else source
     head = b""
     unavailable = False
