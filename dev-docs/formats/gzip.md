@@ -132,15 +132,15 @@ the member before the target. An empty member (BGZF's end marker) shares its off
 what follows and adds none. A forward seek past the known points, `SEEK_END` or a size
 query walks a BGZF file (`codecs/bgzf_index.py`): each member's `BC` extra subfield names
 its size, and its ISIZE, exact since a member holds at most 64 KiB, its output. The walk
-reads the first header alone and stops there when the file is not BGZF; otherwise it
-reads the file once, front to back in 256 KiB pieces, and inflates nothing. Jumping from
-header to header reads fewer bytes only on paper: through the stream's read buffer
-(`io.DEFAULT_BUFFER_SIZE`, 8 KiB, 128 KiB from Python 3.14) each jump refills the
-buffer, and on a remote source it is one request per member. The walk stops quietly at
-the first member without a `BC` subfield (an ordinary gzip member, trailing data,
-padding) and keeps the points before it; the size is known only when it reaches the end
-of the file, so a BGZF file with NUL padding after it seeks by its blocks and
-learns its size by decoding to the end. The sizes are trusted like the xz and lzip
+reads the first header (one read buffer's worth) and stops there when the file is not
+BGZF; otherwise it reads the file once, front to back in 256 KiB pieces, and inflates
+nothing. Jumping from header to header reads fewer bytes only on paper: through the
+stream's read buffer (`io.DEFAULT_BUFFER_SIZE`, 8 KiB, 128 KiB from Python 3.14) each
+jump refills the buffer, and on a remote source it is one request per member. The walk
+stops quietly at the first member without a `BC` subfield (an ordinary gzip member,
+trailing data, padding) and keeps the points before it; the size is known only when it
+reaches the end of the file, so a BGZF file with NUL padding after it seeks by its
+blocks and learns its size by decoding to the end. The sizes are trusted like the xz and lzip
 indexes (threat-model O17); a forward read still checks every member's CRC-32 and ISIZE.
 A `.gzi` index is a separate file, which a stream cannot find, so it is not read. Under
 `rapidgzip` none of this applies: its own index serves the seeks.
