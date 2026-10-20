@@ -22,31 +22,35 @@ def _run(probe: str) -> str:
     return proc.stdout.strip()
 
 
-def test_loading_the_worker_imports_nothing_new() -> None:
-    """At module level the worker imports a few small standard-library modules and no
-    codec library or ``archivey``, so each child imports only its own codec."""
+def _modules_added_by(code: str) -> set[str]:
     probe = textwrap.dedent(
         f"""
-        import importlib.util, sys
+        import sys
         before = set(sys.modules)
-        spec = importlib.util.spec_from_file_location("w", {str(decoder_child.WORKER)!r})
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        {code}
         new = sorted(set(sys.modules) - before - {{"w"}})
         print(",".join(new))
         """
     )
-    new = {m for m in _run(probe).split(",") if m}
-    allowed = {
-        "__future__",
-        "enum",
-        "signal",
-        "_signal",
-        "marshal",
-        "struct",
-        "_struct",
-    }
+    return {m for m in _run(probe).split(",") if m}
+
+
+def test_loading_the_worker_imports_nothing_new() -> None:
+    """At module level the worker imports a few small standard-library modules and no
+    codec library or ``archivey``, so each child imports only its own codec. What those
+    modules pull in differs by build (free-threaded Python preloads less), so the
+    allowance is what importing them directly adds in the same interpreter."""
+    worker = str(decoder_child.WORKER)
+    new = _modules_added_by(
+        "import importlib.util; "
+        f"spec = importlib.util.spec_from_file_location('w', {worker!r}); "
+        "spec.loader.exec_module(importlib.util.module_from_spec(spec))"
+    )
+    allowed = _modules_added_by(
+        "import importlib.util, __future__, marshal, signal, struct, enum"
+    )
     assert new <= allowed, sorted(new - allowed)
+    assert not {m for m in new if m.split(".")[0] in {"archivey", "pyppmd"}}
 
 
 def test_turning_off_core_dumps_survives_a_python_without_ctypes() -> None:
