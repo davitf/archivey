@@ -19,10 +19,11 @@ jobs:
         env:
           PYTHONFAULTHANDLER: "1"
         run: >
+          (while sleep 15; do echo "MEM $(free -m | awk 'NR==2{print "used " $3 " of " $2 " avail " $7}') swap $(free -m | awk 'NR==3{print $3}') TOP $(ps -eo rss=,args= --sort=-rss | head -4 | awk '{printf "%dMB %s %s %s | ", $1/1024, $2, $3, $NF}')"; done) > mem.log 2>&1 & MON=$!; cat /proc/sys/vm/overcommit_memory;
           uv run --python pypy3.11 --no-sync
           --with pytest --with pytest-timeout --with pytest-xdist
           pytest tests/ -q -n auto --timeout=300 -o addopts= --tb=short -p no:warnings
-          -m 'not ppmd_native_stress' --junitxml=core.xml > pytest.out 2>&1 || true; tail -5 pytest.out
+          -m 'not ppmd_native_stress' --junitxml=core.xml > pytest.out 2>&1 || true; tail -5 pytest.out; kill $MON; cat mem.log | cut -c1-400
       - if: always()
         run: python3 scripts/junit_failure_lines.py core.xml --detail 14 --width 260
 
@@ -50,23 +51,18 @@ jobs:
             [ "$pkg" = "${{ matrix.drop }}" ] && continue
             uv pip install --python .venv "$pkg" > /dev/null 2>&1 || echo "FAILED $pkg"
           done
-      - name: rapidgzip in-process smoke
-        if: matrix.drop == 'none'
-        continue-on-error: true
-        run: |
-          .venv/bin/python .github/pypy_smoke.py
-          for m in partial full memoryview block bad; do .venv/bin/python -X faulthandler .github/pypy_lz4_stress.py $m 2>&1 | tail -5; echo "rc=${PIPESTATUS[0]}"; done
       - name: extras
         continue-on-error: true
         env:
           PYTHONFAULTHANDLER: "1"
         run: >
+          (while sleep 15; do echo "MEM $(free -m | awk 'NR==2{print "used " $3 " of " $2 " avail " $7}') swap $(free -m | awk 'NR==3{print $3}') TOP $(ps -eo rss=,args= --sort=-rss | head -4 | awk '{printf "%dMB %s %s %s | ", $1/1024, $2, $3, $NF}')"; done) > mem.log 2>&1 & MON=$!; cat /proc/sys/vm/overcommit_memory;
           uv run --python pypy3.11 --no-sync
           pytest tests/ -q -n auto --timeout=300 -o addopts= --tb=short -p no:warnings
-          -m 'not ppmd_native_stress' --junitxml=extras.xml > pytest.out 2>&1 || true;
+          -m 'not ppmd_native_stress' --junitxml=extras.xml > pytest.out 2>&1 || true; kill $MON; cat mem.log | cut -c1-400;
           tail -3 pytest.out; echo "segfaults: $(grep -c 'Segmentation fault' pytest.out)";
           grep -A8 'Fatal Python error' pytest.out | grep 'File' | grep -v site-packages | head -40
       - if: always() && matrix.drop == 'none'
-        run: python3 scripts/junit_failure_lines.py extras.xml --detail 14 --width 260
+        run: python3 scripts/junit_failure_lines.py extras.xml --detail 5 --width 220
       - if: always() && matrix.drop != 'none'
         run: python3 scripts/junit_failure_lines.py extras.xml --width 260
