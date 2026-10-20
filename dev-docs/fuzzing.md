@@ -25,13 +25,21 @@ uv run --python 3.12 --no-sync python -m tests.atheris_fuzz --smoke
 ```
 
 Deepen one target (budget seconds via env, e.g. `ARCHIVEY_FUZZ_BUDGET_SEVENZIP_HEADER=60`,
-`ARCHIVEY_FUZZ_BUDGET_ZIP=60`, or `ARCHIVEY_FUZZ_BUDGET_UNIX_COMPRESS=60`):
+`ARCHIVEY_FUZZ_BUDGET_ZIP=60`, `ARCHIVEY_FUZZ_BUDGET_OPEN_DETECTED=60`, or
+`ARCHIVEY_FUZZ_BUDGET_FILTERS=60`):
 
 ```bash
 uv run --no-sync python -m tests.atheris_fuzz --target sevenzip_header
 uv run --no-sync python -m tests.atheris_fuzz --target zip
-uv run --no-sync python -m tests.atheris_fuzz --target unix_compress
+uv run --no-sync python -m tests.atheris_fuzz --target open_detected
+uv run --no-sync python -m tests.atheris_fuzz --target filters
 ```
+
+`open_detected` opens whatever `detect_format` names (SFX payload offset, single-file
+readers, compressed tar, UDIF refusal). `filters` feeds BCJ2, ARM64, Delta and the
+liblzma branch filters directly. The TAR target recomputes header checksums before
+parsing. 7z, RAR and ISO open targets read a few member payloads, and the ZIP target
+also opens the same bytes as a pipe.
 
 On a crash the harness writes the input under `artifacts/atheris/` and prints a one-line
 repro command.

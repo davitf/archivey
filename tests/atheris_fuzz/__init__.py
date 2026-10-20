@@ -22,6 +22,10 @@ DEFAULT_BUDGETS: dict[str, int] = {
     "iso": 8,
     "rar_header": 30,
     "rar": 15,
+    # Auto-detect open: SFX payload offset, single-file reader, compressed tar, UDIF.
+    "open_detected": 20,
+    # BCJ2, ARM64, Delta and the liblzma branch filters, fed directly.
+    "filters": 15,
     "unix_compress": 15,
     "xz": 12,
     "lzip": 10,

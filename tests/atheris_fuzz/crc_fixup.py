@@ -443,6 +443,59 @@ def fixup_rar_header_crcs(data: bytes, *, broken: bool | None = None) -> bytes:
     return bytes(buf)
 
 
+# A TAR header is 512 bytes. The checksum lives at bytes 148:156 and is the unsigned
+# sum of the block with those eight bytes read as spaces. libFuzzer will not
+# recompute it, so a one-byte edit of a name or type flag never reaches the parser.
+_TAR_BLOCK = 512
+_TAR_CHECKSUM_AT = 148
+_TAR_CHECKSUM_LEN = 8
+_TAR_MAGIC_AT = 257
+# POSIX is ``ustar\0`` and old GNU is ``ustar  \0``. Both start with these five.
+_USTAR_PREFIX = b"ustar"
+
+
+def _tar_block_checksum(block: bytes) -> int:
+    """Unsigned sum of one header block, checksum field counted as spaces."""
+    return (
+        sum(block[:_TAR_CHECKSUM_AT])
+        + 0x20 * _TAR_CHECKSUM_LEN
+        + sum(block[_TAR_CHECKSUM_AT + _TAR_CHECKSUM_LEN :])
+    )
+
+
+def fixup_tar_header_checksums(data: bytes, *, broken: bool | None = None) -> bytes:
+    """Recompute the checksum of every block whose magic starts with ``ustar``.
+
+    That magic is POSIX and old GNU. A data block is rewritten too when those
+    five bytes sit at offset 257: the fuzzer can plant them, and the eight
+    checksum bytes then replace payload. A v7 header has no magic, so it is left
+    alone. Zero blocks stay zero: two of them are the end marker, and rewriting
+    one would turn the end of the archive into another member. A partial trailing
+    block is left alone. Broken mode writes a sum that is off by one, so the
+    field is still a number and the reject path is the checksum check.
+    """
+    if len(data) < _TAR_BLOCK:
+        return data
+    if broken is None:
+        broken = should_break_crc(data)
+
+    buf = bytearray(data)
+    limit = len(buf) - (len(buf) % _TAR_BLOCK)
+    for start in range(0, limit, _TAR_BLOCK):
+        block = buf[start : start + _TAR_BLOCK]
+        if block[_TAR_MAGIC_AT : _TAR_MAGIC_AT + len(_USTAR_PREFIX)] != _USTAR_PREFIX:
+            continue
+        checksum = _tar_block_checksum(bytes(block))
+        if broken:
+            checksum ^= 1
+        # Six octal digits, NUL, space. The sum of a block fits in six digits
+        # (512 * 255 = 130560, and 8**6 - 1 = 262143).
+        buf[start + _TAR_CHECKSUM_AT : start + _TAR_CHECKSUM_AT + _TAR_CHECKSUM_LEN] = (
+            f"{checksum:06o}".encode("ascii") + b"\x00 "
+        )
+    return bytes(buf)
+
+
 FixupFn = Callable[[bytes], bytes]
 
 
