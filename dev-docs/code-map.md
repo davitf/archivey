@@ -30,7 +30,8 @@ src/archivey/
     ├── base_reader.py   BaseArchiveReader ABC + the ReadBackend ABC
     ├── extraction.py    extraction coordinator
     ├── bomb_tracker.py  decompression-bomb tracker: byte, ratio and entry-count limits
-    ├── dry_run.py       the dry run's scratch tree and its path translation
+    ├── dry_run.py       the dry run's scratch tree, what it copies in from dest, and
+    │                    its path translation
     ├── filters.py       path-safety checks and policy permission transforms
     ├── detection.py     detect_format() and FormatInfo
     ├── registry.py      ArchiveFormat → backend; format_availability()
