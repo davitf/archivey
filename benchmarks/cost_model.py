@@ -34,8 +34,11 @@ archives (its shapes are not ``fixtures.Scale``s) from its own payload, in which
 every 4 KiB block is 1 KiB of seeded random bytes and 3 KiB of zeros. That keeps
 the compression ratio near 4:1 at every member size; the harness corpus repeats one
 4 KiB pattern, so its large members compress about 250:1 and the per-byte work would
-change with member size. Uncompressed TAR runs no codec, so its throughput is a copy
-rate, not a decode rate.
+change with member size. Uncompressed TAR runs no codec, so the report shows no
+throughput for it: its byte cost is only what is left of a 256 KiB read once the
+per-member cost (fitted on the 8 KiB rung) is taken out, about a quarter of the
+measurement, so it carries the per-member error several times over and the large
+check rungs miss it on most runs. The fit is still in the JSON.
 
 Every rung is timed with the heap in the same state. glibc raises its mmap threshold
 after a large block is freed, and from then on smaller output buffers come from the
@@ -101,6 +104,10 @@ FIT_RUNGS = (0, 2)
 # because the published open cost comes from it. A smaller miss passes unflagged, so
 # the fitted numbers carry about this much slack.
 CHECK_TOLERANCE = 0.25
+# ...and by at least this much. Listing a large-member rung takes well under a
+# millisecond, where timer and scheduler noise alone is a large fraction; like the
+# drift gate's cost floor, this keeps such rungs from flagging every row.
+CHECK_MIN_ABS_MS = 0.5
 MIB = 1024 * 1024
 
 
@@ -222,6 +229,7 @@ LADDERS: dict[str, dict[str, Any]] = {
     "zip": {
         "build": _build_zip,
         "suffix": ".zip",
+        "codec": True,
         "peer": "zipfile",
         "peer_list": _zip_list,
         "peer_read": _zip_read,
@@ -229,6 +237,7 @@ LADDERS: dict[str, dict[str, Any]] = {
     "tar": {
         "build": _build_tar,
         "suffix": ".tar",
+        "codec": False,
         "peer": "tarfile",
         "peer_list": _tar_list,
         "peer_read": _tar_read,
@@ -274,7 +283,12 @@ def measure_ladder(fmt: str, root: Path, *, rounds: int = 9) -> dict[str, Any]:
         )
         ours.append(Rung(members, size, t["ay_list"], t["ay_read"]))
         theirs.append(Rung(members, size, t["peer_list"], t["peer_read"]))
-    out: dict[str, Any] = {"format": fmt, "peer": spec["peer"], "sides": {}}
+    out: dict[str, Any] = {
+        "format": fmt,
+        "peer": spec["peer"],
+        "codec": spec["codec"],
+        "sides": {},
+    }
     for side, rungs in (("archivey", ours), (spec["peer"], theirs)):
         f = fit(rungs)
         checks = []
@@ -326,6 +340,12 @@ def _fmt_rung(rung: tuple[int, int]) -> str:
     return f"{rung[0]} × {_fmt_size(rung[1])}"
 
 
+def _fmt_open(open_ms: float) -> str:
+    """The fitted open cost. It is an intercept, so noise can push a very small
+    one below zero, which would read as a bug rather than as "about nothing"."""
+    return f"{open_ms:.2f} ms" if open_ms >= 0.01 else "under 0.01 ms"
+
+
 def _fmt_rate(us_per_member: float) -> str:
     """A per-member cost as members per second, the figure a reader can weigh
     against their own archive."""
@@ -349,11 +369,14 @@ def format_cost_model(results: list[dict[str, Any]]) -> list[str]:
         + " (see `benchmarks/cost_model.py`). Reading is members per second "
         "through a `stream_members()` pass, listing included, with the byte cost taken "
         "out. Throughput is the data rate once per-member costs are taken out, on data "
-        "that compresses about 4:1; for uncompressed TAR it is a copy rate. Both sides "
+        "that compresses about 4:1. Uncompressed TAR shows none: with no codec its byte "
+        "cost is a small remainder of the fit, and its large check rungs are expected "
+        "to miss. Both sides "
         "read the same files, so the comparison between them holds even where the "
         "absolute numbers move between hosts. A row marked * has a check rung whose "
-        f"listing or read time is more than {CHECK_TOLERANCE:.0%} off its fit (the "
-        "open cost comes from the listing fit); a smaller miss is not flagged. "
+        f"listing or read time is more than {CHECK_TOLERANCE:.0%} and at least "
+        f"{CHECK_MIN_ABS_MS} ms off its fit (the open cost comes from the listing "
+        "fit); a smaller miss is not flagged. "
         "Not a gate.",
         "",
         "| format | side | open | reading | throughput |",
@@ -364,12 +387,23 @@ def format_cost_model(results: list[dict[str, Any]]) -> list[str]:
         for side, data in res["sides"].items():
             f = data["fit"]
             thr = f["throughput_mib_s"]
-            misses = [c for c in data["checks"] if abs(c["error"]) > CHECK_TOLERANCE]
+            misses = [
+                c
+                for c in data["checks"]
+                if abs(c["error"]) > CHECK_TOLERANCE
+                and abs(c["measured_ms"] - c["predicted_ms"]) >= CHECK_MIN_ABS_MS
+            ]
             mark = " \\*" if misses else ""
             lines.append(
-                f"| {res['format']} | {side}{mark} | {f['open_ms']:.2f} ms | "
+                f"| {res['format']} | {side}{mark} | {_fmt_open(f['open_ms'])} | "
                 f"{_fmt_rate(f['read_us_per_member'])} | "
-                + (f"{thr:.0f} MiB/s |" if thr else "too fast to fit |")
+                + (
+                    "no codec |"
+                    if not res.get("codec", True)
+                    else f"{thr:.0f} MiB/s |"
+                    if thr
+                    else "too fast to fit |"
+                )
             )
             for c in misses:
                 flagged.append(
@@ -381,13 +415,14 @@ def format_cost_model(results: list[dict[str, Any]]) -> list[str]:
     lines.append("")
     if flagged:
         lines.append(
-            f"Check rungs off the fit by more than {CHECK_TOLERANCE:.0%} "
-            "(the rows marked *; treat their numbers with care):"
+            f"Check rungs off the fit by more than {CHECK_TOLERANCE:.0%} and "
+            f"{CHECK_MIN_ABS_MS} ms (the rows marked *; treat their numbers with care):"
         )
         lines.extend(flagged)
     else:
         lines.append(
-            f"Every check rung is within {CHECK_TOLERANCE:.0%} of the fit's prediction."
+            f"Every check rung is within {CHECK_TOLERANCE:.0%} or {CHECK_MIN_ABS_MS} ms "
+            "of the fit's prediction."
         )
     return lines
 

@@ -680,10 +680,19 @@ def test_format_text_report_cost_model_section() -> None:
                                 "members": 4,
                                 "member_size": 4 * 1024 * 1024,
                                 "op": "list",
+                                "measured_ms": 2.0,
+                                "predicted_ms": 3.0,
+                                "error": -0.5,
+                            },
+                            # Far off in relative terms, but under the absolute floor.
+                            {
+                                "members": 16,
+                                "member_size": 1024 * 1024,
+                                "op": "list",
                                 "measured_ms": 0.1,
                                 "predicted_ms": 0.15,
                                 "error": -0.5,
-                            }
+                            },
                         ],
                     },
                 },
@@ -696,6 +705,7 @@ def test_format_text_report_cost_model_section() -> None:
     assert "zip archivey read 64 × 256 KiB" in report
     assert "| zip | zipfile \\* |" in report
     assert "zip zipfile list 4 × 4 MiB" in report
+    assert "zip zipfile list 16 × 1 MiB" not in report
 
 
 @pytest.mark.parametrize(
