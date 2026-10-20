@@ -493,11 +493,11 @@ def test_child_error_of_unknown_type_propagates(
 def test_child_crash_surfaces_as_corruption_error(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A crashed child is ``CorruptionError`` to the caller, and the caller lives on."""
+    """A crashed child is ``CorruptionError`` to the caller, and the caller lives on.
+    A real fault (a read of address 0), so Windows sees an access violation: there
+    ``os.kill`` ends the process with a plain exit status."""
     with raises_corruption_not_truncation(match="crashed"):
-        _read_child_member(
-            monkeypatch, tmp_path, "os.kill(os.getpid(), signal.SIGSEGV)"
-        )
+        _read_child_member(monkeypatch, tmp_path, "__import__('ctypes').string_at(0)")
 
 
 def _pid(child: ChildPpmdDecoder) -> int:

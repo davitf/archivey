@@ -215,13 +215,14 @@ def test_a_re_run_that_disagrees_with_delivered_output_raises(stand_in: Path) ->
 
 @pytest.mark.parametrize(
     ("signum", "error"),
-    [(signal.SIGKILL, ResourceLimitError), (signal.SIGTERM, ReadError)],
+    # By name: Windows has no SIGKILL, and collection runs there before the skip.
+    [("SIGKILL", ResourceLimitError), ("SIGTERM", ReadError)],
 )
 def test_an_end_from_outside_is_not_a_verdict(
-    stand_in: Path, signum: int, error: type[Exception]
+    stand_in: Path, signum: str, error: type[Exception]
 ) -> None:
     del stand_in
-    child = DecoderChild("die", (int(signum),))
+    child = DecoderChild("die", (int(getattr(signal, signum)),))
     with pytest.raises(error) as caught:
         child.call("decompress", b"x")
     assert not isinstance(caught.value, CorruptionError)
