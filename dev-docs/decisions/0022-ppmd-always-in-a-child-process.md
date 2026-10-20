@@ -73,8 +73,9 @@ The reasons were:
 - **A child no longer costs a process start per member.** The native-decoder isolation
   design takes children from a pool of reused idle children. In its prototype (Linux,
   CPython 3.11, a child that imports only `struct` and `sys` until it is asked for a
-  codec; `/mnt/project-files/reports/process-isolation-options-2026-10-20.md`), a small
-  member on a reused child cost about 30 µs, against 12 to 18 ms to start a fresh one.
+  codec; the prototype report is tracked internally, and the figures are restated in the
+  design of PR #904), a small member on a reused child cost about 30 µs, against 12 to
+  18 ms to start a fresh one.
   The 75 ms figure above includes importing pyppmd and the older per-codec worker.
 - **The protocol is no longer per codec.** One shared child protocol now serves every
   native decoder, so moving PPMd onto it adds no new copy of the child code.
@@ -99,11 +100,15 @@ tests, or where processes cannot be started. The docs will discourage it.
 Reuse must not move the blame. pyppmd's damage is heap corruption, which can surface
 later, while the same child decodes another member. So a child goes back to the pool only
 after a clean finish: its member decoded to the declared end, the stored CRC matched, and
-the decoder closed normally. Any error, early end or refused member retires it. A crash
-in a child that had already served other members is not charged to the current member:
-that member runs again once in a fresh child, and only a crash there becomes its error.
-A crashed child is never reused, and children are recycled after a fixed number of
-members.
+the decoder closed normally. Any error, early end or refused member retires it, and so
+does a read the caller stops early: freeing a worker that may be parked needs the quiesce
+decode, which is itself one of the suspect calls. A crash in a child that had already
+served other members is not charged to the current member while none of its output has
+reached the caller: that member runs again once in a fresh child, and only a crash there
+becomes its error. Once output has reached the caller, a rerun would have to restart the
+stream; whether it does is settled with the isolation change (PR #904). A member that
+crashes every time decodes twice before it reports. A crashed child is never reused, and
+children are recycled after a fixed number of members.
 
 ## Consequences
 
@@ -113,21 +118,32 @@ members.
   the pipe. The prototype measured
   0.5 to 0.8 ms per MiB of decoded output alone; the PR #481 docstring's 450 MB/s (about
   2.2 ms per MiB) counts compressed input and decoded output together.
-- Password confirmation pays that round trip once per surviving candidate.
+- The pool saves a process start only after a clean finish. A password-confirmation probe
+  stops at its budget (64 KiB of plaintext, 1 MiB of input) or on a wrong key, and a read
+  the caller abandons stops early too, so each of these retires its child and the next
+  member pays a fresh start: 12 to 18 ms, plus importing pyppmd. Confirming three
+  candidate keys on a large PPMd member costs three fresh children.
 - `max_ppmd_in_process_input` loses its role under the default. Whether it is removed,
   renamed or kept for `NONE` is a public-name change. It is decided with the isolation
   change, not here. `DecoderLimits.UNLIMITED` changes meaning with it: it sets the field to
   `None`, which today also guarantees that no child process starts, and under the new
   default a PPMd member starts one anyway.
-- These statements of the current rule change with the implementation:
+- Every statement of the current rule changes with the implementation: the 16 MiB split,
+  "a PPMd member over the threshold decodes in a child", and "a password check runs
+  in-process", wherever it appears in `openspec/specs/`, `docs/`, `dev-docs/`, `src/` or
+  `tests/`. Grepping `max_ppmd_in_process_input` finds them. Examples on 2026-10-20:
   - `openspec/specs/archive-reading/spec.md`: the `max_ppmd_in_process_input` SHALL rows
     (a member over it decodes in a child), its 16 MiB default and the matching scenario
     row;
+  - `openspec/specs/format-zip/spec.md`: the bit-3 PPMd SHALL row and its scenario;
+  - `docs/formats.md`, on the bit-3 PPMd member and the 1 MiB confirmation;
+  - `dev-docs/threat-model.md`, the child-process list and its "Residual" paragraph;
   - the field docstring in `src/archivey/config.py`, including "a password check ... always
     runs in-process";
   - the "Why the split at 16 MiB?" note in `docs/security.md`;
   - `dev-docs/known-issues.md`, "What archivey does" under the pyppmd entry;
-  - `dev-docs/formats/zip.md`, on the bit-3 PPMd member that always decodes in a child.
+  - `dev-docs/formats/zip.md`, on the bit-3 PPMd member that always decodes in a child;
+  - the test files and scripts that pin the threshold (nine files on 2026-10-20).
 - An environment that cannot start a process, such as a frozen application, already gets
   `ResourceLimitError` for PPMd members over the threshold. Under the new default this
   applies to every PPMd member unless the caller picks `NONE`.
