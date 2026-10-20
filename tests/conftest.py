@@ -256,13 +256,16 @@ def sevenzip_lists_arm64() -> bool:
 
     p7zip 16.02, and Homebrew's ``7z`` on macOS, predate the filter and exit 2 on
     ``-m0=ARM64``. 7-Zip 23 and later name ARM64 in that listing. A missing ``7z``
-    or a run that does not finish is false, so a test that needs the filter skips.
+    is false. A run that does not finish is false and is written to stderr once.
+    A test that needs the filter skips on either answer.
     """
     if shutil.which("7z") is None:
         return False
     try:
         listing = run_7z(["i"], text=True).stdout
-    except (OSError, subprocess.TimeoutExpired):
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        # The listing was not read. Report the failure once; the cache keeps it.
+        print(f"7z i did not finish: {exc}", file=sys.stderr)
         return False
     return re.search(r"\bARM64\b", listing) is not None
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import shutil
+import subprocess
 import zipfile
 from pathlib import Path
 
@@ -17,6 +18,7 @@ import pytest
 
 from archivey import ArchiveFormat, ArchiveyError, open_archive
 from tests.atheris_fuzz import TARGET_NAMES
+from tests.atheris_fuzz import seeds as fuzz_seeds
 from tests.atheris_fuzz.seeds import (
     _compressed_tar_seeds,
     _koly_block,
@@ -101,6 +103,54 @@ def test_sevenzip_open_reads_an_uncompressed_header(tmp_path: Path) -> None:
             assert files
             with arc.open(files[0]) as stream:
                 assert stream.read(64)
+
+
+def test_an_arm64_switch_is_skipped_when_7z_omits_the_filter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A row is gated by ``-m0=ARM64`` in its switches, and the skip is printed.
+
+    ``renamed`` carries that switch under another name. A ``7z`` that does not
+    list ARM64 leaves the row out and says so.
+    """
+    if shutil.which("7z") is None:
+        pytest.skip("7z CLI is not on PATH")
+    monkeypatch.setattr(fuzz_seeds, "sevenzip_lists_arm64", lambda: False)
+    monkeypatch.setattr(
+        fuzz_seeds,
+        "_UNCOMPRESSED_HEADER_SPECS",
+        (
+            ("copy", ("-mhc=off", "-m0=Copy"), "one", None),
+            ("renamed", ("-mhc=off", "-m0=ARM64", "-m1=Copy"), "one", None),
+        ),
+    )
+    built = _uncompressed_header_sevenzip_archives(tmp_path)
+    assert [name for name, _blob, _package in built] == ["copy"]
+    assert uncompressed_header_spec_names() == ["copy"]
+    assert (
+        "7z seed renamed skipped: this 7z does not list the ARM64 filter"
+        in capsys.readouterr().err
+    )
+
+
+def test_a_7z_probe_that_does_not_finish_is_reported(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A ``7z i`` that raises is written to stderr and answers false."""
+    from tests import conftest
+
+    monkeypatch.setattr(conftest.shutil, "which", lambda _name: "7z")
+
+    def fail(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(cmd=["7z", "i"], timeout=30)
+
+    monkeypatch.setattr(conftest, "run_7z", fail)
+    conftest.sevenzip_lists_arm64.cache_clear()
+    try:
+        assert conftest.sevenzip_lists_arm64() is False
+    finally:
+        conftest.sevenzip_lists_arm64.cache_clear()
+    assert "7z i did not finish" in capsys.readouterr().err
 
 
 def test_filter_seeds_stay_inside_the_typed_error_contract() -> None:

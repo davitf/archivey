@@ -582,17 +582,26 @@ _UNCOMPRESSED_HEADER_SPECS: tuple[tuple[str, tuple[str, ...], str, str | None], 
 )
 
 
+def _header_spec_builds(switches: tuple[str, ...], *, arm64: bool) -> bool:
+    """Whether ``switches`` are expected from a ``7z`` with this ARM64 answer.
+
+    ``-m0=ARM64`` is expected only when ``arm64`` is true.
+    """
+    return "-m0=ARM64" not in switches or arm64
+
+
 def uncompressed_header_spec_names() -> list[str]:
     """Spec names this ``7z`` is expected to build.
 
-    ARM64 is required only when :func:`tests.conftest.sevenzip_lists_arm64` is
-    true. Every other spec is required whenever ``7z`` is on PATH.
+    A row whose switches include ``-m0=ARM64`` is required only when
+    :func:`tests.conftest.sevenzip_lists_arm64` is true. Every other spec is
+    required whenever ``7z`` is on PATH.
     """
     arm64 = sevenzip_lists_arm64()
     return [
         name
-        for name, _switches, _which, _package in _UNCOMPRESSED_HEADER_SPECS
-        if name != "arm64" or arm64
+        for name, switches, _which, _package in _UNCOMPRESSED_HEADER_SPECS
+        if _header_spec_builds(switches, arm64=arm64)
     ]
 
 
@@ -604,7 +613,8 @@ def _uncompressed_header_sevenzip_archives(
     ``package`` is the optional import a decode of that seed needs, or ``None``.
     A missing ``7z`` returns an empty list. A spec ``7z`` rejects is omitted and
     its switches and stderr are written to stderr, so the loss is not silent.
-    ARM64 is not attempted when this ``7z`` does not list the filter.
+    A row with ``-m0=ARM64`` is not attempted when ``7z i`` does not list that
+    filter, and that skip is written to stderr too.
     """
     if shutil.which("7z") is None:
         return []
@@ -612,10 +622,15 @@ def _uncompressed_header_sevenzip_archives(
     payload.write_bytes(_x86_like())
     other = tmp / "other.bin"
     other.write_bytes(b"second member\n" * 32)
-    wanted = set(uncompressed_header_spec_names())
+    arm64 = sevenzip_lists_arm64()
     out: list[tuple[str, bytes, str | None]] = []
     for name, switches, which, package in _UNCOMPRESSED_HEADER_SPECS:
-        if name not in wanted:
+        if not _header_spec_builds(switches, arm64=arm64):
+            # ``_header_spec_builds`` declines only ``-m0=ARM64``.
+            print(
+                f"7z seed {name} skipped: this 7z does not list the ARM64 filter",
+                file=sys.stderr,
+            )
             continue
         archive = tmp / f"{name}.7z"
         inputs = [payload.name, other.name] if which == "both" else [payload.name]
