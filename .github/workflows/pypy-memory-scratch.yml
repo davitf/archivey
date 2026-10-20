@@ -4,6 +4,7 @@ on:
     branches: [claude/project-thread-upv4hd-pypy-memory-scratch]
 jobs:
   probe:
+    if: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -11,7 +12,7 @@ jobs:
       - run: uv python install pypy3.11
       - run: for v in plain pressure8M release; do uv run --python pypy3.11 --no-project python scratch/lzma_probe2.py $v; done
   extras:
-    if: false
+    if: true
     runs-on: ubuntu-latest
     timeout-minutes: 50
     strategy:
