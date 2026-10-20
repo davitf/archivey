@@ -852,14 +852,15 @@ def test_matching_a_missing_target_joins_a_linear_amount(
         # Missing from its first component: no match.
         f"/archivey-no-such/{deep}",
         # Down past a missing name and back up into dest: a match.
-        f"{tmp_path}/gone/{deep}/" + "../" * 2000 + "out/data",
+        f"{tmp_path}/gone/{deep}/" + "../" * 2001 + "out/data",
     ]
     with dry_run_module.scratch_for(dest) as dry:
         monkeypatch.setattr(os.path, "join", counted)
         matched = [dry.target_on_disk(target) for target in targets]
         monkeypatch.undo()
-    assert matched[0] == targets[0]
-    assert matched[1].endswith(f"{os.sep}out{os.sep}data")
+        # Rewritten through the gap, as ``gone`` is on the way.
+        detour = dry.scratch.parent / "missing" / ".." / dry.scratch.name / "data"
+    assert matched == [targets[0], str(detour)]
     assert joined <= 4 * sum(len(target) for target in targets)
 
 
