@@ -2,14 +2,14 @@
 
 ### Requirement: Cross-validate native readers against reference oracles
 
-The system SHALL validate its native readers against reference implementations used only
-as test oracles: `zipfile` for ZIP, `tarfile` for TAR, `py7zr` for 7z, `rarfile` and
-`unrar` for RAR. The `7z` CLI builds 7z fixtures but is not an oracle: its output is not
-compared, except for the two codecs named below. For representative corpora, native
-member metadata and decompressed bytes MUST match the oracle. Oracle libraries are
-dev-group dependencies only (`zipfile` and `tarfile` are the standard library) and the
-library SHALL NOT import any of them at runtime. Oracle-backed tests SHALL skip, not
-fail, when the oracle library or CLI is unavailable.
+The system SHALL validate its native ZIP, TAR, 7z and RAR readers against reference
+implementations used only as test oracles: `zipfile` for ZIP, `tarfile` for TAR, `py7zr`
+for 7z, `rarfile` and `unrar` for RAR. The `7z` CLI builds 7z fixtures but is not an
+oracle: its output is not compared, except for the two codecs named below. For
+representative corpora, native member metadata and decompressed bytes MUST match the
+oracle. Oracle libraries are dev-group dependencies only (`zipfile` and `tarfile` are
+the standard library) and the library SHALL NOT import any of them at runtime.
+Oracle-backed tests SHALL skip, not fail, when the oracle library or CLI is unavailable.
 
 The 7z corpus MUST cover core codecs supported without extras (LZMA1, LZMA2, simple
 BCJ filters other than ARM64, Delta, BZip2, Deflate, STORED), optional PPMd /
@@ -36,8 +36,9 @@ cross-check metadata and bytes against rarfile/`unrar`.
 
 | Case | Expected |
 | --- | --- |
-| ZIP fixture or corpus entry parsed natively and by `zipfile` | Central-directory fields match field by field; member bytes match `zipfile.read` |
-| TAR corpus entry, or GNU tar archive, walked natively and by `tarfile` | Member fields and bytes match; GNU tar cases skipped if GNU tar is absent |
+| ZIP fixture or corpus entry that `zipfile` opens, parsed natively and by `zipfile` | Central-directory fields match field by field; deliberate divergences are pinned by their own tests |
+| Unencrypted members found by the native local-header walk | Bytes match `zipfile.read` |
+| Well-formed TAR corpus entry, or GNU tar archive, walked natively and by `tarfile` | Member fields and bytes match, except where archivey follows GNU tar on purpose (DR-6), each pinned by its own test; GNU tar cases skipped if GNU tar is absent |
 | 7z corpus entry read by native reader and `py7zr` | Metadata and bytes match; skipped if oracle unavailable |
 | RAR corpus entry read by native reader and `rarfile`/`unrar` | Metadata and bytes match; skipped if oracle unavailable |
 | 7z entry uses BCJ2 | Bytes match `7z x`; `py7zr` is not consulted |
