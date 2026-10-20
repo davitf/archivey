@@ -1,0 +1,87 @@
+# Accelerator fuzz soak (weekly)
+#
+# The four accelerator targets in tests/atheris_fuzz (gzip_accel, zlib_accel,
+# deflate_accel, bzip2_accel) decode each input with the accelerator forced on and
+# forced off and fail when the accelerated bytes differ or the accelerated read ends
+# cleanly where the plain one raised. atheris-fuzz.yml runs them on every PR and nightly,
+# but for 10 to 15 seconds each (a few hundred inputs), which finds only shallow
+# differences. This job gives each target a long run once a week, one runner per target,
+# and keeps each target's corpus between runs so the next week starts where this one
+# stopped.
+#
+# accelerator-crash-search.yml is the other weekly accelerator job: it looks for native
+# crashes in-process, not for wrong data. Not a required check: a red run is the signal.
+on:
+  schedule:
+    - cron: "41 4 * * 2"
+  pull_request:
+    paths:
+      - ".github/workflows/accelerator-fuzz-soak.yml"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: "Seconds per target"
+        required: false
+        default: "1200"
+
+concurrency:
+  group: accel-fuzz-soak-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  soak:
+    name: ${{ matrix.target }} soak
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [gzip_accel, zlib_accel, deflate_accel, bzip2_accel]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      # Same groups as atheris-fuzz.yml; `all` brings the `seekable` extra (rapidgzip).
+      - name: Sync (fuzz + dev + all extras)
+        run: uv sync --python 3.12 --group fuzz --group dev --extra all
+
+      # libFuzzer adds every input that reaches new code to the corpus directory, and the
+      # harness only (re)writes its seed files there, so a restored corpus carries the
+      # earlier weeks' coverage forward. A new key per run; the newest earlier one restores.
+      - name: Restore corpus
+        uses: actions/cache@v4
+        with:
+          path: artifacts/atheris/corpus/${{ matrix.target }}
+          key: accel-soak-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: accel-soak-corpus-${{ matrix.target }}-
+
+      - name: Run ${{ matrix.target }}
+        env:
+          ARCHIVEY_FUZZ_ARTIFACT_DIR: artifacts/atheris
+          TARGET: ${{ matrix.target }}
+          # A PR that edits this file only checks that the job still runs.
+          SECONDS_PER_TARGET: ${{ github.event_name == 'pull_request' && '60' || github.event.inputs.seconds || '1200' }}
+        run: |
+          budget_var="ARCHIVEY_FUZZ_BUDGET_$(echo "$TARGET" | tr '[:lower:]' '[:upper:]')"
+          export "$budget_var=$SECONDS_PER_TARGET"
+          echo "$TARGET for ${SECONDS_PER_TARGET}s; corpus has $(ls artifacts/atheris/corpus/"$TARGET" 2>/dev/null | wc -l) files"
+          uv run --python 3.12 --no-sync python -m tests.atheris_fuzz --target "$TARGET"
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: accel-soak-crash-${{ matrix.target }}
+          path: |
+            artifacts/atheris/
+            !artifacts/atheris/corpus/
+          if-no-files-found: ignore
+          retention-days: 30

@@ -9,6 +9,12 @@ Atheris lives in the PEP 735 `fuzz` dependency group (`atheris`) and runs via
   last ~3 days (commit-recency guard; dormant stretches skip the expensive run).
 - **`workflow_dispatch`:** force the full partition (optional `budget_scale`).
 
+The four accelerator targets (`gzip_accel`, `zlib_accel`, `deflate_accel`,
+`bzip2_accel`) get only 10 to 15 seconds each there. `.github/workflows/accelerator-fuzz-soak.yml`
+runs them again once a week for 20 minutes each, one runner per target, and keeps each
+target's corpus in the Actions cache so the next week starts from it (`workflow_dispatch`
+takes `seconds`).
+
 Mutation fuzz (`tests/test_mutation_fuzz.py`) and `ARCHIVEY_FUZZ=1` /
 `tests/fuzz_sevenzip_parser.py` / `tests/fuzz_rar_parser.py` stay as they are.
 
