@@ -1532,6 +1532,18 @@ def report_trailing_data(
 _CODECS_PACKAGE = "archivey.internal.streams.codecs."
 
 
+def release_decoder(decoder: object) -> None:
+    """Give back ``decoder``'s child process now, when it runs in one.
+
+    For a native decoder its owner drops part-way (a finished xz stream, lzip member,
+    gzip member or frame, a probe's block decoder). CPython frees the dropped child
+    proxy at once and its finalizer gives the child back then; PyPy frees it at a later
+    collection, and the child stays leased until that runs.
+    """
+    if getattr(type(decoder), "holds_decoder_child", False):
+        cast(Any, decoder).close()
+
+
 def release_decoder_children(holder: object, depth: int = 3) -> None:
     """Give back every decoder process ``holder`` holds now, not when GC frees it.
 

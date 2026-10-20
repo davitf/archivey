@@ -25,11 +25,13 @@ from archivey.config import (
 )
 from archivey.exceptions import ArchiveyUsageError
 from archivey.internal.config import StreamConfig
+from archivey.internal.streams.codecs import decoder_child, deps
 from archivey.internal.streams.codecs.bzip2_codec import _bzip2_wanted
 from archivey.internal.streams.codecs.decoder_child import POOL
 from archivey.internal.streams.codecs.rapidgzip_select import _rapidgzip_wanted
 from tests.conftest import requires_binary, run_7z
 from tests.sample_archives import CORPUS, corpus_archive_path, skip_unless_runnable
+from tests.streams_util import make_multi_member_lzip, make_multi_stream_xz
 
 _ENTRIES = {"basic", "zip-compression-methods", "large", "compressed", "single-file"}
 _PARAMS = [
@@ -192,3 +194,46 @@ def test_closing_a_member_stream_gives_its_child_back_at_once(
         stream.close()
         assert POOL.idle_count() == 1, key
         del stream
+
+
+def _two_parts(fmt: str) -> bytes:
+    first, second = _PAYLOAD[:40_000], _PAYLOAD[40_000:]
+    if fmt == "xz":
+        return make_multi_stream_xz([first, second])
+    if fmt == "lz":
+        return make_multi_member_lzip([first, second])
+    if fmt == "gz":
+        return gzip.compress(first) + gzip.compress(second)
+    zstd = deps.zstd
+    if zstd is None:
+        pytest.skip("no zstd module")
+    return zstd.compress(first) + zstd.compress(second)
+
+
+@pytest.mark.parametrize("fmt", ["xz", "lz", "gz", "zst"])
+def test_a_finished_stream_gives_its_child_back_before_the_next_starts(
+    fmt: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A decoder dropped part-way (a finished xz stream, lzip or gzip member, zstd
+    frame, and the detection probe's block decoder) gives its child back then, not
+    when the garbage collector frees it: CPython frees it at once, PyPy only at a
+    later collection. Each decoder is kept referenced here, as PyPy keeps it, so at
+    most the one decoding now still holds a child."""
+    path = tmp_path / f"two.{fmt}"
+    path.write_bytes(_two_parts(fmt))
+    made: list[decoder_child.DecoderChild] = []
+    init = decoder_child.DecoderChild.__init__
+
+    def keep(self: decoder_child.DecoderChild, *args: object, **kwargs: object) -> None:
+        made.append(self)
+        init(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(decoder_child.DecoderChild, "__init__", keep)
+    config = ArchiveyConfig(process_isolation=ProcessIsolation.NATIVE_DECODERS)
+    with open_archive(path, config=config) as ar:
+        (member,) = (m for m in ar.members() if m.type is MemberType.FILE)
+        with ar.open(member) as stream:
+            assert stream.read() == _PAYLOAD
+            leased = [child for child in made if child._lease.process is not None]
+            assert len(made) >= 2, fmt
+            assert len(leased) <= 1, fmt
