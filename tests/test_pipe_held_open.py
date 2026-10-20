@@ -13,8 +13,10 @@ on a clock. A regression fails after ``_HOLD_SECONDS`` and does not hang.
 
 from __future__ import annotations
 
+import bz2
 import gzip
 import io
+import lzma
 import os
 import tarfile
 import threading
@@ -183,3 +185,89 @@ def test_a_streaming_tar_read_in_small_pieces_matches_the_whole_bytes() -> None:
     expected = contents(io.BytesIO(payload))
     assert len(expected) == 5
     assert contents(_Trickle(payload, 7)) == expected  # type: ignore[arg-type]  # RawIOBase double
+
+
+_KOLY = b"koly" + (4).to_bytes(4, "big") + (512).to_bytes(4, "big")
+
+
+def _short_udif(first_block: bytes) -> bytes:
+    """A first block and a 512-byte ``koly`` trailer: the shape UDIF images end in."""
+    trailer = bytearray(512)
+    trailer[: len(_KOLY)] = _KOLY
+    return first_block + bytes(trailer)
+
+
+@pytest.mark.parametrize("compress", [bz2.compress, lzma.compress], ids=["bz2", "xz"])
+def test_a_short_udif_image_read_forward_only_is_the_image(
+    compress: Callable[[bytes], bytes],
+) -> None:
+    """A bzip2 or xz hit does not settle the near peek: the trailer can outrank it.
+
+    The image fits in the 4 KiB window, so its ``koly`` block is in the prefix and
+    the trailer matches on a forward-only source too, as it does on a file.
+    """
+    image = _short_udif(compress(b"first block"))
+    assert len(image) < 4096
+    assert detect_format(io.BytesIO(image)).format == ArchiveFormat.DMG
+    assert detect_format(_Trickle(image, 4096)).format == ArchiveFormat.DMG  # type: ignore[arg-type]  # RawIOBase double
+
+
+class _SignalsFirstRead(io.RawIOBase):
+    """The read end of a pipe that sets ``first_read`` once its first read returns."""
+
+    def __init__(self, fd: int) -> None:
+        super().__init__()
+        self._file = open(fd, "rb", buffering=0)  # noqa: SIM115
+        self.first_read = threading.Event()
+        self.reads = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, b: bytearray | memoryview) -> int | None:  # type: ignore[override]
+        got = self._file.readinto(b)
+        self.reads += 1
+        self.first_read.set()
+        return got
+
+    def close(self) -> None:
+        self._file.close()
+        super().close()
+
+
+def test_an_inner_tar_probe_waits_only_for_the_bytes_it_needs() -> None:
+    """The second installment arrives after detection has read the first, and
+    the probe decodes its TAR header from both without waiting for the close.
+
+    The first installment settles the near magic (gzip at 0, past offset 262) but,
+    stored without compression, holds fewer than 512 decoded bytes, so the
+    inner-TAR probe has to read again.
+    """
+    payload = gzip.compress(_tar(2000), compresslevel=0, mtime=0)
+    first, rest = payload[:300], payload[300:]
+    read_fd, write_fd = os.pipe()
+    stream = _SignalsFirstRead(read_fd)
+    release = threading.Event()
+    closed = threading.Event()
+
+    def writer() -> None:
+        try:
+            os.write(write_fd, first)
+            if stream.first_read.wait(_HOLD_SECONDS):
+                os.write(write_fd, rest)
+                release.wait(_HOLD_SECONDS)
+        finally:
+            closed.set()
+            os.close(write_fd)
+
+    thread = threading.Thread(target=writer, daemon=True)
+    thread.start()
+    try:
+        info = detect_format(stream)  # type: ignore[arg-type]  # RawIOBase over the pipe
+        assert not closed.is_set(), "detection waited for the writer to close the pipe"
+        assert stream.reads >= 2, "the probe never needed the second installment"
+    finally:
+        release.set()
+        thread.join()
+        stream.close()
+    assert info.format == ArchiveFormat.TAR_GZ

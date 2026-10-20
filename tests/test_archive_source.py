@@ -30,6 +30,7 @@ from archivey.internal.streams.streamtools import (
     DEFAULT_UNKNOWN_LENGTH_READ_STEP,
     ensure_bufferedio,
     is_seekable,
+    read_arrived,
     source_byte_size,
     source_name,
 )
@@ -1273,3 +1274,123 @@ def test_a_closed_source_refuses_to_read_a_borrowed_stream() -> None:
         source.tell()
     assert caller.tell() == 3
     assert not caller.closed
+
+
+class _Chunks(io.RawIOBase):
+    """A forward-only raw that hands over one queued chunk per read, then EOF.
+
+    A chunk of ``None`` is a stall that lasts, as on a non-blocking pipe whose
+    writer sends nothing more: every read from there on returns ``None``.
+    """
+
+    def __init__(self, *chunks: bytes | None) -> None:
+        super().__init__()
+        self._chunks = list(chunks)
+        self.calls = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def read(self, n: int = -1, /) -> bytes | None:
+        self.calls += 1
+        if not self._chunks:
+            return b""
+        chunk = self._chunks[0]
+        if chunk is None:
+            return None
+        take = len(chunk) if n < 0 else min(n, len(chunk))
+        if take == len(chunk):
+            self._chunks.pop(0)
+        else:
+            self._chunks[0] = chunk[take:]
+        return chunk[:take]
+
+
+class _BufferedChunks(io.BufferedIOBase):
+    """``_Chunks`` behind a buffered surface: ``read`` gathers, ``read1`` does not."""
+
+    def __init__(self, *chunks: bytes | None) -> None:
+        super().__init__()
+        self.raw_chunks = _Chunks(*chunks)
+
+    def readable(self) -> bool:
+        return True
+
+    def read(self, size: int | None = -1, /) -> bytes | None:  # type: ignore[override]
+        out = b""
+        want = -1 if size is None else size
+        while want < 0 or len(out) < want:
+            chunk = self.raw_chunks.read(-1 if want < 0 else want - len(out))
+            if chunk is None:
+                return out or None
+            if not chunk:
+                break
+            out += chunk
+        return out
+
+    def read1(self, size: int = -1, /) -> bytes:
+        chunk = self.raw_chunks.read(size)
+        # BufferedReader.read1 answers b"" for a stall as well as for EOF.
+        return b"" if chunk is None else chunk
+
+
+@pytest.mark.parametrize("wrap", [_Chunks, _BufferedChunks], ids=["raw", "buffered"])
+def test_read_arrived_takes_one_reads_worth(wrap: Callable[..., io.IOBase]) -> None:
+    """One read's worth, not a full count; ``b""`` only at the end."""
+    stream = wrap(b"abc", b"defg")
+    assert read_arrived(stream, 10) == b"abc"  # type: ignore[arg-type]  # test double
+    assert read_arrived(stream, 2) == b"de"  # type: ignore[arg-type]  # test double
+    assert read_arrived(stream, 10) == b"fg"  # type: ignore[arg-type]  # test double
+    assert read_arrived(stream, 10) == b""  # type: ignore[arg-type]  # test double
+
+
+@pytest.mark.parametrize("wrap", [_Chunks, _BufferedChunks], ids=["raw", "buffered"])
+def test_read_arrived_refuses_a_stall(wrap: Callable[..., io.IOBase]) -> None:
+    """``None`` from the stream, or a buffered ``read1``'s ``b""`` stall, is not EOF."""
+    stream = wrap(None)
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        read_arrived(stream, 10)  # type: ignore[arg-type]  # test double
+
+
+def test_read_arrived_refuses_a_non_positive_size() -> None:
+    with pytest.raises(ValueError, match="positive"):
+        read_arrived(io.BytesIO(b"x"), 0)
+
+
+def test_read_arrived_refuses_an_over_read() -> None:
+    class _OverReads(io.RawIOBase):
+        def readable(self) -> bool:
+            return True
+
+        def read(self, n: int = -1, /) -> bytes:
+            return b"x" * (n + 1)
+
+    with pytest.raises(ValueError, match="inner returned 5 bytes for read"):
+        read_arrived(_OverReads(), 4)  # type: ignore[arg-type]  # test double
+
+
+def test_peek_arrived_grows_by_one_reads_worth_and_replays() -> None:
+    """``peek_arrived`` makes one read per call and keeps the bytes for the backend."""
+    inner = _Chunks(b"abc", b"defg")
+    source = ArchiveSource.for_stream(inner)  # type: ignore[arg-type]  # test double
+    assert source.peek_arrived(10) == b"abc"
+    assert source.peek_arrived(2) == b"ab"  # already held: no read
+    assert inner.calls == 1
+    assert source.peek_arrived(10) == b"abcdefg"
+    assert source.peek_arrived(10) == b"abcdefg"  # no growth: the end
+    assert source.read() == b"abcdefg"
+
+
+def test_peek_arrived_refuses_a_stall() -> None:
+    source = ArchiveSource.for_stream(_Chunks(b"ab", None))  # type: ignore[arg-type]  # test double
+    assert source.peek_arrived(10) == b"ab"
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        source.peek_arrived(10)
+
+
+def test_peek_arrived_refuses_a_seekable_source_and_a_negative_size() -> None:
+    with pytest.raises(io.UnsupportedOperation, match="seekable"):
+        ArchiveSource.for_stream(io.BytesIO(b"abc")).peek_arrived(2)
+    source = ArchiveSource.for_stream(_Chunks(b"abc"))  # type: ignore[arg-type]  # test double
+    with pytest.raises(ValueError, match="non-negative"):
+        source.peek_arrived(-1)
