@@ -189,7 +189,9 @@ def _inflate_rest(
     The end is reached with ``decompress`` (with no input when nothing is left over:
     zlib may still hold output that an earlier ``max_length`` cut short), not with
     ``flush``: PyPy's ``flush`` never sets ``eof``, so a stream that ended there would
-    read as truncated.
+    read as truncated. On CPython that ``decompress`` drains everything zlib holds, so
+    the ``flush`` after it returns nothing; it stays for a binding whose ``decompress``
+    holds output back, so a truncated stream still yields every byte decoded.
     """
     out = _inflate(decomp, decomp.unconsumed_tail, -1, error)
     if decomp.eof:
