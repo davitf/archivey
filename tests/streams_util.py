@@ -17,6 +17,8 @@ from typing import BinaryIO
 
 import pytest
 
+from tests.conftest import CPYTHON
+
 
 class NonSeekableBytesIO(io.RawIOBase):
     """A ``BytesIO`` that reports (and behaves as) non-seekable, for forward-only tests."""
@@ -509,7 +511,7 @@ def assert_non_integer_seek_is_type_error(stream: BinaryIO, content: bytes) -> N
                 seek(*args)
             assert type(excinfo.value) is TypeError, args
             # The message is CPython's: PyPy's io.BytesIO words it differently.
-            if sys.implementation.name == "cpython":
+            if CPYTHON:
                 assert str(excinfo.value) == str(expected.value), args
             position = stream.tell()
             assert type(position) is int and position == at, args
@@ -554,7 +556,7 @@ def assert_non_integer_read_is_type_error(stream: BinaryIO, content: bytes) -> N
             with pytest.raises(TypeError) as excinfo:
                 read(size)
             assert type(excinfo.value) is TypeError, size
-            if sys.implementation.name == "cpython":  # PyPy words it differently
+            if CPYTHON:  # PyPy words it differently
                 assert str(excinfo.value) == str(expected.value), size
             assert stream.tell() == at, size
 
@@ -596,7 +598,7 @@ def assert_oversized_read_is_overflow_error(stream: BinaryIO, content: bytes) ->
             with pytest.raises(OverflowError) as excinfo:
                 stream.read(size)
             assert type(excinfo.value) is OverflowError, size
-            if sys.implementation.name == "cpython":  # PyPy words it differently
+            if CPYTHON:  # PyPy words it differently
                 assert str(excinfo.value) == str(expected.value), size
             assert stream.tell() == at, size
 
