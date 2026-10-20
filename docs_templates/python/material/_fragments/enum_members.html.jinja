@@ -1,0 +1,18 @@
+{% if class.extra.enum_members %}
+{#- Enum members as a list, in the layout mkdocstrings gives parameters under
+    `docstring_section_style: list` (see mkdocs.yml): a table overflows a phone screen. -#}
+<p><span class="doc-section-title">Members:</span></p>
+<ul>
+  {% for r in class.extra.enum_members.rows %}
+  <li class="doc-section-item field-body">
+    <b><code>{{ r.name }}</code></b>
+    {%- if r.value is not none %} (<code>{{ r.value }}</code>){% endif %}
+    {%- if r.doc %} –
+    <div class="doc-md-description">
+      {{ r.doc|convert_markdown(heading_level, html_id, autoref_hook=autoref_hook) }}
+    </div>
+    {%- endif %}
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
