@@ -65,8 +65,9 @@ When the pass reaches the index, archivey fills in the rest on the members you a
 Until then `member.member_state_final` is `False`. From a pipe, the pass reaches a ZIP's index only
 when the sender closes the pipe, so the loop doesn't finish while the sender keeps it open.
 
-A `.gz` from a pipe that the sender keeps open opens at once, but the read that reaches its end
-waits until the sender closes the pipe ([Single-file compressors](formats.md#single-file-compressors)).
+A compressed file or a compressed tar from a pipe that the sender keeps open can wait for the
+sender to close it, at open or at a read, depending on its size
+([Single-file compressors](formats.md#single-file-compressors) says where).
 
 ??? note "Why can't the others come from a pipe?"
     7z keeps its index at the end of the file, and reading an ISO means jumping between places in

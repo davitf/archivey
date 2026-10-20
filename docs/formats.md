@@ -965,12 +965,21 @@ yielded.
   deep: damage further in still fails on the read. It costs one decoded block, which is
   noticeable only for `.bz2` (a block is up to 900 KB of output; about 30 ms on
   incompressible data). A pipe is not checked at open, because the check would consume
-  bytes of its one pass; it fails on the first read as before. So a `.gz` sent down a
-  pipe that the sender keeps open opens at once, but a read can wait. The decoder reads
-  the compressed data in 64 KiB pieces, and its read of each piece returns only when it
-  has 64 KiB or the sender closes the pipe. So the read that needs the last piece waits
-  until the sender closes the pipe, at any size. For a `.gz` under 64 KiB, that is the
-  first read. Close the sending side when the file is done.
+  bytes of its one pass; it fails on the first read as before.
+- **From a pipe that the sender keeps open**, a compressed file or a compressed tar can
+  wait for the sender to close the pipe. These are the places it waits:
+    - `open_archive`, when the file is short enough that the bytes that identify it have
+      not all arrived: under 262 bytes, a `.bz2` or `.xz` under 4 KiB (`.tar.bz2` and
+      `.tar.xz` too), or a file that decompresses to under 512 bytes.
+    - `open_archive` of a compressed tar under 64 KiB, and the first read of any other
+      compressed file under 64 KiB. The decoder reads the compressed data in 64 KiB
+      pieces, and it gets a piece only when the piece is full or the sender closes the
+      pipe.
+    - The read that reaches the end of the file, at any size, for the same reason.
+
+  bzip2 decompresses nothing until a whole block has arrived (up to 900 KB of original
+  data). So a `.bz2` or `.tar.bz2` that fits in one block waits as if it were under
+  64 KiB. Close the sending side when the file is done.
 - The `[seekable]` accelerator's bzip2 decoder reads input that is not bzip2 as an empty
   stream. When it yields nothing, Archivey decodes the source again with the standard
   library, so a corrupt `.bz2` raises the same error whether or not
