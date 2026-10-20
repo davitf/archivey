@@ -258,10 +258,13 @@ def stream_end(
                 data = source.read(1 << 16)
                 if not data:
                     # zlib can still hold output an earlier ``max_length`` cut kept
-                    # back, the final block's included: drain it before calling the
-                    # stream cut, as ``_inflate_rest`` does.
+                    # back, the final block's included: drain it, then let ``eof``
+                    # decide whether the stream was cut. No ``flush`` fallback: on a
+                    # binding that holds more back, ``None`` costs a second decode
+                    # (the caller switches to the standard library), not a wrong
+                    # verdict.
                     held = len(decomp.decompress(b"", 1 << 20))
-                    if not held:
+                    if not held and not decomp.eof:
                         return None, False
                     produced += held
                     continue

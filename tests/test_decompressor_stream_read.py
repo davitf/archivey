@@ -313,20 +313,29 @@ class _FlushLeavesEof:
         return self._inner.unused_data
 
 
+def _flush_leaves_eof_decoder(point: SeekPoint, inner: BinaryIO) -> ZlibDecoder:
+    del point, inner
+    decoder = ZlibDecoder(-15)
+    decoder._decomp = _FlushLeavesEof(decoder._decomp)  # type: ignore[assignment]
+    return decoder
+
+
 def test_a_complete_deflate_stream_ends_without_flush_setting_eof() -> None:
     """Output a ``max_length`` cut held back is drained at the end of the input, and the
-    stream counts as complete even where ``flush`` never sets ``eof`` (PyPy)."""
+    stream counts as complete even where ``flush`` never sets ``eof`` (PyPy).
+
+    Small reads keep zlib's output cut short when the input runs out, so the end is
+    reached only through ``_inflate_rest``.
+    """
     compressor = zlib.compressobj(6, zlib.DEFLATED, -15)
     payload = b"\0" * 300_000
     data = compressor.compress(payload) + compressor.flush()
-    decoder = ZlibDecoder(-15)
-    decoder._decomp = _FlushLeavesEof(decoder._decomp)  # type: ignore[assignment]
-    out = bytearray()
-    for start in range(0, len(data), 255):
-        out += decoder.feed(data[start : start + 255], 255).data
-        while not decoder.needs_input:
-            out += decoder.feed(b"", 255).data
-    out += decoder.flush().data
-    assert decoder.finished
-    assert decoder.pending_error is None
-    assert bytes(out) == payload
+    with DecompressorStream(
+        io.BytesIO(data), make_decoder=_flush_leaves_eof_decoder
+    ) as stream:
+        pieces: list[bytes] = []
+        while piece := stream.read(255):
+            pieces.append(piece)
+        assert b"".join(pieces) == payload
+        assert stream._decoder.finished
+        assert stream._decoder.pending_error is None
