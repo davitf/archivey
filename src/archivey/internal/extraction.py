@@ -95,11 +95,13 @@ if TYPE_CHECKING:
 _CHUNK = 1024 * 1024  # 1 MiB copy chunk
 
 # Prefix of the temp files atomic FILE writes stage in the destination directory
-# (mkstemp appends a random suffix). Python-level failures unlink them; a removal the
-# filesystem refuses (logged) or a hard kill (SIGKILL, power loss) can leave one:
-# leftover ``.archivey-tmp-*`` files in an extraction destination are archivey's and
-# are safe to delete. Documented in docs/extracting.md; keep the value and that doc in
-# sync.
+# (mkstemp appends a random suffix), and of the staging directory of a pass that stages
+# its members (``_write_staged``: a ZIP from a pipe). Python-level failures remove
+# them; a removal the filesystem refuses (logged) or a hard kill (SIGKILL, power loss)
+# can leave one: leftover ``.archivey-tmp-*`` files and directories in an extraction
+# destination are archivey's and are safe to delete once no extraction is running
+# there (a staging directory holds a running pipe extraction's only copy of its
+# data). Documented in docs/extracting.md; keep the value and that doc in sync.
 _TMP_PREFIX = ".archivey-tmp-"
 
 # A module attribute, not ``os.name`` at each use, so a test can take the Windows path
@@ -785,6 +787,11 @@ class ExtractionCoordinator:
         # for a pass that stages its members, once its walk has ended and before any
         # member is placed (``_stage_then_place``).
         unmatched_pending: CollectionSelector | None = None
+        # A pass that stages its members never has a free list here (its reader lists
+        # nothing up front, and ``extract_all`` refuses a streaming reader whose pass
+        # has started), so ``_stage_then_place`` is its only reporter: the report is
+        # made once.
+        assert not (reader._REVISES_YIELDED_MEMBERS and all_members is not None)
         if isinstance(selector, CollectionSelector):
             if all_members is not None and not listing_damaged:
                 selector.report_unmatched(

@@ -139,9 +139,10 @@ yielded.
   from its data descriptor once the pass gets past its data. Until the pass reaches the directory, a
   member's ``mode``, ``create_system``, ``comment``, ``uid`` and ``gid`` are ``None`` and a symlink
   is a ``FILE``; then every member is updated in place, and ``member_state_final`` turns ``True``.
-  Extraction writes each member as it arrives and, at the end of the pass, applies modes and owners,
-  makes the links (after running your ``filter`` again on them) and removes what a member the
-  directory types ``OTHER`` wrote, so the files on disk match a read from a file. A member the
+  Extraction keeps each member's data in a private ``.archivey-tmp-`` folder inside the
+  destination and puts the members in place only once the pass has read the directory, calling
+  your ``filter`` once on each member as the directory describes it, so the files on disk match a
+  read from a file. A member the
   directory does not list (an appended update, a planted entry) is still yielded by the pass when it
   is met. When the pass reaches the directory, it is dropped from the listing and reported as
   ``ARCHIVE_UNLISTED_DATA``, and extraction does not keep it.

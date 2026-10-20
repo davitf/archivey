@@ -177,7 +177,9 @@ policy.
     `NameRewrite.PORTABLE_NAME` in `result.rewrites` say which ones those are.
 
 A `filter` sees each member before these checks run, so it can rename one they would refuse, such as
-`../evil.txt`, and that member is then written under its new name. Device files are refused whatever
+`../evil.txt`, and that member is then written under its new name. A ZIP read from a pipe is the
+exception: there the checks also run on each member's name as it arrives, before its data is kept,
+so a member they refuse fails even if the filter renames it. Device files are refused whatever
 the filter does, and a link pointing outside is refused unless the filter also changes its target.
 `archivey.sanitize_names` is a ready-made filter for this, passed as `filter=` to `extract_all`. It
 drops a leading `/` or drive letter, resolves or drops `..`, removes those reordering characters,

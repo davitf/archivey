@@ -118,10 +118,10 @@ def test_a_link_buffer_with_padding_past_it_keeps_its_target(bit3: bool) -> None
     assert _from_pipe(data, read=False)["link"].link_target == "C:/target"
 
 
-def test_a_folder_the_pass_made_for_a_junction_is_taken_back(tmp_path: Path) -> None:
+def test_a_folder_the_pass_meets_as_a_junction_is_never_made(tmp_path: Path) -> None:
     """The name makes the member a folder until the directory says it is a junction;
-    the pass writes the folder and its parent, and takes both back when the junction
-    is refused, as the file read never writes them."""
+    the pass makes nothing for it, and the junction is refused at placement, so
+    neither the folder nor its parent is made, as from a file."""
     buffer = _reparse_buffer(
         IO_REPARSE_TAG_MOUNT_POINT, "\\??\\C:\\tree\\target", "C:\\tree\\target"
     )

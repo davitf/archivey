@@ -295,6 +295,27 @@ def test_a_filter_by_a_name_the_directory_gives_extracts_from_a_pipe(
     assert tree["docs/r.txt"][0] == b"read me"
 
 
+def test_a_filter_rename_of_a_refused_local_name_fails_from_a_pipe(
+    tmp_path: Path,
+) -> None:
+    """From a file, the filter renames ``../evil.txt`` before the checks and it is
+    written as ``safe.txt``. From a pipe, the checks refuse the local header's name
+    before anything is staged, so the renamed member has no data to place (DR-5a)."""
+
+    def rename(member: ArchiveMember) -> ArchiveMember:
+        return member.replace(name="safe.txt")
+
+    data = _zip([(_entry("../evil.txt"), b"evil!!!")])
+    from_file = _extract(data, tmp_path / "file", piped=False, filter=rename)
+    from_pipe = _extract(
+        data, tmp_path / "pipe", piped=True, filter=rename, on_error="continue"
+    )
+    assert from_file == [("../evil.txt", ExtractionStatus.EXTRACTED, "safe.txt")]
+    assert from_pipe == [("../evil.txt", ExtractionStatus.FAILED, None)]
+    assert (tmp_path / "file" / "safe.txt").read_bytes() == b"evil!!!"
+    assert list((tmp_path / "pipe").iterdir()) == []
+
+
 def test_a_member_a_predicate_takes_only_in_the_end_is_an_extraction_error(
     tmp_path: Path,
 ) -> None:
@@ -395,10 +416,10 @@ def test_a_member_the_list_takes_in_the_end_meets_the_callers_parent(
 
 
 @posix_modes
-def test_a_run_stopped_in_the_pass_puts_the_callers_parent_back(
+def test_a_run_stopped_in_the_pass_leaves_the_callers_parent(
     tmp_path: Path,
 ) -> None:
-    """As ``test_a_run_stopped_in_the_pass_puts_the_callers_file_back``, with the
+    """As ``test_a_run_stopped_in_the_pass_leaves_the_callers_file``, with the
     caller's file at the parent ``x`` that ``x/y`` implies."""
     data = _zip([(_entry("x\\y"), b"ARCHIVE"), (_entry("../evil"), b"Z")])
     for where, piped in (("file", False), ("pipe", True)):
@@ -446,11 +467,11 @@ def test_a_read_only_file_of_the_callers_is_handled_as_from_a_file(
         ("z.txt", {"limits": ExtractionLimits(max_entries=1)}),
     ],
 )
-def test_a_run_stopped_in_the_pass_puts_the_callers_file_back(
+def test_a_run_stopped_in_the_pass_leaves_the_callers_file(
     second: str, options: dict[str, object], tmp_path: Path
 ) -> None:
-    """The run stops before the directory says whether ``x\\y`` is ``x/y``, so
-    nothing the pass wrote at the caller's ``x/y`` is kept."""
+    """The run stops before the directory says whether ``x\\y`` is ``x/y``, so it
+    places nothing, and the caller's ``x/y`` is as it was."""
     data = _zip([(_entry("x\\y"), b"ARCHIVE"), (_entry(second), b"Z")])
     for where, piped in (("file", False), ("pipe", True)):
         _seed(tmp_path / where, {"x/y": b"MINE"})
@@ -470,9 +491,12 @@ def test_a_run_stopped_in_the_pass_puts_the_callers_file_back(
 
 
 @needs_symlinks
-def test_a_run_stopped_while_settling_keeps_what_it_settled(tmp_path: Path) -> None:
+def test_a_run_stopped_during_placement_keeps_the_member_placed_before(
+    tmp_path: Path,
+) -> None:
     """The directory retypes ``payload`` as a link out of the destination, which
-    stops the run; ``docs/r.txt``, settled before it, replaced the caller's file."""
+    stops the run at its placement; ``docs/r.txt``, placed before it, replaced the
+    caller's file."""
     data = _zip(
         [
             (_entry("docs\\r.txt", host=0), b"read me"),
@@ -542,13 +566,13 @@ def test_a_run_stopped_in_the_pass_leaves_nothing_in_the_destination(
 
 
 @needs_symlinks
-def test_a_run_stopped_while_settling_takes_back_what_it_had_not_settled(
+def test_a_run_stopped_during_placement_keeps_what_it_placed(
     tmp_path: Path,
 ) -> None:
     """The directory makes ``evil`` a link out of the destination, which stops the
-    run as the end of the pass settles it: the members settled before it stay, links
-    made, and the files written for the members after it that may be links are taken
-    back. A file read stops at ``evil`` too, before writing those."""
+    run when placement reaches it: the members placed before it stay, links made, and
+    the members after it are not placed. A file read stops at ``evil`` too, before
+    writing those."""
     data = _zip(
         [
             (_entry("rel_link", mode=0o120777), b"target.txt"),
@@ -682,7 +706,7 @@ def test_the_filter_sees_each_member_once_and_final(tmp_path: Path) -> None:
     assert [final for _, final in seen] == [True]
 
 
-def test_a_special_file_the_directory_reveals_is_removed(tmp_path: Path) -> None:
+def test_a_special_file_the_directory_reveals_is_refused(tmp_path: Path) -> None:
     data = _zip([(_entry("fifo", mode=0o010644), b""), (_entry("b"), b"after")])
     results, tree = _both(data, tmp_path, on_error="continue")
     assert results[0][:2] == ("fifo", ExtractionStatus.BLOCKED)
@@ -811,7 +835,7 @@ def _outcomes(
     ]
 
 
-def test_an_unlisted_local_entry_is_taken_back(tmp_path: Path) -> None:
+def test_an_unlisted_local_entry_is_not_placed(tmp_path: Path) -> None:
     hand = _Hand()
     hand.local(b"a.txt", b"one")
     hand.local(b"sub/planted.txt", b"not listed")

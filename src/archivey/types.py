@@ -1198,7 +1198,9 @@ MemberSelectorArg = (
 )
 # ``MemberFilter`` — a per-member sanitize/rename hook run after the policy transform and
 # before the safety checks, so it sees unsafe members too and can rename them; the
-# safety checks run on what it returns. Returns a ``.replace()``d copy, or ``None`` to
+# safety checks run on what it returns. From a ZIP read from a pipe the checks also run
+# on each member's local-header name before its data is staged, so a member they refuse
+# there fails whatever the filter returns. Returns a ``.replace()``d copy, or ``None`` to
 # skip the member. ``archivey.sanitize_names`` is a ready-made one.
 MemberFilter = Callable[[ArchiveMember], "ArchiveMember | None"]
 

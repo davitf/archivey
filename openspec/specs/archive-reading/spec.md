@@ -1360,10 +1360,10 @@ has been offered to the selector:
 - `extract_all()` reports before it writes any member when the member list is available
   without a scan, and otherwise at the end of the pass. A ZIP read from a non-seekable
   source has its member list once its central directory has been read, before any
-  member is placed (`safe-extraction`), so it reports then, as the first case does. Under a `RAISE` disposition the
-  first case refuses the call before the destination is created. In the second case
-  the members already written stay on disk and `DiagnosticRaisedError` replaces the
-  report.
+  member is placed (`safe-extraction`), so it reports then, as the first case does.
+  Under a `RAISE` disposition the first case refuses the call before the destination
+  is created. In the second case the members already written stay on disk and
+  `DiagnosticRaisedError` replaces the report.
 - When the member list ends in terminal damage, `extract_all()` SHALL NOT report: an
   entry could match a member past the damage that was never listed. The call raises
   the listing's own error after writing the prefix (`safe-extraction`), so under a

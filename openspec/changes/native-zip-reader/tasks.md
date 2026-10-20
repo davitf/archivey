@@ -206,7 +206,8 @@ each lands with nothing half-done reachable:
       type or name changed again from the start (taking back what was written; a file
       that moved is written again from its bytes on disk) and applies metadata the
       directory added, unless the filter set that field
-      (`ExtractionCoordinator._settle_revised_members`, `test_zip_pipe_extract.py`,
+      (`ExtractionCoordinator._settle_revised_members`, since replaced by
+      `_stage_then_place` in `pipe-zip-stage-then-commit`; `test_zip_pipe_extract.py`,
       which also extracts the corpus both ways). 3b3b also selects again at the end:
       `members=` and `filter=` are applied to what each member became, a list matches
       every spelling a member can end with during the pass, a member taken only at
@@ -223,7 +224,8 @@ each lands with nothing half-done reachable:
       reader's half (`ZipForwardReader._failed_at_end`; `stream_members()` raises at
       the end of the pass),
       `test_a_descriptor_the_directory_contradicts_fails_at_the_end_of_the_pass`.
-      3b3c2: extraction (`_settle_failures_at_end`).
+      3b3c2: extraction (`_settle_failures_at_end`, since replaced by
+      `_placement_data` in `pipe-zip-stage-then-commit`).
 - [x] 3.3c `is_current` from the directory order; same-name members in reverse order are
       detected at the end of the pass, with 3.3g's outcome (fixture with the two orders
       reversed). 3b3c1: `is_current` (`_listed_in_index_order`),
@@ -262,7 +264,8 @@ each lands with nothing half-done reachable:
       different names (3b3a raises after the pass) gets the same treatment: the file
       written under the local name is taken back and the member fails, as the
       seekable extraction fails it when it reads the local header. 3b3c2:
-      `ExtractionCoordinator._settle_failures_at_end`, the tests after "Failures
+      `ExtractionCoordinator._settle_failures_at_end` (since replaced by
+      `_placement_data`, `pipe-zip-stage-then-commit`), the tests after "Failures
       found at the end of the pass" in `test_zip_pipe_extract.py`; a directory entry
       with no local entry is built from the directory (`_missing_member`) and gets a
       `FAILED` result when selected; a current copy that needs no bytes (an empty

@@ -532,7 +532,8 @@ class BaseArchiveReader(ArchiveReader):
     _LINK_TARGETS_IN_DATA: bool = False
     # Does a forward pass change members it has already yielded, once the walk ends (a
     # ZIP read from a pipe, whose central directory comes last)? ``extract_all`` then
-    # keeps what it wrote each such member as, and settles it at the end of the pass.
+    # stages each such member's data and places the members only once the walk has
+    # ended (``ExtractionCoordinator._stage_then_place``).
     _REVISES_YIELDED_MEMBERS: bool = False
 
     def __init__(
@@ -613,7 +614,8 @@ class BaseArchiveReader(ArchiveReader):
         # counts the members the walk has produced.
         self._listed: list[ArchiveMember] = []
         # The member id of each member the walk yielded and ``_drop_listed`` then took
-        # out of the listing; extraction takes back what it wrote for them.
+        # out of the listing; extraction does not place them, and drops what it staged
+        # for them (``ExtractionCoordinator._stage_then_place``).
         self._dropped_listed: set[int] = set()
         # Members the end of a revising walk fails (``_REVISES_YIELDED_MEMBERS``), in
         # the index's order, with why: the walk's error is the first of them, and
