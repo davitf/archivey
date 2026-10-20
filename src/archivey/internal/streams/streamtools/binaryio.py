@@ -166,6 +166,12 @@ def try_readinto(stream: object, b: WriteableBuffer) -> int | None:
     first. That is not detectable here at all: a ``readinto`` that consumed
     without writing leaves no trace in ``b`` (``io.RawIOBase``'s default and
     the advertised-then-refuse file-likes raise before touching the buffer).
+
+    Implementations must also release every ``memoryview`` of ``b`` before they
+    return (``with memoryview(b) as view:``). The caller may resize ``b`` next
+    (``RawIOBase.read`` does), which an unreleased view refuses with
+    ``BufferError``. CPython releases a dropped view at once, so the mistake shows
+    only where views are freed at a collection (PyPy).
     """
     readinto = getattr(stream, "readinto", None)
     if readinto is None:
@@ -204,7 +210,8 @@ def readinto_via_read(src: ReadableStream, b: WriteableBuffer) -> int:
     Copies at most ``len(b)`` bytes. A ``read`` that returns more than the
     buffer is a contract violation: those extra bytes are already consumed and
     cannot be delivered without losing them, so this raises ``ValueError``
-    rather than truncating.
+    rather than truncating. A ``read`` that returns ``None`` (a non-blocking stream
+    with nothing ready) raises ``BlockingIOError``, as :func:`read_blocking` does.
 
     That ``ValueError`` means the *source object* is broken, not that a
     payload is damaged. Callers that translate ``ValueError`` into
@@ -213,15 +220,16 @@ def readinto_via_read(src: ReadableStream, b: WriteableBuffer) -> int:
     today (ZIP, streaming TAR): slicers clamp the request before it
     reaches this helper.
     """
-    mv = memoryview(b).cast("B")
-    data = src.read(len(mv))
-    if len(data) > len(mv):
-        raise ValueError(
-            f"read({len(mv)}) returned {len(data)} bytes; the excess is already consumed "
-            "and cannot be delivered without losing it"
-        )
-    mv[: len(data)] = data
-    return len(data)
+    # Views released on return: see try_readinto.
+    with memoryview(b) as outer, outer.cast("B") as mv:
+        data = read_blocking(src, len(mv))
+        if len(data) > len(mv):
+            raise ValueError(
+                f"read({len(mv)}) returned {len(data)} bytes; the excess is already "
+                "consumed and cannot be delivered without losing it"
+            )
+        mv[: len(data)] = data
+        return len(data)
 
 
 def read_exact(stream: ReadableStream, n: int) -> bytes:

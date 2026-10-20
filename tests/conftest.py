@@ -23,6 +23,11 @@ if TYPE_CHECKING:
     from archivey.types import ArchiveMember
 
 
+# Whether this is CPython. Tests that pin CPython's exact wording or object lifetimes
+# check it; other interpreters (PyPy) word errors differently and collect later.
+CPYTHON = sys.implementation.name == "cpython"
+
+
 # PyPy has no ``_tracemalloc``, so ``import tracemalloc`` fails there and every test
 # module that imports it, directly or through tests/memory_util.py, would fail to
 # load. This stand-in skips only the test that calls it.

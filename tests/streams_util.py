@@ -17,6 +17,8 @@ from typing import BinaryIO
 
 import pytest
 
+from tests.conftest import CPYTHON
+
 
 class NonSeekableBytesIO(io.RawIOBase):
     """A ``BytesIO`` that reports (and behaves as) non-seekable, for forward-only tests."""
@@ -121,10 +123,10 @@ class ShortReadBytesIO(io.RawIOBase):
         return data
 
     def readinto(self, b) -> int:  # type: ignore[override]  # test double; broad buffer type
-        mv = memoryview(b).cast("B")
-        data = self.read(len(mv))
-        mv[: len(data)] = data
-        return len(data)
+        with memoryview(b) as outer, outer.cast("B") as mv:
+            data = self.read(len(mv))
+            mv[: len(data)] = data
+            return len(data)
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         if not self._seekable:
@@ -257,12 +259,33 @@ class ReadSizeRecorder(io.RawIOBase):
         return self._inner.tell()
 
 
+def lzma_alone_with_filter(data: bytes, lzma1: dict) -> bytes:
+    """``lzma.compress(data, format=FORMAT_ALONE, filters=[lzma1])``, also on PyPy.
+
+    PyPy's ``lzma`` refuses FORMAT_ALONE with a filter chain (NotImplementedError).
+    The Alone format is a 13-byte header (properties byte, dictionary size, unknown
+    size) before the raw LZMA1 stream, so this writes the header and compresses with
+    FORMAT_RAW. ``lzma1`` must give ``dict_size``. The bytes match what CPython writes
+    (``test_lzma_alone_with_filter_matches_cpython``): like liblzma's Alone encoder,
+    the header declares ``dict_size`` rounded up to 2^n or 2^n + 2^(n-1).
+    """
+    lzma1 = {"lc": 3, "lp": 0, "pb": 2, **lzma1}
+    props = (lzma1["pb"] * 5 + lzma1["lp"]) * 9 + lzma1["lc"]
+    raw = lzma.compress(data, format=lzma.FORMAT_RAW, filters=[lzma1])
+    declared = lzma1["dict_size"] - 1
+    for shift in (2, 3, 4, 8, 16):
+        declared |= declared >> shift
+    declared = min(declared + 1, 2**32 - 1)
+    return bytes([props]) + struct.pack("<LQ", declared, 2**64 - 1) + raw
+
+
 def make_lzip_member(data: bytes, dict_size_bits: int = 20) -> bytes:
     """Build one lzip member from ``data`` using stdlib ``lzma``.
 
-    lzip omits the 13-byte LZMA_ALONE header from its raw stream; compress with
-    FORMAT_ALONE (which includes it), strip the header, then wrap in the lzip
-    header/trailer.
+    lzip's stream is the raw LZMA1 stream an Alone file carries after its 13-byte
+    header; compress with FORMAT_RAW, then wrap in the lzip header/trailer. Not
+    FORMAT_ALONE with the header stripped: PyPy's ``lzma`` refuses FORMAT_ALONE with
+    a filter chain (NotImplementedError), and the raw bytes are the same.
     """
     filters: list[dict] = [
         {
@@ -273,8 +296,7 @@ def make_lzip_member(data: bytes, dict_size_bits: int = 20) -> bytes:
             "pb": 2,
         }
     ]
-    compressed_alone = lzma.compress(data, format=lzma.FORMAT_ALONE, filters=filters)
-    lzma_raw = compressed_alone[13:]
+    lzma_raw = lzma.compress(data, format=lzma.FORMAT_RAW, filters=filters)
     header = b"LZIP" + bytes([1, dict_size_bits])
     member_total = len(header) + len(lzma_raw) + 20
     trailer = struct.pack(
@@ -489,7 +511,7 @@ def assert_non_integer_seek_is_type_error(stream: BinaryIO, content: bytes) -> N
                 seek(*args)
             assert type(excinfo.value) is TypeError, args
             # The message is CPython's: PyPy's io.BytesIO words it differently.
-            if sys.implementation.name == "cpython":
+            if CPYTHON:
                 assert str(excinfo.value) == str(expected.value), args
             position = stream.tell()
             assert type(position) is int and position == at, args
@@ -534,7 +556,7 @@ def assert_non_integer_read_is_type_error(stream: BinaryIO, content: bytes) -> N
             with pytest.raises(TypeError) as excinfo:
                 read(size)
             assert type(excinfo.value) is TypeError, size
-            if sys.implementation.name == "cpython":  # PyPy words it differently
+            if CPYTHON:  # PyPy words it differently
                 assert str(excinfo.value) == str(expected.value), size
             assert stream.tell() == at, size
 
@@ -576,7 +598,7 @@ def assert_oversized_read_is_overflow_error(stream: BinaryIO, content: bytes) ->
             with pytest.raises(OverflowError) as excinfo:
                 stream.read(size)
             assert type(excinfo.value) is OverflowError, size
-            if sys.implementation.name == "cpython":  # PyPy words it differently
+            if CPYTHON:  # PyPy words it differently
                 assert str(excinfo.value) == str(expected.value), size
             assert stream.tell() == at, size
 
