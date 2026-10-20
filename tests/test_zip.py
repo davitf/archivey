@@ -16,6 +16,7 @@ import zlib
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any, BinaryIO
 
 import pytest
 
@@ -417,8 +418,8 @@ def test_unencrypted_codec_indexerror_is_not_truncated(
     """IndexError on the codec path is an archivey bug, not archive damage.
 
     Nothing on the ZIP read path translates IndexError, so a latent off-by-one in
-    ``open_codec_stream`` still fails the Atheris zip target rather than being
-    swallowed as TruncatedError.
+    the codec opener (``open_codec_raw`` for an unencrypted member) still fails the
+    Atheris zip target rather than being swallowed as TruncatedError.
     """
     import archivey.internal.backends.zip_reader as zip_reader
 
@@ -429,7 +430,7 @@ def test_unencrypted_codec_indexerror_is_not_truncated(
     def _boom(*_args: object, **_kwargs: object) -> object:
         raise IndexError("index out of range")
 
-    monkeypatch.setattr(zip_reader, "open_codec_stream", _boom)
+    monkeypatch.setattr(zip_reader, "open_codec_raw", _boom)
     with open_archive(io.BytesIO(buf.getvalue()), format=ArchiveFormat.ZIP) as ar:
         with pytest.raises(IndexError, match="index out of range"):
             ar.open(next(iter(ar)))
@@ -454,6 +455,24 @@ def test_lzma_member_with_invalid_properties_is_corrupt_at_open() -> None:
     assert info.value.member_name == "a.txt"
 
 
+def _opened_codec_reading_from(
+    make_stream: Callable[[], BinaryIO],
+) -> Callable[..., object]:
+    """An ``open_codec_raw`` that opens the real codec, then reads from ``make_stream``.
+
+    The member stream keeps the codec's own translator, so a test sees what the whole
+    translation chain does with the error the stream raises.
+    """
+    from archivey.internal.streams.codecs import open_codec_raw
+
+    def opener(*args: object, **kwargs: object) -> object:
+        opened = open_codec_raw(*args, **kwargs)  # type: ignore[arg-type]  # forwarded as received
+        opened.stream.close()
+        return dataclasses.replace(opened, stream=make_stream())
+
+    return opener
+
+
 def test_unencrypted_member_read_indexerror_is_not_truncated(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -476,7 +495,7 @@ def test_unencrypted_member_read_indexerror_is_not_truncated(
         def read(self, *args: object, **kwargs: object) -> bytes:
             raise IndexError("index out of range")
 
-    monkeypatch.setattr(zip_reader, "open_codec_stream", lambda *_a, **_k: _Boom())
+    monkeypatch.setattr(zip_reader, "open_codec_raw", _opened_codec_reading_from(_Boom))
     with open_archive(io.BytesIO(buf.getvalue()), format=ArchiveFormat.ZIP) as ar:
         stream = ar.open(next(iter(ar)))
         with pytest.raises(IndexError, match="index out of range"):
@@ -500,7 +519,7 @@ def test_member_read_unsupported_operation_other_than_seek_is_not_corruption(
             raise io.UnsupportedOperation("read")
 
     monkeypatch.setattr(
-        zip_reader, "open_codec_stream", lambda *_a, **_k: _Unsupported()
+        zip_reader, "open_codec_raw", _opened_codec_reading_from(_Unsupported)
     )
     with open_archive(io.BytesIO(buf.getvalue()), format=ArchiveFormat.ZIP) as ar:
         stream = ar.open(next(iter(ar)))
@@ -3118,3 +3137,52 @@ def test_relative_seek_before_0_after_a_deferred_seek_clamps() -> None:
             stream.seek(100)
             assert stream.seek(-500, io.SEEK_CUR) == 0
             assert stream.read() == data
+
+
+@pytest.mark.parametrize(
+    "method",
+    [zipfile.ZIP_DEFLATED, zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA],
+    ids=["deflate", "bzip2", "lzma"],
+)
+def test_member_decoder_config_matches_the_codec_openers_own(
+    monkeypatch: pytest.MonkeyPatch, method: int
+) -> None:
+    """The decoder config a ZIP member opens with is the one the codec opener derives.
+
+    The reader builds the per-member config in one copy, filling the input size
+    itself where the opener would. It must equal what the opener derives from the
+    reader's base config: an LZMA member's header read moves the body, and the
+    opener then measures the rest, not the whole body.
+    """
+    import archivey.internal.backends.zip_reader as zip_reader
+    from archivey.internal.streams.codecs import open_codec_raw
+    from archivey.internal.streams.codecs.registry import _decoder_config
+    from archivey.internal.streams.streamtools import fix_stream_start_position
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", method) as zf:
+        zf.writestr("a.txt", b"hello" * 100)
+    seen: list[tuple[object, object]] = []
+
+    with open_archive(io.BytesIO(buf.getvalue()), format=ArchiveFormat.ZIP) as ar:
+
+        def capture(codec: Any, body: Any, *, config: Any, params: Any) -> Any:
+            expected = _decoder_config(
+                codec,
+                fix_stream_start_position(body),
+                dataclasses.replace(
+                    ar._stream_config,  # type: ignore[attr-defined]
+                    expected_decompressed_size=500,
+                    refuse_input_after_end=True,
+                ),
+                ar._diagnostics_collector,  # type: ignore[attr-defined]
+            )
+            got = _decoder_config(codec, fix_stream_start_position(body), config, None)
+            seen.append((expected, got))
+            return open_codec_raw(codec, body, config=config, params=params)
+
+        monkeypatch.setattr(zip_reader, "open_codec_raw", capture)
+        with ar.open("a.txt") as stream:
+            assert stream.read() == b"hello" * 100
+    ((expected, got),) = seen
+    assert got == expected

@@ -233,12 +233,11 @@ def test_dropped_stream_is_garbage_collected(tmp_path: Path) -> None:
 def test_dropped_stream_is_collected_without_reader_close(tmp_path: Path) -> None:
     """An abandoned reader's unclosed stream must still become collectable.
 
-    Regression, and the only test here that catches it: the safety-net finalizer
-    captured a callback that strongly referenced the stream. ``weakref.finalize``
-    keeps its callback alive until it fires, so the stream kept *itself* alive and the
-    finalizer could never fire -- the stream and its file descriptor survived every
-    ``gc.collect()`` until process exit. Closing the reader detaches the finalizer and
-    hides the bug, so the reader here is dropped rather than closed.
+    Nothing the reader keeps for an open stream may hold it strongly: not the record
+    that ``close()`` closes forgotten streams from, and not the stream's own close
+    hook. Either would keep the stream and its file descriptor alive. Closing the
+    reader closes the stream and hides such a reference, so the reader here is dropped
+    rather than closed.
     """
     root = _two_file_dir(tmp_path)
     reader = open_archive(root)
@@ -250,6 +249,47 @@ def test_dropped_stream_is_collected_without_reader_close(tmp_path: Path) -> Non
         gc.collect()
 
     assert ref() is None
+
+
+@pytest.mark.parametrize("cycle", [False, True], ids=["refcount", "cycle"])
+@pytest.mark.parametrize("fmt", ["dir", "zip"])
+def test_dropped_stream_releases_its_lease(
+    tmp_path: Path, fmt: str, cycle: bool
+) -> None:
+    """A stream dropped without ``close()`` gives its slot back when it is collected.
+
+    The interpreter closes a collected stream (``IOBase.__del__``), and that close
+    releases the lease: a reader without ``concurrent_operations`` then opens the
+    next member, and its own close tears the archive down. ``cycle`` drops the stream
+    in a reference cycle, so only the cyclic collector reclaims it.
+    """
+    from archivey.internal.reader_state import LifecycleState
+
+    if fmt == "dir":
+        root = _two_file_dir(tmp_path)
+    else:
+        import zipfile
+
+        root = tmp_path / "a.zip"
+        with zipfile.ZipFile(root, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("a.txt", b"aaa")
+            zf.writestr("b.txt", b"bbb")
+    reader = open_archive(root)
+    stream = reader.open("a.txt")
+    assert stream.read() == b"aaa"
+    ref = weakref.ref(stream)
+    if cycle:
+        stream.self_reference = stream  # type: ignore[attr-defined]
+    del stream
+    if cycle:
+        assert ref() is not None
+        gc.collect()
+    assert ref() is None
+
+    with reader.open("b.txt") as second:
+        assert second.read() == b"bbb"
+    reader.close()
+    assert reader._state.lifecycle is LifecycleState.TEARDOWN_COMPLETE
 
 
 def test_reader_close_closes_streams_in_open_order(tmp_path: Path) -> None:
