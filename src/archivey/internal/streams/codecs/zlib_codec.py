@@ -31,7 +31,12 @@ from archivey.internal.streams.codecs.base import (
 from archivey.internal.streams.codecs.deflate_decoder import ZlibDecompressorStream
 from archivey.internal.streams.codecs.deflate_family_codec import _DeflateFamilyCodec
 from archivey.internal.streams.codecs.deflate_resume import stream_end
-from archivey.internal.streams.codecs.isolated import IN_PROCESS, Natives, natives_for
+from archivey.internal.streams.codecs.isolated import (
+    IN_PROCESS,
+    Natives,
+    natives_for,
+    release_decoder,
+)
 from archivey.internal.streams.codecs.stdlib_takeover import (
     _DRAIN_CHUNK,
     _drain_into,
@@ -337,10 +342,9 @@ class _ZlibAdlerCheckStream(DelegatingStream):
                             raise _ZlibFirstStreamEnds(produced)
                         first = False
                         # The next of several zlib streams one after another.
-                        pending, decoder = (
-                            decoder.unused_data,
-                            self._natives.zlib_decompressobj(),
-                        )
+                        pending = decoder.unused_data
+                        release_decoder(decoder)
+                        decoder = self._natives.zlib_decompressobj()
                         continue
                     if not pending:
                         pending = f.read(1 << 16)
@@ -357,6 +361,8 @@ class _ZlibAdlerCheckStream(DelegatingStream):
             raise _StreamChecksumError(
                 f"Error reading zlib stream: {exception_detail(exc)}"
             ) from exc
+        finally:
+            release_decoder(decoder)
         if adler == self._sum.value and (
             stopped_short or produced > self._sum.frontier
         ):

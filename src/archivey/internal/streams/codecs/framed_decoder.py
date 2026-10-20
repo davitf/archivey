@@ -15,6 +15,7 @@ from archivey.internal.streams.codecs.bzip2_resume import (
     Bzip2Resume,
     Bzip2ResumeDecoder,
 )
+from archivey.internal.streams.codecs.isolated import release_decoder
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
     DecodeOut,
@@ -256,6 +257,7 @@ class FramedDecoder(BaseDecoder):
             self._need_more = True
             return b""
         if state:
+            release_decoder(self._decomp)
             self._decomp = self._new()
             self._between = False
             return rest

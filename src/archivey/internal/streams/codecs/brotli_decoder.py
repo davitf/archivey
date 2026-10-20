@@ -7,7 +7,11 @@ from typing import BinaryIO, Protocol
 
 from archivey.exceptions import TruncatedError
 from archivey.internal.diagnostics_collector import DiagnosticCollector
-from archivey.internal.streams.codecs.isolated import IN_PROCESS, Natives
+from archivey.internal.streams.codecs.isolated import (
+    IN_PROCESS,
+    Natives,
+    release_decoder,
+)
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
     DecodeOut,
@@ -179,8 +183,8 @@ class BrotliDecoder(BaseDecoder):
         if inner is None or not inner.seekable():
             raise error
         position = inner.tell()
+        decomp: _BrotliDecompressor = self._natives.brotli_decompressor()
         try:
-            decomp: _BrotliDecompressor = self._natives.brotli_decompressor()
             inner.seek(0)
             remaining = self._settled
             while remaining:
@@ -201,8 +205,12 @@ class BrotliDecoder(BaseDecoder):
                 parts.append(chunk)
                 wanted -= len(chunk)
             region = b"".join(parts)
+        except BaseException:
+            release_decoder(decomp)
+            raise
         finally:
             inner.seek(position)
+        release_decoder(self._decomp)
         self._decomp = decomp
         self._replay = region
         self._replay_at = 0

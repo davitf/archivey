@@ -41,6 +41,7 @@ from archivey.internal.streams.codecs.isolated import (
     IN_PROCESS,
     Natives,
     ZlibDecompressor,
+    release_decoder,
 )
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
@@ -248,7 +249,6 @@ def stream_end(
     stream's first end: a resume point can lie in a further stream that rapidgzip read
     on into.
     """
-    produced, bit, decomp = 0, 0, natives.zlib_decompressobj(RAW_DEFLATE_WBITS)
     if point is not None:
         resume = point.state
         # RapidgzipChildStream.resume_point gives only such points.
@@ -257,6 +257,7 @@ def stream_end(
         produced, bit = point.decompressed_offset, resume.bit
         source.seek(point.compressed_offset)
     else:
+        produced, bit, decomp = 0, 0, natives.zlib_decompressobj(RAW_DEFLATE_WBITS)
         source.seek(0)
     data = b""
     try:
@@ -280,9 +281,12 @@ def stream_end(
                 data, bit = _splice(bit, data), 0
             produced += len(decomp.decompress(data, 1 << 20))
             data = decomp.unconsumed_tail
+        if produced > cap:
+            return None, False
+        unused = decomp.unused_data
     except zlib.error:
         return None, False
-    if produced > cap:
-        return None, False
-    after = check_input_after and (bool(decomp.unused_data) or bool(source.read(1)))
+    finally:
+        release_decoder(decomp)
+    after = check_input_after and (bool(unused) or bool(source.read(1)))
     return produced, after

@@ -18,7 +18,7 @@ from __future__ import annotations
 import lzma
 import zlib
 from collections.abc import Mapping
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from archivey.config import ProcessIsolation
 from archivey.internal.streams.codecs import deps
@@ -196,6 +196,24 @@ class ChildPpmdDecoder(_ChildProxy):
     @property
     def unused_data(self) -> bytes:
         return self._child.get("unused_data") if self.eof else b""
+
+
+class _HoldsChild(Protocol):
+    def close(self) -> None: ...
+
+
+def release_decoder(decoder: object) -> None:
+    """Give back now the child process of a decoder that :class:`Natives` built, when
+    it has one (``holds_decoder_child``: a proxy, or a wrapper that closes the proxy it
+    holds); a no-op for an in-process decoder or ``None``.
+
+    Call it before a decoder is dropped or replaced (the next gzip member, xz stream
+    or zstd frame). Otherwise the child stays leased until the collector frees the
+    proxy: at once on CPython, but on PyPy only at a later collection, and until then
+    every new decoder starts a process of its own.
+    """
+    if getattr(type(decoder), "holds_decoder_child", False):
+        cast("_HoldsChild", decoder).close()
 
 
 class Natives:

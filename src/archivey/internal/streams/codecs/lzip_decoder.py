@@ -50,7 +50,12 @@ from archivey.internal.config import (
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.hashing import crc32_combine
-from archivey.internal.streams.codecs.isolated import IN_PROCESS, Decompressor, Natives
+from archivey.internal.streams.codecs.isolated import (
+    IN_PROCESS,
+    Decompressor,
+    Natives,
+    release_decoder,
+)
 from archivey.internal.streams.codecs.xz_decoder import lzma_error_to_archivey
 from archivey.internal.streams.decompressor_stream import (
     TRAILING_DATA_CANDIDATES,
@@ -451,6 +456,7 @@ class _LzipState:
                 if self._dec.eof:
                     self._member_comp_size -= len(self._dec.unused_data)
                     self._buf[0:0] = self._dec.unused_data
+                    release_decoder(self._dec)
                     self._dec = None
                     self._state = self._NEED_TRAILER
                 elif not self._dec.needs_input:

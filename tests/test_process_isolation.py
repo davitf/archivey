@@ -192,3 +192,60 @@ def test_closing_a_member_stream_gives_its_child_back_at_once(
         stream.close()
         assert POOL.idle_count() == 1, key
         del stream
+
+
+def _multi_unit_sources() -> list[tuple[str, bytes]]:
+    import bz2
+    import lzma
+
+    from archivey.internal.streams.codecs import deps
+
+    parts = [bytes([65 + i]) * 3000 for i in range(_UNITS)]
+    sources = [
+        ("gz", b"".join(gzip.compress(p) for p in parts)),
+        ("bz2", b"".join(bz2.compress(p) for p in parts)),
+        ("xz", b"".join(lzma.compress(p) for p in parts)),
+    ]
+    if deps.zstd is not None:
+        sources.append(("zst", b"".join(deps.zstd.compress(p) for p in parts)))
+    if deps.lz4_frame is not None:
+        sources.append(("lz4", b"".join(deps.lz4_frame.compress(p) for p in parts)))
+    return sources
+
+
+_UNITS = 12
+
+
+@pytest.mark.parametrize(
+    ("suffix", "data"),
+    [pytest.param(s, d, id=s) for s, d in _multi_unit_sources()],
+)
+def test_a_replaced_decoder_gives_its_child_back_without_the_collector(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, suffix: str, data: bytes
+) -> None:
+    # PyPy frees a dropped decoder only at a later collection. Keeping every decoder
+    # alive stands in for that: a decoder that relies on being freed holds its child,
+    # and each later member, stream or frame starts a process of its own.
+    from archivey.internal.streams.codecs import decoder_child
+
+    kept: list[decoder_child.DecoderChild] = []
+    built = decoder_child.DecoderChild.__init__
+
+    def keep(self: decoder_child.DecoderChild, *args: object, **kwargs: object) -> None:
+        built(self, *args, **kwargs)  # type: ignore[arg-type]
+        kept.append(self)
+
+    monkeypatch.setattr(decoder_child.DecoderChild, "__init__", keep)
+    path = tmp_path / f"units.{suffix}"
+    path.write_bytes(data)
+    config = ArchiveyConfig(process_isolation=ProcessIsolation.NATIVE_DECODERS)
+    try:
+        with open_archive(path, config=config) as ar:
+            for _, stream in ar.stream_members():
+                assert stream is not None
+                assert len(stream.read()) == 3000 * _UNITS
+                leased = [c for c in kept if c._lease.process is not None]
+                assert len(leased) <= 1, f"{len(leased)} decoders still hold a child"
+    finally:
+        for child in kept:
+            child.close()

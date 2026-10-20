@@ -18,7 +18,11 @@ from archivey.internal.streams.codecs.deflate_resume import (
     DeflateResume,
     DeflateResumeDecoder,
 )
-from archivey.internal.streams.codecs.isolated import IN_PROCESS, Natives
+from archivey.internal.streams.codecs.isolated import (
+    IN_PROCESS,
+    Natives,
+    release_decoder,
+)
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
     DecodeOut,
@@ -196,6 +200,7 @@ class GzipDecoder(BaseDecoder):
             self._arm_trailing_junk(data)
             return b""
         if data.startswith(GZIP_MAGIC):
+            release_decoder(self._decomp)
             self._decomp = self._natives.zlib_decompressobj(GZIP_WBITS)
             self._between_members = False
             self._retained = b""

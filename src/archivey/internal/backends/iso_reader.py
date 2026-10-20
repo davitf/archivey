@@ -119,6 +119,7 @@ from archivey.internal.streams.codecs.isolated import (
     IN_PROCESS,
     Natives,
     natives_for,
+    release_decoder,
 )
 from archivey.internal.streams.streamtools import (
     DelegatingStream,
@@ -1492,15 +1493,18 @@ class _ZisofsStream(io.RawIOBase):
             decompressor = self._natives.zlib_decompressobj()
             try:
                 data = decompressor.decompress(packed, expected + 1)
+                ended = decompressor.eof and not decompressor.unused_data
             except zlib.error as exc:
                 raise CorruptionError(f"zisofs block {index}: {exc}") from exc
+            finally:
+                release_decoder(decompressor)
             if len(data) != expected:
                 raise CorruptionError(
                     f"zisofs block {index} holds {len(data)} bytes, not {expected}"
                 )
             # The stream has to end, checksum included, where the pointers say: a
             # block cut before its Adler-32 or followed by other bytes is not verified.
-            if not decompressor.eof or decompressor.unused_data:
+            if not ended:
                 raise CorruptionError(
                     f"zisofs block {index} does not end where its pointers say"
                 )

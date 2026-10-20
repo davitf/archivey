@@ -29,7 +29,12 @@ from archivey.internal.streams.codecs.base import (
 )
 from archivey.internal.streams.codecs.deflate_decoder import GzipDecompressorStream
 from archivey.internal.streams.codecs.deflate_family_codec import _DeflateFamilyCodec
-from archivey.internal.streams.codecs.isolated import IN_PROCESS, Natives, natives_for
+from archivey.internal.streams.codecs.isolated import (
+    IN_PROCESS,
+    Natives,
+    natives_for,
+    release_decoder,
+)
 from archivey.internal.streams.codecs.stdlib_takeover import (
     _DRAIN_CHUNK,
     _drain_into,
@@ -87,13 +92,16 @@ def _gzip_header_refused(source: CodecSource, natives: Natives = IN_PROCESS) -> 
 
     def refused(view: BinaryIO) -> bool:
         decoder = natives.zlib_decompressobj(GZIP_WBITS)
-        while chunk := view.read(1 << 16):
-            try:
-                if decoder.decompress(chunk, 1) or decoder.eof:
-                    return False
-            except zlib.error:
-                return True
-        return False
+        try:
+            while chunk := view.read(1 << 16):
+                try:
+                    if decoder.decompress(chunk, 1) or decoder.eof:
+                        return False
+                except zlib.error:
+                    return True
+            return False
+        finally:
+            release_decoder(decoder)
 
     with _peeking(source) as f:
         f.seek(0)
@@ -576,6 +584,8 @@ def _gzip_member_at(
                 pending = decoder.unconsumed_tail
     except zlib.error:
         return None, fed
+    finally:
+        release_decoder(decoder)
     return True, fed
 
 

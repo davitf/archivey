@@ -300,7 +300,10 @@ class ResourceLimitError(ArchiveyError):
     :class:`~archivey.config.DecoderLimits` caps on archive-declared decoder memory
     and key-derivation work, and :class:`~archivey.config.SpoolLimits`, the cap on
     copying a stream source to temporary storage; opening the archive from a path
-    avoids that copy.
+    avoids that copy. Also raised for a decoder that
+    :class:`~archivey.config.ProcessIsolation` runs only in a child process when no
+    child can start, and for a decoder child ended by SIGKILL (most often the
+    out-of-memory killer).
     Sibling of :class:`ExtractionError` (not a subclass): limit trips are not
     filter/path failures.
     """

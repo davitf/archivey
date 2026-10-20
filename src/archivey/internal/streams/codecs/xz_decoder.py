@@ -46,7 +46,12 @@ from archivey.internal.diagnostics_collector import (
     resolve_collector,
 )
 from archivey.internal.logs import streams as logger
-from archivey.internal.streams.codecs.isolated import IN_PROCESS, Decompressor, Natives
+from archivey.internal.streams.codecs.isolated import (
+    IN_PROCESS,
+    Decompressor,
+    Natives,
+    release_decoder,
+)
 from archivey.internal.streams.decompressor_stream import (
     TRAILING_DATA_CANDIDATES,
     TRAILING_DATA_SEARCH,
@@ -842,6 +847,7 @@ class _XzState:
                     self._stream_offset += compressed_size
                     new_streams.append((self._stream_decomp_bytes, compressed_size))
                     self._streams_seen += 1
+                    release_decoder(self._dec)
                     self._dec = None
                     self._buf[0:0] = unused
                     self._state = self._NEED_HEADER
@@ -1486,16 +1492,20 @@ def _decode_xz_head(
             format=lzma.FORMAT_RAW, filters=_head_filter_chain(header, size)
         )
         fed = 0
-        while not dec.eof and len(out) < size:
-            data = b""
-            if dec.needs_input:
-                data = source.take_all()
-                fed += len(data)
-            out += dec.decompress(data, size - len(out))
-        if not dec.eof:
-            break  # ``size`` reached inside the block
-        source.pending[:0] = dec.unused_data
-        compressed = len(header) + fed - len(dec.unused_data)
+        try:
+            while not dec.eof and len(out) < size:
+                data = b""
+                if dec.needs_input:
+                    data = source.take_all()
+                    fed += len(data)
+                out += dec.decompress(data, size - len(out))
+            if not dec.eof:
+                break  # ``size`` reached inside the block
+            unused = dec.unused_data
+        finally:
+            release_decoder(dec)
+        source.pending[:0] = unused
+        compressed = len(header) + fed - len(unused)
         source.take(-compressed % 4 + _check_size(check))  # block padding, then check
     return bytes(out)
 
