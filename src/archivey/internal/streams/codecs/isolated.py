@@ -15,10 +15,9 @@ translate alongside the real ones.
 
 from __future__ import annotations
 
-import importlib
 import lzma
 import zlib
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from typing import Any, Protocol
 
 from archivey.config import ProcessIsolation
@@ -29,6 +28,7 @@ from archivey.internal.streams.codecs.decoder_child import (
     decoder_child_unavailable_reason,
     isolation_error,
 )
+from archivey.internal.streams.native_memory import note_native_memory
 
 
 class Decompressor(Protocol):
@@ -102,34 +102,15 @@ def _lz4_errors() -> dict[tuple[str, str], type[Exception]]:
     return _known(getattr(block, "LZ4BlockError", None)) if block is not None else {}
 
 
-# liblzma's dictionary for the default preset (6), and zstd's largest window for the
-# levels a default compressor picks: what a decoder of an unknown stream most likely
-# allocates.
+# What a decoder of an unknown stream most likely holds outside PyPy's heap
+# (``native_memory`` has why it matters and which decoders report). liblzma: the
+# dictionary of the default preset (6). zstd: the largest window of the levels a
+# default compressor picks.
 _TYPICAL_DECODER_MEMORY = 8 << 20
-# What libbz2 allocates to decode the default (and largest) 900 kB block size.
+# libbz2: the default (and largest) 900 kB block size.
 _BZ2_DECODER_MEMORY = 3600 << 10
-# PyPy's own module; no type checker knows it.
-_add_memory_pressure: Callable[[int], None] | None = (
-    importlib.import_module("__pypy__").add_memory_pressure if deps.UNDER_PYPY else None
-)
-
-
-def _note_native_memory(nbytes: int) -> None:
-    """Tell PyPy's GC that a decoder just built holds ``nbytes`` outside its heap.
-
-    CPython frees a dropped decoder's buffers at once. PyPy frees them at its next
-    major collection, and that collection is scheduled by the GC heap's growth only,
-    which a decoder hardly adds to. A run that drops thousands of decoders (an xz or
-    bzip2 file of many streams, a test suite) then keeps gigabytes of buffers
-    allocated, and once glibc has grown its heap for them, ``fork`` refuses to copy
-    that mapping: ``OSError: [Errno 12] Cannot allocate memory`` from ``subprocess``.
-    The pressure brings the collection forward, as PyPy's own ``LZMACompressor`` does.
-    An estimate cannot cover a dictionary only the stream declares (up to 4 GiB), so
-    a decoder's ``close`` also ends its liblzma decoders at once
-    (``release_decoder_children``).
-    """
-    if _add_memory_pressure is not None:
-        _add_memory_pressure(nbytes)
+# brotli: the ring buffer of the default 22-bit window.
+_BROTLI_DECODER_MEMORY = 4 << 20
 
 
 def _lzma_decoder_memory(
@@ -145,9 +126,25 @@ def _lzma_decoder_memory(
                 for f in filters
                 if f.get("id") in (lzma.FILTER_LZMA1, lzma.FILTER_LZMA2)
             ),
-            default=0,
+            default=_TYPICAL_DECODER_MEMORY,
         )
     return estimate if memlimit is None else min(estimate, memlimit)
+
+
+def _zstd_decoder_memory(options: Mapping[int, int] | None) -> int:
+    """What a zstd decoder most likely holds: the typical window, never more than the
+    ``window_log_max`` it is given.
+
+    A frame can declare a window up to that cap (2 GiB under the default
+    ``max_decoder_memory``), and nothing frees it before a collection. Reporting the
+    cap would force a major collection per decoder, so the estimate stays typical.
+    """
+    zstd = deps.zstd
+    assert zstd is not None
+    log_max = (options or {}).get(zstd.DecompressionParameter.window_log_max)
+    if log_max is None:
+        return _TYPICAL_DECODER_MEMORY
+    return min(_TYPICAL_DECODER_MEMORY, 1 << int(log_max))
 
 
 class _ChildProxy:
@@ -297,7 +294,7 @@ class Natives:
             import bz2
 
             decoder = bz2.BZ2Decompressor()
-            _note_native_memory(_BZ2_DECODER_MEMORY)
+            note_native_memory(decoder, _BZ2_DECODER_MEMORY)
             return decoder
         return ChildDecompressor(self._child("bz2"))
 
@@ -311,7 +308,7 @@ class Natives:
             decoder = lzma.LZMADecompressor(
                 format=format, memlimit=memlimit, filters=filters
             )
-            _note_native_memory(_lzma_decoder_memory(memlimit, filters))
+            note_native_memory(decoder, _lzma_decoder_memory(memlimit, filters))
             return decoder
         kwargs: dict[str, object] = {"format": format}
         if memlimit is not None:
@@ -328,7 +325,7 @@ class Natives:
             zstd = deps.zstd
             assert zstd is not None
             decoder = zstd.ZstdDecompressor(options=options)
-            _note_native_memory(_TYPICAL_DECODER_MEMORY)
+            note_native_memory(decoder, _zstd_decoder_memory(options))
             return decoder
         # The option keys are ``DecompressionParameter`` members, an ``IntEnum`` that
         # ``marshal`` does not carry; the decoder takes their integer values too.
@@ -363,7 +360,9 @@ class Natives:
         if not self.isolated:
             brotli = deps.brotli.load()
             assert brotli is not None
-            return brotli.Decompressor()
+            decoder = brotli.Decompressor()
+            note_native_memory(decoder, _BROTLI_DECODER_MEMORY)
+            return decoder
         child = self._child("brotli", known=_BROTLI_ERRORS)
         if child.has("can_accept_more_data"):
             return ChildBrotliDecompressorWithLimit(child)
