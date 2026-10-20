@@ -6,6 +6,7 @@ from __future__ import annotations
 import dataclasses
 import gzip
 import hashlib
+import importlib
 import importlib.util
 import io
 import random
@@ -13,12 +14,15 @@ import re
 import shutil
 import sys
 import sysconfig
+import types
 import zlib
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Literal
 
 import pytest
 
+from archivey import ArchiveFormat, format_availability, open_archive
 from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import (
     ArchiveyError,
@@ -56,6 +60,7 @@ from archivey.internal.streams.verify import VerifyingStream
 from archivey.types import HashAlgorithm, StreamFormat
 from tests.conftest import (
     CPYTHON,
+    has_package,
     requires,
     requires_binary,
     requires_zstd,
@@ -215,7 +220,7 @@ def test_resolve_backend_without_opening() -> None:
 
 
 @pytest.mark.skipif(
-    importlib.util.find_spec("pyppmd") is not None,
+    has_package("pyppmd"),
     reason="pyppmd is installed; the missing-backend path cannot be exercised",
 )
 def test_ppmd_without_pyppmd_raises() -> None:
@@ -2857,6 +2862,9 @@ def test_absent_codec_backend_hint_is_installable(
     rot unnoticed, because ``format_availability`` reported the updated string while
     ``open()`` still advertised a deleted extra.
     """
+    requirement = codec_requirement(codec)
+    if requirement is not None and requirement.reason:
+        pytest.skip(f"no install hint here: {requirement.reason}")
     current = getattr(codecs_module.deps, absent_global)
     absent = (
         codecs_module.deps.LazyOptional(current.name, present=False)
@@ -2867,6 +2875,124 @@ def test_absent_codec_backend_hint_is_installable(
     with pytest.raises(PackageNotInstalledError) as ei:
         open_codec_stream(codec, io.BytesIO(b""))
     _assert_hint_is_installable(str(ei.value))
+
+
+@pytest.fixture
+def deps_built_under_pypy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[types.ModuleType]:
+    """``deps`` re-run as if the interpreter were PyPy, and rebuilt afterwards."""
+    deps = codecs_module.deps
+    monkeypatch.setattr(sys.implementation, "name", "pypy")
+    importlib.reload(deps)
+    try:
+        yield deps
+    finally:
+        monkeypatch.undo()
+        importlib.reload(deps)
+
+
+def test_packages_unused_under_pypy_count_as_absent(
+    deps_built_under_pypy: types.ModuleType,
+) -> None:
+    """Under PyPy archivey treats lz4, pyppmd and rapidgzip as absent even when they are
+    installed, and has a reason for each."""
+    deps = deps_built_under_pypy
+    assert deps.lz4_frame is None
+    assert deps.lz4_block is None
+    assert deps.pyppmd.available() is False
+    for package in ("lz4", "pyppmd", "rapidgzip"):
+        assert f"archivey does not use {package} under PyPy" in deps.unused_reason(
+            package
+        )
+    assert codecs_module.rapidgzip_child.rapidgzip_child_unavailable_reason() == (
+        deps.unused_reason("rapidgzip")
+    )
+    assert deps.unused_reason("brotli") == ""
+
+
+def test_an_unused_package_reports_its_reason_on_every_channel(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A package archivey does not use here is reported with the reason, not the
+    install advice: by the codec open, by ``format_availability()``, by the registry's
+    refusal. ``--version -v`` is pinned in tests/test_cli.py."""
+    reason = "archivey does not use lz4 under PyPy, where it crashes"
+    codec = stream_codec(Codec.LZ4)
+    requirement = dataclasses.replace(codec.requirement, reason=reason)
+    monkeypatch.setattr(codec, "requirement", requirement)
+    monkeypatch.setattr(codecs_module.deps, "lz4_frame", None)
+
+    with pytest.raises(PackageNotInstalledError) as ei:
+        open_codec_stream(Codec.LZ4, io.BytesIO(b""))
+    assert str(ei.value) == (
+        f"The 'lz4' package is required for lz4 streams, but {reason}."
+    )
+
+    availability = format_availability(ArchiveFormat.LZ4)
+    assert availability.missing == (requirement,)
+    assert availability.missing[0].advice == reason
+
+    path = tmp_path / "a.lz4"
+    path.write_bytes(b"\x04\x22\x4d\x18" + bytes(16))
+    with pytest.raises(PackageNotInstalledError) as ei:
+        open_archive(path)
+    assert reason in str(ei.value)
+    assert "pip install" not in str(ei.value)
+
+
+def _rapidgzip_rewind_messages(config: StreamConfig) -> list[str]:
+    """The rewind report for a seek back to 0 in gzip and bzip2, the two sites that
+    name rapidgzip."""
+    from archivey.internal.streams.archive_stream import ArchiveStream
+
+    warnings = [
+        codecs_module.rapidgzip_select._rapidgzip_rewind_warning("gzip", config),
+        stream_codec(Codec.BZIP2).rewind_warning(config),
+    ]
+    return [
+        ArchiveStream._rewind_message(w, 5_000_000, 0, 5_000_000)
+        for w in warnings
+        if w is not None
+    ]
+
+
+@pytest.mark.parametrize(
+    ("present", "expected"),
+    [
+        (False, "Install the 'seekable' extra (rapidgzip) for indexed random access."),
+        (True, "The 'rapidgzip' accelerator has no closer resume point in its index"),
+    ],
+    ids=["absent", "present"],
+)
+def test_rewind_report_names_rapidgzip_by_whether_it_is_installed(
+    monkeypatch: pytest.MonkeyPatch, present: bool, expected: str
+) -> None:
+    deps = codecs_module.deps
+    monkeypatch.setattr(deps, "UNDER_PYPY", False)
+    monkeypatch.setattr(
+        deps, "rapidgzip", deps.LazyOptional("rapidgzip", present=present)
+    )
+    messages = _rapidgzip_rewind_messages(
+        StreamConfig(use_rapidgzip=AcceleratorMode.OFF, seekable=True)
+    )
+    assert len(messages) == 2
+    for message in messages:
+        assert expected in message, message
+
+
+def test_rewind_report_gives_the_reason_rapidgzip_is_unused(
+    deps_built_under_pypy: types.ModuleType,
+) -> None:
+    """Under PyPy the report neither suggests installing rapidgzip nor blames its
+    index: it says why archivey does not use it."""
+    reason = deps_built_under_pypy.unused_reason("rapidgzip")
+    messages = _rapidgzip_rewind_messages(StreamConfig(seekable=True))
+    assert len(messages) == 2
+    for message in messages:
+        assert message.endswith(
+            f"The 'rapidgzip' accelerator is not available: {reason}."
+        ), message
 
 
 def test_absent_crypto_hint_is_installable(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -45,6 +45,35 @@ class _TracemallocUnavailable(types.ModuleType):
 if importlib.util.find_spec("_tracemalloc") is None:
     sys.modules["tracemalloc"] = _TracemallocUnavailable("tracemalloc")
 
+# archivey never uses rapidgzip, lz4 or pyppmd under PyPy, where they misread data or
+# crash the interpreter (deps.unused_reason), and the tests treat them as not installed
+# there. rapidgzip and lz4 get a ``None`` entry, which makes the import fail and
+# ``importlib.util.find_spec`` return ``None``, so no test loads them. pyppmd cannot:
+# py7zr, a test oracle, imports it. Tests that need it ask ``has_package`` (through
+# ``requires`` or ``importorskip``) instead. The source of truth is
+# ``deps._UNUSED_UNDER_PYPY``; this copy is kept by hand because it must be in place
+# before anything imports archivey, and importing ``deps`` imports ``lz4.frame``.
+UNUSED_UNDER_PYPY = (
+    frozenset({"rapidgzip", "lz4", "pyppmd"})
+    if sys.implementation.name == "pypy"
+    else frozenset()
+)
+for _blocked in UNUSED_UNDER_PYPY - {"pyppmd"}:
+    sys.modules[_blocked] = None  # type: ignore[assignment]
+
+
+def has_package(name: str) -> bool:
+    """Whether optional package ``name`` is installed and archivey uses it here."""
+    return name not in UNUSED_UNDER_PYPY and importlib.util.find_spec(name) is not None
+
+
+def importorskip(name: str) -> types.ModuleType:
+    """``pytest.importorskip``, also skipping a package archivey does not use here."""
+    if name in UNUSED_UNDER_PYPY:
+        pytest.skip(f"archivey does not use {name} under PyPy")
+    return pytest.importorskip(name)
+
+
 # Per-test OS-resource leak oracle (child processes, owning streams, pipe fds).
 pytest_plugins = ("leak_oracle",)
 
@@ -115,11 +144,14 @@ def requires(*packages: str) -> pytest.MarkDecorator:
     Tests asserting the *degradation* behavior (a missing lib raising
     PackageNotInstalledError) should instead run unconditionally and assert that error.
     """
-    missing = [p for p in packages if importlib.util.find_spec(p) is None]
-    return pytest.mark.skipif(
-        bool(missing),
-        reason=f"requires optional package(s): {', '.join(missing)}",
-    )
+    unused = [p for p in packages if p in UNUSED_UNDER_PYPY]
+    missing = [p for p in packages if p not in unused and not has_package(p)]
+    reasons = []
+    if missing:
+        reasons.append(f"requires optional package(s): {', '.join(missing)}")
+    if unused:
+        reasons.append(f"archivey does not use {', '.join(unused)} under PyPy")
+    return pytest.mark.skipif(bool(reasons), reason="; ".join(reasons))
 
 
 def unar_refusal() -> str | None:

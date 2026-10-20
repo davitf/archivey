@@ -56,7 +56,10 @@ from archivey.types import MissingComponent
 # is an *accelerator* they only demand when random access was explicitly requested. It still
 # needs one install hint, shared with the rewind diagnostic that suggests the same package.
 _RAPIDGZIP_REQUIREMENT = MissingComponent(
-    "rapidgzip", "pip install archivey[seekable]", ("random-access",)
+    "rapidgzip",
+    "pip install archivey[seekable]",
+    ("random-access",),
+    reason=deps.unused_reason("rapidgzip"),
 )
 
 
@@ -155,13 +158,18 @@ def _rapidgzip_rewind_warning(
     The old "below the AUTO size threshold, stay quiet" arm is gone: the distance
     threshold covers it, and covers it better (a small member cannot produce a large
     re-decode distance). ``suggest_install`` stays False when the accelerator is present
-    or engaged, so a caller is never told to install what they already have.
+    or engaged, so a caller is never told to install what they already have. On an
+    interpreter where archivey does not use it, ``unused_reason`` carries why
+    (``deps.unused_reason``) and the report says that instead.
     """
     engaged = _deflate_family_uses_accelerator(config)
     return RewindWarning(
         codec_name,
         accelerator="rapidgzip",
-        suggest_install=not engaged and not deps.rapidgzip.available(),
+        suggest_install=not engaged
+        and not deps.rapidgzip.available()
+        and not deps.unused_reason("rapidgzip"),
+        unused_reason=deps.unused_reason("rapidgzip"),
     )
 
 

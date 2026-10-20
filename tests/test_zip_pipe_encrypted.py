@@ -31,7 +31,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
     raw_message_of,
 )
-from tests.conftest import requires
+from tests.conftest import importorskip, requires
 from tests.streams_util import NonSeekableBytesIO
 from tests.zip_descriptors import without_descriptor_signatures
 from tests.zipcrypto import (
@@ -798,7 +798,7 @@ def test_a_wrong_password_with_an_unsupported_codec_header_is_skipped() -> None:
     """A wrong key that passes the check byte can decrypt a PPMd header asking for
     restore method 2. That is the key's garbage, not the archive's, so the right
     password after it reads the member, as from a file."""
-    pytest.importorskip("pyppmd")
+    importorskip("pyppmd")
     data = _with_plain_member(
         build_zipcrypto_zip(
             _PASSWORD, b"a.txt", _LONG, compression=98, compressed=_ppmd(_LONG)
@@ -826,7 +826,7 @@ def test_a_wrong_password_running_out_of_an_intact_archive_is_not_a_cut(
     garbage runs out of input there has not met a cut stream: the archive's end
     record went by. The right password after it reads the member; alone, it fails
     as a password that may be wrong, as from a file."""
-    pytest.importorskip("pyppmd")
+    importorskip("pyppmd")
     data = _with_plain_member(
         _bit3(
             build_zipcrypto_zip(
