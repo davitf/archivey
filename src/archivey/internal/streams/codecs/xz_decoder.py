@@ -575,6 +575,11 @@ def new_capped_decompressor(
     )
 
 
+# A binding with no message for ``LZMA_MEMLIMIT_ERROR`` words it by its code, 6 (PyPy:
+# "Unrecognised error from liblzma: 6"); CPython's message starts "Memory usage limit".
+_NUMERIC_MEMLIMIT_SUFFIX = "error from liblzma: 6"
+
+
 def lzma_error_to_archivey(
     exc: lzma.LZMAError, context: str, limits: DecoderLimits | None = None
 ) -> ArchiveyError:
@@ -590,7 +595,9 @@ def lzma_error_to_archivey(
     check it does not implement, and a memlimit error is a configured cap refusing a
     declared dictionary. None of those is damage. Anything else (corrupt data, a
     header that is not LZMA, an unrecognized code) stays :class:`CorruptionError`.
-    ``LZMA_MEM_ERROR`` never gets here: CPython raises it as ``MemoryError``.
+    ``LZMA_MEM_ERROR`` never gets here: CPython raises it as ``MemoryError``. PyPy's
+    ``lzma`` has no message for ``LZMA_MEMLIMIT_ERROR`` and words it by its code
+    (:data:`_NUMERIC_MEMLIMIT_SUFFIX`).
 
     ``limits`` are the limits the decompressor was built with
     (:func:`new_capped_decompressor`). Only a decompressor built with a ``memlimit``
@@ -602,7 +609,7 @@ def lzma_error_to_archivey(
         ("Invalid or unsupported options", "Unsupported integrity check")
     ):
         return UnsupportedFeatureError(f"{context}: {exc} (liblzma cannot decode this)")
-    if text.startswith("Memory usage limit"):
+    if text.startswith("Memory usage limit") or text.endswith(_NUMERIC_MEMLIMIT_SUFFIX):
         cap = limits.max_decoder_memory if limits is not None else None
         if cap is not None:
             return ResourceLimitError(

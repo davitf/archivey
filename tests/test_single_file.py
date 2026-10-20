@@ -178,11 +178,7 @@ def test_gzip_stored_filename_non_ascii_is_latin1(tmp_path: Path) -> None:
     # "café.txt" as the bytes b"caf\xe9.txt"; decoding those as UTF-8 would mangle them
     # (0xE9 is not valid UTF-8), so the decoded value must use Latin-1.
     path = tmp_path / "archive.gz"
-    gz = gzip.GzipFile(
-        filename="café.txt", mode="wb", fileobj=open(path, "wb"), mtime=0
-    )
-    gz.write(b"payload")
-    gz.close()
+    path.write_bytes(_gzip_bytes(b"payload", filename="café.txt"))
     with open_archive(path) as ar:
         member = ar.members()[0]
         assert member.raw_name == b"caf\xe9.txt"  # verbatim stored bytes

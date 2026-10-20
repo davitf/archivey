@@ -202,11 +202,12 @@ class _OverCountingReadinto(io.BytesIO):
         self._short_first = short_first
 
     def readinto(self, b: WriteableBuffer, /) -> int:  # type: ignore[override]
-        view = memoryview(b).cast("B")
-        if self._short_first:
-            self._short_first = False
-            return super().readinto(view[:2])
-        return super().readinto(view) + self._extra
+        with memoryview(b) as outer, outer.cast("B") as view:
+            if self._short_first:
+                self._short_first = False
+                with view[:2] as head:
+                    return super().readinto(head)
+            return super().readinto(view) + self._extra
 
 
 def test_readinto_refuses_a_count_larger_than_the_buffer() -> None:
@@ -568,6 +569,43 @@ class _BufferedShortThenStall(io.BufferedIOBase):
         return len(chunk)
 
 
+class _BufferedShortThenZero(_BufferedShortThenStall):
+    """:class:`_BufferedShortThenStall` as PyPy's ``BufferedReader`` answers it:
+    ``readinto`` with nothing ready returns 0, the same as at the end, where CPython
+    returns ``None``. Only ``read`` still tells the stall (``None``) from the end."""
+
+    def readinto(self, b: memoryview, /) -> int | None:  # type: ignore[override]
+        got = super().readinto(b)
+        return 0 if got is None else got
+
+
+class _ZeroThenArrives(io.BufferedIOBase):
+    """``readinto`` answers 0 while ``read`` already has ``data``: bytes that arrived
+    between the two calls. After ``data``, both answer the end."""
+
+    def __init__(self, data: bytes, *, over_read: int = 0) -> None:
+        super().__init__()
+        self._data = data
+        self._over_read = over_read
+
+    def readable(self) -> bool:
+        return True
+
+    def read(self, size: int | None = -1, /) -> bytes:  # type: ignore[override]
+        take = len(self._data) if size is None or size < 0 else size
+        chunk, self._data = self._data[: take + self._over_read], self._data[take:]
+        return chunk
+
+    def readinto(self, b: memoryview, /) -> int:  # type: ignore[override]
+        return 0
+
+
+_STALL_DOUBLES = {
+    "none": _BufferedShortThenStall,  # CPython's answer
+    "zero": _BufferedShortThenZero,  # PyPy's answer
+}
+
+
 _SHORT_THEN_STALL_READS: dict[str, Callable[[ArchiveSource], object]] = {
     "read(n)": lambda s: s.read(10),
     "read(-1)": lambda s: s.read(-1),
@@ -577,11 +615,13 @@ _SHORT_THEN_STALL_READS: dict[str, Callable[[ArchiveSource], object]] = {
 }
 
 
+@pytest.mark.parametrize("double", _STALL_DOUBLES.values(), ids=_STALL_DOUBLES)
 @pytest.mark.parametrize(
     "call", _SHORT_THEN_STALL_READS.values(), ids=_SHORT_THEN_STALL_READS
 )
 def test_buffered_short_then_stall_is_not_end_of_file(
     call: Callable[[ArchiveSource], object],
+    double: type[_BufferedShortThenStall],
 ) -> None:
     """Bytes that have arrived, then a stall, are not a short source.
 
@@ -589,9 +629,28 @@ def test_buffered_short_then_stall_is_not_end_of_file(
     without ever returning ``None``. Taken as final, that is a truncated prefix
     reported as the whole source.
     """
-    wrapped = ArchiveSource.for_stream(_BufferedShortThenStall(b"ABCDE"))  # type: ignore[arg-type]  # BufferedIOBase double
+    wrapped = ArchiveSource.for_stream(double(b"ABCDE"))  # type: ignore[arg-type]  # BufferedIOBase double
     with pytest.raises(BlockingIOError, match="non-blocking"):
         call(wrapped)
+
+
+def test_readinto_zero_while_read_has_bytes_delivers_them() -> None:
+    """A 0 from ``readinto`` is asked again with ``read``: bytes that arrived in
+    between are delivered, not taken for the end."""
+    double = _ZeroThenArrives(b"ABCDE")
+    wrapped = ArchiveSource.for_stream(double)  # type: ignore[arg-type]  # BufferedIOBase double
+    buf = bytearray(10)
+    assert wrapped.readinto(buf) == 5
+    assert bytes(buf[:5]) == b"ABCDE"
+    assert wrapped.readinto(buf) == 0
+
+
+def test_readinto_zero_then_an_over_long_read_is_refused() -> None:
+    """The ``read`` that confirms a 0 is held to its size, as every read here is."""
+    double = _ZeroThenArrives(b"ABCDEFGH", over_read=3)
+    wrapped = ArchiveSource.for_stream(double)  # type: ignore[arg-type]  # BufferedIOBase double
+    with pytest.raises(ValueError, match="the excess is already consumed"):
+        wrapped.readinto(bytearray(4))
 
 
 def _tar_head(n: int) -> bytes:

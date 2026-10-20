@@ -114,7 +114,7 @@ aren't failures. It's empty by default:
 | `abort_on` value | Raises when |
 |---|---|
 | `"blocked_member"` | A member is refused |
-| `"name_collision"` | Two members of the archive would be written to the same path. This raises before `overwrite` is applied, so even with `"rename"` the second member isn't written. Not checked under `"trusted"` |
+| `"name_collision"` | Two members of the archive would be written to the same path. This includes a file member landing on a folder that an earlier member created, as `x` does after `x/f`. This raises before `overwrite` is applied, so even with `"rename"` the second member isn't written. Not checked under `"trusted"` |
 | `"name_sanitized"` | A name is rewritten to its portable spelling, or an absolute name is placed inside the destination. Under `"strict"` an absolute name is refused instead, so `"blocked_member"` is the one that catches it |
 
 After an abort there's no report, and the files already written stay on disk.
