@@ -2920,6 +2920,108 @@ def test_orphan_link_failing_after_the_content_was_placed_fails_alone(
     assert by_name["L2.txt"].failure_group_id is None
 
 
+@pytest.mark.parametrize(
+    ("overwrite", "held", "message"),
+    [
+        (OverwritePolicy.ERROR, "file", "Destination already exists"),
+        (OverwritePolicy.REPLACE, "full-dir", "Destination is a directory"),
+    ],
+    ids=["error-over-file", "replace-over-full-dir"],
+)
+def test_orphan_link_refused_by_the_policy_fails_alone(
+    tmp_path: Path, overwrite: OverwritePolicy, held: str, message: str
+) -> None:
+    # The excluded source's content goes to the first link the OverwritePolicy lets
+    # it take. L1's destination is refused, so L1 fails on its own, nothing of the
+    # source has been read, and L2 gets the content: the source did not fail, so no
+    # failure group joins the two.
+    src = _orphan_tar(tmp_path, ["L1.txt", "L2.txt"])
+    dest = tmp_path / "out"
+    dest.mkdir()
+    if held == "file":
+        (dest / "L1.txt").write_bytes(b"pre-existing")
+    else:
+        (dest / "L1.txt").mkdir()
+        (dest / "L1.txt" / "keep").write_bytes(b"pre-existing")
+
+    with open_archive(src) as r:
+        results = r.extract_all(
+            dest,
+            members=["L1.txt", "L2.txt"],
+            overwrite=overwrite,
+            on_error=OnError.CONTINUE,
+        ).results
+
+    by_name = {res.member.name: res for res in results}
+    first = by_name["L1.txt"]
+    assert first.status is ExtractionStatus.FAILED
+    assert message in str(first.error)
+    assert first.failure_group_id is None
+    assert first.failure_group_size is None
+    assert first.requested_path == dest / "L1.txt"
+    assert by_name["L2.txt"].status is ExtractionStatus.EXTRACTED
+    assert by_name["L2.txt"].failure_group_id is None
+    assert (dest / "L2.txt").read_bytes() == b"hello world"
+    if held == "file":
+        assert (dest / "L1.txt").read_bytes() == b"pre-existing"
+    else:
+        assert (dest / "L1.txt" / "keep").read_bytes() == b"pre-existing"
+    assert not (dest / "A.txt").exists()
+
+
+def test_orphan_link_refused_by_the_policy_stops_under_stop(tmp_path: Path) -> None:
+    # Under OnError.STOP the first link's own failure ends the run, as any other
+    # link's would.
+    src = _orphan_tar(tmp_path, ["L1.txt", "L2.txt"])
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "L1.txt").write_bytes(b"pre-existing")
+
+    with (
+        open_archive(src) as r,
+        pytest.raises(ExtractionError, match="Destination already exists"),
+    ):
+        r.extract_all(
+            dest, members=["L1.txt", "L2.txt"], overwrite=OverwritePolicy.ERROR
+        )
+    assert not (dest / "L2.txt").exists()
+
+
+def test_orphan_source_failure_keeps_earlier_link_results(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # L1 is skipped, then reading the source fails while writing it at L2. The source
+    # failed, so L2 and L3 fail as one group of two; L1's NOT_OVERWRITTEN stands.
+    src = _orphan_tar(tmp_path, ["L1.txt", "L2.txt", "L3.txt"])
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "L1.txt").write_bytes(b"pre-existing")
+
+    def boom(self: ExtractionCoordinator, *args: object, **kwargs: object) -> None:
+        raise ExtractionError("forced second-pass failure")
+
+    monkeypatch.setattr(ExtractionCoordinator, "_write_file_atomic", boom)
+    with open_archive(src) as r:
+        results = r.extract_all(
+            dest,
+            members=["L1.txt", "L2.txt", "L3.txt"],
+            overwrite=OverwritePolicy.SKIP,
+            on_error=OnError.CONTINUE,
+        ).results
+
+    by_name = {res.member.name: res for res in results}
+    assert by_name["L1.txt"].status is ExtractionStatus.NOT_OVERWRITTEN
+    assert by_name["L1.txt"].failure_group_id is None
+    failed = [by_name["L2.txt"], by_name["L3.txt"]]
+    assert [r.status for r in failed] == [ExtractionStatus.FAILED] * 2
+    assert failed[0].failure_group_id is not None
+    assert failed[0].failure_group_id == failed[1].failure_group_id
+    assert [r.failure_group_size for r in failed] == [2, 2]
+    assert (dest / "L1.txt").read_bytes() == b"pre-existing"
+    assert not (dest / "L2.txt").exists()
+    assert not (dest / "L3.txt").exists()
+
+
 def test_orphan_all_links_skipped_writes_nothing(tmp_path: Path) -> None:
     # Companion to the above: when EVERY selected link's destination already exists under
     # SKIP, all links are recorded NOT_OVERWRITTEN, existing files stay untouched, and no stray

@@ -480,6 +480,14 @@ materialized path, and write nothing if every selected link is skipped. The
 materialized file gets the selected link's transformed metadata. An equivalent
 hidden temp inside `dest` is permitted.
 
+A failure before the source's bytes are read is the link's own: a destination that
+`ERROR` refuses, or that `REPLACE` cannot remove (a directory with entries), fails that
+link alone, governed by `OnError`, and under `CONTINUE` the content moves to the next
+selected link. A failure once the bytes are being written (reading or decoding the
+source, a bomb limit on it, or the write itself) is the source's: the bytes cannot be
+offered to another link, so that link and every later one fail as one group. Links
+before it keep their own results.
+
 Recovering orphaned links SHALL take at most one extra pass and no speculative upfront
 scan to find them: a seekable source gets one conditional second pass after the main
 pass, and a forward-only source makes the orphaned link unrecoverable and therefore a
@@ -528,6 +536,8 @@ refuses its links; any other is recovered as above.
 | HARDLINK reached after its source was extracted | Try `os.link()` against recorded source paths; fallback to copy on all-`EXDEV` or all-`EMLINK` |
 | Selected hardlink source was excluded but recoverable | Source content appears at selected link path(s); excluded source path is never created |
 | First selected link destination exists under `OverwritePolicy.SKIP` | That link result is `NOT_OVERWRITTEN`; content moves to the next allowed link; all skipped means no write |
+| First selected link destination refused under `OverwritePolicy.ERROR`, or a directory with entries under `REPLACE`, with `OnError.CONTINUE` | That link alone is `FAILED`, with no failure group; content moves to the next allowed link |
+| Reading the excluded source fails while writing it at a later link, an earlier link skipped | The skipped link stays `NOT_OVERWRITTEN`; that link and the ones after it are `FAILED` as one failure group |
 | Excluded source on a forward-only stream | Per-member failure: `STOP` raises; `CONTINUE` records `FAILED` and proceeds |
 | HARDLINK appears before its also-selected source | After the pass it links to the extracted source inode; source bytes read and counted once |
 | HARDLINK whose resolved source is not a FILE (e.g. a DIRECTORY member) | Per-member `ExtractionError` naming the source's type (for a directory: a hard link to one cannot be created); the source itself still extracts |

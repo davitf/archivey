@@ -3174,27 +3174,10 @@ class ExtractionCoordinator:
         with _closing_pass(passing):
             for member, stream in passing:
                 group = orphans_by_source[member.member_id]
-                self._current = _MemberState()
-                remaining: list[_Orphan] = []
-
-                def record(
-                    error: ArchiveyError | OSError, failed: ExtractionResult
-                ) -> bool:
-                    # One failed source, N failed links: the fan-out is recorded on the
-                    # results themselves, so a caller can tell N separate failures from one
-                    # failure seen N times without joining against a diagnostic.
-                    # Nothing the second pass runs raises FilterRejectionError.
-                    assert failed.status is ExtractionStatus.FAILED
-                    self._record_failure_group(group, error)
-                    return False
-
-                with self._handling(
-                    member,
-                    kind="orphaned hardlink source",
-                    record=record,
-                    cleanup=lambda: self._close(stream),
-                ):
+                try:
                     remaining = self._materialize_orphan_source(member, stream, group)
+                finally:
+                    self._close(stream)
                 # Each link after the one that took the content is its own attempt: its
                 # failure is that link's, not the source's.
                 self._link_orphan_group(remaining, member.member_id)
@@ -3299,29 +3282,81 @@ class ExtractionCoordinator:
     ) -> list[_Orphan]:
         """Write the source's content at the first link of ``group`` that takes it, and
         return the links after that one, for the caller to link against it. None remain
-        when every link's destination already exists under SKIP: then nothing was
-        written either."""
+        when no link took the content: every link was skipped or failed on its own, or
+        the source itself failed."""
         # Count the recovered source bytes toward the cumulative/ratio guards too.
         self._state.tracker.start_member(source_member)
 
         # The excluded source's content is written to the FIRST link whose destination the
-        # OverwritePolicy allows writing (a SKIP over an existing entry moves on to the next
-        # link), never to the source's own name — atomically (temp + os.replace), same as a
-        # normal FILE, so a failure while re-reading doesn't clobber an existing entry. The
-        # link's transformed copy supplies the on-disk mode/timestamps: hardlinks share one
-        # inode, so the metadata must be applied to the file that carries the content. Each
-        # link's destination is O2-collision-resolved against the map the main pass built
-        # (a deferred link's key may have been claimed after it was orphaned).
+        # OverwritePolicy allows writing, never to the source's own name. A link the
+        # policy declines (SKIP over an existing entry) or refuses (ERROR, a REPLACE
+        # that cannot remove what is there) records that outcome as its own, and the
+        # content moves on to the next link: nothing of the source has been read yet.
         for index, orphan in enumerate(group):
-            # An error names the link as listed (the caller's ``_handling``).
-            self._current.spelled_from = orphan.spelled_from
+            placed = self._materialize_at(source_member, stream, group, index)
+            if placed is None:
+                # The source failed: every link from this one on is in its group.
+                return []
+            if placed:
+                return group[index + 1 :]
+        return []
+
+    def _materialize_at(
+        self,
+        source_member: ArchiveMember,
+        stream: BinaryIO | None,
+        group: list[_Orphan],
+        index: int,
+    ) -> bool | None:
+        """Try to write the source's content at link ``group[index]``, as one step of
+        ``_materialize_orphan_source``: True when it took the content, False when the
+        link was declined or failed on its own, ``None`` when the source failed.
+
+        The content is written atomically (temp + ``os.replace``), same as a normal
+        FILE, so a failure while re-reading does not clobber an existing entry. The
+        link's transformed copy supplies the on-disk mode and timestamps: hardlinks
+        share one inode, so the metadata goes on the file that carries the content. The
+        destination is O2-collision-resolved against the map the main pass built (a
+        deferred link's key may have been claimed after it was orphaned).
+
+        A failure before the write starts belongs to the link, as for any other link
+        (``_link_orphan``). Once the write starts, the source's bytes are being read,
+        and they cannot be offered to another link: a failure from there on is the
+        source's, and fails this link and every later one as one group."""
+        orphan = group[index]
+        current = self._current = _MemberState(
+            requested_path=orphan.dest_path, spelled_from=orphan.spelled_from
+        )
+        writing = False
+        source_error: ArchiveyError | OSError | None = None
+
+        def record(error: ArchiveyError | OSError, failed: ExtractionResult) -> bool:
+            nonlocal source_error
+            # Nothing the second pass runs raises FilterRejectionError.
+            assert failed.status is ExtractionStatus.FAILED
+            if not writing:
+                # This link's own failure, not a source fan-out: no group id.
+                self._revise_result(orphan.result_index, failed)
+                return False
+            # One failed source, N failed links: the fan-out is recorded on the
+            # results themselves, so a caller can tell N separate failures from one
+            # failure seen N times without joining against a diagnostic. Earlier
+            # links keep their own results.
+            self._record_failure_group(group[index:], error)
+            source_error = error
+            return True  # stopped on or logged below, under the source's name
+
+        placed = False
+        with self._handling(orphan.original, kind="hardlink", record=record):
             resolved, prior, collided_with = self._resolve_collision(
                 orphan.original, orphan.transformed, orphan.dest_path
             )
+            current.collided_with = collided_with
             result = self._make_room(
                 orphan.original, orphan.transformed, resolved, atomic=True
             )
             if result is None:
+                writing = True
                 self._write_file_atomic(stream, resolved, orphan.transformed)
                 self._state.written_paths.add(resolved)
                 self._state.source_paths.setdefault(source_member.member_id, []).append(
@@ -3340,9 +3375,17 @@ class ExtractionCoordinator:
                 result_index=orphan.result_index,
             )
             self._revise_result(orphan.result_index, result)
-            if result.status is ExtractionStatus.EXTRACTED:
-                return group[index + 1 :]
-        return []
+            placed = result.status is ExtractionStatus.EXTRACTED
+        if source_error is not None:
+            self._stop_or_log(
+                source_error,
+                source_error,
+                ExtractionStatus.FAILED,
+                kind="orphaned hardlink source",
+                name=source_member.name,
+            )
+            return None
+        return placed
 
     def _link_orphan_group(self, group: list[_Orphan], source_id: int) -> None:
         """Link each orphan in ``group`` against the source content already on disk
