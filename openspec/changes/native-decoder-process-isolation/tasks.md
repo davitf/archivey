@@ -51,5 +51,5 @@
 
 - [x] 5.1 Security page: what each value isolates, what stays in-process, costs, the CLI
       subprocess recipe for a hard time limit.
-- [ ] 5.2 `openspec validate native-decoder-process-isolation` (strict only warns on long requirements); `check.sh`;
+- [x] 5.2 `openspec validate native-decoder-process-isolation` (strict only warns on long requirements); `check.sh`;
       `test.sh --all-configs`.
