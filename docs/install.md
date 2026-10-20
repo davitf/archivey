@@ -130,10 +130,12 @@ by setting `use_rapidgzip` or `use_indexed_bzip2` to `AcceleratorMode.ON`.
 
 If you use PyPy, close member streams and passes yourself, with a `with` block or `close()`. On
 CPython, one that nothing refers to any more is closed at once. PyPy closes it only at a later
-garbage collection, and until then it still holds the archive. Unless you opened the archive with
+garbage collection, and until then it still holds the archive. When a call finds the archive held,
+archivey runs a garbage collection and tries once more, so a stream or pass you dropped doesn't
+block it. One you still refer to does: unless you opened the archive with
 `concurrent_operations=True`, the next `open` raises `ArchiveyUsageError` because a member stream
 is already open, and an unfinished `stream_members` pass makes the archive's other calls raise. A
-RAR member read through `unrar` also keeps its `unrar` process running until then, and so does a
-decoder's child process where one is in use
+RAR member read through `unrar` also keeps its `unrar` process running until the collection, and
+so does a decoder's child process where one is in use
 ([Decoders in a child process](security.md#decoders-in-a-child-process)).
 [Reading once](reading.md#reading-once) shows the `with` form for a pass.

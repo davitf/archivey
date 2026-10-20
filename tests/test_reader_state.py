@@ -592,9 +592,10 @@ def _unreachable_but_alive(obj: object) -> None:
 
 @pytest.fixture
 def collector_paused() -> Iterator[None]:
-    """Pause the cycle collector, so that only the refusal path collects. On CPython
-    the tests using it fail if the retry is limited to interpreters without
-    reference counting."""
+    """Pause the cycle collector, so that only the refusal path collects.
+
+    The two "dropped ... is collected" tests that use it fail on CPython if the retry
+    is limited to interpreters without reference counting."""
     import gc
 
     was_enabled = gc.isenabled()
@@ -641,7 +642,17 @@ def test_a_pass_still_held_is_refused_after_the_collection(tmp_path: Path) -> No
         passing.close()
 
 
-@pytest.mark.usefixtures("collector_paused")
+def test_an_overlap_refusal_is_a_plain_usage_error(tmp_path: Path) -> None:
+    # The docs and the error-handling spec promise ArchiveyUsageError itself for an
+    # overlap; the mark that lets a collection retry it stays off the type.
+    with open_archive(_zip_with_files(tmp_path)) as reader:
+        first, second = reader.members()
+        with reader.open(first):
+            with pytest.raises(ArchiveyUsageError) as excinfo:
+                reader.open(second)
+    assert type(excinfo.value) is ArchiveyUsageError
+
+
 def test_a_closed_reader_is_refused_without_a_collection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -758,9 +769,7 @@ def test_an_error_out_of_the_orphan_pass_closes_it(
         assert orphan_pass._pass.gi_frame is None
 
 
-def test_a_failed_pass_close_does_not_hide_the_extraction_error(
-    tmp_path: Path,
-) -> None:
+def test_a_failed_pass_close_does_not_hide_the_extraction_error() -> None:
     from archivey.internal.extraction import _closing_pass
 
     class FailingClose:

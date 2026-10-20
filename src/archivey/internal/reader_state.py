@@ -76,10 +76,20 @@ T = TypeVar("T")
 # overlapping something nobody can reach, at a moment memory pressure decides.
 
 
-class _OverlapRefused(ArchiveyUsageError):
+_OVERLAP_MARK = "_archivey_overlap_refusal"
+
+
+def _overlap_refused(message: str) -> ArchiveyUsageError:
     """A refusal because other work holds the reader: one that a dropped pass or
-    stream can be behind, so a collection may clear it. A closed reader or a callback
-    re-entry raises plain :class:`ArchiveyUsageError`, which no collection clears."""
+    stream can be behind, so a collection may clear it.
+
+    It is a plain :class:`ArchiveyUsageError`, as the docs promise for an overlap; a
+    private mark on the instance tells :func:`_retry_after_collecting` it may retry. A
+    closed reader or a callback re-entry raises an unmarked one, which no collection
+    clears."""
+    exc = ArchiveyUsageError(message)
+    setattr(exc, _OVERLAP_MARK, True)
+    return exc
 
 
 def _retry_after_collecting(attempt: Callable[[], T]) -> T:
@@ -94,8 +104,9 @@ def _retry_after_collecting(attempt: Callable[[], T]) -> T:
     """
     try:
         return attempt()
-    except _OverlapRefused:
-        pass
+    except ArchiveyUsageError as exc:
+        if not getattr(exc, _OVERLAP_MARK, False):
+            raise
     gc.collect()
     return attempt()
 
@@ -339,12 +350,12 @@ class ReaderState:
             if self._root is not None and not (
                 overlap and self._pass_admits_overlap_locked(self._root.name)
             ):
-                raise _OverlapRefused(
+                raise _overlap_refused(
                     f"Cannot start {name!r}: another reader operation "
                     f"({self._root.name!r}) is already active."
                 )
             if self._workers and not overlap:
-                raise _OverlapRefused(
+                raise _overlap_refused(
                     f"Cannot start {name!r}: a concurrent open()/read() call is still "
                     "in progress."
                 )
@@ -471,7 +482,7 @@ class ReaderState:
             ):
                 # Side passes exist only beside a root that admits overlap, and they
                 # admit it too, so checking the root is enough.
-                raise _OverlapRefused(
+                raise _overlap_refused(
                     f"Cannot call {name!r}: another reader operation "
                     f"({self._root.name!r}) is already active."
                 )
@@ -579,7 +590,7 @@ class ReaderState:
                 if self._live_streams or self._reservations:
                     site = self.open_site
                     loc = site.location if site is not None else "<unknown>"
-                    raise _OverlapRefused(
+                    raise _overlap_refused(
                         "A member stream is already open on this reader. Close it "
                         "before opening another, or reopen the archive with "
                         "concurrent_operations=True "
