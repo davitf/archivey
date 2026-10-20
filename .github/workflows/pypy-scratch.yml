@@ -32,7 +32,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        drop: [none]
+        drop: [none, lz4]
     env:
       UV_PYTHON: pypy3.11
     steps:
@@ -53,7 +53,9 @@ jobs:
       - name: rapidgzip in-process smoke
         if: matrix.drop == 'none'
         continue-on-error: true
-        run: .venv/bin/python .github/pypy_smoke.py
+        run: |
+          .venv/bin/python .github/pypy_smoke.py
+          for m in partial full memoryview block bad; do .venv/bin/python -X faulthandler .github/pypy_lz4_stress.py $m 2>&1 | tail -5; echo "rc=${PIPESTATUS[0]}"; done
       - name: extras
         continue-on-error: true
         env:
@@ -66,3 +68,5 @@ jobs:
           grep -A8 'Fatal Python error' pytest.out | grep 'File' | grep -v site-packages | head -40
       - if: always() && matrix.drop == 'none'
         run: python3 scripts/junit_failure_lines.py extras.xml --detail 14 --width 260
+      - if: always() && matrix.drop != 'none'
+        run: python3 scripts/junit_failure_lines.py extras.xml --width 260
