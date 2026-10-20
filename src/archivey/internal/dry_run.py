@@ -68,6 +68,19 @@ def _fold(name: str) -> str:
     return unicodedata.normalize("NFC", name).casefold()
 
 
+def _numbered_as(candidate: str, name: str) -> str | None:
+    """``candidate``, a numbered name spelled from a name that folds to ``name``
+    (``_NUMBERED``), spelled from ``name`` itself instead. ``None`` when folding
+    changed the length, so the counter has no place in ``name``."""
+    found = _NUMBERED.fullmatch(candidate)
+    if found is None:
+        return None
+    head, tail = found.group(1), found.group(3)
+    if len(head) + len(tail) != len(name):
+        return None
+    return f"{name[: len(head)]} ({found.group(2)}){name[len(head) :]}"
+
+
 def _with_ancestors(into: set[str], rel: str) -> None:
     """Add ``rel``, a ``/``-separated path, and each of its ancestors to ``into``."""
     parts = rel.split("/")
@@ -152,8 +165,8 @@ class _Listing(NamedTuple):
     # Sorted, so the entry ``_bring_one`` copies is the same on every run.
     names: tuple[str, ...]
     present: frozenset[str]
-    # Each name by its ``_fold`` key, and the names spelled from it as RENAME
-    # spells a free name (``_NUMBERED``).
+    # Each name by its ``_fold`` key; and by the ``_fold`` key of a name, the names
+    # spelled from it, in any case, as RENAME spells a free name (``_NUMBERED``).
     folded: dict[str, str]
     numbered: dict[str, tuple[str, ...]]
 
@@ -188,8 +201,9 @@ class DryRun:
     # kept. Where those two spellings of dest differ, the pass is handed a spelling
     # of the scratch directory that differs from its own ``abspath`` the same way, so
     # each path can be shown in the spelling a real run would give it.
-    # (``dest.resolve()`` spells nothing a real run reports; it is only for matching
-    # link targets, ``dest_spellings``.)
+    # (``dest.resolve()`` spells one thing a real run reports, the path of a symlink
+    # loop under dest (``rebase_os_error``). Else it is only for matching link
+    # targets, ``dest_spellings``.)
     scratch_given: Path
     shown_abspath: Path
     # The caller's destination as the absolute path they gave and as it resolves,
@@ -356,13 +370,28 @@ class DryRun:
             ),
         )
 
-    def rebase_os_error(self, exc: OSError) -> None:
+    def rebase_os_error(self, exc: OSError, *, resolved: bool = False) -> None:
         """Point a filesystem error's file names at the caller's dest, without the
-        long-path prefix, in place."""
+        long-path prefix, in place.
+
+        With ``resolved``, the error names a path the pass built from the resolved
+        scratch directory, where a real run names one built from the resolved dest
+        (``check_universal``'s symlink loop): it is shown under the resolved dest."""
         for attr in ("filename", "filename2"):
             value = getattr(exc, attr, None)
             if isinstance(value, str):
-                setattr(exc, attr, str(self.shown(Path(plain(value)))))
+                path = Path(plain(value))
+                shown = self._shown_resolved(path) if resolved else None
+                setattr(exc, attr, str(shown or self.shown(path)))
+
+    def _shown_resolved(self, path: Path) -> Path | None:
+        """``path``, under the resolved scratch directory, under the resolved dest;
+        ``None`` for a path outside it."""
+        try:
+            rest = path.relative_to(self.scratch)
+        except ValueError:
+            return None
+        return Path(self.dest_spellings[1]) / rest
 
     def record(self, made: Iterable[Path]) -> ScratchRecord:
         """What the pass left in the scratch copy of dest, for ``ExtractionReport``:
@@ -447,6 +476,18 @@ class DryRun:
         elif member.type is MemberType.SYMLINK:
             on_disk = self._link_parts(self.target_on_disk(target))
             self._walk((*rel.parent.parts, *on_disk))
+
+    def bring_in_link(self, path: Path, target: str) -> None:
+        """Copy into the scratch tree the entries of dest that the pass's symlink at
+        ``path``, with the target ``target`` on disk, resolves through now.
+
+        A later member can change a path that the link resolves through, and the
+        recheck then resolves it again (``_recheck_links``). The new route can pass
+        entries of dest that ``bring_in`` did not copy when the link was made."""
+        rel = self._rel(path.parent)
+        if not rel and path.parent not in (self.scratch, self.scratch_given):
+            return  # outside the scratch tree: not a link of the pass
+        self._walk((*PurePath(rel).parts, *self._link_parts(target)))
 
     def _link_parts(self, target: str) -> tuple[str, ...]:
         """The ``_walk`` components of a symlink of the scratch tree whose target is
@@ -533,12 +574,19 @@ class DryRun:
         if listing is None:
             return
         held = name if name in listing.present else listing.folded.get(_fold(name))
-        if held is None or (
-            held != name and not os.path.lexists(long_path(listing.source / name))
+        if held is not None and (
+            held == name or os.path.lexists(long_path(listing.source / name))
         ):
-            return
-        for candidate in (held, *listing.numbered.get(held, ())):
-            self._copy_named(directory, listing, candidate)
+            self._copy_named(directory, listing, held)
+        # A RENAME can try these names also when dest does not hold ``name``: the
+        # member can collide with another member of the run.
+        for candidate in listing.numbered.get(_fold(name), ()):
+            spelled = _numbered_as(candidate, name)
+            if spelled == candidate or (
+                spelled is not None
+                and os.path.lexists(long_path(listing.source / spelled))
+            ):
+                self._copy_named(directory, listing, candidate)
 
     def _bring_one(self, directory: Path) -> None:
         """Copy in one entry of the directory of dest that ``directory`` stands for,
@@ -587,7 +635,7 @@ class DryRun:
                     found = _NUMBERED.fullmatch(name)
                     if found is not None:
                         base = found.group(1) + found.group(3)
-                        numbered.setdefault(base, []).append(name)
+                        numbered.setdefault(_fold(base), []).append(name)
                 listing = _Listing(
                     source,
                     tuple(names),

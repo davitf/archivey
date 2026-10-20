@@ -584,6 +584,17 @@ _EXISTING_CASES: dict[str, tuple[dict[str, object], list[tuple[str, str, object]
         {"f": b"mine", "h": b"mine"},
         [("f", "file", b"content"), ("h", "hard", "f")],
     ),
+    # RENAME's first numbered name is taken in dest, but the base name is free: the
+    # member collides with a directory the run made, so RENAME still tries it.
+    "rename-past-a-held-numbered-name": (
+        {"a (1)": b"mine"},
+        [("a/x", "file", b"x"), ("a", "file", b"a")],
+    ),
+    # The same, where the member collides with another member's case variant.
+    "rename-case-variant-past-a-held-numbered-name": (
+        {"A (1)": b"mine"},
+        [("a", "file", b"a"), ("A", "file", b"A")],
+    ),
 }
 
 _EXISTING_LINK_CASES: dict[
@@ -639,6 +650,22 @@ _EXISTING_LINK_CASES: dict[
     "file-over-full-directory-through-symlink": (
         {"sub/b/keep.txt": b"mine", "a": ("sym", "sub")},
         [("a/b", "file", b"theirs")],
+    ),
+    # A symlink of the caller's that loops: the error names it in dest.
+    "under-a-looping-symlink": (
+        {"a": ("sym", "a")},
+        [("a/c", "file", b"x")],
+    ),
+    # A link member whose target is missing when it is made, and that a later member
+    # makes resolve through the caller's symlink out of dest: the recheck refuses it.
+    "link-member-escapes-after-a-later-member": (
+        {"real/esc": ("sym", "../../outside")},
+        [("l", "sym", "a/esc"), ("a", "sym", "real")],
+    ),
+    # The same, where the later member replaces a directory the run made.
+    "link-member-escapes-after-a-later-member-replaces-a-directory": (
+        {"real/esc": ("sym", "../../outside")},
+        [("a", "dir", None), ("l", "sym", "a/esc"), ("a", "sym", "real")],
     ),
 }
 
@@ -705,6 +732,21 @@ def test_existing_symlinks_are_met_alike(
 ) -> None:
     held, members = _EXISTING_LINK_CASES[case]
     _run_existing_case(held, members, overwrite, streaming, tmp_path)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+def test_symlink_loop_error_names_dest_in_its_cause(tmp_path: Path) -> None:
+    # The report shape compares the message only; the cause keeps a file name too.
+    dest = tmp_path / "out"
+    _put(dest, {"a": ("sym", "a")})
+    blob = _tar([("a/c", "file", b"x")])
+    with open_archive(io.BytesIO(blob)) as reader:
+        report = reader.extract_all(dest, on_error=OnError.CONTINUE, dry_run=True)
+    (result,) = report.results
+    assert result.status is ExtractionStatus.FAILED
+    cause = result.error.__cause__
+    assert isinstance(cause, OSError)
+    assert cause.filename == str(dest.resolve() / "a")
 
 
 @pytest.mark.parametrize("overwrite", list(OverwritePolicy))
