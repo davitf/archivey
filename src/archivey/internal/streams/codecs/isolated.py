@@ -106,6 +106,8 @@ def _lz4_errors() -> dict[tuple[str, str], type[Exception]]:
 # levels a default compressor picks: what a decoder of an unknown stream most likely
 # allocates.
 _TYPICAL_DECODER_MEMORY = 8 << 20
+# What libbz2 allocates to decode the default (and largest) 900 kB block size.
+_BZ2_DECODER_MEMORY = 3600 << 10
 # PyPy's own module; no type checker knows it.
 _add_memory_pressure: Callable[[int], None] | None = (
     importlib.import_module("__pypy__").add_memory_pressure if deps.UNDER_PYPY else None
@@ -117,11 +119,14 @@ def _note_native_memory(nbytes: int) -> None:
 
     CPython frees a dropped decoder's buffers at once. PyPy frees them at its next
     major collection, and that collection is scheduled by the GC heap's growth only,
-    which a decoder hardly adds to. A run that drops thousands of decoders (an xz
-    file of many streams, a test suite) then keeps gigabytes of dictionaries
+    which a decoder hardly adds to. A run that drops thousands of decoders (an xz or
+    bzip2 file of many streams, a test suite) then keeps gigabytes of buffers
     allocated, and once glibc has grown its heap for them, ``fork`` refuses to copy
     that mapping: ``OSError: [Errno 12] Cannot allocate memory`` from ``subprocess``.
     The pressure brings the collection forward, as PyPy's own ``LZMACompressor`` does.
+    An estimate cannot cover a dictionary only the stream declares (up to 4 GiB), so
+    a decoder's ``close`` also ends its liblzma decoders at once
+    (``release_decoder_children``).
     """
     if _add_memory_pressure is not None:
         _add_memory_pressure(nbytes)
@@ -291,7 +296,9 @@ class Natives:
         if not self.isolated:
             import bz2
 
-            return bz2.BZ2Decompressor()
+            decoder = bz2.BZ2Decompressor()
+            _note_native_memory(_BZ2_DECODER_MEMORY)
+            return decoder
         return ChildDecompressor(self._child("bz2"))
 
     def lzma_decompressor(

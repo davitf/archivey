@@ -19,7 +19,9 @@ from __future__ import annotations
 
 import bisect
 import io
+import lzma
 import os
+import sys
 import zlib
 from collections.abc import Callable, Container, Sequence
 from contextlib import AbstractContextManager, nullcontext
@@ -1532,6 +1534,33 @@ def report_trailing_data(
 _CODECS_PACKAGE = "archivey.internal.streams.codecs."
 
 
+def _pypy_lzma_end() -> Callable[[lzma.LZMADecompressor], None] | None:
+    """Ends a liblzma decoder now, on PyPy; ``None`` elsewhere.
+
+    CPython ends one when its last reference goes. PyPy's ``lzma`` is cffi: the
+    decoder's ``lzs`` is an ``ffi.gc`` handle that calls ``lzma_end`` at a major
+    collection, which can be many decoders later, with a dictionary of up to 4 GiB
+    held by each (codecs/isolated.py, ``_note_native_memory``, has the rest).
+    ``ffi.release`` calls it now. A decoder used after that raises ``LZMAError``:
+    liblzma refuses a stream it has ended.
+    """
+    if sys.implementation.name != "pypy":
+        return None
+    release = getattr(getattr(sys.modules.get("_lzma"), "ffi", None), "release", None)
+    if release is None:
+        return None
+
+    def end(decoder: lzma.LZMADecompressor) -> None:
+        handle = getattr(decoder, "lzs", None)
+        if handle is not None:
+            release(handle)
+
+    return end
+
+
+_end_lzma_decoder = _pypy_lzma_end()
+
+
 def release_decoder_children(holder: object, depth: int = 3) -> None:
     """Give back every decoder process ``holder`` holds now, not when GC frees it.
 
@@ -1540,11 +1569,14 @@ def release_decoder_children(holder: object, depth: int = 3) -> None:
     this looks through the attributes of codec-layer helpers a few levels down for a
     child proxy (``holds_decoder_child``, codecs/isolated.py). An archive reader can
     sit in a reference cycle, and without this its decoders' child processes would
-    stay leased until the cycle collector ran.
+    stay leased until the cycle collector ran. On PyPy it also ends the in-process
+    liblzma decoders it finds (:func:`_pypy_lzma_end`).
     """
     for value in list(getattr(holder, "__dict__", {}).values()):
         if getattr(type(value), "holds_decoder_child", False):
             value.close()
+        elif _end_lzma_decoder is not None and type(value) is lzma.LZMADecompressor:
+            _end_lzma_decoder(value)
         elif (
             depth > 0
             and type(value).__module__.startswith(_CODECS_PACKAGE)
