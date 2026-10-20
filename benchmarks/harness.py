@@ -18,7 +18,8 @@ Modes:
   solid decode-once bounds, and a non-solid over-decode bound on ``read_all``.
   Under-decode remains an integrity check; over-decode catches silent re-open churn
   that the old seek slack (baseline×2+8) used to absorb.
-- ``full``: also report wall-time ratios vs stdlib peers. Absolute ratios are noisy
+- ``full``: also report wall-time ratios vs stdlib peers, and the per-member cost and
+  throughput fitted by ``benchmarks/cost_model.py``. Absolute ratios are noisy
   on shared runners, so full mode is **not** a PR gate. The change-guarded nightly
   (``benchmark-wall.yml``) hard-fails on (1) the ~10× sanity ceiling and (2)
   **wall-ratio drift** vs the JSON artifact of the last run that measured, pass or
@@ -78,6 +79,7 @@ from archivey.config import AcceleratorMode, ArchiveyConfig
 from archivey.exceptions import PackageNotInstalledError
 from archivey.internal.base_reader import BaseArchiveReader
 from archivey.internal.measurement import enable_measurement
+from benchmarks.cost_model import format_cost_model, run_cost_model
 from benchmarks.fixtures import (
     SCALES,
     ZIP_AES_PASSWORD,
@@ -394,8 +396,12 @@ def _stdlib_gzip_read_all(path: Path) -> None:
 
 
 def _stdlib_targz_read_all(path: Path) -> None:
+    # Iterate rather than getmembers(): listing first decompresses to the end, and
+    # the first extractfile() then seeks back, which restarts the decompression. The
+    # restart is a property of a compressed stream: the plain-tar peers above keep
+    # getmembers(), because seeking back in an uncompressed file costs nothing.
     with tarfile.open(path, "r:gz") as tf:
-        for member in tf.getmembers():
+        for member in tf:
             if not member.isfile():
                 continue
             f = tf.extractfile(member)
@@ -404,8 +410,12 @@ def _stdlib_targz_read_all(path: Path) -> None:
 
 
 def _stdlib_tarbz2_read_all(path: Path) -> None:
+    # Iterate rather than getmembers(): listing first decompresses to the end, and
+    # the first extractfile() then seeks back, which restarts the decompression. The
+    # restart is a property of a compressed stream: the plain-tar peers above keep
+    # getmembers(), because seeking back in an uncompressed file costs nothing.
     with tarfile.open(path, "r:bz2") as tf:
-        for member in tf.getmembers():
+        for member in tf:
             if not member.isfile():
                 continue
             f = tf.extractfile(member)
@@ -1616,6 +1626,14 @@ def format_text_report(payload: dict[str, Any]) -> str:
                 f"{_vision_label(r.wall_ratio, operation=r.operation, format=r.format)} |"
             )
 
+    cost_model = payload.get("cost_model")
+    if cost_model:
+        lines.extend(format_cost_model(cost_model))
+    elif payload.get("cost_model_error"):
+        lines.extend(
+            ["", "## Cost model", "", f"Not measured: {payload['cost_model_error']}"]
+        )
+
     lines.extend(
         [
             "",
@@ -1812,6 +1830,15 @@ def main(argv: list[str] | None = None) -> int:
     }
     # Stamp when ratios were actually timed (nightly skip re-publish preserves this).
     if args.mode == "full":
+        # Per-member cost and throughput from a ladder of archive shapes, next to
+        # the per-fixture ratios. Informational: no gate reads it, so a failure here
+        # is reported in its section and must not lose the run's results. The ladder
+        # is the same at every scale, so it lives beside the scale directories.
+        try:
+            payload["cost_model"] = run_cost_model(fixtures.root.parent / "ladder")
+        except Exception as exc:  # noqa: BLE001 - see above
+            payload["cost_model_error"] = f"{type(exc).__name__}: {exc}"
+
         payload.update(measurement_provenance())
     report = format_text_report(payload)
     if args.json_out is not None:
