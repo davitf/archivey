@@ -70,7 +70,7 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   for RAR archives, listed in the table below. When the archive records a member's size in
   `member.size`, archivey never decodes more than that, and a member holding more raises
   `CorruptionError`.
-- - **A pass that reads members as it goes checks the listing limits as it goes.** On a TAR,
+- **A pass that reads members as it goes checks the listing limits as it goes.** On a TAR,
   `stream_members()` yields members up to the limit and then raises, and `extract_all` leaves the
   files it wrote before then on disk. 7z, RAR and ISO archives check the limits before they give you
   any member, with or without `streaming=True`. A ZIP read from a file checks the member count its
