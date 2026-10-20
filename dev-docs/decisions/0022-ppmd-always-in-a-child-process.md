@@ -33,30 +33,49 @@ The reasons were:
 
 - **The discipline looked complete.** Every shape measured at the time ran clean under it,
   and valgrind reported no errors on archivey's own call sequences.
-- **A child per member was expensive.** Starting one costs 12 to 18 ms, which made
-  decoding every member in a child 70 to 154 times slower on archives of small PPMd
-  members. Only for large members did the memory of holding the whole input outweigh that.
+- **A child per member was expensive.** The `max_ppmd_in_process_input` docstring
+  (`src/archivey/config.py`, from PR #481) puts the PPMd child's start-up at about 75 ms
+  and its pipe at about 450 MB/s, compressed input in and decoded output back. That
+  start-up is small beside a 16 MiB member, which takes seconds at pyppmd's 2 to 8 MB/s,
+  but it dominates a small one. Only for large members did the memory of holding the
+  whole input outweigh it. A re-measurement on 2026-10-20 (the PPMd child on main, Linux,
+  CPython 3.11; numbers in PR #905's description) gave the same picture: decoding every
+  member in a fresh child was 70 to 154 times slower on archives of 1 KB and 30 KB
+  members, and 1.1 times on two 20 MB members.
 - **Isolation was reserved for crashes that could not be avoided.** The rapidgzip DEFLATE
-  abort was one. Native code alone was not a reason to pay for a process boundary.
+  abort was one. Native code alone was not a reason to pay for a process boundary. In the
+  terms of [DR-20](../design-rules.md#dr-20-parse-in-python-isolate-native-code-that-can-crash)
+  ("a codec with known crashes runs in a child process or is designed around"), PPMd
+  below 16 MiB took the "designed around" branch.
 - **`multiprocessing` was ruled out.** Its spawn mode re-imports the caller's `__main__`,
   and it reports neither stderr nor the exit status. A child had to be a plain subprocess
   running a standalone worker script, which kept the child code small and per codec.
 
 ## What changed (2026-10-20)
 
-- **The discipline has a hole, and it can't be closed from Python.** A re-measurement on
-  2026-10-20 found that the quiesce step itself is a decode after the end when the member
-  ended early. A spy on the native calls saw it on 183 of 200 hostile 7z members. Replaying
-  that call order on bare pyppmd crashed 5 and 6 of 100 children for PPMd7 and 60 of 100
-  for PPMd8. Leaving the step out brings back the use-after-free it exists to prevent. The
-  safe choice depends on the state pyppmd does not expose, so no in-process call sequence
-  is safe by construction. Through archivey no crash was seen in 860 fresh children, but
-  that is a low rate, not a guarantee. The crash that `known-issues.md` used to describe
-  (an oversized `unpack_size`) turned out to be the free-while-parked route, which
-  quiescing already handles. PR #905 corrects the docs.
+- **The discipline holds only by measurement, and one call separates it from a crash.**
+  A re-measurement on 2026-10-20 (`scripts/pyppmd_crash_repro.py` in PR #905) found no
+  crash on archivey's own call order: crafted members with an overstated `unpack_size` ran
+  clean in 860 fresh children and under valgrind, and archivey's teardown order crashed 0
+  of 100 children. But the margin is thin. When a member ends early, the quiesce step is
+  itself a decode after the end; a spy saw it on 183 of 200 hostile 7z members. It stays
+  safe only because pyppmd happens to stop that call at once. One more decode after
+  pyppmd has raised `ValueError` crashed 59 of 100 children for PPMd8 and 5 of 100 for
+  PPMd7, and archivey avoids it only because `_quiesce_worker` returns early on the state
+  pyppmd reports after the error. Leaving the quiesce step out brings back the
+  use-after-free it exists to prevent. Two candidates for an in-process crash stay open:
+  the quiesce decode after an early end, and empty drains on a member that is declared
+  complete but corrupt. Since pyppmd does not expose the state that would make a call
+  sequence safe by construction, the in-process path rests on test results, not on a
+  rule that can be checked. `known-issues.md` described the remaining risk as an
+  oversized `unpack_size`; measured, that shape is the free-while-parked route, which
+  quiescing already handles. PR #905 corrects that entry.
 - **A child no longer costs a process start per member.** The native-decoder isolation
-  design takes children from a pool of reused idle children. On a reused child a small
-  member costs about 30 µs in the prototype, against 12 to 18 ms for a fresh one.
+  design takes children from a pool of reused idle children. In its prototype (Linux,
+  CPython 3.11, a child that imports only `struct` and `sys` until it is asked for a
+  codec; `/mnt/project-files/reports/process-isolation-options-2026-10-20.md`), a small
+  member on a reused child cost about 30 µs, against 12 to 18 ms to start a fresh one.
+  The 75 ms figure above includes importing pyppmd and the older per-codec worker.
 - **The protocol is no longer per codec.** One shared child protocol now serves every
   native decoder, so moving PPMd onto it adds no new copy of the child code.
 - **One rule is easier to state than a threshold.** "PPMd always decodes in a child" needs
@@ -65,20 +84,50 @@ The reasons were:
 ## Decision
 
 By default every PPMd member decodes in a child process taken from the pool, whatever its
-size. A crash costs that member and becomes an archivey error, as above the threshold
-today. The `ProcessIsolation.NONE` setting keeps PPMd in this process, as a risk the
-caller accepts for speed, for tests, or where processes cannot be started. The docs
-discourage that setting.
+size. This is DR-20's "runs in a child process" branch, since "designed around" is not
+reachable from Python for pyppmd. A crash costs that member and becomes an archivey
+error, as above the threshold today.
+
+Password confirmation follows the same rule. It decodes a PPMd member under each
+candidate key, and a wrong key turns the member into exactly the random input that
+reaches pyppmd's crash routes, so it is the path most likely to need the isolation.
+
+The planned `ProcessIsolation.NONE` setting, whose name lands with the native-decoder
+isolation change, keeps PPMd in this process as a risk the caller accepts: for speed, for
+tests, or where processes cannot be started. The docs will discourage it.
+
+Reuse must not move the blame. pyppmd's damage is heap corruption, which can surface
+later, while the same child decodes another member. So a child goes back to the pool only
+after a clean finish: its member decoded to the declared end, the stored CRC matched, and
+the decoder closed normally. Any error, early end or refused member retires it. A crash
+in a child that had already served other members is not charged to the current member:
+that member runs again once in a fresh child, and only a crash there becomes its error.
+A crashed child is never reused, and children are recycled after a fixed number of
+members.
 
 ## Consequences
 
-- PPMd output on small members pays a pipe round trip per request: about 30 µs per member,
-  plus about 0.5 to 0.8 ms per MiB of output copied through the pipe.
+- Each request to a pooled child is a pipe round trip. A small member takes three (open,
+  decode, close), about 30 µs together in the prototype; a large member read in bounded
+  chunks takes one more per chunk. On top of that comes the cost of copying data through
+  the pipe. The prototype measured
+  0.5 to 0.8 ms per MiB of decoded output alone; the PR #481 docstring's 450 MB/s (about
+  2.2 ms per MiB) counts compressed input and decoded output together.
+- Password confirmation pays that round trip once per surviving candidate.
 - `max_ppmd_in_process_input` loses its role under the default. Whether it is removed,
   renamed or kept for `NONE` is a public-name change. It is decided with the isolation
-  change, not here.
-- The "Why the split at 16 MiB?" note in `docs/security.md` and the field docstring change
-  with the implementation.
+  change, not here. `DecoderLimits.UNLIMITED` changes meaning with it: it sets the field to
+  `None`, which today also guarantees that no child process starts, and under the new
+  default a PPMd member starts one anyway.
+- These statements of the current rule change with the implementation:
+  - `openspec/specs/archive-reading/spec.md`: the `max_ppmd_in_process_input` SHALL rows
+    (a member over it decodes in a child), its 16 MiB default and the matching scenario
+    row;
+  - the field docstring in `src/archivey/config.py`, including "a password check ... always
+    runs in-process";
+  - the "Why the split at 16 MiB?" note in `docs/security.md`;
+  - `dev-docs/known-issues.md`, "What archivey does" under the pyppmd entry;
+  - `dev-docs/formats/zip.md`, on the bit-3 PPMd member that always decodes in a child.
 - An environment that cannot start a process, such as a frozen application, already gets
   `ResourceLimitError` for PPMd members over the threshold. Under the new default this
   applies to every PPMd member unless the caller picks `NONE`.
