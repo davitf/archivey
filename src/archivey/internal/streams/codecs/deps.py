@@ -132,5 +132,9 @@ inflate64 = LazyOptional("inflate64")
 # rapidgzip runs in a child process for every codec it decodes (gzip, zlib, raw deflate
 # and bzip2), so this process only needs to know it is installed. bzip2 uses rapidgzip's
 # bundled IndexedBzip2File, never the separate indexed_bzip2 package: the two loaded into
-# one process corrupt the heap on macOS (ADR 0008).
-rapidgzip = LazyOptional("rapidgzip")
+# one process corrupt the heap on macOS (ADR 0008). Under PyPy it reads as absent, so
+# ``ON`` raises the PackageNotInstalledError of an absent package and ``AUTO`` stays
+# quiet; ``rapidgzip_child_unavailable_reason`` keeps refusing a child there as well.
+rapidgzip = LazyOptional(
+    "rapidgzip", present=False if unused_reason("rapidgzip") else None
+)

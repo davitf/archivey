@@ -3,12 +3,15 @@ the digest-verification stage."""
 
 from __future__ import annotations
 
+import bz2
 import dataclasses
 import gzip
 import hashlib
 import importlib
+import importlib.machinery
 import importlib.util
 import io
+import logging
 import lzma
 import random
 import re
@@ -2893,15 +2896,31 @@ def deps_built_under_pypy(
         importlib.reload(deps)
 
 
+def _pretend_rapidgzip_is_installed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the package lookup find rapidgzip, which the test environment may lack."""
+    find_spec = importlib.util.find_spec
+
+    def found(
+        name: str, package: str | None = None
+    ) -> importlib.machinery.ModuleSpec | None:
+        if name == "rapidgzip":
+            return importlib.machinery.ModuleSpec(name, None)
+        return find_spec(name, package)
+
+    monkeypatch.setattr(importlib.util, "find_spec", found)
+
+
 def test_packages_unused_under_pypy_count_as_absent(
-    deps_built_under_pypy: types.ModuleType,
+    deps_built_under_pypy: types.ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Under PyPy archivey treats lz4, pyppmd and rapidgzip as absent even when they are
     installed, and has a reason for each."""
     deps = deps_built_under_pypy
+    _pretend_rapidgzip_is_installed(monkeypatch)
     assert deps.lz4_frame is None
     assert deps.lz4_block is None
     assert deps.pyppmd.available() is False
+    assert deps.rapidgzip.available() is False
     for package in ("lz4", "pyppmd", "rapidgzip"):
         assert f"archivey does not use {package} under PyPy" in deps.unused_reason(
             package
@@ -2910,6 +2929,43 @@ def test_packages_unused_under_pypy_count_as_absent(
         deps.unused_reason("rapidgzip")
     )
     assert deps.unused_reason("brotli") == ""
+
+
+@pytest.mark.parametrize(
+    ("codec", "data", "setting"),
+    [
+        (Codec.GZIP, gzip.compress(b"x" * 1000), "use_rapidgzip"),
+        (Codec.BZIP2, bz2.compress(b"x" * 1000), "use_indexed_bzip2"),
+    ],
+    ids=["gzip", "bzip2"],
+)
+def test_installed_rapidgzip_under_pypy_reads_as_absent(
+    deps_built_under_pypy: types.ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    codec: Codec,
+    data: bytes,
+    setting: str,
+) -> None:
+    """Under PyPy an installed rapidgzip changes nothing: ON raises the same
+    PackageNotInstalledError as when it is absent, not ResourceLimitError, and AUTO
+    reads with the standard library without a warning."""
+    _pretend_rapidgzip_is_installed(monkeypatch)
+    monkeypatch.setattr(codecs_module.rapidgzip_select, "_child_fallback_warned", set())
+    caplog.set_level(logging.WARNING, logger="archivey.streams")
+
+    on = StreamConfig(seekable=True, **{setting: AcceleratorMode.ON})
+    with pytest.raises(PackageNotInstalledError, match="rapidgzip"):
+        open_codec_stream(codec, io.BytesIO(data), config=on)
+
+    auto = StreamConfig(
+        seekable=True,
+        compressed_input_size=1 << 40,
+        expected_decompressed_size=1000,
+    )
+    with open_codec_stream(codec, io.BytesIO(data), config=auto) as stream:
+        assert stream.read() == b"x" * 1000
+    assert [r.getMessage() for r in caplog.records] == []
 
 
 def test_an_unused_package_reports_its_reason_on_every_channel(
