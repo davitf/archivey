@@ -188,6 +188,11 @@ class _Pool:
         except (OSError, ValueError):
             process.end()
             return
+        except BaseException:
+            # Interrupted part-way through the frame: no lease holds the child any
+            # more, so it is ended here or never.
+            process.end()
+            raise
         with self._lock:
             if process.alive() and len(self._idle) < MAX_IDLE:
                 self._idle.append(process)
@@ -308,8 +313,9 @@ class DecoderChild:
 
     After the child dies, every later call raises the same error again. After a request
     or its reply was interrupted (``KeyboardInterrupt`` part-way through), every later
-    call raises ``ArchiveyUsageError``, and the child is ended at close: the rest of the
-    request is still to be read, or the rest of the reply is still in the pipe.
+    call raises ``ArchiveyUsageError``, and the child is ended at close (see
+    :meth:`_abandon`): the rest of the request is still to be read, or the rest of the
+    reply is still in the pipe.
     """
 
     # How a death during a request is reported: the subclass for PPMd keeps the
@@ -427,8 +433,7 @@ class DecoderChild:
         except BaseException:
             # Interrupted part-way through a request: the child is still reading it,
             # and would read the next frame as the rest of its payload.
-            self._interrupted = True
-            self._lease.reusable = False
+            self._abandon()
             raise
         return self._receive_raw()
 
@@ -442,10 +447,17 @@ class DecoderChild:
         except BaseException:
             # Interrupted part-way through a reply: the rest of it is still in the
             # pipe, and the next read would take its bytes for a reply header.
-            self._interrupted = True
-            self._lease.reusable = False
+            self._abandon()
             raise
         return tag, state, output
+
+    def _abandon(self) -> None:
+        """Give up on the child after an interrupt part-way through a frame: every
+        later call refuses, and :meth:`close` ends the child instead of reusing it.
+        The child is not ended here: ending it waits for it to exit (up to
+        ``REAP_TIMEOUT``), and that wait must not run inside the interrupt."""
+        self._interrupted = True
+        self._lease.reusable = False
 
     def _request(self, tag: int, arg: int, *parts: bytes) -> bytes:
         """Send one request and return its output, re-running in a fresh child a crash
