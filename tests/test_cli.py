@@ -2643,14 +2643,17 @@ def test_dry_run_names_where_rename_moves_the_root_past_a_file(
     archive_name: str,
 ) -> None:
     """The root ``foo/`` meets the operator's file ``foo``: the dry run names
-    ``foo (1)/``, where the real run puts it, not ``foo/``."""
+    ``foo (1)/``, where the real run puts it, not ``foo/``. The archive stores
+    ``foo/`` as a directory member too, which the dry run meets at the operator's
+    file before it renames it."""
     monkeypatch.chdir(tmp_path)
     archive = tmp_path / archive_name
     if archive_name.endswith(".zip"):
         with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr("foo/", b"")
             zf.writestr("foo/x.txt", b"ARCHIVE")
     else:
-        _tar(archive, {"foo/x.txt": b"ARCHIVE"})
+        _tar_root_with_file(archive, explicit_root=True)
     (tmp_path / "foo").write_bytes(b"MINE")
     assert main(["x", str(archive), "--dry-run"]) == EXIT_OK
     dry = capsys.readouterr().err

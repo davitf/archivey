@@ -2,9 +2,9 @@
 into for real, and the translation of every path it reports back to the caller's dest.
 
 The copy starts empty and is filled from dest as the pass goes (``DryRun.bring_in``):
-the entries of each directory of dest that a member's path, link target or hardlink
-source passes through are copied in, a file as an empty file and a symlink as a symlink,
-before the pass looks at them. dest itself is only read.
+each entry of dest that a member's path, link target or hardlink source names is copied
+in before the pass looks at it, a file as an empty file and a symlink as a symlink.
+dest itself is only read.
 
 ``ExtractionCoordinator.run`` describes what a dry run shows and where it says less
 than a real run would.
@@ -15,15 +15,20 @@ from __future__ import annotations
 import contextlib
 import errno
 import os
+import re
 import shutil
 import stat
 import tempfile
-from collections.abc import Iterator
+import unicodedata
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePath
 from typing import BinaryIO, NamedTuple
 
-from archivey.internal.filters import resolve_or_raise_on_loop
+from archivey.internal.filters import (
+    resolve_or_raise_on_loop,
+    strip_absolute_root,
+)
 from archivey.internal.logs import extraction as logger
 from archivey.internal.long_paths import long_path, plain
 from archivey.types import ArchiveMember, ExtractionResult, MemberType
@@ -45,11 +50,28 @@ _FROM_ROOT = "\0root"
 _OUTSIDE = "\0outside"
 
 
+# A name ``numbered_name`` can have spelled from another: ``a (2).txt`` from ``a.txt``,
+# ``d (1)`` from ``d``. The name it came from is group 1 followed by group 3. A name
+# that only looks numbered is matched too, which costs at most one extra copy.
+_NUMBERED = re.compile(r"(.*) \(([1-9][0-9]*)\)(.*)", re.DOTALL)
+
+
 def _dir_copy_mode(mode: int) -> int:
-    """The mode of the scratch copy of a directory of dest that has ``mode``: the same,
-    plus the owner's read, write and search bits, so the copy can be filled and
-    walked."""
-    return stat.S_IMODE(mode) & 0o777 | stat.S_IRWXU
+    """The mode of the scratch copy of a directory of dest that has ``mode``: the same
+    bits, setgid and sticky included, plus the owner's read, write and search bits, so
+    the copy can be filled and walked."""
+    return stat.S_IMODE(mode) | stat.S_IRWXU
+
+
+def _fold(name: str) -> str:
+    """``name`` as a case-insensitive, normalizing filesystem compares it."""
+    return unicodedata.normalize("NFC", name).casefold()
+
+
+def _with_ancestors(into: set[str], rel: str) -> None:
+    """Add ``rel``, a ``/``-separated path, and each of its ancestors to ``into``."""
+    parts = rel.split("/")
+    into.update("/".join(parts[:i]) for i in range(1, len(parts) + 1))
 
 
 def scratch_tree(
@@ -117,11 +139,23 @@ class _Copy(NamedTuple):
 
     # The entry of dest it copies.
     source: Path
-    # The copy's inode and mtime when made, and whether it is a directory: an entry
-    # the pass replaced is another file (``DryRun._is_untouched_copy``).
+    # The copy's inode when made, and whether it is a directory: a directory that
+    # the pass removed and the run made again is not the copy (``DryRun._source_of``).
     ino: int
-    mtime_ns: int
     is_dir: bool
+
+
+class _Listing(NamedTuple):
+    """The names in a directory of dest, read once (``DryRun._listing``)."""
+
+    source: Path
+    # Sorted, so the entry ``_bring_one`` copies is the same on every run.
+    names: tuple[str, ...]
+    present: frozenset[str]
+    # Each name by its ``_fold`` key, and the names spelled from it as RENAME
+    # spells a free name (``_NUMBERED``).
+    folded: dict[str, str]
+    numbered: dict[str, tuple[str, ...]]
 
 
 class ScratchRecord(NamedTuple):
@@ -163,20 +197,26 @@ class DryRun:
     dest_spellings: tuple[PurePath, PurePath]
     # Where FILE bodies go instead of the file (``os.devnull``).
     sink: BinaryIO
-    # The scratch directories whose entries in dest were copied in (``_expand``).
-    _expanded: set[Path] = field(default_factory=set)
+    # What each scratch directory's counterpart in dest holds, once read; ``None``
+    # for a directory that stands for none, or one that cannot be listed.
+    _listings: dict[Path, _Listing | None] = field(default_factory=dict)
     # Each entry copied in from dest, by its scratch path (``_copy_in``).
     _copies: dict[Path, _Copy] = field(default_factory=dict)
-    # Copied directories a DIRECTORY member named, which the run reports as its own.
-    _claimed: set[Path] = field(default_factory=set)
+    # The scratch paths whose counterpart in dest was looked for. Each is looked for
+    # once, so an entry the pass removed is not copied in again.
+    _considered: set[Path] = field(default_factory=set)
 
     def target_on_disk(self, target: str) -> str:
         """The target a link is created with: an absolute target that names a path
         under dest is rewritten to the same path under the scratch copy.
 
-        Matched by name against dest as given and as it resolves, not resolved itself,
-        so ``..`` components and symlinks on the way are left for the checks that
-        resolve the link. Any other target is returned as it is.
+        Matched by name against dest as given and as it resolves. A target that
+        spells dest some other way (``x/../out``, or through a symlink outside dest)
+        is matched by the shortest leading part of it that resolves to dest, on the
+        real filesystem: that part is outside dest, where a real run resolves it the
+        same way. What follows dest in the target is not resolved, so ``..``
+        components and symlinks there are left for the checks that resolve the link.
+        Any other target is returned as it is.
         """
         pure = PurePath(target)
         if not pure.anchor:
@@ -188,6 +228,14 @@ class DryRun:
         for spelling in self.dest_spellings:
             if pure.is_relative_to(spelling):
                 return str(self.scratch / pure.relative_to(spelling))
+        parts = pure.parts
+        for end in range(1, len(parts) + 1):
+            try:
+                found = os.path.realpath(long_path(PurePath(*parts[:end])))
+            except (OSError, ValueError):
+                return target
+            if PurePath(plain(found)) == self.dest_spellings[1]:
+                return str(self.scratch.joinpath(*parts[end:]))
         return target
 
     def shown(self, path: Path) -> Path:
@@ -229,57 +277,55 @@ class DryRun:
             if isinstance(value, str):
                 setattr(exc, attr, str(self.shown(Path(plain(value)))))
 
-    def record(self) -> ScratchRecord:
+    def record(self, made: Iterable[Path]) -> ScratchRecord:
         """What the pass left in the scratch copy of dest, for ``ExtractionReport``:
         the entries directly under it, and, when there is exactly one, every entry and
         symlink of the tree (``scratch_tree``), which the CLI's hoist prediction walks.
         ``None`` for what could not be read.
 
-        Only what the run made counts, as only that is in a real run's results. An
-        entry copied in from dest and left as it was is not recorded, and neither is
-        a directory of dest, unless the run put something in it or a DIRECTORY member
-        named it."""
-        if not self._copies:
-            return self._record_all()
-        tree = scratch_tree(self.scratch)
-        if tree is None:
-            return ScratchRecord(None, None, None)
-        entries, links = tree
-        kept: set[str] = set()
-        for rel, _ in entries:
-            path = self.scratch / rel
-            try:
-                st = os.lstat(long_path(path))
-            except OSError:
-                return ScratchRecord(None, None, None)
-            if not self._is_untouched_copy(path, st):
-                parts = rel.split("/")
-                kept.update("/".join(parts[:i]) for i in range(1, len(parts) + 1))
-        entries = tuple(entry for entry in entries if entry[0] in kept)
-        top = tuple(entry for entry in entries if "/" not in entry[0])
-        if len(top) != 1:
-            return ScratchRecord(top, None, None)
-        return ScratchRecord(
-            top, entries, tuple(link for link in links if link[0] in kept)
-        )
-
-    def _record_all(self) -> ScratchRecord:
-        """``record`` for a scratch tree that holds nothing copied in from dest."""
+        Only what the run made counts, as only that is in a real run's results.
+        ``made`` is the coordinator's own record of it: every path it wrote or
+        created, and every path an extracted result names (a directory member that
+        merged into one of the caller's directories). An entry copied in from dest
+        counts only when it is one of those or holds one."""
+        copied = {rel for path in self._copies if (rel := self._rel(path))}
+        ours: set[str] = set()
+        for path in made:
+            rel = self._rel(path)
+            if rel:
+                _with_ancestors(ours, rel)
         top: tuple[tuple[str, bool], ...] | None = None
-        tree = None
         with contextlib.suppress(OSError):
             with os.scandir(long_path(self.scratch)) as entries:
                 top = tuple(
                     sorted(
                         (entry.name, entry.is_dir(follow_symlinks=False))
                         for entry in entries
+                        if entry.name not in copied or entry.name in ours
                     )
                 )
-            if len(top) == 1:
-                tree = scratch_tree(self.scratch)
+        if top is None or len(top) != 1:
+            return ScratchRecord(top, None, None)
+        tree = scratch_tree(self.scratch)
         if tree is None:
             return ScratchRecord(top, None, None)
-        return ScratchRecord(top, tree[0], tree[1])
+        entries, links = tree
+        if copied:
+            entries = tuple(e for e in entries if e[0] not in copied or e[0] in ours)
+            links = tuple(e for e in links if e[0] not in copied or e[0] in ours)
+        return ScratchRecord(top, entries, links)
+
+    def _rel(self, path: Path) -> str:
+        """``path``, a path of the pass in either spelling of the scratch directory,
+        relative to it with ``/`` separators; ``""`` for the scratch directory itself
+        or a path outside it."""
+        for base in (self.scratch_given, self.scratch):
+            try:
+                rel = path.relative_to(base).as_posix()
+            except ValueError:
+                continue
+            return "" if rel == "." else rel
+        return ""
 
     # --- what dest holds already ---------------------------------------------------
 
@@ -287,29 +333,27 @@ class DryRun:
         """Copy into the scratch tree the entries of dest that handling ``member`` can
         look at, so the pass meets them where a real run meets them in dest.
 
-        ``member`` is the member as it reaches disk. The entries are those of each
-        directory on its path, followed through symlinks as the OS resolves the path,
-        and of the directory the path names: what the overwrite policy, a parent in
-        the way, a RENAME's free name and a REPLACE's emptiness check look at. For a
-        symlink the same is done along its target from the link's directory, and for
-        a hardlink along the member it links to. A directory's entries are copied once,
-        the first time a path passes through it.
+        ``member`` is the member as it reaches disk. Copied are the entry of dest at
+        each component of its path, followed through symlinks as the OS resolves the
+        path; the names a RENAME would try in place of each component
+        (``numbered_name``); and, when the path names a directory, one entry of it, so
+        the pass finds it not empty when it is not. The same is done along a
+        symlink's target from the link's directory, and along a hardlink's source as
+        the policy checks it, re-rooted. Each path is looked for once.
         """
+        # Read first for every member: it gives the scratch root dest's mode, which a
+        # `./` member, whose path has no component, keeps.
+        self._listing(self.scratch)
         rel = PurePath(member.name.rstrip("/"))
         if rel.anchor:
             return  # ``check_universal`` refuses it, so nothing is placed
-        self._walk(rel.parts)
-        if member.type is MemberType.DIRECTORY:
-            path = self.scratch.joinpath(*rel.parts)
-            if path in self._copies:
-                self._claimed.add(path)
+        self._walk(rel.parts, leaf=True)
         target = member.link_target
         if target is None:
             return
         if member.type is MemberType.HARDLINK:
-            source = PurePath(target.rstrip("/"))
-            if not source.anchor:
-                self._walk(source.parts)
+            # ``_source_refused`` checks the source re-rooted, as a policy writes it.
+            self._walk(PurePath(strip_absolute_root(target.rstrip("/"))).parts)
         elif member.type is MemberType.SYMLINK:
             on_disk = self._link_parts(self.target_on_disk(target))
             self._walk((*rel.parent.parts, *on_disk))
@@ -326,19 +370,24 @@ class DryRun:
         except ValueError:
             return (_OUTSIDE,)
 
-    def _walk(self, parts: tuple[str, ...]) -> None:
+    def _walk(self, parts: tuple[str, ...], *, leaf: bool = False) -> None:
         """Follow ``parts`` from the scratch root as the OS resolves a path, copying in
-        the entries of each directory it enters (``_expand``). It stops where the path
-        meets a file or nothing, or leaves the scratch tree. Above the scratch root it
-        can only come back in by dest's name (``../out/x``), as the scratch root is the
-        one entry there named like dest (``scratch_for``)."""
+        the entry of dest at each component first (``_bring``). It stops where the
+        path meets a file or nothing, or leaves the scratch tree. Above the scratch
+        root it can only come back in by dest's name (``../out/x``), as the scratch
+        root is the one entry there named like dest (``scratch_for``).
+
+        With ``leaf``, ``parts`` is a member's own path: when it ends on a directory
+        reached without following a symlink, one entry of it is copied in
+        (``_bring_one``)."""
         pending = list(reversed(parts))
         current = self.scratch
         above = self.scratch.parent
-        self._expand(current)
+        ends_on_directory = False
         hops = 0
         while pending:
             part = pending.pop()
+            ends_on_directory = False
             if part == _FROM_ROOT:
                 current = self.scratch
                 continue
@@ -347,6 +396,8 @@ class DryRun:
             if part == "..":
                 current = current.parent
                 continue
+            if current != above:
+                self._bring(current, part)
             path = current / part
             try:
                 st = os.lstat(long_path(path))
@@ -354,9 +405,10 @@ class DryRun:
                 return
             if stat.S_ISDIR(st.st_mode):
                 current = path
-                self._expand(current)
+                ends_on_directory = True
                 continue
             hops += 1
+            leaf = False
             if not stat.S_ISLNK(st.st_mode) or hops > _MAX_LINK_HOPS:
                 return
             try:
@@ -364,101 +416,171 @@ class DryRun:
             except OSError:
                 return
             pending.extend(reversed(self._link_parts(target)))
+        if leaf and ends_on_directory:
+            self._bring_one(current)
 
-    def _expand(self, directory: Path) -> None:
-        """Copy in, once, the entries of the directory of dest that ``directory``
-        stands for: dest for the scratch root, and for a directory copied in from dest
-        (``_copy_in``) the one it copies, while the pass has left it in place. A
-        directory the run made stands for none."""
-        if directory in self._expanded:
+    def _bring(self, directory: Path, name: str) -> None:
+        """Copy in the entry of dest that ``directory / name`` stands for, once, with
+        the names a RENAME would try in its place (``_NUMBERED``).
+
+        Looked for as the caller's filesystem looks: a name that dest finds under
+        another case or normalization is copied under the name dest holds it by."""
+        path = directory / name
+        if path in self._considered:
             return
-        self._expanded.add(directory)
-        if directory == self.scratch:
-            source = self.shown_dest
+        self._considered.add(path)
+        listing = self._listing(directory)
+        if listing is None:
+            return
+        held = name if name in listing.present else listing.folded.get(_fold(name))
+        if held is None or (
+            held != name and not os.path.lexists(long_path(listing.source / name))
+        ):
+            return
+        for candidate in (held, *listing.numbered.get(held, ())):
+            self._copy_named(directory, listing, candidate)
+
+    def _bring_one(self, directory: Path) -> None:
+        """Copy in one entry of the directory of dest that ``directory`` stands for,
+        when the scratch copy holds none: REPLACE removes a directory only when it is
+        empty, and one entry is enough to show it is not."""
+        listing = self._listing(directory)
+        if listing is None or not listing.names:
+            return
+        try:
+            with os.scandir(long_path(directory)) as entries:
+                if next(entries, None) is not None:
+                    return
+        except OSError:
+            return
+        for name in listing.names:
+            if directory / name not in self._considered:
+                self._copy_named(directory, listing, name)
+                return
+
+    def _copy_named(self, directory: Path, listing: _Listing, name: str) -> None:
+        """Copy ``listing``'s entry ``name`` to ``directory / name``, unless that path
+        was looked for already or is taken."""
+        path = directory / name
+        if path in self._copies:
+            return
+        self._considered.add(path)
+        if not os.path.lexists(long_path(path)):
+            self._copy_in(listing.source / name, path)
+
+    def _listing(self, directory: Path) -> _Listing | None:
+        """The names in the directory of dest that ``directory`` stands for
+        (``_source_of``), read once."""
+        if directory in self._listings:
+            return self._listings[directory]
+        listing = None
+        source = self._source_of(directory)
+        if source is not None:
             try:
-                st = os.stat(long_path(source))
+                names = sorted(os.listdir(long_path(source)))
+            except OSError as exc:
+                # The pass then meets none of what it holds.
+                logger.debug("Dry run could not list %r: %s", str(source), exc)
+            else:
+                numbered: dict[str, list[str]] = {}
+                for name in names:
+                    found = _NUMBERED.fullmatch(name)
+                    if found is not None:
+                        base = found.group(1) + found.group(3)
+                        numbered.setdefault(base, []).append(name)
+                listing = _Listing(
+                    source,
+                    tuple(names),
+                    frozenset(names),
+                    {_fold(name): name for name in names},
+                    {base: tuple(found) for base, found in numbered.items()},
+                )
+        self._listings[directory] = listing
+        return listing
+
+    def _source_of(self, directory: Path) -> Path | None:
+        """The directory of dest that the scratch directory ``directory`` stands for:
+        dest for the scratch root, and for a directory copied in from dest the one it
+        copies, while the pass has left it in place. A directory the run made stands
+        for none."""
+        if directory == self.scratch:
+            try:
+                st = os.stat(long_path(self.shown_dest))
             except (OSError, ValueError):
-                return
+                return None
             if not stat.S_ISDIR(st.st_mode):
-                return
+                return None
             # A `./` member keeps dest's mode, and reports it when it differs from
             # the member's own; the scratch root is given that mode.
-            os.chmod(long_path(directory), _dir_copy_mode(st.st_mode))
-        else:
-            copy = self._copies.get(directory)
             try:
-                st = os.lstat(long_path(directory))
-            except OSError:
-                return
-            if copy is None or not self._is_untouched_copy(directory, st):
-                return
-            source = copy.source
+                os.chmod(long_path(directory), _dir_copy_mode(st.st_mode))
+            except OSError as exc:
+                logger.debug("Dry run could not set the root's mode: %s", exc)
+            return self.shown_dest
+        copy = self._copies.get(directory)
+        if copy is None or not copy.is_dir:
+            return None
         try:
-            with os.scandir(long_path(source)) as listing:
-                entries = list(listing)
-        except OSError as exc:
-            # The pass then meets none of what it holds.
-            logger.debug("Dry run could not list %r: %s", str(source), exc)
-            return
-        for entry in entries:
-            path = directory / entry.name
-            if not os.path.lexists(long_path(path)):
-                self._copy_in(entry, path)
+            st = os.lstat(long_path(directory))
+        except OSError:
+            return None
+        if not stat.S_ISDIR(st.st_mode) or st.st_ino != copy.ino:
+            return None
+        return copy.source
 
-    def _copy_in(self, entry: os.DirEntry[str], path: Path) -> None:
-        """Create at ``path`` a copy of ``entry``, an entry of dest: a directory, with
-        its entries left for ``_expand``; an empty file with the file's mode; or a
-        symlink with its target, rewritten as ``target_on_disk`` rewrites a link
-        member's.
+    def _copy_in(self, source: Path, path: Path) -> None:
+        """Create at ``path`` a copy of ``source``, an entry of dest: a directory, with
+        its entries left for later; an empty file with the file's mode; or a symlink
+        with its target, rewritten as ``target_on_disk`` rewrites a link member's.
 
         A directory's copy gets the owner's read, write and search bits added to its
         mode (``_dir_copy_mode``). Anything that is not a directory or a symlink (a
         FIFO, a device) is copied as an empty file, as the pass treats each such entry
         as a file. So is a symlink the OS will not create (Windows without the
-        privilege)."""
-        st = entry.stat(follow_symlinks=False)
-        is_junction = getattr(entry, "is_junction", None)  # Python 3.12+
-        if stat.S_ISLNK(st.st_mode) or (is_junction is not None and is_junction()):
-            if not self._copy_link(entry, path):
-                open(long_path(path), "xb").close()
-        elif stat.S_ISDIR(st.st_mode):
-            os.mkdir(long_path(path))
-            os.chmod(long_path(path), _dir_copy_mode(st.st_mode))
-        else:
-            open(long_path(path), "xb").close()
-            os.chmod(long_path(path), stat.S_IMODE(st.st_mode) & 0o777)
-        made = os.lstat(long_path(path))
-        self._copies[path] = _Copy(
-            Path(plain(entry.path)),
-            made.st_ino,
-            made.st_mtime_ns,
-            stat.S_ISDIR(made.st_mode),
-        )
-
-    def _copy_link(self, entry: os.DirEntry[str], path: Path) -> bool:
-        """Create at ``path`` a symlink with ``entry``'s target; whether it was made."""
+        privilege). An entry that cannot be copied at all (it went away, the scratch
+        filesystem is full, its name is too long there) is left out, so the pass
+        meets nothing there, as it does in a directory that cannot be listed."""
         try:
-            target = plain(os.readlink(entry.path))
+            st = os.lstat(long_path(source))
+            isjunction = getattr(os.path, "isjunction", None)  # Python 3.12+
+            if stat.S_ISLNK(st.st_mode) or (
+                isjunction is not None and isjunction(long_path(source))
+            ):
+                if not self._copy_link(source, path):
+                    open(long_path(path), "xb").close()
+            elif stat.S_ISDIR(st.st_mode):
+                os.mkdir(long_path(path))
+                os.chmod(long_path(path), _dir_copy_mode(st.st_mode))
+            else:
+                open(long_path(path), "xb").close()
+                os.chmod(long_path(path), stat.S_IMODE(st.st_mode))
+            made = os.lstat(long_path(path))
+        except OSError as exc:
+            logger.debug("Dry run could not copy %r: %s", str(source), exc)
+            with contextlib.suppress(OSError):
+                if os.path.isdir(long_path(path)) and not os.path.islink(
+                    long_path(path)
+                ):
+                    os.rmdir(long_path(path))
+                elif os.path.lexists(long_path(path)):
+                    os.unlink(long_path(path))
+            return
+        self._copies[path] = _Copy(source, made.st_ino, stat.S_ISDIR(made.st_mode))
+
+    def _copy_link(self, source: Path, path: Path) -> bool:
+        """Create at ``path`` a symlink with ``source``'s target; whether it was
+        made."""
+        try:
+            target = plain(os.readlink(long_path(source)))
             os.symlink(
                 self.target_on_disk(target),
                 long_path(path),
-                target_is_directory=os.path.isdir(entry.path),
+                target_is_directory=os.path.isdir(long_path(source)),
             )
         except OSError as exc:
-            logger.debug("Dry run copies symlink %r as a file: %s", entry.path, exc)
+            logger.debug("Dry run copies symlink %r as a file: %s", str(source), exc)
             return False
         return True
-
-    def _is_untouched_copy(self, path: Path, st: os.stat_result) -> bool:
-        """Whether the entry at ``path`` (``st`` its ``lstat``) is a copy of dest's
-        that the pass left as it was: not replaced, and for a directory not named by a
-        DIRECTORY member."""
-        copy = self._copies.get(path)
-        if copy is None or path in self._claimed or st.st_ino != copy.ino:
-            return False
-        if copy.is_dir:
-            return stat.S_ISDIR(st.st_mode)
-        return not stat.S_ISDIR(st.st_mode) and st.st_mtime_ns == copy.mtime_ns
 
     def check_creatable(self) -> None:
         """Raise what ``mkdir(parents=True)`` would raise for the absent ``shown_dest``,

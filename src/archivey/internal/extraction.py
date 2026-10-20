@@ -689,29 +689,34 @@ class ExtractionCoordinator:
         a link escape, a collision) behaves as it would in ``dest``. Each FILE body is
         read, decompressed, verified and counted against the limits, then discarded:
         the file itself is created empty. ``dest`` itself is checked the way a real run
-        checks it and is never created or written to. What it holds already is read
-        into the scratch directory as the pass reaches it (``DryRun.bring_in``): the
-        entries of each directory of ``dest`` that a member's path, link target or
-        hardlink source passes through, a file as an empty file with its mode, a
-        directory with its mode, a symlink with its target. So the overwrite policy,
-        a caller's file or symlink in the way, and a RENAME's free name are met as in
-        ``dest``. Paths in the results and in errors are reported under ``dest``, and
-        the scratch directory is removed before this returns or raises. What a
-        completed pass made directly under the scratch copy of ``dest``, not counting
-        what it copied in and left as it was, is kept in ``dry_run_top_level``.
+        checks it and is never created or written to. What it holds already is copied
+        into the scratch directory, entry by entry, as the pass reaches it
+        (``DryRun.bring_in``): the entry at each component of a member's path, link
+        target or hardlink source, the names a RENAME would try in its place, and one
+        entry of a directory the path names. A file is copied as an empty file with
+        its mode, a directory with its mode, a symlink with its target. So the
+        overwrite policy, a caller's file or symlink in the way, a RENAME's free name
+        and a REPLACE's emptiness check are met as in ``dest``. What that costs is a
+        listing of each directory of ``dest`` the pass enters, read once, and a copy of
+        each entry it names, not of everything ``dest`` holds. Paths in the results and
+        in errors are reported under ``dest``, and the scratch directory is removed
+        before this returns or raises. What a completed pass made directly under the
+        scratch copy of ``dest``, by the run's own record of what it wrote, created or
+        extracted, is kept in ``dry_run_top_level``.
 
         Where the scratch tree cannot stand in for ``dest``, the run says less than a
         real one would. The copy of a directory of ``dest`` always has its owner's
         read, write and search bits, so a directory there that the caller cannot
         write to, or that the run cannot list, is not refused as a real run refuses
-        it, and a member that keeps such a directory's mode reports that bit too; a
-        directory that cannot be listed is copied as empty. A symlink of ``dest`` that
-        the OS will not create in the scratch tree (Windows without the privilege) is
-        copied as an empty file. A link target that leaves ``dest`` is resolved outside the
-        scratch tree, so one that comes back into ``dest`` through a symlink outside it,
-        or climbs above the directory that holds it, is refused where a real run could
-        accept it; an absolute target is matched against ``dest`` by name and is not
-        affected. And everything is written to one filesystem, so a hardlink never falls
+        it, and a member that keeps such a directory's mode reports those bits too; a
+        directory that cannot be listed is copied as empty, and an entry that cannot
+        be copied is left out. A symlink of ``dest`` that the OS will not create in
+        the scratch tree (Windows without the privilege) is copied as an empty file. A
+        link target that leaves ``dest`` is resolved outside the scratch tree, so one
+        that comes back into ``dest`` through a symlink outside it, or climbs above
+        the directory that holds it, is refused where a real run could accept it; an
+        absolute target is matched by the leading part of it that resolves to
+        ``dest`` (``DryRun.target_on_disk``) and is not affected. And everything is written to one filesystem, so a hardlink never falls
         back to a copy: the bytes such a copy counts against ``max_extracted_bytes`` in
         a ``dest`` that spans a mount point are not counted.
         """
@@ -731,7 +736,20 @@ class ExtractionCoordinator:
                 raise
             finally:
                 self._dry = None
-            record = dry.record()
+            # What the run made, from its own record of it: an entry copied in from
+            # dest counts only when it is one of these (``DryRun.record``).
+            state = self._state
+            record = dry.record(
+                (
+                    *state.written_paths,
+                    *state.created_dirs,
+                    *(
+                        r.path
+                        for r in results
+                        if r.status is ExtractionStatus.EXTRACTED and r.path is not None
+                    ),
+                )
+            )
             self.dry_run_top_level = record.top_level
             self.dry_run_entries = record.entries
             self.dry_run_links = record.links
