@@ -78,11 +78,10 @@ and each change will be listed here. No major changes are expected.
 
 ### Performance
 
-Measured on 2026-10-19 at commit `8c0de2e1`, eight merges before 0.2.0, in one nightly
-run on a GitHub `ubuntu-latest` runner (4 vCPUs, Python 3.11). Each figure is archivey's
-time over the standard library's or reference reader's time; lower is better. The bands
-are the targets in [`VISION.md`](VISION.md); the full table is in
-`benchmarks/RESULTS.md`.
+Measured on 2026-10-19 at commit `8c0de2e1` in one nightly run on a GitHub
+`ubuntu-latest` runner (4 vCPUs, Python 3.11). Each figure is archivey's time over the
+standard library's or reference reader's time; lower is better. The bands are the
+targets in [`VISION.md`](VISION.md); the full table is in `benchmarks/RESULTS.md`.
 
 - Single-stream gzip, and `.tar.gz` / `.tar.bz2` with accelerators off: 0.6–0.8×,
   within the 1.3× band for reads.

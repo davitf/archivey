@@ -51,9 +51,10 @@ uv run --extra all python -m benchmarks.harness --mode full --scale realistic
 The figures quoted in the 0.2.0 CHANGELOG entry. Source: `benchmark-wall.yml` run
 39258785182, `measured_at` 2026-10-19T13:17:56Z, `source_sha` `8c0de2e1838a`, GitHub
 `ubuntu-latest` (4 vCPUs), Python 3.11, `--mode full --scale realistic --warmup`.
-Corpus: 64 × 256 KiB members, 32 MiB gzip, 10 000 solid tiny / 1 000 non-solid
-7z/RAR list members. The band column is the nightly report's own label against
-`VISION.md`.
+Corpus: 64 × 256 KiB members, 32 MiB gzip; 7z listing 10 000 solid tiny / 1 000
+non-solid members; RAR listing 1 000 / 256 members, the committed ci-scale fixtures,
+because the nightly has no `rar` writer. The band column is the nightly report's own
+label against `VISION.md`.
 
 | Case | archivey | peer | ratio | band |
 | --- | ---: | ---: | ---: | --- |
@@ -79,9 +80,10 @@ rapidgzip now runs in its own process (about 45 ms to start, `docs/security.md`)
 forcing the gzip accelerator on at this corpus size is slower than the plain codec.
 
 **Measurement host for the tables below:** 4-core Intel Xeon (KVM), Linux x86_64,
-July 2026, before the native ZIP reader and the rapidgzip subprocess; superseded by
-the section above where they overlap. rapidgzip parallelises across cores — absolute
-speedups scale with core count; treat the figures as directional, not portable.
+July–September 2026, before the native ZIP reader and the rapidgzip subprocess;
+superseded by the section above where they overlap. rapidgzip parallelises across cores
+— absolute speedups scale with core count; treat the figures as directional, not
+portable.
 
 ## Investigation: ZIP “faster than stdlib” and TAR slowdown
 
