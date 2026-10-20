@@ -23,8 +23,10 @@ archive's, so there is nothing for :class:`~archivey.DecoderLimits` to cap.
 
 from __future__ import annotations
 
-from types import ModuleType
 from typing import TYPE_CHECKING
+
+from archivey.internal.streams.codecs import deps
+from archivey.internal.streams.codecs.isolated import IN_PROCESS, Natives
 
 if TYPE_CHECKING:
     from archivey.internal.streams.codecs.framed_decoder import _OneStreamDecompressor
@@ -49,8 +51,8 @@ class Lz4LegacyDecompressor:
     ``lz4.block.LZ4BlockError``.
     """
 
-    def __init__(self, lz4_block: ModuleType) -> None:
-        self._block = lz4_block
+    def __init__(self, natives: Natives = IN_PROCESS) -> None:
+        self._natives = natives
         # Starts with the magic until it has been checked.
         self._input = bytearray()
         self._magic_checked = False
@@ -88,7 +90,9 @@ class Lz4LegacyDecompressor:
             if len(self._input) < len(LEGACY_MAGIC):
                 return None
             if self._input[: len(LEGACY_MAGIC)] != LEGACY_MAGIC:
-                raise self._block.LZ4BlockError("Not a legacy LZ4 stream (bad magic)")
+                block = deps.lz4_block
+                assert block is not None  # the codec checks lz4 before opening
+                raise block.LZ4BlockError("Not a legacy LZ4 stream (bad magic)")
             del self._input[: len(LEGACY_MAGIC)]
             self._magic_checked = True
         if len(self._input) < _SIZE_FIELD:
@@ -113,7 +117,9 @@ class Lz4LegacyDecompressor:
         block = bytes(self._input[_SIZE_FIELD:end])
         del self._input[:end]
         self._output = memoryview(
-            self._block.decompress(block, uncompressed_size=LEGACY_BLOCK_SIZE)
+            self._natives.lz4_block_decompress(
+                block, uncompressed_size=LEGACY_BLOCK_SIZE
+            )
         )
         return True
 
@@ -147,9 +153,8 @@ class Lz4Decompressor:
     ``lz4.frame``, so a file that is not LZ4 fails with that library's own error.
     """
 
-    def __init__(self, lz4_frame: ModuleType, lz4_block: ModuleType) -> None:
-        self._frame = lz4_frame
-        self._block = lz4_block
+    def __init__(self, natives: Natives = IN_PROCESS) -> None:
+        self._natives = natives
         self._head = b""
         self._inner: _OneStreamDecompressor | None = None
 
@@ -162,9 +167,9 @@ class Lz4Decompressor:
             return b""
         self._head = b""
         if data.startswith(LEGACY_MAGIC):
-            self._inner = Lz4LegacyDecompressor(self._block)
+            self._inner = Lz4LegacyDecompressor(self._natives)
         else:
-            self._inner = self._frame.LZ4FrameDecompressor()
+            self._inner = self._natives.lz4_frame_decompressor()
         return data
 
     def decompress(self, data: bytes, max_length: int = -1) -> bytes:

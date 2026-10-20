@@ -68,7 +68,9 @@ install_linux_packages() {
   # zip, unzip: `zip -A` and the `unzipsfx` stub build the real self-extractor in
   #   tests/test_sfx.py (macOS ships both); unzip is also the oracle
   #   tests/test_zip_extra_fields.py compares extra-field times with.
-  ${SUDO} apt-get install -y unrar rar p7zip-full unar xorriso zip unzip
+  # tabix: ships bgzip, the reference BGZF writer tests/test_bgzf_seek.py checks the
+  #   block walk against (the test skips without it).
+  ${SUDO} apt-get install -y unrar rar p7zip-full unar xorriso zip unzip tabix
 }
 
 install_macos_packages() {
@@ -102,6 +104,8 @@ install_macos_packages() {
   command -v 7z >/dev/null 2>&1 || brew install p7zip
   command -v unar >/dev/null 2>&1 || brew install unar
   command -v xorriso >/dev/null 2>&1 || brew install xorriso
+  # htslib ships bgzip, for tests/test_bgzf_seek.py's reference-writer test.
+  command -v bgzip >/dev/null 2>&1 || brew install htslib
 }
 
 install_windows_packages() {
@@ -171,7 +175,7 @@ def _on_login_path(found: str) -> bool:
     return parent in login_dirs
 
 
-for tool in ("unrar", "7z", "unar", "xorriso", "zip", "unzip", "unzipsfx"):
+for tool in ("unrar", "7z", "unar", "xorriso", "zip", "unzip", "unzipsfx", "bgzip"):
     found = shutil.which(tool)
     if not found:
         print(f"MISSING {tool}")

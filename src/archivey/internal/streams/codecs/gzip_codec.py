@@ -29,6 +29,7 @@ from archivey.internal.streams.codecs.base import (
 )
 from archivey.internal.streams.codecs.deflate_decoder import GzipDecompressorStream
 from archivey.internal.streams.codecs.deflate_family_codec import _DeflateFamilyCodec
+from archivey.internal.streams.codecs.isolated import IN_PROCESS, Natives, natives_for
 from archivey.internal.streams.codecs.stdlib_takeover import (
     _DRAIN_CHUNK,
     _drain_into,
@@ -71,7 +72,7 @@ def _gzip_isize_and_length(source: CodecSource) -> tuple[int | None, int | None]
     return length, int.from_bytes(trailer, "little")
 
 
-def _gzip_header_refused(source: CodecSource) -> bool:
+def _gzip_header_refused(source: CodecSource, natives: Natives = IN_PROCESS) -> bool:
     """Whether zlib refuses the first gzip member's header, which rapidgzip accepts.
 
     rapidgzip 0.16 ignores a header CRC (FHCRC) that does not match and the reserved
@@ -85,7 +86,7 @@ def _gzip_header_refused(source: CodecSource) -> bool:
     """
 
     def refused(view: BinaryIO) -> bool:
-        decoder = zlib.decompressobj(GZIP_WBITS)
+        decoder = natives.zlib_decompressobj(GZIP_WBITS)
         while chunk := view.read(1 << 16):
             try:
                 if decoder.decompress(chunk, 1) or decoder.eof:
@@ -123,6 +124,8 @@ def _stdlib_gzip(source: CodecSource, config: StreamConfig) -> BinaryIO:
         source,
         collector=config.collector,
         report_trailing_data=config.report_trailing_data,
+        natives=natives_for(config.process_isolation),
+        index=config.seekable,
     )
 
 
@@ -219,8 +222,10 @@ class _GzipTruncationCheckStream(DelegatingStream):
         views: _SourceViews,
         isize: int | None,
         source_len: int | None,
+        natives: Natives = IN_PROCESS,
     ) -> None:
         super().__init__(inner)
+        self._natives = natives
         # The same object as ``_inner``, typed: the ISIZE check hands over through it.
         self._takeover = inner
         self._views = views
@@ -461,7 +466,7 @@ class _GzipTruncationCheckStream(DelegatingStream):
         # mark for a shared view (see _SourceViews).
         try:
             with self._views.view() as f:
-                return gzip_has_additional_member(f)
+                return gzip_has_additional_member(f, self._natives)
         except OSError:
             return True  # cannot rule out a second member -> do not raise
 
@@ -485,7 +490,7 @@ _MEMBER_PROBE_BUDGET = 1 << 20
 _MEMBER_PROBE_PIECE = 1 << 12
 
 
-def gzip_has_additional_member(stream: BinaryIO) -> bool:
+def gzip_has_additional_member(stream: BinaryIO, natives: Natives = IN_PROCESS) -> bool:
     """Whether ``stream`` contains a gzip member after the one starting at offset 0.
 
     A member starts with ``1f 8b 08``, and those three bytes turn up by chance in a
@@ -519,7 +524,7 @@ def gzip_has_additional_member(stream: BinaryIO) -> bool:
         while found >= 0:
             # FLG, when this block holds it: reserved bits make zlib refuse the header.
             if found + 3 >= len(buf) or not buf[found + 3] & 0xE0:
-                member, fed = _gzip_member_at(stream, offset + found, budget)
+                member, fed = _gzip_member_at(stream, offset + found, budget, natives)
                 budget -= fed
                 if member is not None:
                     return member
@@ -534,7 +539,7 @@ def gzip_has_additional_member(stream: BinaryIO) -> bool:
 
 
 def _gzip_member_at(
-    stream: BinaryIO, offset: int, budget: int
+    stream: BinaryIO, offset: int, budget: int, natives: Natives = IN_PROCESS
 ) -> tuple[bool | None, int]:
     """Whether a gzip member starts at ``offset`` of ``stream``, as far as a short decode
     can tell, and the compressed bytes read: ``True`` for a member, ``None`` for a
@@ -550,7 +555,7 @@ def _gzip_member_at(
     the standard-library engine then reports.
     """
     stream.seek(offset)
-    decoder = zlib.decompressobj(GZIP_WBITS)
+    decoder = natives.zlib_decompressobj(GZIP_WBITS)
     fed = produced = 0
     try:
         while fed < _MEMBER_PROBE_INPUT:
@@ -617,7 +622,7 @@ class GzipCodec(_DeflateFamilyCodec):
     def _open_accelerated(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO | None:
-        if _gzip_header_refused(source):
+        if _gzip_header_refused(source, natives_for(config.process_isolation)):
             # The standard-library engine raises zlib's own error on the first
             # read, as it does with the accelerator off.
             return None
@@ -650,6 +655,7 @@ class GzipCodec(_DeflateFamilyCodec):
             views=views,
             isize=isize,
             source_len=source_len,
+            natives=natives_for(config.process_isolation),
         )
 
     def translate(self, exc: Exception) -> ArchiveyError | None:

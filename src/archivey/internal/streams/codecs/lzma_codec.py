@@ -10,6 +10,7 @@ import os
 from collections.abc import Callable
 from typing import BinaryIO
 
+from archivey.config import ProcessIsolation
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
@@ -34,6 +35,12 @@ from archivey.internal.streams.codecs.base import (
     StreamCodec,
 )
 from archivey.internal.streams.codecs.framed_decoder import FramedDecompressorStream
+from archivey.internal.streams.codecs.isolated import (
+    IN_PROCESS,
+    Decompressor,
+    Natives,
+    natives_for,
+)
 from archivey.internal.streams.codecs.lzip_decoder import LzipDecompressorStream
 from archivey.internal.streams.codecs.xz_decoder import (
     XzDecompressorStream,
@@ -101,7 +108,11 @@ class XzCodec(_SizedLzmaCodec):
         if config.probe_read_bound is not None:
             # Probes decode from a bounded in-memory or peek reader, never a path.
             assert not isinstance(source, (str, os.PathLike))
-            return open_xz_head(source, config.probe_read_bound)
+            return open_xz_head(
+                source,
+                config.probe_read_bound,
+                natives_for(config.process_isolation),
+            )
         return XzDecompressorStream(
             source,
             collector=config.collector,
@@ -109,6 +120,7 @@ class XzCodec(_SizedLzmaCodec):
             decoder_limits=config.decoder_limits,
             report_trailing_data=config.report_trailing_data,
             initial_index=config.seek_index,
+            natives=natives_for(config.process_isolation),
         )
 
 
@@ -127,6 +139,7 @@ class LzipCodec(_SizedLzmaCodec):
             decoder_limits=config.decoder_limits,
             report_trailing_data=config.report_trailing_data,
             probe_read_bound=config.probe_read_bound,
+            natives=natives_for(config.process_isolation),
         )
 
     def extract_metadata(self, ctx: MetadataContext, member: ArchiveMember) -> None:
@@ -275,9 +288,9 @@ class _ClampedAloneDecompressor:
     ``.lzma`` gets a new one, so every header the probe reaches is clamped.
     """
 
-    def __init__(self, read_bound: int) -> None:
+    def __init__(self, read_bound: int, natives: Natives = IN_PROCESS) -> None:
         self._read_bound = read_bound
-        self._dec = lzma.LZMADecompressor(format=lzma.FORMAT_ALONE)
+        self._dec = natives.lzma_decompressor(format=lzma.FORMAT_ALONE)
         self._header: bytes | None = b""
 
     def decompress(self, data: bytes, max_length: int = -1) -> bytes:
@@ -307,8 +320,8 @@ class _ClampedAloneDecompressor:
 
 
 def _new_alone_decompressor(
-    read_bound: int | None, limits: DecoderLimits
-) -> lzma.LZMADecompressor | _ClampedAloneDecompressor:
+    read_bound: int | None, limits: DecoderLimits, natives: Natives = IN_PROCESS
+) -> Decompressor:
     """A decompressor for one Alone stream.
 
     The dictionary its header declares is refused over ``max_decoder_memory`` by
@@ -321,8 +334,8 @@ def _new_alone_decompressor(
     probe may have misread. A probe (``read_bound``) clamps the dictionary instead.
     """
     if read_bound is None:
-        return new_capped_decompressor(limits, lzma.FORMAT_ALONE)
-    return _ClampedAloneDecompressor(read_bound)
+        return new_capped_decompressor(limits, lzma.FORMAT_ALONE, natives)
+    return _ClampedAloneDecompressor(read_bound, natives)
 
 
 class LzmaAloneCodec(_LzmaErrorCodec):
@@ -340,7 +353,10 @@ class LzmaAloneCodec(_LzmaErrorCodec):
         return FramedDecompressorStream(
             source,
             functools.partial(
-                _new_alone_decompressor, config.probe_read_bound, config.decoder_limits
+                _new_alone_decompressor,
+                config.probe_read_bound,
+                config.decoder_limits,
+                natives_for(config.process_isolation),
             ),
             codec_name="lzma",
             magic=_starts_alone_stream,
@@ -366,6 +382,7 @@ class LzmaAloneCodec(_LzmaErrorCodec):
         source_length: int | None = None,
         read_at: ProbeReadAt | None = None,
         charge_decode: ProbeChargeDecode | None = None,
+        isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
     ) -> bool:
         """Recognize LZMA Alone: plausible 13-byte header that then yields decode output.
 
@@ -386,7 +403,10 @@ class LzmaAloneCodec(_LzmaErrorCodec):
         if source_length is not None and source_length <= _ALONE_HEADER_SIZE:
             return False
         return self._decodes_sample(
-            prefix, source_length=source_length, require_output=True
+            prefix,
+            source_length=source_length,
+            require_output=True,
+            isolation=isolation,
         )
 
 
@@ -470,10 +490,13 @@ class _RawLzmaCodec(_LzmaErrorCodec):
         # there and DataAfterEndError here. ``LZMAFile`` would instead have started
         # a second raw stream on those bytes and delivered it as content. Raw LZMA
         # is container-only, so the stream always refuses them (``refuse_input_after_end``).
+        natives = natives_for(config.process_isolation)
         if params.unpack_size is None:
             return FramedDecompressorStream(
                 source,
-                lambda: lzma.LZMADecompressor(format=lzma.FORMAT_RAW, filters=filters),
+                lambda: natives.lzma_decompressor(
+                    format=lzma.FORMAT_RAW, filters=filters
+                ),
                 codec_name="lzma",
                 magic=_no_second_lzma_stream,
                 zero_padding=False,
@@ -484,7 +507,9 @@ class _RawLzmaCodec(_LzmaErrorCodec):
         lzma2 = any(spec.get("id") == lzma.FILTER_LZMA2 for spec in filters)
         return DecompressorStream(
             source,
-            make_decoder=lambda _p, _i: _LzmaToSizeDecoder(filters, size, lzma2=lzma2),
+            make_decoder=lambda _p, _i: _LzmaToSizeDecoder(
+                filters, size, lzma2=lzma2, natives=natives
+            ),
             collector=config.collector,
             codec_name="lzma",
             refuse_input_after_end=True,
@@ -552,11 +577,21 @@ class _LzmaToSizeDecoder(BaseDecoder):
     ``open_codec_stream(Codec.LZMA2, ..., params=CodecParams(unpack_size=...))``.
     """
 
-    def __init__(self, filters: list[dict], size: int, *, lzma2: bool) -> None:
+    def __init__(
+        self,
+        filters: list[dict],
+        size: int,
+        *,
+        lzma2: bool,
+        natives: Natives = IN_PROCESS,
+    ) -> None:
         self._filters = filters
         self._size = size
         self._lzma2 = lzma2
-        self._decomp = lzma.LZMADecompressor(format=lzma.FORMAT_RAW, filters=filters)
+        self._natives = natives
+        self._decomp = natives.lzma_decompressor(
+            format=lzma.FORMAT_RAW, filters=filters
+        )
         self._produced = 0
         # Input not yet given to liblzma: the bytes held back, and input kept while
         # a zero output limit allowed no decoding.
@@ -569,7 +604,9 @@ class _LzmaToSizeDecoder(BaseDecoder):
 
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> Decoder:
         del point, inner
-        return _LzmaToSizeDecoder(self._filters, self._size, lzma2=self._lzma2)
+        return _LzmaToSizeDecoder(
+            self._filters, self._size, lzma2=self._lzma2, natives=self._natives
+        )
 
     def _surplus(self) -> None:
         """The input holds bytes after the stream's end: the stream refuses them."""

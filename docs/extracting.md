@@ -115,7 +115,7 @@ aren't failures. It's empty by default:
 | `abort_on` value | Raises when |
 |---|---|
 | `"blocked_member"` | A member is refused |
-| `"name_collision"` | Two members of the archive would be written to the same path. This raises before `overwrite` is applied, so even with `"rename"` the second member isn't written. Not checked under `"trusted"` |
+| `"name_collision"` | Two members of the archive would be written to the same path. This includes a file member landing on a folder that an earlier member created, as `x` does after `x/f`. This raises before `overwrite` is applied, so even with `"rename"` the second member isn't written. Not checked under `"trusted"` |
 | `"name_sanitized"` | A name is rewritten to its portable spelling, or an absolute name is placed inside the destination. Under `"strict"` an absolute name is refused instead, so `"blocked_member"` is the one that catches it |
 
 After an abort there's no report, and the files already written stay on disk.
@@ -139,25 +139,42 @@ member that would clash with one of them still shows as extracted.
 
 ## What each policy does with unusual members
 
-Some members are refused under every policy, and others depend on it:
+These are refused under every policy:
 
-| Member in the archive | `"strict"` | `"standard"` | `"trusted"` |
-|---|---|---|---|
-| `../evil.txt` or `a/../../evil.txt` | Refused | Refused | Refused |
-| `/etc/evil.txt` or `C:/evil.txt` | Refused | Written as `etc/evil.txt` or `evil.txt` | Written as `etc/evil.txt` or `evil.txt` |
-| A link to `../../outside` or `/etc/passwd` | Refused | Refused | Refused |
-| A device file or a named pipe | Refused | Refused | Refused |
-| `CON`, `aux.txt` or `file:ads`, which Windows can't create | Refused | Refused | Written as is |
-| A name with characters that reorder how it displays, making an `.exe` look like a `.png` | Refused | Refused | Written as is |
-| `invoice\u200b.pdf`, with a zero-width space, word joiner or byte-order mark | Written as is, and noted as `MEMBER_NAME_ZERO_WIDTH_CHARACTER`, which `DiagnosticPolicy.STRICT` turns into an exception | Same as `"strict"` | Same as `"strict"` |
-| A name with another invisible character, such as a zero-width joiner or a soft hyphen | Written as is, and noted as `MEMBER_NAME_INVISIBLE_CHARACTER` | Same as `"strict"` | Same as `"strict"` |
-| `notes. `, with a trailing dot and space | Written as `notes` | Written as is | Written as is |
-| `caf\xe9.txt`, a name that isn't valid UTF-8 | Written as `caf%E9.txt` | Written as `caf%E9.txt` | Written as is |
-| `what?.txt`, with a character Windows doesn't allow | Written as `what%3F.txt` | Written as `what%3F.txt` | Written as is |
-| `back\slash` in a TAR | Written as `slash` in a folder `back` | Same as `"strict"` | Written as is |
-| `README`, then `readme`, or `café` written two ways in Unicode | The second one counts as a file already there | Same as `"strict"` | Both written, if the disk tells them apart |
-| A file with mode `rwsr-xr-x` | Written as `rwxr-xr-x` | Written as `rwxr-xr-x` | Written as is |
-| A file with mode `rw-rw-rw-` | Written as `rw-r--r--` | Written as is | Written as is |
+- `../evil.txt` or `a/../../evil.txt`.
+- A link to `../../outside` or `/etc/passwd`.
+- A device file or a named pipe.
+
+These are written as is under every policy, and noted:
+
+- `invoice\u200b.pdf`, with a zero-width space, word joiner or byte-order mark, is noted as
+  `MEMBER_NAME_ZERO_WIDTH_CHARACTER`, which `DiagnosticPolicy.STRICT` turns into an exception.
+- A name with another invisible character, such as a zero-width joiner or a soft hyphen, is noted as
+  `MEMBER_NAME_INVISIBLE_CHARACTER`.
+
+The rest depend on the policy:
+
+- **`/etc/evil.txt` or `C:/evil.txt`:** `"strict"` refuses it. `"standard"` and `"trusted"` write it
+  as `etc/evil.txt` or `evil.txt`.
+- **`CON`, `aux.txt` or `file:ads`, which Windows can't create:** `"strict"` and `"standard"` refuse
+  it. `"trusted"` writes it as is.
+- **A name with characters that reorder how it displays, making an `.exe` look like a `.png`:**
+  `"strict"` and `"standard"` refuse it. `"trusted"` writes it as is.
+- **`notes. `, with a trailing dot and space:** `"strict"` writes it as `notes`. `"standard"` and
+  `"trusted"` write it as is.
+- **`caf\xe9.txt`, a name that isn't valid UTF-8:** `"strict"` and `"standard"` write it as
+  `caf%E9.txt`. `"trusted"` writes it as is.
+- **`what?.txt`, with a character Windows doesn't allow:** `"strict"` and `"standard"` write it as
+  `what%3F.txt`. `"trusted"` writes it as is.
+- **`back\slash` in a TAR:** `"strict"` and `"standard"` write it as `slash` in a folder `back`.
+  `"trusted"` writes it as is.
+- **`README`, then `readme`, or `café` written two ways in Unicode:** under `"strict"` and
+  `"standard"`, the second one counts as a file already there. `"trusted"` writes both, if the disk
+  tells them apart.
+- **A file with mode `rwsr-xr-x`:** `"strict"` and `"standard"` write it as `rwxr-xr-x`. `"trusted"`
+  writes it as is.
+- **A file with mode `rw-rw-rw-`:** `"strict"` writes it as `rw-r--r--`. `"standard"` and
+  `"trusted"` write it as is.
 
 `"strict"` and `"standard"` treat `README` and `readme` as the same file on every system. An
 archive that writes more in total than `limits` allows stops the whole extraction, whatever the

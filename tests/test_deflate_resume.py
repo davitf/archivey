@@ -181,6 +181,17 @@ def test_stream_end_finds_the_final_block_from_a_resume_point(bit: int) -> None:
     assert stream_end(io.BytesIO(stream), point, end - 1)[0] is None
 
 
+def test_stream_end_drains_output_a_max_length_cut_held_back() -> None:
+    """The decode is cut to 1 MiB pieces: output just past one, with the final block,
+    can still be in zlib when the input runs out, and the stream still ends there."""
+    compressor = zlib.compressobj(6, zlib.DEFLATED, -15)
+    size = (1 << 20) + 100
+    full = compressor.compress(bytes(size)) + compressor.flush()
+    assert stream_end(io.BytesIO(full), None, 1 << 40)[0] == size
+    assert stream_end(io.BytesIO(full[: len(full) // 2]), None, 1 << 40)[0] is None
+    assert stream_end(io.BytesIO(full[:-1]), None, 1 << 40)[0] is None
+
+
 def test_stream_end_needs_a_final_block() -> None:
     """A stream cut right after a whole block decodes every byte with no error, and
     has no end."""

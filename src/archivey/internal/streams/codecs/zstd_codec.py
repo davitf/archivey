@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 from typing import BinaryIO
 
 from archivey.exceptions import (
@@ -29,14 +30,17 @@ from archivey.internal.streams.codecs.base import (
 )
 from archivey.internal.streams.codecs.framed_decoder import (
     FramedDecompressorStream,
+    StreamIndex,
     stream_magic,
 )
+from archivey.internal.streams.codecs.isolated import natives_for
 from archivey.internal.streams.codecs.zstd_framing import (
     FRAME_MAGIC as ZSTD_FRAME_MAGIC,
 )
 from archivey.internal.streams.codecs.zstd_framing import (
     regular_frame_behind_skippable_frames,
 )
+from archivey.internal.streams.codecs.zstd_seek_table import build_seek_table_index
 from archivey.internal.streams.decompressor_stream import _StreamChecksumError
 from archivey.types import (
     ArchiveFormat,
@@ -146,13 +150,28 @@ class ZstdCodec(StreamCodec):
         window_log_max, _ = _zstd_window_log_max(config.decoder_limits)
         window_log_max = _probe_window_log_max(window_log_max, config)
         options = {zstd.DecompressionParameter.window_log_max: window_log_max}
+        index = None
+        if config.seekable and not params.single_stream:
+            # Declared seek demand only (``seekable-decompressor-streams``): each
+            # regular frame starts a seek point, and the seekable format's table
+            # lists them all without decoding.
+            collector = config.collector
+            index = StreamIndex(
+                resumes_at=lambda data: data.startswith(ZSTD_FRAME_MAGIC),
+                build=lambda inner, last: build_seek_table_index(
+                    inner, last, collector
+                ),
+            )
         return FramedDecompressorStream(
             source,
-            lambda: zstd.ZstdDecompressor(options=options),
+            functools.partial(
+                natives_for(config.process_isolation).zstd_decompressor, options
+            ),
             codec_name="zstd",
             # A container coder that is one stream (a ZIP member) reads no further
             # frame: one there is input after the end (``CodecParams.single_stream``).
             magic=stream_magic() if params.single_stream else _ZSTD_STREAMS,
+            index=index,
             collector=config.collector,
             report_trailing_data=config.report_trailing_data,
             refuse_input_after_end=config.refuse_input_after_end,

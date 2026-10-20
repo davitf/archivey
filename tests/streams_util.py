@@ -17,6 +17,8 @@ from typing import BinaryIO
 
 import pytest
 
+from tests.conftest import CPYTHON
+
 
 class NonSeekableBytesIO(io.RawIOBase):
     """A ``BytesIO`` that reports (and behaves as) non-seekable, for forward-only tests."""
@@ -121,10 +123,10 @@ class ShortReadBytesIO(io.RawIOBase):
         return data
 
     def readinto(self, b) -> int:  # type: ignore[override]  # test double; broad buffer type
-        mv = memoryview(b).cast("B")
-        data = self.read(len(mv))
-        mv[: len(data)] = data
-        return len(data)
+        with memoryview(b) as outer, outer.cast("B") as mv:
+            data = self.read(len(mv))
+            mv[: len(data)] = data
+            return len(data)
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         if not self._seekable:
@@ -257,12 +259,66 @@ class ReadSizeRecorder(io.RawIOBase):
         return self._inner.tell()
 
 
+class QueuedChunks(io.RawIOBase):
+    """A forward-only raw that hands over at most one queued chunk per read, then EOF.
+
+    A sized read takes up to ``n`` bytes of the front chunk and leaves the rest
+    queued. A chunk of ``None`` is a stall that lasts, as on a non-blocking pipe
+    whose writer sends nothing more: every read from there on returns ``None``.
+    ``calls`` counts reads. The detection workspace and ``ArchiveSource`` tests share
+    this one copy so both mean the same thing by "one read" and "a stall".
+    """
+
+    def __init__(self, *chunks: bytes | None) -> None:
+        super().__init__()
+        self._chunks = list(chunks)
+        self.calls = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def read(self, n: int = -1, /) -> bytes | None:
+        self.calls += 1
+        if not self._chunks:
+            return b""
+        chunk = self._chunks[0]
+        if chunk is None:
+            return None
+        take = len(chunk) if n < 0 else min(n, len(chunk))
+        if take == len(chunk):
+            self._chunks.pop(0)
+        else:
+            self._chunks[0] = chunk[take:]
+        return chunk[:take]
+
+
+def lzma_alone_with_filter(data: bytes, lzma1: dict) -> bytes:
+    """``lzma.compress(data, format=FORMAT_ALONE, filters=[lzma1])``, also on PyPy.
+
+    PyPy's ``lzma`` refuses FORMAT_ALONE with a filter chain (NotImplementedError).
+    The Alone format is a 13-byte header (properties byte, dictionary size, unknown
+    size) before the raw LZMA1 stream, so this writes the header and compresses with
+    FORMAT_RAW. ``lzma1`` must give ``dict_size``. The bytes match what CPython writes
+    (``test_lzma_alone_with_filter_matches_cpython``): like liblzma's Alone encoder,
+    the header declares ``dict_size`` rounded up to 2^n or 2^n + 2^(n-1).
+    """
+    lzma1 = {"lc": 3, "lp": 0, "pb": 2, **lzma1}
+    props = (lzma1["pb"] * 5 + lzma1["lp"]) * 9 + lzma1["lc"]
+    raw = lzma.compress(data, format=lzma.FORMAT_RAW, filters=[lzma1])
+    declared = lzma1["dict_size"] - 1
+    for shift in (2, 3, 4, 8, 16):
+        declared |= declared >> shift
+    declared = min(declared + 1, 2**32 - 1)
+    return bytes([props]) + struct.pack("<LQ", declared, 2**64 - 1) + raw
+
+
 def make_lzip_member(data: bytes, dict_size_bits: int = 20) -> bytes:
     """Build one lzip member from ``data`` using stdlib ``lzma``.
 
-    lzip omits the 13-byte LZMA_ALONE header from its raw stream; compress with
-    FORMAT_ALONE (which includes it), strip the header, then wrap in the lzip
-    header/trailer.
+    lzip's stream is the raw LZMA1 stream an Alone file carries after its 13-byte
+    header; compress with FORMAT_RAW, then wrap in the lzip header/trailer. Not
+    FORMAT_ALONE with the header stripped: PyPy's ``lzma`` refuses FORMAT_ALONE with
+    a filter chain (NotImplementedError), and the raw bytes are the same.
     """
     filters: list[dict] = [
         {
@@ -273,8 +329,7 @@ def make_lzip_member(data: bytes, dict_size_bits: int = 20) -> bytes:
             "pb": 2,
         }
     ]
-    compressed_alone = lzma.compress(data, format=lzma.FORMAT_ALONE, filters=filters)
-    lzma_raw = compressed_alone[13:]
+    lzma_raw = lzma.compress(data, format=lzma.FORMAT_RAW, filters=filters)
     header = b"LZIP" + bytes([1, dict_size_bits])
     member_total = len(header) + len(lzma_raw) + 20
     trailer = struct.pack(
@@ -324,6 +379,58 @@ def make_multiblock_xz(data: bytes, block_size: int) -> bytes:
         check=True,
     )
     return result.stdout
+
+
+def seekable_zstd_table(
+    frames: list[tuple[int, int]], *, checksums: bool = False, descriptor: int = 0
+) -> bytes:
+    """The skippable frame that ends a Seekable Zstandard file, for ``frames``.
+
+    ``frames`` holds ``(compressed_size, decompressed_size)`` per frame. ``checksums``
+    writes 12-byte entries (with a zero checksum) and sets the descriptor's flag;
+    ``descriptor`` adds bits to it.
+    """
+    entry = struct.Struct("<III" if checksums else "<II")
+    body = b"".join(entry.pack(c, d, *([0] if checksums else [])) for c, d in frames)
+    flags = descriptor | (0x80 if checksums else 0)
+    body += struct.pack("<IBI", len(frames), flags, 0x8F92EAB1)
+    return struct.pack("<II", 0x184D2A5E, len(body)) + body
+
+
+def make_seekable_zstd(parts: list[bytes], *, checksums: bool = False) -> bytes:
+    """A Seekable Zstandard file: one frame per part, then the seek table."""
+    from tests.conftest import zstd_backend
+
+    zstd = zstd_backend()
+    frames = [zstd.compress(part) for part in parts]
+    table = seekable_zstd_table(
+        [(len(f), len(p)) for f, p in zip(frames, parts, strict=True)],
+        checksums=checksums,
+    )
+    return b"".join(frames) + table
+
+
+def make_bgzf_block(data: bytes, *, extra_before: bytes = b"") -> bytes:
+    """One BGZF member holding ``data`` (SAM spec §4.1), as ``bgzip`` writes it.
+
+    ``extra_before`` is raw extra-field subfields put before the ``BC`` one.
+    """
+    compressor = zlib.compressobj(6, zlib.DEFLATED, -15)
+    body = compressor.compress(data) + compressor.flush()
+    xlen = len(extra_before) + 6
+    size = 12 + xlen + len(body) + 8
+    header = b"\x1f\x8b\x08\x04" + b"\x00" * 4 + b"\x00\xff" + struct.pack("<H", xlen)
+    extra = extra_before + b"BC" + struct.pack("<HH", 2, size - 1)
+    return header + extra + body + struct.pack("<II", zlib.crc32(data), len(data))
+
+
+# The empty member that ends every BGZF file, byte for byte as the spec gives it.
+BGZF_EOF = bytes.fromhex("1f8b08040000000000ff0600424302001b0003000000000000000000")
+
+
+def make_bgzf(parts: list[bytes], *, eof: bool = True) -> bytes:
+    """A BGZF file: one member per part, then the end-of-file marker."""
+    return b"".join(make_bgzf_block(p) for p in parts) + (BGZF_EOF if eof else b"")
 
 
 def make_unix_compress(data: bytes) -> bytes:
@@ -489,7 +596,7 @@ def assert_non_integer_seek_is_type_error(stream: BinaryIO, content: bytes) -> N
                 seek(*args)
             assert type(excinfo.value) is TypeError, args
             # The message is CPython's: PyPy's io.BytesIO words it differently.
-            if sys.implementation.name == "cpython":
+            if CPYTHON:
                 assert str(excinfo.value) == str(expected.value), args
             position = stream.tell()
             assert type(position) is int and position == at, args
@@ -534,7 +641,7 @@ def assert_non_integer_read_is_type_error(stream: BinaryIO, content: bytes) -> N
             with pytest.raises(TypeError) as excinfo:
                 read(size)
             assert type(excinfo.value) is TypeError, size
-            if sys.implementation.name == "cpython":  # PyPy words it differently
+            if CPYTHON:  # PyPy words it differently
                 assert str(excinfo.value) == str(expected.value), size
             assert stream.tell() == at, size
 
@@ -576,7 +683,7 @@ def assert_oversized_read_is_overflow_error(stream: BinaryIO, content: bytes) ->
             with pytest.raises(OverflowError) as excinfo:
                 stream.read(size)
             assert type(excinfo.value) is OverflowError, size
-            if sys.implementation.name == "cpython":  # PyPy words it differently
+            if CPYTHON:  # PyPy words it differently
                 assert str(excinfo.value) == str(expected.value), size
             assert stream.tell() == at, size
 

@@ -6,7 +6,6 @@ import logging
 import sys
 import threading
 import uuid
-import weakref
 from abc import ABC, abstractmethod
 from collections.abc import (
     Callable,
@@ -113,8 +112,10 @@ from archivey.internal.sfx import HitValidator
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import (
     ArchiveStream,
+    ExceptionTranslator,
     RewindWarning,
     as_closed_source_error,
+    compose_translators,
 )
 from archivey.internal.streams.counting import (
     CountingReader,
@@ -561,20 +562,6 @@ class BaseArchiveReader(ArchiveReader):
         # pass another reader's identity check; and not a plain counter, whose small
         # sequential values invite confusion with member_id or hardcoding).
         self._archive_id = uuid.uuid4().hex
-        # Public member streams still open, so close() can close them (stdlib parity:
-        # ZipFile.close()/TarFile.close() invalidate member streams too). Weak, because
-        # a strong registry here would be one more thing keeping a dropped stream alive.
-        # Keyed by an open counter rather than being a set, because close order is part
-        # of the contract and WeakSet iteration is unordered; dict iteration is
-        # insertion-ordered, and dead entries drop out on their own.
-        self._public_streams: weakref.WeakValueDictionary[int, ArchiveStream] = (
-            weakref.WeakValueDictionary()
-        )
-        self._public_stream_seq = 0
-        # Guards the counter and the registry: on a CONCURRENT reader two open() calls
-        # register at once, and an unlocked ``+= 1`` could hand both the same key, so
-        # one stream would drop out and close() would leave it open.
-        self._public_streams_lock = threading.Lock()
         # The archive's source, recorded by every backend's constructor. The reader owns
         # it: teardown closes it after ``_close_archive``. Also backs
         # ``compressed_source_size`` below.
@@ -743,20 +730,22 @@ class BaseArchiveReader(ArchiveReader):
         ``token`` is a reservation already taken (eager ``open()``); bind is
         infallible. Without ``token`` this acquires a new slot (lazy
         ``stream_members`` wrappers, which have not spawned yet).
+
+        The gate also records the stream, weakly and in open order, for ``close()``
+        to close if the caller has not (stdlib parity: ``ZipFile.close()`` and
+        ``TarFile.close()`` invalidate member streams too). A stream the caller drops
+        without closing needs no finalizer of its own: ``IOBase.__del__`` calls
+        ``close()`` on it, and ``close()`` runs the hook below in its ``finally``.
         """
         if token is None:
             self._state.acquire_live_stream(stream)
         else:
             self._state.bind_live_stream(token, stream)
-        with self._public_streams_lock:
-            self._public_stream_seq += 1
-            self._public_streams[self._public_stream_seq] = stream
 
-        # Capture the identity token, not the stream. ``weakref.finalize`` keeps its
-        # callback alive until it fires, so a callback that strongly referenced the
-        # stream would keep the stream alive too — and the finalizer could then never
-        # fire. That is exactly what happened: an unclosed stream held its file
-        # descriptor until process exit, immune to gc.collect().
+        # Capture the identity token, not the stream. The stream holds this hook, so a
+        # hook that referenced the stream would make a cycle, and a dropped stream would
+        # then wait for the cyclic collector to be closed, holding its file descriptor
+        # until it ran.
         stream_id = id(stream)
 
         def _on_close() -> None:
@@ -764,7 +753,6 @@ class BaseArchiveReader(ArchiveReader):
                 self._maybe_teardown()
 
         stream._on_close = _on_close
-        stream._attach_finalizer()
         return stream
 
     def _internal_member_opens(self) -> _InternalMemberOpens:
@@ -1091,6 +1079,7 @@ class BaseArchiveReader(ArchiveReader):
         end_check: Callable[[int], None] | None = None,
         fill_size: bool = False,
         rewind_warning: RewindWarning | None = None,
+        translate: ExceptionTranslator | None = None,
     ) -> ArchiveStream:
         """Wrap a raw member stream so read/seek errors route through the backend's
         translator and are stamped with format/archive/member context.
@@ -1129,9 +1118,19 @@ class BaseArchiveReader(ArchiveReader):
         end cleanly (``MemberVerifier``). It is the late size of a member whose format
         records none, or records one that cannot be trusted (a macOS ZIP's size
         modulo 2³²).
+
+        ``translate`` is the translator of a codec ``inner`` was opened with
+        (:func:`~archivey.internal.streams.codecs.registry.open_codec_raw`). It is asked
+        before the backend's, as it would be had ``inner`` been the codec's own
+        ``ArchiveStream`` collapsed into this one.
         """
         if (inner is None) == (open_fn is None):
             raise TypeError("exactly one of inner or open_fn is required")
+        member_translate = (
+            self._translate_exception
+            if translate is None
+            else compose_translators(translate, self._translate_exception)
+        )
 
         if open_fn is not None:
             if track_output:
@@ -1150,7 +1149,7 @@ class BaseArchiveReader(ArchiveReader):
 
             return ArchiveStream(
                 use_open,
-                translate=self._translate_exception,
+                translate=member_translate,
                 stamp=lambda exc: self._stamp_error_context(exc, member_name),
                 lazy=True,
                 seekable=(self._seek_declared() if seekable is None else seekable),
@@ -1172,7 +1171,7 @@ class BaseArchiveReader(ArchiveReader):
             inner = self._track_decompressed(inner)
         return ArchiveStream(
             lambda: inner,
-            translate=self._translate_exception,
+            translate=member_translate,
             stamp=lambda exc: self._stamp_error_context(exc, member_name),
             lazy=lazy,
             seekable=(
@@ -3674,18 +3673,14 @@ class BaseArchiveReader(ArchiveReader):
         reading through it, never underneath one.
         """
         failures: list[BaseException] = []
-        # Snapshot: closing mutates the registry through the lease callbacks.
-        with self._public_streams_lock:
-            streams = list(self._public_streams.values())
-        for stream in streams:
+        # A snapshot: each close removes its stream from the registry (the lease hook).
+        for stream in self._state.live_streams():
             if stream.closed:
                 continue
             try:
                 stream.close()
             except BaseException as exc:  # noqa: BLE001 - report every failure, not the first
                 failures.append(exc)
-        with self._public_streams_lock:
-            self._public_streams.clear()
         if len(failures) == 1:
             raise failures[0]
         if failures:

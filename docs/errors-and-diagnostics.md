@@ -132,6 +132,13 @@ A cut-off member can also end early without an error. `stream.read(member.size)`
 bytes than the member should hold, and the next read raises `TruncatedError`. So code that reads a
 member in one call and then stops should check the length it got, or call `read()` once more.
 
+A member whose data is damaged doesn't end a `stream_members()` loop. Its own read raises, and the
+loop goes on to the next member, so one pass can find every damaged member in the archive. In a
+solid archive the members after the damage in the same solid block fail too, each from its own
+read, and with random access `open()` itself can raise for them. The loop raises and stops early
+only when the damage is to the archive's structure, such as a TAR cut off inside a member, so that
+archivey can't find the next member.
+
 No option makes archivey check a member before handing you its bytes. If you must never use
 unchecked data, read the whole member into memory or a temporary file first, and use it only once
 the read has finished without an error.
@@ -147,8 +154,10 @@ most seeks keep the checksum check: a seek back, a seek to or past the end, and 
 the next read has to decode its way through anyway. Bytes you read again after a seek back aren't
 checked a second time. A seek forward that jumps over bytes without decoding them, and lands before
 the end, stops the checksum check once you read on from there. That happens in a member stored
-without compression, and through the `seekable` accelerator when it has a restart point between
-what you've read and where you seek to. Seeking back to a point you had already read up to brings
+without compression, through the `seekable` accelerator when it has a restart point between
+what you've read and where you seek to, and in a `bgzip` file or a Seekable Zstandard file, which
+list their restart points up front. The blocks or frames jumped over are never decompressed, so
+their own checksums aren't checked either. Seeking back to a point you had already read up to brings
 it back. The length is still checked after a jump, and damage the decompressor itself notices still
 raises. Once a read has raised, a later read that reaches the end raises the same error, even after
 a seek, so seeking back can't hand you the damaged member as if it were complete.

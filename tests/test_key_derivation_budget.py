@@ -105,6 +105,19 @@ def test_rar5_member_reads_are_charged_once_per_record() -> None:
 
 
 @requires("cryptography")
+def test_rar5_stored_member_read_also_charges_the_data_key() -> None:
+    """A stored member archivey decrypts itself needs the AES key too: three
+    derivations from one chain, each charged."""
+    path = _RAR / "encryption_stored__.rar"
+    enough = _RAR5_CHECK + _RAR5_HASH_KEY + _RAR5_KEY
+    with open_archive(path, password="password", config=_config(enough)) as archive:
+        assert archive.read("secret.txt") == b"This is secret"
+    with open_archive(path, password="password", config=_config(enough - 1)) as archive:
+        with pytest.raises(ResourceLimitError, match="RAR5 key derivation"):
+            archive.read("secret.txt")
+
+
+@requires("cryptography")
 def test_rar3_header_derivation_is_charged_at_its_fixed_cost() -> None:
     path = _RAR / "encrypted_header__rar4.rar"
     with open_archive(path, password="header_password", config=_config(_RAR3)) as a:

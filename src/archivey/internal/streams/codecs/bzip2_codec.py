@@ -4,14 +4,13 @@ results, stream gaps, resume points).
 
 from __future__ import annotations
 
-import bz2
 import io
 import itertools
 import re
 from collections.abc import Callable
 from typing import BinaryIO
 
-from archivey.config import INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE
+from archivey.config import INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE, ProcessIsolation
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
@@ -40,6 +39,7 @@ from archivey.internal.streams.codecs.framed_decoder import (
     FramedDecompressorStream,
     stream_magic,
 )
+from archivey.internal.streams.codecs.isolated import natives_for
 from archivey.internal.streams.codecs.rapidgzip_child import (
     crashed_on_data,
     from_callers_source,
@@ -80,7 +80,10 @@ from archivey.types import (
 def _bzip2_wanted(config: StreamConfig, *, available: bool) -> bool:
     """Resolve ``use_indexed_bzip2`` including the ``AUTO`` size gate
     (:data:`~archivey.config.INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE`), before asking
-    whether a child process can run the decoder."""
+    whether a child process can run the decoder. ``process_isolation=NONE`` never
+    uses it: rapidgzip runs only in a child process."""
+    if config.process_isolation is ProcessIsolation.NONE:
+        return False
     return config.use_indexed_bzip2.enabled_for(
         seekable=config.seekable,
         available=available,
@@ -134,7 +137,7 @@ def _stdlib_bzip2(
     # the accelerator's fallbacks too, must agree on what follows its stream (DR-5).
     return FramedDecompressorStream(
         source,
-        bz2.BZ2Decompressor,
+        natives_for(config.process_isolation).bz2_decompressor,
         codec_name="bzip2",
         magic=_NO_FURTHER_STREAM if single_stream else _BZIP2_STREAMS,
         collector=config.collector,
@@ -866,7 +869,9 @@ class Bzip2Codec(StreamCodec):
             "bzip2",
             accelerator="rapidgzip",
             suggest_install=not _bzip2_uses_accelerator(config)
-            and not deps.rapidgzip.available(),
+            and not deps.rapidgzip.available()
+            and not deps.unused_reason("rapidgzip"),
+            unused_reason=deps.unused_reason("rapidgzip"),
         )
 
     def _accelerator_data_error(self, exc: Exception) -> bool:

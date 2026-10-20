@@ -789,6 +789,21 @@ growing decompressed-block cache until reader close. On solid archives, random
 directed to `stream_members()` by `reader.cost.access_cost` and by the `open()` /
 `read()` docstrings rather than by a runtime warning.
 
+A member's data error (a digest mismatch, a corrupt or cut-short compressed stream) SHALL
+be raised from that member's stream read and SHALL NOT end the pass, whether or not the
+caller read that stream: the pass SHALL yield the members after it whenever the walk of
+the archive's structure can reach them, and SHALL end without raising. Members after the
+damage in the same solid block fail too, each from its own read, as `7z t` and `unrar t`
+fail them; a later solid block reads cleanly. Random `open()` / `read()` give each member
+the same outcome; on a solid block `open()` decodes from the block start up to the member,
+so the error MAY be raised from `open()` instead of the first read. A format that stores
+no member checksum (ISO, TAR) returns damaged bytes with no error. Of the damage cases,
+only damage to the archive's structure that stops the walk makes the pass itself raise
+(DR-2): a TAR cut inside a member, a compressed TAR whose stream fails, a ZIP read from a
+pipe whose local-header walk loses its place. The members after that point are not
+yielded; resyncing past such damage is out of scope. (The pass also raises for reasons
+other than damage, such as `ListingLimits` or a diagnostic set to raise.)
+
 A `stream_members()` invocation is an exclusive one-pass/data-path operation in
 both modes. It SHALL NOT overlap random `open()`, materialization, another
 iteration/data pass, unrelated extraction, or reader close. On a reader opened with
@@ -842,6 +857,11 @@ advancing a closed pass SHALL end the iteration. Closing a pass that is executin
 | Encrypted solid 7z `[a.txt, link, b.txt]`, `read_link_targets=False`, `stream_members(lambda m: False)` to the end | Nothing decoded; provider never consulted; `link_target` unset; no `SYMLINK_TARGET_UNAVAILABLE` |
 | `stream_members(file_copy_streams=False)`, RAR5 file copy | The copy is yielded with stream `None`; its source with its bytes |
 | `stream_members(file_copy_streams=0)` | `ArchiveyUsageError` at the call |
+| One member's data damaged, non-solid ZIP (from a file or a pipe), 7z or RAR, either mode, its stream read or not | That member's read raises `CorruptionError`; every later member is yielded and reads correctly; the pass ends without raising |
+| Same, solid 7z with one folder or solid RAR | The damaged member and the later ones in its block raise from their reads; the pass ends without raising |
+| Same, solid 7z with two folders, damage in the first | Only the damaged member raises; the second folder reads correctly |
+| Same, ISO or plain TAR | No error; the damaged bytes are returned; later members read correctly |
+| Archive structure damaged (TAR cut inside a member, compressed TAR stream fails, pipe ZIP local header lost) | Members before the damage yielded; then the pass raises and ends |
 
 ### Requirement: Transparent link following
 
@@ -959,7 +979,7 @@ Lease/token/teardown once-guards and dual-failure `ExceptionGroup` rules:
 | Several open streams + `reader.close()` | All are closed; teardown runs once, after the last |
 | `close()` raises (executing pass/worker) | Reader stays open; member streams untouched |
 | `close()` while a pass is suspended at a yield | Reader closed; yielded stream closed; resuming the pass → `ArchiveyUsageError` |
-| Stream dropped without close | Finalizer reclaims it; the stream must not be kept alive by its own finalizer |
+| Stream dropped without close | `IOBase.__del__` closes it, which releases its lease; nothing the reader or the stream holds may keep it alive |
 | Caller-supplied `BinaryIO`, all closed | Library does not call `close()` on that source |
 | `open_archive()` context exits | Reader closed; any member stream still open is closed with it, then the backend is released |
 | Op after reader close | `ArchiveyUsageError` |
@@ -1209,10 +1229,16 @@ class SpoolLimits:
     max_bytes: int | None = 2**30
     UNLIMITED: ClassVar["SpoolLimits"]
 
+class ProcessIsolation(Enum):
+    KNOWN_CRASHES = "known_crashes"
+    NATIVE_DECODERS = "native_decoders"
+    NONE = "none"
+
 @dataclass(frozen=True)
 class ArchiveyConfig:
     use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO
     use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO
+    process_isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES
     zip_unflagged_fallback_encoding: str = "cp437"
     rar_allow_glob_member_concatenation: bool = False
     read_link_targets: bool = True
@@ -1245,17 +1271,23 @@ actually run: a key the reader already derived for the same password, salt and
 cost SHALL cost nothing, and every candidate password tried SHALL count. The
 check SHALL run before the derivation that would cross the cap, and SHALL raise
 `ResourceLimitError`, which SHALL NOT be treated as a wrong password by
-candidate iteration. `max_ppmd_in_process_input` SHALL bound the compressed bytes of
-one PPMd member the process holds to decode it in-process; a larger member SHALL decode
-in a child process, where a crash of the native decoder (a fault signal such as SIGSEGV,
-or the Windows status for the same fault) SHALL surface as `CorruptionError`. A child
-killed by SIGKILL, or one that dies allocating the member's model, SHALL raise
-`ResourceLimitError`, as SHALL a larger member where no child process can be started. A
-child that ends any other way (another signal, a plain exit status) SHALL raise
-`ReadError`, which is not a verdict on the data. `None` SHALL decode every member
-in-process, except one whose size is known only once it has been read (a ZIP member with
-bit 3 set, read from a non-seekable source): that one SHALL be fed to the decoder in
-pieces and only in a child process, so `None` SHALL refuse it with `ResourceLimitError`.
+candidate iteration. Under `process_isolation=KNOWN_CRASHES` (the default) and
+`NATIVE_DECODERS`, every PPMd member SHALL decode in a child process (`compressed-streams`,
+"Native decoders run where process_isolation puts them"), where a crash of the native
+decoder (a fault signal such as SIGSEGV, or the Windows status for the same fault) SHALL
+surface as `CorruptionError`. A child killed by SIGKILL, or one that dies allocating the
+member's model, SHALL raise `ResourceLimitError`, as SHALL a member where no child process
+can be started. A child that ends any other way (another signal, a plain exit status)
+SHALL raise `ReadError`, which is not a verdict on the data. `max_ppmd_in_process_input`
+SHALL bound the compressed bytes of one PPMd member the process holds to hand to pyppmd
+whole, in the child or, under `process_isolation=NONE`, in-process; a larger member, and
+one whose size is known only once it has been read (a ZIP member with bit 3 set, read from
+a non-seekable source), SHALL be fed to pyppmd in pieces. `None` SHALL hold every member
+whose size is known.
+`process_isolation` SHALL be converted from the member or its name at construction, as
+the accelerator fields are. `process_isolation=NONE` together with `use_rapidgzip=ON` or
+`use_indexed_bzip2=ON` SHALL raise `ArchiveyUsageError` at construction: rapidgzip runs
+only in a child process.
 Per-call `limits` still beat `config.extraction_limits`, then reader/library default.
 Other per-call operational args stay outside `ArchiveyConfig`.
 `detection_budget` SHALL bound what format detection spends, for `detect_format` and for
@@ -1305,8 +1337,12 @@ Callbacks hold no Archivey collector/reader/stream/backend/registry lock
 | `detect_format(BytesIO(zlib_bytes))`, then with `always_probe_content=True` | `FormatDetectionError`, then `ZLIB` / `content_probe` |
 | Reader opened with `read_link_targets=False` | No data-stored link target is read by listing or a pass for the reader lifetime |
 | Header-encrypted RAR5 set of four parts, one encryption record repeated, `max_key_derivation_rounds` one round short of key + PswCheck | `ResourceLimitError` at `open_archive`; at exactly key + PswCheck the set lists |
-| 7z PPMd member of 200 KB compressed, `max_ppmd_in_process_input=1024`, no child process possible | `ResourceLimitError` on the first read |
-| Same member on the child path; the child crashes / is killed by SIGKILL / by SIGTERM | `CorruptionError` / `ResourceLimitError` / `ReadError`, not `CorruptionError` |
+| 7z PPMd member of 200 KB compressed, no child process possible | `ResourceLimitError` on the first read, naming `process_isolation` |
+| Same member; the child crashes / is killed by SIGKILL / by SIGTERM | `CorruptionError` / `ResourceLimitError` / `ReadError`, not `CorruptionError` |
+| Same member, `process_isolation=NONE`, `max_ppmd_in_process_input=1024` / default | In-process, fed in pieces / held and decoded whole |
+| Valid 7z PPMd member of 8 MiB that pyppmd fed in pieces stops short of, default config | Held, decoded whole in a child, read in full |
+| `ArchiveyConfig(process_isolation="none")` | Holds `ProcessIsolation.NONE` |
+| `ArchiveyConfig(process_isolation=ProcessIsolation.NONE, use_rapidgzip=AcceleratorMode.ON)` | `ArchiveyUsageError` at construction |
 | Password list `["wrong", right]`, budget covering only the right candidate's derivations | `ResourceLimitError`, not `EncryptionError`; the list does not continue |
 
 ### Requirement: Reader-lifetime cumulative diagnostic snapshots

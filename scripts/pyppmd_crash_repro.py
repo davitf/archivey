@@ -23,6 +23,16 @@ Two distinct pure-``pyppmd`` abort families (fresh subprocesses, ~5 cycles each)
    materially more output than the stream's true remaining payload; the exact
    remaining size (py7zr-style) is the safe contract.
 
+4. **spent-quiesce-nul** (``--mode spent-quiesce-nul``): archivey's teardown call
+   order on a member that ended early. A sized decode of random input returns short
+   at ``eof`` with all input fed; then ``decode(b"\\0", 1)``, at most 8 times, before
+   the decoder is freed. That NUL is a decode after the model's end. See
+   ``dev-docs/investigations/ppmd-native-investigation-results.md`` §K.4.
+
+5. **nul-after-error** (``--mode nul-after-error``): the same input, with the NULs
+   sent after a ``decode`` that raised ``ValueError``. archivey does not make this
+   call (§K.4).
+
 Controls that stayed at 0 crashes in 100-child soaks: sized-only decode;
 pre-EOF ``decode(packed + b"\\0", size)``; skip after-eof when ``dec.eof``;
 underfed sized decode then dealloc (``--mode underfed-sized``); bounded decode
@@ -56,6 +66,10 @@ Examples::
     python scripts/pyppmd_crash_repro.py 30 --mode skip-after-eof
     python scripts/pyppmd_crash_repro.py 30 --mode underfed-sized
     python scripts/pyppmd_crash_repro.py 30 --mode hostile-tail
+    python scripts/pyppmd_crash_repro.py 100 --mode spent-quiesce-nul --cycles 20
+    python scripts/pyppmd_crash_repro.py 100 --mode nul-after-error --cycles 20
+    PPMD_REPRO_VARIANT=7 python scripts/pyppmd_crash_repro.py 100 \\
+        --mode nul-after-error --cycles 20
 
     pip install 'pyppmd==1.2.0'
     pip install 'pyppmd==1.3.1'
@@ -299,6 +313,88 @@ _MODES: dict[str, str] = {
             if not dec.eof:
                 _ = dec.decode(b"\\0", -1)
         print("ok", pyppmd.__version__, "skipped-after-eof")
+        """
+    ),
+    # archivey's teardown on a spent payload (``PpmdDecoder._quiesce_worker``): random
+    # input fed whole, a sized request it cannot fill, a short return at eof, then
+    # single-symbol NULs before the free. PPMd8 by default; PPMD_REPRO_VARIANT=7 for
+    # PPMd7. The seed differs per child and is printed, so a crash can be replayed
+    # with PPMD_REPRO_SEED.
+    "spent-quiesce-nul": textwrap.dedent(
+        """\
+        import faulthandler
+        import random
+        import sys
+
+        faulthandler.enable(all_threads=True, file=sys.stderr)
+
+        import pyppmd
+
+        ORDER, MEM, SIZE = 6, 16 << 20, 65536
+        variant = int(os.environ.get("PPMD_REPRO_VARIANT", "8"))
+        seed = int(os.environ.get("PPMD_REPRO_SEED", str(os.getpid() * 1000)))
+        cycles = int(os.environ.get("PPMD_REPRO_CYCLES", "5"))
+        print("seed", seed, file=sys.stderr, flush=True)
+        after_eof = 0
+        for cycle in range(cycles):
+            data = b"\\0" + random.Random(seed + cycle).randbytes(SIZE - 1)
+            if variant == 8:
+                dec = pyppmd.Ppmd8Decoder(ORDER, MEM, 0)
+            else:
+                dec = pyppmd.Ppmd7Decoder(ORDER, MEM)
+            try:
+                out = dec.decode(data, 16 * SIZE)
+            except ValueError:
+                continue  # pyppmd reported the corruption; nothing is parked
+            if len(out) == 16 * SIZE or not dec.eof:
+                continue  # not the spent-payload state
+            for _ in range(8):  # _PPMD_QUIESCE_MAX_CALLS
+                after_eof += dec.eof
+                if dec.decode(b"\\0", 1):
+                    break
+            del dec
+        print("ok", pyppmd.__version__, "nul-after-eof", after_eof)
+        """
+    ),
+    # The same input, but the NULs follow a decode that raised ValueError ("Corrupted
+    # input data"). archivey does not make this call: after the error pyppmd reports
+    # eof=True, and _quiesce_worker returns without decoding. Kept as the measured
+    # pyppmd defect. Seed and variant as in spent-quiesce-nul.
+    "nul-after-error": textwrap.dedent(
+        """\
+        import faulthandler
+        import random
+        import sys
+
+        faulthandler.enable(all_threads=True, file=sys.stderr)
+
+        import pyppmd
+
+        ORDER, MEM, SIZE = 6, 16 << 20, 65536
+        variant = int(os.environ.get("PPMD_REPRO_VARIANT", "8"))
+        seed = int(os.environ.get("PPMD_REPRO_SEED", str(os.getpid() * 1000)))
+        cycles = int(os.environ.get("PPMD_REPRO_CYCLES", "5"))
+        print("seed", seed, file=sys.stderr, flush=True)
+        errors = 0
+        for cycle in range(cycles):
+            data = b"\\0" + random.Random(seed + cycle).randbytes(SIZE - 1)
+            if variant == 8:
+                dec = pyppmd.Ppmd8Decoder(ORDER, MEM, 0)
+            else:
+                dec = pyppmd.Ppmd7Decoder(ORDER, MEM)
+            try:
+                dec.decode(data, 16 * SIZE)
+                continue  # no error: not this call order
+            except ValueError:
+                errors += 1
+            for _ in range(8):
+                try:
+                    if dec.decode(b"\\0", 1):
+                        break
+                except ValueError:
+                    break
+            del dec
+        print("ok", pyppmd.__version__, "nul-after-error", errors)
         """
     ),
 }

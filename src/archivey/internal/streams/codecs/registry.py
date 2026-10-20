@@ -1,5 +1,5 @@
 """The codec registry: every openable codec, lookups by id and stream format, and
-:func:`open_codec_stream` / :func:`resolve_codec`.
+:func:`open_codec_stream` / :func:`open_codec_raw` / :func:`resolve_codec`.
 """
 
 from __future__ import annotations
@@ -7,7 +7,7 @@ from __future__ import annotations
 import os
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, BinaryIO
+from typing import TYPE_CHECKING, Any, BinaryIO
 
 from archivey.exceptions import ArchiveyError
 from archivey.internal.config import (
@@ -18,6 +18,7 @@ from archivey.internal.streams.archive_stream import (
     ArchiveStream,
     ExceptionTranslator,
     RewindWarning,
+    raise_translated,
 )
 from archivey.internal.streams.codecs.base import (
     _DEFAULT_PARAMS,
@@ -216,24 +217,7 @@ def open_codec_stream(
     is not already there. Some reads still seek, and one seek is enough to mark the
     stream rewound.
     """
-    is_stream = not isinstance(source, (str, os.PathLike))
-    if is_stream:
-        # A seekable stream positioned mid-file gets a clean tell()==0 origin (a
-        # SlicingStream view), because codec backends address the source with absolute
-        # offsets — the seekable XZ/lzip index, stdlib gzip's rewind — and would
-        # otherwise read the wrong bytes. Streams at position 0 pass through unchanged
-        # (see the stream-position contract in ``format-detection``). Expected to be a
-        # no-op for every caller today: ``open_stream`` rebases its source first, and the
-        # readers hand in views that start at 0. It stays for a direct caller that does
-        # not.
-        source = fix_stream_start_position(source)
-    # A stored stream decodes nothing, so the config work below would build values
-    # nothing reads: ``StoredCodec`` opens its source as is, and its translator and
-    # rewind warning ignore the config. ZIP opens one per member, so it is skipped
-    # (the collector still reaches the stream below). A path source still runs it.
-    if not (is_stream and codec is Codec.STORED):
-        config = _decoder_config(codec, source, config, collector)
-    backend = resolve_codec(codec, config)
+    source, config, backend = _prepared_backend(codec, source, config, collector)
     # Default True: internal/format callers may need to seek the codec stream even when
     # ``config.seekable`` is False (no accelerator/index). Public ``open_stream`` passes
     # the caller's ``seekable=`` explicitly.
@@ -251,6 +235,77 @@ def open_codec_stream(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class OpenedCodec:
+    """A codec stream opened without an :class:`ArchiveStream` around it.
+
+    ``translate`` and ``rewind_warning`` are what :func:`open_codec_stream` would have
+    put on that stream. The caller builds its own stream around ``stream`` with them.
+    """
+
+    stream: BinaryIO
+    translate: ExceptionTranslator
+    rewind_warning: RewindWarning | None
+
+
+def open_codec_raw(
+    codec: Codec,
+    source: CodecSource,
+    *,
+    config: StreamConfig = DEFAULT_STREAM_CONFIG,
+    params: CodecParams = _DEFAULT_PARAMS,
+    collector: DiagnosticCollector | None = None,
+) -> OpenedCodec:
+    """Open ``codec`` over ``source`` now, for a caller that wraps the result itself.
+
+    :func:`open_codec_stream` returns an :class:`ArchiveStream`. A member backend wraps
+    that in its member stream, which then collapses the codec stream away on open. A
+    caller that would only do that (a ZIP member) calls this instead and passes
+    ``translate`` and ``rewind_warning`` to its own stream: one stream object per
+    member, not two. An open failure raises what :func:`open_codec_stream` raises for
+    it. ``rewind_warning`` is the codec's, whatever the seek demand: the caller drops it
+    for a stream that cannot seek, as :func:`open_codec_stream` does for
+    ``seekable=False``.
+    """
+    source, config, backend = _prepared_backend(codec, source, config, collector)
+    try:
+        stream = backend.open(source, params)
+    except Exception as e:  # noqa: BLE001 - re-raised via the translator
+        raise_translated(e, backend.translate)
+    return OpenedCodec(
+        stream=stream,
+        translate=backend.translate,
+        rewind_warning=backend.rewind_warning,
+    )
+
+
+def _prepared_backend(
+    codec: Codec,
+    source: CodecSource,
+    config: StreamConfig,
+    collector: DiagnosticCollector | None,
+) -> tuple[CodecSource, StreamConfig, CodecBackend]:
+    """The source, decoder config and backend that both openers above use."""
+    is_stream = not isinstance(source, (str, os.PathLike))
+    if is_stream:
+        # A seekable stream positioned mid-file gets a clean tell()==0 origin (a
+        # SlicingStream view), because codec backends address the source with absolute
+        # offsets — the seekable XZ/lzip index, stdlib gzip's rewind — and would
+        # otherwise read the wrong bytes. Streams at position 0 pass through unchanged
+        # (see the stream-position contract in ``format-detection``). Expected to be a
+        # no-op for every caller today: ``open_stream`` rebases its source first, and the
+        # readers hand in views that start at 0. It stays for a direct caller that does
+        # not.
+        source = fix_stream_start_position(source)
+    # A stored stream decodes nothing, so the config work below would build values
+    # nothing reads: ``StoredCodec`` opens its source as is, and its translator and
+    # rewind warning ignore the config. ZIP opens one per member, so it is skipped
+    # (the collector still reaches the stream below). A path source still runs it.
+    if not (is_stream and codec is Codec.STORED):
+        config = _decoder_config(codec, source, config, collector)
+    return source, config, resolve_codec(codec, config)
+
+
 def _decoder_config(
     codec: Codec,
     source: CodecSource,
@@ -262,8 +317,11 @@ def _decoder_config(
     Carries ``collector``, drops seek demand that a stream source cannot meet, fills the
     known input size, then lets the codec adjust it.
     """
-    if collector is not None:
-        config = replace(config, collector=collector)
+    # One copy for all three adjustments, and none when nothing changes: a ZIP reader
+    # opens a codec per member, and each copy of this dataclass is a few microseconds.
+    changes: dict[str, Any] = {}
+    if collector is not None and config.collector is not collector:
+        changes["collector"] = collector
     if (
         not isinstance(source, (str, os.PathLike))
         and config.seekable
@@ -273,12 +331,14 @@ def _decoder_config(
         # accelerator AUTO pick a decoder that fails at open when it asks the
         # source for ``tell``. A compressed TAR opened ``streaming=True`` with
         # ``seekable_members=True`` over a forward-only stream arrives here so.
-        config = replace(config, seekable=False)
+        changes["seekable"] = False
     # Fill the AUTO size gate when the caller did not already supply a known length
     # (path ``stat``, ``SlicingStream.size``, ``BytesIO``, …). Unknown stays ``None``.
     if config.compressed_input_size is None:
         size = source_byte_size(source)
         if size is not None:
-            config = replace(config, compressed_input_size=size)
+            changes["compressed_input_size"] = size
+    if changes:
+        config = replace(config, **changes)
     # Fill before resolve_codec so the translator and rewind_warning agree with open.
     return _BY_CODEC[codec].prepare_config(source, config)
