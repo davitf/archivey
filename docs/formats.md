@@ -179,7 +179,8 @@ yielded.
   members are final, only when the sender closes the pipe. A sender that keeps the pipe
   open after the ZIP keeps the pass waiting after the last member, and, when the sizes
   come after each member's data (bit 3), in the read that ends the last member's data.
-  Close the sending side when the ZIP is done.
+  A ZIP under 262 bytes also waits at `open_archive`, because a tar header could still
+  start at offset 257. Close the sending side when the ZIP is done.
 - **A member whose local header disagrees with the central directory on its name, or
   stores a real CRC-32 where the directory stores 0, is read**, from a file and a pipe
   alike, as `unzip` reads it. The directory's name is used, reported as
@@ -968,9 +969,14 @@ yielded.
   bytes of its one pass; it fails on the first read as before.
 - **From a pipe that the sender keeps open**, a compressed file or a compressed tar can
   wait for the sender to close the pipe. These are the places it waits:
-    - `open_archive`, when the file is short enough that the bytes that identify it have
-      not all arrived: under 262 bytes, a `.bz2` or `.xz` under 4 KiB (`.tar.bz2` and
-      `.tar.xz` too), or a file that decompresses to under 512 bytes.
+    - `open_archive` of a short file, because archivey reads a fixed amount from the
+      start before it decides:
+        - Under 262 bytes. A tar header could still start at offset 257, so even a
+          `.gz` whose first two bytes say gzip could still be something else.
+        - A `.gz` under 512 bytes, whose first 512 bytes are read for the stored name.
+        - A `.bz2` or `.xz` under 4 KiB, and a `.tar.bz2` or `.tar.xz` too. These are
+          checked for a disk image, which needs the length of the file.
+        - A file that decompresses to under 512 bytes, the size of a tar header.
     - `open_archive` of a compressed tar under 64 KiB, and the first read of any other
       compressed file under 64 KiB. The decoder reads the compressed data in 64 KiB
       pieces, and it gets a piece only when the piece is full or the sender closes the
