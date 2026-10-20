@@ -154,8 +154,10 @@ most seeks keep the checksum check: a seek back, a seek to or past the end, and 
 the next read has to decode its way through anyway. Bytes you read again after a seek back aren't
 checked a second time. A seek forward that jumps over bytes without decoding them, and lands before
 the end, stops the checksum check once you read on from there. That happens in a member stored
-without compression, and through the `seekable` accelerator when it has a restart point between
-what you've read and where you seek to. Seeking back to a point you had already read up to brings
+without compression, through the `seekable` accelerator when it has a restart point between
+what you've read and where you seek to, and in a `bgzip` file or a Seekable Zstandard file, which
+list their restart points up front. The blocks or frames jumped over are never decompressed, so
+their own checksums aren't checked either. Seeking back to a point you had already read up to brings
 it back. The length is still checked after a jump, and damage the decompressor itself notices still
 raises. Once a read has raised, a later read that reaches the end raises the same error, even after
 a seek, so seeking back can't hand you the damaged member as if it were complete.

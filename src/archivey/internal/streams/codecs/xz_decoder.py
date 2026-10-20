@@ -47,7 +47,6 @@ from archivey.internal.diagnostics_collector import (
 )
 from archivey.internal.logs import streams as logger
 from archivey.internal.streams.decompressor_stream import (
-    SEEK_TABLE_THINNED,
     TRAILING_DATA_CANDIDATES,
     TRAILING_DATA_SEARCH,
     BaseDecoder,
@@ -58,6 +57,7 @@ from archivey.internal.streams.decompressor_stream import (
     SpacedCollector,
     build_index_backwards,
     damaged_stream_error,
+    emit_index_thinned,
     near_stream_magic,
     truncated_message,
 )
@@ -1111,18 +1111,8 @@ class XzDecoder(BaseDecoder):
                         on_thinned=lambda: thinned.append(True),
                     )
                     if thinned:
-                        resolve_collector(self._collector).emit(
-                            code=DiagnosticCode.SEEK_INDEX_DEGRADED,
-                            message=(
-                                "XZ stream has more blocks than the seek-table cap; "
-                                "kept a spaced subset, so seeks may decode further"
-                            ),
-                            context=SeekIndexContext(
-                                codec="xz",
-                                scan="per_stream",
-                                error_type=SEEK_TABLE_THINNED,
-                            ),
-                            logger=logger,
+                        emit_index_thinned(
+                            self._collector, "xz", "per_stream", units="blocks"
                         )
                     # Prefer block-bounds (with resume state) for the stream start
                     # over a state=None placeholder — avoids colliding with a prior
