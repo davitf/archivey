@@ -1226,10 +1226,16 @@ class SpoolLimits:
     max_bytes: int | None = 2**30
     UNLIMITED: ClassVar["SpoolLimits"]
 
+class ProcessIsolation(Enum):
+    KNOWN_CRASHES = "known_crashes"
+    NATIVE_DECODERS = "native_decoders"
+    NONE = "none"
+
 @dataclass(frozen=True)
 class ArchiveyConfig:
     use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO
     use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO
+    process_isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES
     zip_unflagged_fallback_encoding: str = "cp437"
     rar_allow_glob_member_concatenation: bool = False
     read_link_targets: bool = True
@@ -1262,17 +1268,23 @@ actually run: a key the reader already derived for the same password, salt and
 cost SHALL cost nothing, and every candidate password tried SHALL count. The
 check SHALL run before the derivation that would cross the cap, and SHALL raise
 `ResourceLimitError`, which SHALL NOT be treated as a wrong password by
-candidate iteration. `max_ppmd_in_process_input` SHALL bound the compressed bytes of
-one PPMd member the process holds to decode it in-process; a larger member SHALL decode
-in a child process, where a crash of the native decoder (a fault signal such as SIGSEGV,
-or the Windows status for the same fault) SHALL surface as `CorruptionError`. A child
-killed by SIGKILL, or one that dies allocating the member's model, SHALL raise
-`ResourceLimitError`, as SHALL a larger member where no child process can be started. A
-child that ends any other way (another signal, a plain exit status) SHALL raise
-`ReadError`, which is not a verdict on the data. `None` SHALL decode every member
-in-process, except one whose size is known only once it has been read (a ZIP member with
-bit 3 set, read from a non-seekable source): that one SHALL be fed to the decoder in
-pieces and only in a child process, so `None` SHALL refuse it with `ResourceLimitError`.
+candidate iteration. Under `process_isolation=KNOWN_CRASHES` (the default) and
+`NATIVE_DECODERS`, every PPMd member SHALL decode in a child process (`compressed-streams`,
+"Native decoders run where process_isolation puts them"), where a crash of the native
+decoder (a fault signal such as SIGSEGV, or the Windows status for the same fault) SHALL
+surface as `CorruptionError`. A child killed by SIGKILL, or one that dies allocating the
+member's model, SHALL raise `ResourceLimitError`, as SHALL a member where no child process
+can be started. A child that ends any other way (another signal, a plain exit status)
+SHALL raise `ReadError`, which is not a verdict on the data. `max_ppmd_in_process_input`
+SHALL bound the compressed bytes of one PPMd member the process holds to hand to pyppmd
+whole, in the child or, under `process_isolation=NONE`, in-process; a larger member, and
+one whose size is known only once it has been read (a ZIP member with bit 3 set, read from
+a non-seekable source), SHALL be fed to pyppmd in pieces. `None` SHALL hold every member
+whose size is known.
+`process_isolation` SHALL be converted from the member or its name at construction, as
+the accelerator fields are. `process_isolation=NONE` together with `use_rapidgzip=ON` or
+`use_indexed_bzip2=ON` SHALL raise `ArchiveyUsageError` at construction: rapidgzip runs
+only in a child process.
 Per-call `limits` still beat `config.extraction_limits`, then reader/library default.
 Other per-call operational args stay outside `ArchiveyConfig`.
 `detection_budget` SHALL bound what format detection spends, for `detect_format` and for
@@ -1322,8 +1334,12 @@ Callbacks hold no Archivey collector/reader/stream/backend/registry lock
 | `detect_format(BytesIO(zlib_bytes))`, then with `always_probe_content=True` | `FormatDetectionError`, then `ZLIB` / `content_probe` |
 | Reader opened with `read_link_targets=False` | No data-stored link target is read by listing or a pass for the reader lifetime |
 | Header-encrypted RAR5 set of four parts, one encryption record repeated, `max_key_derivation_rounds` one round short of key + PswCheck | `ResourceLimitError` at `open_archive`; at exactly key + PswCheck the set lists |
-| 7z PPMd member of 200 KB compressed, `max_ppmd_in_process_input=1024`, no child process possible | `ResourceLimitError` on the first read |
-| Same member on the child path; the child crashes / is killed by SIGKILL / by SIGTERM | `CorruptionError` / `ResourceLimitError` / `ReadError`, not `CorruptionError` |
+| 7z PPMd member of 200 KB compressed, no child process possible | `ResourceLimitError` on the first read, naming `process_isolation` |
+| Same member; the child crashes / is killed by SIGKILL / by SIGTERM | `CorruptionError` / `ResourceLimitError` / `ReadError`, not `CorruptionError` |
+| Same member, `process_isolation=NONE`, `max_ppmd_in_process_input=1024` / default | In-process, fed in pieces / held and decoded whole |
+| Valid 7z PPMd member of 8 MiB that pyppmd fed in pieces stops short of, default config | Held, decoded whole in a child, read in full |
+| `ArchiveyConfig(process_isolation="none")` | Holds `ProcessIsolation.NONE` |
+| `ArchiveyConfig(process_isolation=ProcessIsolation.NONE, use_rapidgzip=AcceleratorMode.ON)` | `ArchiveyUsageError` at construction |
 | Password list `["wrong", right]`, budget covering only the right candidate's derivations | `ResourceLimitError`, not `EncryptionError`; the list does not continue |
 
 ### Requirement: Reader-lifetime cumulative diagnostic snapshots

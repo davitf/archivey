@@ -220,8 +220,9 @@ cannot find its end SHALL be passed by the same scan for its descriptor on its s
 bytes, with no key. The scan starts at the last 4 MiB the decode read and counts the
 bytes before them into the size it matches; a decode that read more than that past the
 data's end leaves the descriptor behind the scan's start, and the pass SHALL then end
-with the scan's error. A bit-3 PPMd member is decoded in a child process, and
-`max_ppmd_in_process_input=None` SHALL refuse it with `ResourceLimitError`. Several
+with the scan's error. A bit-3 PPMd member is decoded in a child process, like every
+PPMd member, except under `process_isolation=NONE`, which SHALL decode it in-process,
+fed in pieces. Several
 password candidates SHALL be confirmed on a kept prefix of the member's data
 (`archive-reading`, "A unit read once").
 
@@ -314,7 +315,7 @@ short members' data before it. The archive comment SHALL be weighed against
 | `extract_all()` from a pipe that stops before the end of the pass (`abort_on`, `on_error="stop"`, a limit, a `STRICT` refusal at the directory, or any other reason) | Every file the pass wrote whose data could be a link's (4096 bytes or less, or starting with a Windows symlink or junction reparse tag) is removed; a longer file stays, with no mode applied |
 | Bit-3 STORED members (stdlib `zipfile` writing to a pipe) | Each ends at its descriptor; contents as from a file |
 | Bit-3 LZMA member without the end-of-stream marker | `UnsupportedFeatureError` at that member |
-| Bit-3 PPMd member, `max_ppmd_in_process_input=None` | `ResourceLimitError` |
+| Bit-3 PPMd member, `process_isolation=NONE` | Decoded in-process |
 | Two same-name members whose directory order reverses their file order | `is_current` from the directory order; `stream_members()` raises nothing |
 | A data descriptor that understates a STORED member, `stream_members()` | `CorruptionError` at the end of the pass |
 | A local entry the directory does not list | Dropped from the listing; `ARCHIVE_UNLISTED_DATA` |

@@ -53,5 +53,5 @@
       subprocess recipe for a hard time limit.
 - [x] 5.2 `openspec validate native-decoder-process-isolation` (strict only warns on long requirements); `check.sh`;
       `test.sh --all-configs`.
-- [ ] 5.3 Archive the change (`openspec archive native-decoder-process-isolation`) once
-      review settles; the PR merges after 0.2.0.
+- [x] 5.3 Archive the change (`openspec archive native-decoder-process-isolation`) once
+      review settles.
