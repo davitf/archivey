@@ -1538,6 +1538,39 @@ class RarReader(BaseArchiveReader):
             source_format=ArchiveFormat.RAR,
         )
 
+    def _cut_data_error(
+        self, member: ArchiveMember, info: RarMemberInfo
+    ) -> TruncatedError | None:
+        """Why a program cannot read this member: the file ends inside its packed data.
+
+        Decided from the listing, as :meth:`_missing_data_error` is. The callers ask
+        only for a member a program would decode; a stored plaintext member that
+        archivey slices itself reads up to the cut and then raises. ``unrar`` cannot
+        say why it failed on such a member. It exits 3, which for an encrypted member
+        that wrote nothing is also its RAR4 answer to a wrong password, and the bytes
+        it writes for the gap can fail the digest as corruption before its exit code
+        is read. ``None`` when the source size is not known.
+        """
+        size = self._shared.size
+        if size is None:
+            return None
+        if info.data_parts:
+            offset, part_size = info.data_parts[-1]
+            end = offset + part_size
+        elif _data_is_in_one_place(info):
+            end = info.data_offset + info.compress_size
+        else:
+            return None
+        if end <= size:
+            return None
+        return TruncatedError(
+            f"RAR member {quoted(member.name)} is cut short: its packed data ends at "
+            f"byte {end}, past the end of the file ({size} bytes).",
+            archive_name=self._archive_name,
+            member_name=member.name,
+            source_format=ArchiveFormat.RAR,
+        )
+
     def _unrar_path_for(self, info: RarMemberInfo) -> Path:
         """The volume ``unrar`` is pointed at to read this member.
 
@@ -3311,6 +3344,18 @@ class RarReader(BaseArchiveReader):
                     raise error
 
                 slot = _refused
+            elif (
+                not self._can_direct_read(raw)
+                and self._cut_data_error(member, raw) is not None
+            ):
+                # The file ends inside this member's data, so it is the last member
+                # listed and takes no offset a later member needs.
+                def _cut() -> BinaryIO:
+                    error = self._cut_data_error(member, raw)
+                    assert error is not None
+                    raise error
+
+                slot = _cut
             else:
                 slot = plan(member, raw, size, bool(hashes))
             open_fn: Callable[[], BinaryIO]
@@ -4177,6 +4222,10 @@ class RarReader(BaseArchiveReader):
 
         if self._decrypts_natively(raw):
             return self._open_decrypted_stored(member, raw)
+
+        cut = self._cut_data_error(member, raw)
+        if cut is not None:
+            raise cut
 
         if self._decompressor is RarDecompressor.NONE:
             raise self._no_decompressor_refused(member, raw)
