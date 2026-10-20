@@ -604,10 +604,10 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 
 **Building fixtures.** The standard library writes gzip and zlib (`gzip.compress`,
 `zlib.compress`); `tests/streams_util.py::make_bgzf` writes BGZF; `pigz` and `bgzip`
-(package `tabix`) install from the distribution. `scripts/setup-dev-env.sh` and the
-Linux `all` CI legs install `tabix`, so
+(package `tabix`) install from the distribution. `scripts/setup-dev-env.sh` (`tabix`
+on Linux, `htslib` on macOS) and the Linux `all` CI legs install `bgzip`, so
 `tests/test_bgzf_seek.py::test_a_real_bgzip_file_seeks_by_its_blocks` checks the walk
-against the reference writer; on macOS it skips.
+against the reference writer; the macOS CI legs skip it.
 `scripts/bench_rapidgzip_child.py` measures the child's start and round-trip cost.
 
 ## 9. References
