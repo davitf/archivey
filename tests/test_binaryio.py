@@ -34,6 +34,9 @@ from archivey.internal.streams.streamtools import (
 )
 from tests.streams_util import CountingBytesIO, NonSeekableBytesIO
 
+# Messages are compared with io.BytesIO only on CPython, whose wording archivey copies.
+_CPYTHON = sys.implementation.name == "cpython"
+
 DATA = b"0123456789abcdefghijklmnopqrstuvwxyz"
 
 
@@ -1143,7 +1146,9 @@ class TestResolveSeek:
         reference: Callable[..., int] = io.BytesIO().seek
         with pytest.raises(TypeError) as expected:
             reference(*args)
-        with pytest.raises(TypeError, match=re.escape(str(expected.value))):
+        # The message is CPython's: PyPy's io.BytesIO words it differently.
+        message = re.escape(str(expected.value)) if _CPYTHON else None
+        with pytest.raises(TypeError, match=message):
             resolve(*args, pos=4, end=self._end)
         assert self.end_calls == 0
 
@@ -1189,7 +1194,8 @@ class TestCheckReadSize:
             io.BytesIO(b"abc").read(bad)
         with pytest.raises(OverflowError) as excinfo:
             check_read_size(bad)
-        assert str(excinfo.value) == str(expected.value)
+        if _CPYTHON:  # PyPy words it differently
+            assert str(excinfo.value) == str(expected.value)
 
     @pytest.mark.parametrize("edge", [sys.maxsize, -sys.maxsize - 1])
     def test_ssize_t_bounds_pass(self, edge: int) -> None:
@@ -1203,4 +1209,5 @@ class TestCheckReadSize:
             io.BytesIO(b"abc").read(bad)  # type: ignore[arg-type]
         with pytest.raises(TypeError) as excinfo:
             check(bad)
-        assert str(excinfo.value) == str(expected.value)
+        if _CPYTHON:  # PyPy words it differently
+            assert str(excinfo.value) == str(expected.value)
