@@ -293,6 +293,17 @@ class MissingComponent:
     unlocks: tuple[str, ...] = ()
     """The codecs or features it enables, such as ``("ppmd",)``."""
 
+    reason: str = ""
+    """Why archivey does not use the package on this interpreter, where installing it
+    would not help, such as ``"archivey does not use lz4 under PyPy, where its frame
+    decoder crashes the interpreter"``. Empty when installing it is the fix."""
+
+    @property
+    def advice(self) -> str:
+        """What a report of this component says to do: ``reason`` when set, otherwise
+        ``install_hint``."""
+        return self.reason or self.install_hint
+
     def message(self, purpose: str, *, note: str = "") -> str:
         """Text for the ``PackageNotInstalledError`` raised when this component is absent.
 
@@ -305,10 +316,15 @@ class MissingComponent:
         ``note`` appends a sentence for cases where the bare hint would mislead (e.g.
         a backport that is pointless on a Python version shipping the module).
 
+        When ``reason`` is set it replaces the install advice, which would not help.
+
         For package entries only: a program entry's ``install_hint`` is already a
         complete message.
         """
-        text = f"The {self.name!r} package is required for {purpose} ({self.install_hint})."
+        if self.reason:
+            text = f"The {self.name!r} package is required for {purpose}, but {self.reason}."
+        else:
+            text = f"The {self.name!r} package is required for {purpose} ({self.install_hint})."
         return f"{text} {note}" if note else text
 
 

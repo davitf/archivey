@@ -904,6 +904,11 @@ def build_member_verifier(
 
     ``fill_size`` with a ``member`` and no ``expected_size`` is something to do: the
     verifier sets ``member.size`` when a read that skipped no byte reaches the end.
+
+    Building the verifier emits only ``DIGEST_UNVERIFIABLE``, once for each entry of
+    ``expected`` that has no hasher. A lazy ``ArchiveStream`` that builds its own
+    verifier relies on that: it enters its diagnostic scope for the build only when
+    ``expected`` is non-empty.
     """
     hashes = expected if expected is not None else {}
     fills = fill_size and member is not None and expected_size is None

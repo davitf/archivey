@@ -60,6 +60,7 @@ from archivey.internal.streams.child_process import (
     spawn,
     unavailable_reason,
 )
+from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.decoder_worker import (
     RAPIDGZIP_ARG,
     parse_error_payload,
@@ -176,10 +177,20 @@ def _start_error(reason: str) -> RapidgzipChildStartError:
     )
 
 
+# rapidgzip under PyPy refuses valid gzip streams ("Failed to detect a valid file
+# format"), reads a bzip2 stream as empty, and aborts the process when it reads a Python
+# file object. An empty read is wrong data, not a crash a fallback can catch, so no child
+# runs it there (dev-docs/known-issues.md).
+
+
 def rapidgzip_child_unavailable_reason() -> str | None:
     """Why no Python child process can be started to run the worker script, or ``None``
     when one can (see :func:`~archivey.internal.streams.child_process.unavailable_reason`).
+    Under PyPy, where rapidgzip misreads valid streams, there is always a reason.
     """
+    pypy_reason = deps.unused_reason("rapidgzip")
+    if pypy_reason:
+        return pypy_reason
     return unavailable_reason(_WORKER, "rapidgzip")
 
 

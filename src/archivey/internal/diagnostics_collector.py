@@ -9,8 +9,8 @@ is capped at ``max_retained``. Exact counts are kept as a small fixed per-code `
 Ranged snapshots are computed by differencing a cheap :class:`DiagnosticWatermark` (a
 sequence number plus a per-code count snapshot) against the live counters, and an
 operation's snapshot (a member stream's, an extraction's) comes from its
-:class:`DiagnosticScope`, which its owner holds: a per-code ``Counter`` of its own, and a
-tag on the retained entries. So nothing grows with the number of emitted diagnostics, and
+:class:`DiagnosticScope`, which its owner holds: a per-code count of its own, and a tag on
+the retained entries. So nothing grows with the number of emitted diagnostics, and
 a scope lives as long as its stream or a retained entry that names it.
 """
 
@@ -82,7 +82,9 @@ class DiagnosticScope:
     def __init__(self, collector: DiagnosticCollector) -> None:
         self._collector = collector
         self._total = 0
-        self._counts: Counter[DiagnosticCode] = Counter()
+        # A plain dict, not a Counter: every member stream builds a scope, and a
+        # Counter costs over ten times as much to build.
+        self._counts: dict[DiagnosticCode, int] = {}
 
     def summary(self) -> DiagnosticSummary:
         """The emits counted so far: exact counts, and those still retained."""
@@ -529,7 +531,7 @@ class DiagnosticCollector:
                 scopes = tuple(open_scopes)
                 for scope in scopes:
                     scope._total += 1
-                    scope._counts[code] += 1
+                    scope._counts[code] = scope._counts.get(code, 0) + 1
 
             retained_aggregate = False
             attached = False

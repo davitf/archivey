@@ -51,7 +51,12 @@ class Lz4Codec(StreamCodec):
         # The legacy stream ``lz4 -l`` writes, and Linux kernel images use.
         MagicSignature(0, LEGACY_MAGIC, ArchiveFormat.LZ4),
     )
-    requirement = MissingComponent("lz4", "pip install archivey[recommended]", ("lz4",))
+    requirement = MissingComponent(
+        "lz4",
+        "pip install archivey[recommended]",
+        ("lz4",),
+        reason=deps.unused_reason("lz4"),
+    )
 
     def _backend_present(self) -> bool:
         return deps.lz4_frame is not None and deps.lz4_block is not None

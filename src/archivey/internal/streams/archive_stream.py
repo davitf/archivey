@@ -15,9 +15,7 @@ from __future__ import annotations
 
 import contextlib
 import io
-import sys
 import threading
-import weakref
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import TracebackType
@@ -86,8 +84,10 @@ class RewindWarning:
 
     ``codec_name`` names the format. When an ``accelerator`` package (the ``[seekable]``
     extra) can provide indexed random access, the report names it. ``suggest_install`` is
-    True when that package is absent (tell the user to install it) and False when it is
-    present.
+    True when that package is absent and installing it would help (tell the user to
+    install it). ``unused_reason`` is set instead when archivey does not use the package
+    on this interpreter (``deps.unused_reason``), and the report gives that reason. With
+    neither, the package is present and the report says its index had no closer point.
 
     ``min_redecode_bytes`` is a cost floor the predicate maxes against. Use it when the
     carrier re-decodes bytes the member stream's own ``tell()`` does not contain (a
@@ -99,6 +99,7 @@ class RewindWarning:
     accelerator: str | None = None
     suggest_install: bool = True
     min_redecode_bytes: int = 0
+    unused_reason: str = ""
 
 
 def _noop_stamp(_exc: ArchiveyError) -> None:
@@ -163,8 +164,9 @@ class ArchiveStream(ReadOnlyIOStream):
     4. **Fused verify** — optional ``MemberVerifier`` (digests / ``expected_size``) runs
        in ``read`` / ``close``. Distinct from bare ``size=`` (fsspec attribute only —
        does **not** enable length checks).
-    5. **Lease / finalizer** — ``on_close`` releases reader live-stream state; a
-       weakref finalizer is a safety net if the caller never ``close()``s.
+    5. **Lease** — ``on_close`` releases reader live-stream state, in ``close()``'s
+       ``finally``. A stream the caller never closes is closed by ``IOBase.__del__``
+       when it is collected, so the lease is released then.
 
     Prefer constructing via backends / ``open_codec_stream`` rather than by hand.
     """
@@ -208,10 +210,9 @@ class ArchiveStream(ReadOnlyIOStream):
         self._size = size
         self._diagnostics_collector = collector
         self._on_close = on_close
-        # ``close()`` reads these two. Assign them before the verifier build below,
-        # which can raise (a digest diagnostic under a RAISE policy): ``IOBase.__del__``
-        # still calls ``close()`` on an instance whose ``__init__`` raised.
-        self._finalizer: weakref.finalize | None = None
+        # ``close()`` reads this. Assign it before the verifier build below, which can
+        # raise (a digest diagnostic under a RAISE policy): ``IOBase.__del__`` still
+        # calls ``close()`` on an instance whose ``__init__`` raised.
         self._closing = False
         self._verifier: MemberVerifier | None = verifier
         # The content verdict this stream raised, if any. Every later read and seek
@@ -234,9 +235,15 @@ class ArchiveStream(ReadOnlyIOStream):
         self._diagnostics_scope: DiagnosticScope | None = (
             collector.new_scope() if collector is not None else None
         )
+        # Only an eager open and a digest the verifier cannot check emit here, so a
+        # lazy stream with no digest skips entering the scope: ``stream_members()``
+        # builds one such stream per member.
+        can_emit = not lazy or (bool(expected_hashes) and verifier is None)
         with (
             collector.inside(self._diagnostics_scope)
-            if collector is not None and self._diagnostics_scope is not None
+            if can_emit
+            and collector is not None
+            and self._diagnostics_scope is not None
             else contextlib.nullcontext()
         ):
             self._init_checks(
@@ -296,60 +303,6 @@ class ArchiveStream(ReadOnlyIOStream):
         if self._member_name is None:
             raise AttributeError("name")
         return self._member_name
-
-    def _attach_finalizer(self) -> None:
-        """Safety-net finalizer: release the lease if the caller never closed us.
-
-        Never raises; reports via ``sys.unraisablehook`` if release fails.
-
-        Shutdown caveat: the release path takes ``ReaderState``'s lock. At interpreter
-        exit, ``weakref.finalize``'s atexit hook runs while daemon threads are frozen —
-        a daemon thread that died *inside* a reader-state critical section leaves the
-        lock held forever and this finalizer would then hang shutdown. The window is a
-        few bytecodes wide and requires daemon threads driving a reader at exit; noted
-        so a future refactor doesn't widen it (e.g. by making the finalizer wait on a
-        condition).
-
-        Ordering note: this must be called AFTER ``_on_close`` is assigned — the
-        callback captures ``self._on_close`` at attach time, not at fire time.
-        """
-        if self._finalizer is not None:
-            return
-        on_close = self._on_close
-
-        def _finalize() -> None:
-            try:
-                if on_close is not None:
-                    on_close()
-            except Exception as exc:  # noqa: BLE001 - finalizers must not raise
-                from types import SimpleNamespace
-                from typing import cast
-
-                try:
-                    # ``sys.unraisablehook`` expects UnraisableHookArgs; SimpleNamespace
-                    # matches the runtime shape (exc_type/value/traceback/err_msg/object).
-                    hook_args = cast(
-                        sys.UnraisableHookArgs,
-                        SimpleNamespace(
-                            exc_type=type(exc),
-                            exc_value=exc,
-                            exc_traceback=exc.__traceback__,
-                            err_msg="ArchiveStream finalizer failed",
-                            object=None,
-                        ),
-                    )
-                    sys.unraisablehook(hook_args)
-                except Exception:  # noqa: BLE001 - never raise from a finalizer
-                    pass
-
-        # Hold only the close hook; do not keep the stream alive.
-        self._finalizer = weakref.finalize(self, _finalize)
-
-    def _detach_finalizer(self) -> None:
-        finalizer = self._finalizer
-        self._finalizer = None
-        if finalizer is not None:
-            finalizer.detach()
 
     @property
     def diagnostics(self) -> DiagnosticSummary:
@@ -451,11 +404,7 @@ class ArchiveStream(ReadOnlyIOStream):
         outer_translate = self._translate
         outer_stamp = self._stamp
 
-        def composed_translate(exc: Exception) -> ArchiveyError | None:
-            translated = nested_translate(exc)
-            if translated is not None:
-                return translated
-            return outer_translate(exc)
+        composed_translate = compose_translators(nested_translate, outer_translate)
 
         def composed_stamp(err: ArchiveyError) -> None:
             nested_stamp(err)
@@ -481,7 +430,6 @@ class ArchiveStream(ReadOnlyIOStream):
             inner = nested._inner
             nested._open_fn = None
             nested._inner = None
-        nested._detach_finalizer()
         # Only the handle returned to the caller gets a lease hook; a nested wrapper
         # is backend-internal and never registered, so there is nothing to drop.
         assert nested._on_close is None, "collapse would discard a nested lease hook"
@@ -577,25 +525,7 @@ class ArchiveStream(ReadOnlyIOStream):
 
     def _raise_translated(self, e: Exception) -> NoReturn:
         """Translate + stamp ``e`` and raise, or re-raise it unchanged."""
-        if isinstance(e, ArchiveyError):
-            self._stamp(e)
-            raise e
-        translated_closed = as_closed_source_error(e, self._member_name)
-        if translated_closed is not None:
-            # The *inner* stream hit a closed handle underneath it — typically the
-            # caller closed the BinaryIO they passed in. Mapped here, before the
-            # per-library translator, so a backend's generic ValueError mapping cannot
-            # claim it. The wrapper's own read-after-close never reaches _fail (plain
-            # ValueError from _ensure_open). BaseArchiveReader._raise_translated maps
-            # the same error raised while a member opens, with the same message.
-            logger.debug("Translated exception: %r -> %r", e, translated_closed)
-            raise translated_closed from e
-        translated = self._translate(e)
-        if translated is not None:
-            self._stamp(translated)
-            logger.debug("Translated exception: %r -> %r", e, translated)
-            raise translated from e
-        raise e
+        raise_translated(e, self._translate, self._stamp, self._member_name)
 
     def read(self, n: int | None = -1, /) -> bytes:
         """Read up to ``n`` bytes of the member; ``-1`` or ``None`` reads to EOF.
@@ -824,6 +754,11 @@ class ArchiveStream(ReadOnlyIOStream):
             )
         if warning.accelerator is None:
             return f"{cost}. {where}"
+        if warning.unused_reason:
+            return (
+                f"{cost}. {where} The '{warning.accelerator}' accelerator is not "
+                f"available: {warning.unused_reason}."
+            )
         if warning.suggest_install:
             return (
                 f"{cost}. {where} Install the 'seekable' extra ({warning.accelerator}) "
@@ -909,7 +844,6 @@ class ArchiveStream(ReadOnlyIOStream):
             # probe / force positioning).
         finally:
             super().close()
-            self._detach_finalizer()
             on_close = self._on_close
             self._on_close = None
             teardown_exc: Exception | None = None
@@ -930,6 +864,58 @@ class ArchiveStream(ReadOnlyIOStream):
 
     def __repr__(self) -> str:
         return f"<ArchiveStream inner={self._inner!r}>"
+
+
+def raise_translated(
+    e: Exception,
+    translate: ExceptionTranslator,
+    stamp: ErrorStamp = _noop_stamp,
+    member_name: str | None = None,
+) -> NoReturn:
+    """Translate + stamp ``e`` and raise it, or re-raise it unchanged.
+
+    The error boundary of :class:`ArchiveStream`, also for a caller that opens a codec
+    before it builds the stream that will carry its translator
+    (:func:`~archivey.internal.streams.codecs.registry.open_codec_raw`), so an open
+    failure raises what the stream would have raised.
+    """
+    if isinstance(e, ArchiveyError):
+        stamp(e)
+        raise e
+    translated_closed = as_closed_source_error(e, member_name)
+    if translated_closed is not None:
+        # The *inner* stream hit a closed handle underneath it — typically the
+        # caller closed the BinaryIO they passed in. Mapped here, before the
+        # per-library translator, so a backend's generic ValueError mapping cannot
+        # claim it. The wrapper's own read-after-close never reaches _fail (plain
+        # ValueError from _ensure_open). BaseArchiveReader._raise_translated maps
+        # the same error raised while a member opens, with the same message.
+        logger.debug("Translated exception: %r -> %r", e, translated_closed)
+        raise translated_closed from e
+    translated = translate(e)
+    if translated is not None:
+        stamp(translated)
+        logger.debug("Translated exception: %r -> %r", e, translated)
+        raise translated from e
+    raise e
+
+
+def compose_translators(
+    inner: ExceptionTranslator, outer: ExceptionTranslator
+) -> ExceptionTranslator:
+    """A translator that asks ``inner`` first and ``outer`` when ``inner`` declines.
+
+    The order a collapsed nested stream uses: the codec's own taxonomy before the
+    reader's.
+    """
+
+    def composed(exc: Exception) -> ArchiveyError | None:
+        translated = inner(exc)
+        if translated is not None:
+            return translated
+        return outer(exc)
+
+    return composed
 
 
 def _is_content_verdict(error: BaseException) -> bool:
