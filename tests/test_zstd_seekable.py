@@ -14,7 +14,6 @@ from typing import Any
 import pytest
 
 from archivey.diagnostics import DiagnosticCode
-from archivey.exceptions import CorruptionError
 from archivey.internal.config import StreamConfig
 from archivey.internal.streams.codecs import Codec, open_codec_stream
 from archivey.internal.streams.codecs.zstd_seek_table import read_seek_table
@@ -107,15 +106,100 @@ def test_an_empty_frame_adds_no_point_of_its_own() -> None:
         assert _points(stream) == [0, STARTS[1]]
 
 
-def test_a_seek_into_a_misplaced_frame_raises_when_the_decode_reaches_it() -> None:
-    """The table puts frame 3 where frame 2 starts; decoding into it notices."""
+def _contradicted(seen: list[Any]) -> Any:
+    """The one report that the decode contradicted the index."""
+    (report,) = _degraded(seen)
+    assert report.context.scan == "decode_check"
+    assert report.context.error_type == "SeekIndexContradicted"
+    return report
+
+
+def test_a_seek_into_a_misplaced_frame_drops_the_table_when_the_decode_reaches_it() -> (
+    None
+):
+    """The table puts frame 3 where frame 2 starts; decoding past frame 2 notices.
+
+    The decode began at the table's point for frame 1, so its offsets are the table's
+    too: the stream restarts it from the start and the read gets the right bytes.
+    """
     data = _lying_table_file()
-    with _open(io.BytesIO(data)) as stream:
-        with pytest.raises(
-            CorruptionError, match="zstd seek table and the data do not agree"
-        ):
-            stream.seek(STARTS[1] + 5)
-            stream.read()
+    collector, seen = _collector()
+    with _open(io.BytesIO(data), collector=collector) as stream:
+        stream.seek(STARTS[1] + 5)
+        assert stream.read() == FULL[STARTS[1] + 5 :]
+        _contradicted(seen)
+        stream.seek(STARTS[3] + 1)
+        assert stream.read(10) == FULL[STARTS[3] + 1 : STARTS[3] + 11]
+        assert stream.seek(0, io.SEEK_END) == len(FULL)
+
+
+def _frame_0_size_lie() -> bytes:
+    """The table's compressed sizes are right, but frame 0 claims 100 output bytes."""
+    zstd = zstd_backend()
+    frames = [zstd.compress(p) for p in PARTS]
+    sizes = [(len(f), len(p)) for f, p in zip(frames, PARTS, strict=True)]
+    sizes[0] = (sizes[0][0], 100)
+    return b"".join(frames) + seekable_zstd_table(sizes)
+
+
+def test_a_forward_read_that_contradicts_the_table_drops_it() -> None:
+    """The table puts frame 1 at 100; a read from the start finds it at ``STARTS[1]``.
+
+    Both points have frame 1's compressed offset. The table's one is dropped with the
+    rest of the table, so a later seek to 150 resumes from the start, not from frame 1.
+    """
+    collector, seen = _collector()
+    with _open(io.BytesIO(_frame_0_size_lie()), collector=collector) as stream:
+        stream.seek(50)  # reads the table
+        assert stream.read(10) == FULL[50:60]
+        stream.read(STARTS[1] + 10_000)  # decodes past frame 1's start
+        report = _contradicted(seen)
+        assert report.context.codec == "zstd"
+        assert _points(stream) == [0, STARTS[1]]
+        stream.seek(150)
+        assert stream.read(10) == FULL[150:160]
+        assert stream.seek(0, io.SEEK_END) == len(FULL)
+        stream.seek(STARTS[4])
+        assert stream.read(10) == FULL[STARTS[4] : STARTS[4] + 10]
+    assert len(_degraded(seen)) == 1
+
+
+def test_a_size_from_a_contradicted_table_is_forgotten() -> None:
+    collector, seen = _collector()
+    with _open(io.BytesIO(_frame_0_size_lie()), collector=collector) as stream:
+        lie = len(FULL) - len(PARTS[0]) + 100
+        assert stream.seek(0, io.SEEK_END) == lie
+        stream.seek(0)
+        stream.read(STARTS[1] + 10)
+        _contradicted(seen)
+        assert _engine(stream).try_get_size() is None
+        assert stream.seek(0, io.SEEK_END) == len(FULL)
+        assert _engine(stream).try_get_size() == len(FULL)
+
+
+def test_a_contradiction_under_strict_raises_after_the_read_and_reading_goes_on() -> (
+    None
+):
+    from archivey import DiagnosticPolicy
+    from archivey.exceptions import DiagnosticRaisedError
+    from archivey.internal.diagnostics_collector import DiagnosticCollector
+
+    collector = DiagnosticCollector(policy=DiagnosticPolicy.STRICT)
+    with _open(io.BytesIO(_lying_table_file()), collector=collector) as stream:
+        stream.seek(STARTS[1] + 5)
+        pieces: list[bytes] = []
+        raises = 0
+        while True:
+            try:
+                chunk = stream.read(30_000)
+            except DiagnosticRaisedError:
+                raises += 1
+                continue
+            if not chunk:
+                break
+            pieces.append(chunk)
+        assert raises == 1
+        assert b"".join(pieces) == FULL[STARTS[1] + 5 :]
 
 
 def test_skippable_frames_before_a_frame_add_no_point_of_their_own() -> None:

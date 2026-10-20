@@ -627,11 +627,12 @@ class EncryptedVerificationContext(_JsonSafeContext):
 
 @dataclass(frozen=True)
 class SeekIndexContext(_JsonSafeContext):
-    """Seek index build failed, was skipped, or was thinned.
+    """Seek index build failed, was skipped, was thinned, or was dropped.
 
     A failed or skipped build means the stream may redecompress on rewind. A thinned
     table (more entries than the seek-table cap) still works, with points further
-    apart, so a seek may decode further than it would otherwise.
+    apart, so a seek may decode further than it would otherwise. An index that a decode
+    proved wrong is dropped, and seeks resume only from points found by decoding.
     """
 
     kind: Literal["seek_index"] = "seek_index"
@@ -640,7 +641,8 @@ class SeekIndexContext(_JsonSafeContext):
     member_id: int | None = None
     codec: str = ""
     scan: str = ""
-    # The failing exception's class name, or "SeekTableThinned" for a thinned table.
+    # The failing exception's class name, "SeekTableThinned" for a thinned table, or
+    # "SeekIndexContradicted" (scan "decode_check") for an index a decode proved wrong.
     error_type: str = ""
 
 

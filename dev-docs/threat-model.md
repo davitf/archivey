@@ -1178,19 +1178,38 @@ it, and avoiding that is the index's purpose. Decoding from the start before the
 cold seek would remove fast random access for every honest file, and xz's and lzip's
 own tools trust their indexes the same way.
 
-What the design still catches: a seek landing inside the misdescribed region resumes
-from a checked point before it and raises when the decode reaches the end of the lying
-unit (the member's trailer for lzip and BGZF, the stream end for xz, the start of the
-frame the table placed elsewhere for zstd); bytes returned before that are correct for their
-offsets. A seek past the lie followed by a read to the end is not
-caught, since every later unit is genuine. A diagnostic for an ambiguous trailer walk was
-considered and not taken: an attacker who controls the trailers can avoid it. Public:
+What the design still catches. For lzip, xz and a BGZF ISIZE that lies, a seek landing
+inside the misdescribed region resumes from a checked point before it and raises when
+the decode reaches the end of the lying unit (the member's trailer for lzip and BGZF, the
+stream end for xz); bytes returned before that are correct for their offsets. A zstd
+seek table, or a BGZF BSIZE, can misstate the output size of a unit whose data is
+genuine, so nothing raises there. Instead the stream compares each unit start a decode
+finds with the index. When the two put the same compressed offset (with the same resume
+state) at different output offsets, the index is wrong, and the stream drops every point
+the index gave and every point a decode counted from one, forgets a size the index gave,
+and emits `SEEK_INDEX_DEGRADED` (scan `decode_check`, type `SeekIndexContradicted`).
+Later seeks use only the points found by a decode from the start, and a size query
+decodes to the end. A decode in progress that began at an index point restarts from such
+a point, so the read, seek or size query that found the lie returns the right bytes and
+the right position. Ruled by davi on 2026-10-20: the index is only an accelerator, and a
+file that zstd or gzip decodes is not refused. A lie is caught once a decode passes the
+first unit start the index lists after it. Not caught: a cold seek past the lie followed
+by a read to the end (every later unit is genuine, and the decode agrees with the
+index's shifted offsets), and the bytes a decode returned before it reached that unit
+start. Where the index and a decode put two different compressed offsets at one output
+offset, nothing is proved (an empty lzip member makes that pair in an honest file): the
+decoded point is kept, and the check above catches the lie at the next unit start. A
+diagnostic for an ambiguous trailer walk was considered and not taken: an attacker who
+controls the trailers can avoid it. Public:
 [the integrity guarantee](../docs/errors-and-diagnostics.md#the-integrity-guarantee) and
 [where the guarantees stop](../docs/security.md#where-the-guarantees-stop). Tests:
 `tests/test_seekable_streams.py::test_lzip_cold_seek_trusts_a_self_consistent_trailer_chain`,
 `::test_xz_cold_seek_trusts_a_self_consistent_block_index`,
 `tests/test_zstd_seekable.py::test_cold_seek_trusts_a_self_consistent_table`,
-`tests/test_bgzf_seek.py::test_bgzf_cold_seek_trusts_the_block_sizes`.
+`::test_a_forward_read_that_contradicts_the_table_drops_it`,
+`::test_a_seek_into_a_misplaced_frame_drops_the_table_when_the_decode_reaches_it`,
+`tests/test_bgzf_seek.py::test_bgzf_cold_seek_trusts_the_block_sizes`,
+`::test_a_forward_read_that_contradicts_the_walk_drops_it`.
 
 ### Windows directory sources
 

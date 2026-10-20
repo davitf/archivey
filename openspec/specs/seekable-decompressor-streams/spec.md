@@ -480,6 +480,21 @@ size it reports stays exact. Thinning SHALL emit `SEEK_INDEX_DEGRADED` (failure
 type `SeekTableThinned`). The cap is structural rather than a config field
 because passing it costs seek speed, never a readable file.
 
+A point an index scan gave (the xz index, lzip trailers, the zstd seek table, the
+BGZF walk), and a point recorded by a decode that resumed at such a point, SHALL be
+marked as the index's. When two points name the same compressed offset with the same
+resume state but different decompressed offsets, and either is the index's, the index
+is wrong. The stream SHALL then drop every point that is the index's, forget a size the
+index gave (or a decode that resumed at an index point reached), and emit
+`SEEK_INDEX_DEGRADED` (scan `decode_check`, failure type `SeekIndexContradicted`), once
+per stream. Later seeks SHALL resume only from points a decode from the origin found,
+and a later size query SHALL decode to the end. A decoder that resumed at an index
+point SHALL be restarted from such a point before the read, seek or size query that
+found the contradiction returns, so that operation returns the right bytes and
+position; the file SHALL NOT be refused. An index point and a decoded point at the
+same decompressed offset with different compressed offsets SHALL NOT raise: the
+decoded point is kept (an empty lzip member makes such a pair in an honest file).
+
 #### Scenario: seek-index degradation matrix
 
 | Case | Expected |
@@ -495,6 +510,9 @@ because passing it costs seek speed, never a readable file.
 | A forward read's per-stream xz scan finds more blocks than the cap | That stream's blocks thinned by spacing; `SEEK_INDEX_DEGRADED`; seeks read the right bytes |
 | Forward read records more points than the cap | Table thinned by spacing; `SEEK_INDEX_DEGRADED`; later seeks read the right bytes |
 | XZ blocks after a resume point decode to a size other than the stream index declares | `CorruptionError` |
+| A forward read finds a frame or member start at another output offset than the zstd seek table or BGZF walk gave it | `SEEK_INDEX_DEGRADED` (scan `decode_check`, `SeekIndexContradicted`); index points and size dropped; later seeks and the size match a read from the start |
+| The same, found by a decode that resumed at an index point | That read, seek or size query restarts from a decoded point and returns the right bytes |
+| Lzip file with an empty member; size query before or after a forward read | Every read right; no collision error, no diagnostic |
 
 ### Requirement: Unix-compress uses CLEAR seek points
 
@@ -560,8 +578,9 @@ A forward seek past the known points, a `SEEK_END`, or a size query SHALL read t
 *Seekable Zstandard* seek table when the source ends with one (skippable magic
 `0x184D2A5E`, footer magic `0x8F92EAB1`). Its frame sizes SHALL give the seek points and
 the total size, with no decoding. The table is trusted like the xz and lzip indexes
-(threat-model O17); its per-frame XXH64 checksums SHALL NOT be checked. A table over the
-seek-table cap SHALL be thinned and keep the exact total.
+(threat-model O17) until a decode contradicts it, which drops it (§"Recoverable
+seek-index degradation is diagnostic data"); its per-frame XXH64 checksums SHALL NOT be
+checked. A table over the seek-table cap SHALL be thinned and keep the exact total.
 
 #### Scenario: seek table matrix
 
@@ -570,6 +589,7 @@ seek-table cap SHALL be thinned and keep the exact total.
 | `seek(0, SEEK_END)` | Total from the table; only the table is read |
 | Seek into frame N | Decoding resumes at frame N's start |
 | Reserved descriptor bits set, a frame of 0 compressed bytes, or frame sizes that do not reach the table | `SEEK_INDEX_DEGRADED` (scan `zstd_seek_table`); reads decode from the start |
+| A frame's decompressed size is wrong; read from the start past the next frame, then seek back into the first | `SEEK_INDEX_DEGRADED` (scan `decode_check`); the seek returns the first frame's bytes; the size is the decoded one |
 | Zeros after the table | No table found, no diagnostic; reads decode from the start |
 
 ### Requirement: gzip member starts are seek points
@@ -594,7 +614,8 @@ file's members from the start, reading the file once front to back and inflating
 nothing: each member's `BC` extra subfield gives its size and its ISIZE its output. The
 walk SHALL stop quietly at the first member without one, keeping the points before it;
 the size is known only when it reaches the end of the file. The sizes are trusted like
-the xz and lzip indexes (threat-model O17). A file whose first member is not BGZF SHALL
+the xz and lzip indexes (threat-model O17) until a decode contradicts them, which drops
+the walk's points and size. A file whose first member is not BGZF SHALL
 cost one read buffer's worth before the walk stops. A `.gzi` file is not read.
 
 #### Scenario: BGZF walk matrix
@@ -606,3 +627,4 @@ cost one read buffer's worth before the walk stops. A `.gzi` file is not read.
 | Seek into block N | Decoding resumes at block N's start |
 | BGZF blocks, then a plain member | Points for the blocks; size from decoding to the end |
 | Walk over the seek-table cap | `SEEK_INDEX_DEGRADED` (scan `bgzf_blocks`, `SeekTableThinned`); exact total kept |
+| A member's `BSIZE` covers the next member too; size query, then a read from the start | Size first the walk's; the read is right; `SEEK_INDEX_DEGRADED` (scan `decode_check`); then size and seeks are the decode's |
