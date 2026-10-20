@@ -229,7 +229,10 @@ for every source.
 **Symptom.** pyppmd 1.3.x corrupts the heap (SIGSEGV or SIGABRT on Linux,
 `STATUS_HEAP_CORRUPTION` 0xC0000374 on Windows) when a decode asks for more output than the
 stream holds: `max_length=-1`, a sized request about 64 KiB or more past the true
-remaining output, or a `decode` after `eof`. Valgrind pins the first bad write as a
+remaining output, or a `decode` after `eof`. A sized over-request leaves the worker
+waiting for input once it runs past what the range coder's tail lookahead can satisfy,
+and freeing the decoder in that state is the crash (bare pyppmd, decoder freed without a
+quiesce: +64 and +4096 over, 0/20; +65536 over, 13/20). Valgrind pins the first bad write as a
 use-after-free of pyppmd's own output buffer at `ThreadDecoder.c:134`. Random input (a
 wrong 7z AES key, a hostile archive) reaches a second route: a model that ended early and
 is fed more input segfaults in `Ppmd7_DecodeSymbol`, on 1.2.0 as well. PPMd8 behaves the
@@ -254,10 +257,30 @@ SIGKILL or a refused `mem_size`, `ReadError` for other deaths). Pinned by
 `tests/test_ppmd_crash_isolation.py` and `tests/test_ppmd_raw_streams.py`; the
 non-blocking PPMd native stress workflow watches for regressions.
 
-**What remains.** A crafted 7z or ZIP header that inflates `unpack_size` 64 KiB or more
-past the member's true content puts the one in-process decode call into the crashing class
-(for members under the in-process limit). Archivey cannot detect the lie before decoding;
-the CRC check catches the garbage output after the fact. Only an upstream fix closes it.
+**What remains.** No crash is confirmed on the in-process path; the defect is upstream,
+so the path rests on archivey's call discipline, not on a fixed decoder. A header that
+overstates `unpack_size` measured clean: crafted 7z (PPMd7) and ZIP (PPMd8, with and
+without an end mark) members overstated by 64 KiB, 1 MiB and 15 MiB, read through
+`open_archive` with `read()` and with 64 KiB reads, across text, zero-run, mixed and
+random payloads, gave 0 crashes in 860 fresh children and 0 valgrind errors on 12 such
+shapes. On those members the worker blocked on input a few hundred to a few thousand
+symbols past the true end, and the spent-payload stop and quiesce then held. Two
+candidates remain:
+
+1. The teardown NUL on a member that ended early. When a sized decode returns short at
+   `eof` with all input fed, `_quiesce_worker` still sends `decode(b"\0", 1)`, up to
+   `_PPMD_QUIESCE_MAX_CALLS` times, because pyppmd reports the same flags whether its
+   worker waits for input (the NUL is needed, K.5) or its model has ended (the NUL is a
+   decode after the end, the K.4 route). archivey sends it on 183 of 200 hostile 7z
+   members; in isolation it measured 0 crashes in 100 children
+   (`--mode spent-quiesce-nul`, K.4).
+2. A sized pack declared complete but corrupt can fill toward `unpack_size` through
+   empty drains (the exit-after-green entry below, item 2).
+
+The same NULs sent after a `decode` that raised `ValueError` do crash pyppmd (59 of 100
+children for PPMd8, 5 of 100 for PPMd7, `--mode nul-after-error`), but archivey never
+makes that call: after the error pyppmd reports `eof`, and `_quiesce_worker` returns
+without decoding (0 calls after 370 errors, K.4).
 
 **Upstream.** Not filed. The ready-to-file report, its reproduction scripts and the
 verification checklist for a fixed release are

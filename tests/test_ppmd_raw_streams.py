@@ -827,10 +827,11 @@ def test_ppmd_decoder_never_passes_unbounded_max_length(
 def test_archivey_ppmd7_requires_unpack_size() -> None:
     """Unsized PPMd7 is rejected outright — there is no safe decode request for it.
 
-    PPMd7 has no end mark, and on pyppmd 1.3.x any decode request materially past
-    the true remaining output corrupts the heap (measured: requests ≥64 KiB beyond
-    the payload crash even without ``-1``). With no declared size there is no
-    correct output boundary either, so construction fails fast instead.
+    PPMd7 has no end mark, and on pyppmd 1.3.x a decode request materially past the
+    true remaining output leaves the native worker waiting for input, which corrupts
+    the heap when the decoder is freed (bare pyppmd: +65536 over crashed 13/20, +64
+    and +4096 over 0/20). With no declared size there is no correct output boundary
+    either, so construction fails fast instead.
     """
     with pytest.raises(ValueError, match="unpack_size"):
         PpmdDecompressorStream(

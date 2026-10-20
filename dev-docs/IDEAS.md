@@ -142,13 +142,13 @@ Each idea carries a status:
   an off-grid size could be reported as a wrong password. Measure what real writers emit
   first.
 - **Salvage mode.** *Needs design.* Backups are full of truncated and corrupt archives.
-  Reads already return the readable prefix and then raise, but nothing resyncs past
-  damage. A salvage mode would walk ZIP local headers when the central directory is gone,
-  resync a TAR stream on the next valid header, and return every recoverable member with
-  its error.
-- **Keep iterating past a damaged member.** *Needs design.* Once `stream_members()` raises,
-  the generator is finished. Yielding per-member errors where the format allows would let
-  `archivey test` report every bad member. Narrower than salvage.
+  Reads already return the readable prefix and then raise, and a member's data error
+  already leaves `stream_members()` running wherever the next member is reachable (ZIP,
+  7z, RAR, ISO, plain TAR; `archive-reading` spec). What is left is damage to the
+  archive's structure, which ends the pass: nothing resyncs past it. A salvage mode would
+  walk ZIP local headers when the central directory is gone or a pipe's local-header walk
+  loses its place, resync a TAR or compressed TAR stream on the next valid header, and
+  return every recoverable member with its error.
 
 ## Performance
 

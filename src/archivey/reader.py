@@ -291,6 +291,11 @@ class ForwardArchiveReader(ABC):
         higher limit, or ``ListingLimits.UNLIMITED``, to be streamed; the reader then
         keeps every member until it closes.
 
+        A member whose data is damaged raises from its own stream read and does not
+        end the pass; on a solid archive the later members of its block fail the same
+        way. The pass raises only when damage to the archive's structure stops it
+        finding the next member, such as a TAR cut inside a member.
+
         ``file_copy_streams=False`` also yields ``None`` for a file that the archive
         stores as a copy of an earlier member (``extra["is_file_copy"]``, a RAR5 file
         copy). Its bytes and digests are its source's, ``link_target_member``, so a
