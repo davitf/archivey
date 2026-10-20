@@ -241,8 +241,9 @@ class GzipDecoder(BaseDecoder):
             return DecodeOut(out)
         if not self._between_members:
             # Inside a member, with all of its input fed: the member is cut. zlib can
-            # still hold output back until flush(), but flush() gets no new input, so it
-            # cannot reach the trailer and end the member.
+            # still hold output back, which _inflate_rest returns, but it cannot end the
+            # member: while output is held, the 8-byte trailer is still unconsumed input,
+            # so a member that gets here never reached its trailer.
             out += _inflate_rest(self._decomp, gzip_error)
             self._pending_error = TruncatedError(truncated_message("gzip"))
         elif self._retained:

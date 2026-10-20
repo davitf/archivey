@@ -257,7 +257,14 @@ def stream_end(
             if not data:
                 data = source.read(1 << 16)
                 if not data:
-                    return None, False
+                    # zlib can still hold output an earlier ``max_length`` cut kept
+                    # back, the final block's included: drain it before calling the
+                    # stream cut, as ``_inflate_rest`` does.
+                    held = len(decomp.decompress(b"", 1 << 20))
+                    if not held:
+                        return None, False
+                    produced += held
+                    continue
                 data, bit = _splice(bit, data), 0
             produced += len(decomp.decompress(data, 1 << 20))
             data = decomp.unconsumed_tail
