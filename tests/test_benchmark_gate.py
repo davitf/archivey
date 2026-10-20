@@ -680,3 +680,46 @@ def test_format_text_report_cost_model_section() -> None:
         in report
     )
     assert "zip archivey read 64 × 256 KiB" in report
+
+
+@pytest.mark.parametrize(
+    ("mode", "peer"),
+    [
+        ("w:gz", harness._stdlib_targz_read_all),
+        ("w:bz2", harness._stdlib_tarbz2_read_all),
+    ],
+)
+def test_compressed_tar_peers_read_the_file_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, peer
+) -> None:
+    """The tar.gz / tar.bz2 stdlib peers decompress the stream once.
+
+    ``getmembers()`` before ``extractfile()`` reads the compressed file twice: listing
+    decompresses to the end, and the first seek back restarts from byte zero. That
+    made the peer about twice as slow as a one-pass read and the published ratios
+    flattered archivey.
+    """
+    import io
+    import tarfile
+
+    from benchmarks.fixtures import SCALES, build_tar
+
+    path = tmp_path / f"peer.tar.{mode[2:]}"
+    build_tar(path, SCALES["ci"], mode=mode)
+    read = 0
+
+    class CountingFile(io.FileIO):
+        def readinto(self, b):  # type: ignore[override]
+            nonlocal read
+            n = super().readinto(b)
+            read += n or 0
+            return n
+
+    real_open = tarfile.open
+
+    def counting_open(name, mode="r", **kwargs):  # type: ignore[no-untyped-def]
+        return real_open(fileobj=io.BufferedReader(CountingFile(name)), mode=mode)
+
+    monkeypatch.setattr(harness.tarfile, "open", counting_open)
+    peer(path)
+    assert read <= path.stat().st_size * 1.05

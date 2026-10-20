@@ -397,7 +397,9 @@ def _stdlib_gzip_read_all(path: Path) -> None:
 
 def _stdlib_targz_read_all(path: Path) -> None:
     # Iterate rather than getmembers(): listing first decompresses to the end, and
-    # the first extractfile() then seeks back, which restarts the decompression.
+    # the first extractfile() then seeks back, which restarts the decompression. The
+    # restart is a property of a compressed stream: the plain-tar peers above keep
+    # getmembers(), because seeking back in an uncompressed file costs nothing.
     with tarfile.open(path, "r:gz") as tf:
         for member in tf:
             if not member.isfile():
@@ -409,7 +411,9 @@ def _stdlib_targz_read_all(path: Path) -> None:
 
 def _stdlib_tarbz2_read_all(path: Path) -> None:
     # Iterate rather than getmembers(): listing first decompresses to the end, and
-    # the first extractfile() then seeks back, which restarts the decompression.
+    # the first extractfile() then seeks back, which restarts the decompression. The
+    # restart is a property of a compressed stream: the plain-tar peers above keep
+    # getmembers(), because seeking back in an uncompressed file costs nothing.
     with tarfile.open(path, "r:bz2") as tf:
         for member in tf:
             if not member.isfile():

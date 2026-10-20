@@ -82,15 +82,21 @@ slowdown is **not** “we decompress outside tarfile.”
 | plain TAR read-all | ~3.6 ms | `tarfile` `r:` ~2.1 ms | **~1.7×** |
 | plain TAR list only | ~1.4 ms | `getmembers` ~1.0 ms | ~1.5× |
 | already-open member I/O | ~2.0 ms | `extractfile`+read ~1.0 ms | **~2.0×** |
-| `.tar.gz` (ad-hoc) | ~21 ms | `tarfile` `r:gz` ~18 ms | **~1.19×** |
+| `.tar.gz` (ad-hoc, two-pass peer\*) | ~21 ms | `tarfile` `r:gz` ~18 ms | ~1.19×\* |
 
 So:
 
 - **Plain TAR** pays per-member archivey overhead (`ArchiveMember`,
   `ArchiveStream`, reader-state). Absolute times are tiny; the ratio looks
   loud because stdlib is ~2 ms.
-- **`.tar.gz`** via our outer codec is only ~1.2× native `r:gz` — the
-  compressed-stream design is **not** the main TAR story vs VISION.
+- **`.tar.gz`**: the ~1.2× above was measured against a peer that called
+  `getmembers()` first and so decompressed the stream twice (\*, see the
+  accelerator section below). Against a one-pass peer it is about **2.7×**
+  (23.2 ms vs 8.5 ms, realistic corpus, 2026-10-20, Linux x86_64 4-core VM,
+  CPython 3.11). The gzip single-file row stays near 1.0×, so the cost is in
+  the tar-over-codec stack, not in gzip: archivey feeds zlib about 1600 times
+  for 16 MiB, roughly 10 KiB of output per call, through the slice and
+  read-ahead layers, where `tarfile` makes a few large calls.
 
 ## Realistic scale (corrected harness)
 
@@ -114,6 +120,12 @@ Same ~16 MiB multi-member corpus on the **4-core** host above. Stdlib peer is
 The rows below predate that: the peer then called `getmembers()` first, which
 decompresses to the end, and its first `extractfile()` seeked back and decompressed
 the stream a second time, so its stdlib times are about twice a one-pass read.
+
+The first nightly that measures after this change will drift-fail the tar.gz and
+tar.bz2 rows (accel off and on): their stdlib time roughly halves, so their ratio
+roughly doubles. That is the peer changing, not a regression in `src/`, and the new
+ratios are the honest ones. Let that night become the baseline, or re-seed with
+`skip_drift=true`.
 Archivey forces
 `use_rapidgzip` / `use_indexed_bzip2` ON or OFF; ON also sets
 `MemberStreams.SEEKABLE`.
@@ -216,8 +228,11 @@ at the same `--scale realistic` did not reproduce the ZIP rows.
 | ZIP open+list | 4.44× | **5.17×** |
 | ZIP extract | 2.38× | **1.41×** |
 | gzip read-all | 1.03× | 1.06× |
-| tar.gz accel-off | 1.27× | 1.27× |
-| tar.bz2 accel-off | 1.04× | 1.04× |
+| tar.gz accel-off\* | 1.27× | 1.27× |
+| tar.bz2 accel-off\* | 1.04× | 1.04× |
+
+\* Measured against the two-pass `tarfile` peer (see the accelerator section), so
+the absolute values are stale; the comparison between the two columns still holds.
 
 The codec-dominated rows land on the published values, so this is not simply a
 slower host — only the ZIP wrapper rows move, and they move in **both**
