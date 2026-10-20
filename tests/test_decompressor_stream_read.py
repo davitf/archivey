@@ -11,6 +11,7 @@ from __future__ import annotations
 import gzip
 import io
 import os
+import zlib
 from pathlib import Path
 from typing import BinaryIO
 
@@ -23,6 +24,7 @@ from archivey.exceptions import DiagnosticRaisedError
 from archivey.internal.config import StreamConfig
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.streams.codecs.bzip2_codec import _stdlib_bzip2
+from archivey.internal.streams.codecs.deflate_decoder import ZlibDecoder
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
     DecodeOut,
@@ -277,3 +279,63 @@ def test_a_decoder_error_after_output_hands_back_the_buffer_then_raises() -> Non
     # A seek restarts the decoder, which hands back its first chunk again.
     assert stream.seek(0) == 0
     assert stream.read(len(got)) == got
+
+
+class _FlushLeavesEof:
+    """A ``zlib`` decompressor whose ``flush`` returns the rest but leaves ``eof``
+    as it was, as PyPy's does. Everything else is the real decompressor."""
+
+    def __init__(self, inner: zlib._Decompress) -> None:
+        self._inner = inner
+        self._eof_after_flush: bool | None = None
+
+    def decompress(self, data: bytes, max_length: int = 0) -> bytes:
+        return self._inner.decompress(data, max_length)
+
+    def flush(self, *args: int) -> bytes:
+        before = self._inner.eof
+        out = self._inner.flush(*args)
+        self._eof_after_flush = before
+        return out
+
+    @property
+    def eof(self) -> bool:
+        if self._eof_after_flush is not None:
+            return self._eof_after_flush
+        return self._inner.eof
+
+    @property
+    def unconsumed_tail(self) -> bytes:
+        return self._inner.unconsumed_tail
+
+    @property
+    def unused_data(self) -> bytes:
+        return self._inner.unused_data
+
+
+def _flush_leaves_eof_decoder(point: SeekPoint, inner: BinaryIO) -> ZlibDecoder:
+    del point, inner
+    decoder = ZlibDecoder(-15)
+    decoder._decomp = _FlushLeavesEof(decoder._decomp)  # type: ignore[assignment]
+    return decoder
+
+
+def test_a_complete_deflate_stream_ends_without_flush_setting_eof() -> None:
+    """Output a ``max_length`` cut held back is drained at the end of the input, and the
+    stream counts as complete even where ``flush`` never sets ``eof`` (PyPy).
+
+    Small reads keep zlib's output cut short when the input runs out, so the end is
+    reached only through ``_inflate_rest``.
+    """
+    compressor = zlib.compressobj(6, zlib.DEFLATED, -15)
+    payload = b"\0" * 300_000
+    data = compressor.compress(payload) + compressor.flush()
+    with DecompressorStream(
+        io.BytesIO(data), make_decoder=_flush_leaves_eof_decoder
+    ) as stream:
+        pieces: list[bytes] = []
+        while piece := stream.read(255):
+            pieces.append(piece)
+        assert b"".join(pieces) == payload
+        assert stream._decoder.finished
+        assert stream._decoder.pending_error is None

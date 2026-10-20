@@ -667,10 +667,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _format_missing_components(missing: Sequence[MissingComponent]) -> str:
-    """``"a, b (hint1); c (hint2)"``: names grouped by install hint, first-seen order."""
+    """``"a, b (hint1); c (hint2)"``: names grouped by install hint (or the reason
+    archivey does not use one), first-seen order."""
     names_by_hint: dict[str, list[str]] = {}
     for component in missing:
-        names_by_hint.setdefault(component.install_hint, []).append(component.name)
+        names_by_hint.setdefault(component.advice, []).append(component.name)
     groups = [f"{', '.join(names)} ({hint})" for hint, names in names_by_hint.items()]
     return "; ".join(groups)
 

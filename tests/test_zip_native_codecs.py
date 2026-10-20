@@ -139,6 +139,34 @@ def test_zip_zstd_handbuilt_roundtrip() -> None:
         assert ar.read(member) == _PAYLOAD
 
 
+@requires_zstd()
+def test_zip_zstd_member_reads_no_seek_table() -> None:
+    """A ZIP zstd member is one frame, so the seekable format's table is not read.
+
+    The member's data ends in a table that splits its one frame in two. Read as a
+    table, it would put a seek point inside the frame, and a seek there would fail.
+    """
+    from archivey.internal.streams.decompressor_stream import (
+        DecompressorStream,
+        SeekPoint,
+    )
+    from tests.streams_util import seekable_zstd_table
+
+    frame = zstd_backend().compress(_PAYLOAD)
+    half = len(_PAYLOAD) // 2
+    table = seekable_zstd_table([(len(frame) - 10, half), (10, len(_PAYLOAD) - half)])
+    data = _build_minimal_zip(b"zstd.txt", frame + table, _PAYLOAD, 93)
+    with open_archive(io.BytesIO(data), seekable_members=True) as ar:
+        (member,) = ar.members()
+        with ar.open(member) as stream:
+            assert stream.seek(half + 20) == half + 20
+            assert stream.read(10) == _PAYLOAD[half + 20 : half + 30]
+            engine = stream
+            while not isinstance(engine, DecompressorStream):
+                engine = engine._inner
+            assert engine._seek_points == [SeekPoint(0, 0)]
+
+
 @requires_binary("7z")
 def test_zip_deflate64_without_inflate64_raises(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

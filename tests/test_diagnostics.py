@@ -1151,3 +1151,26 @@ def test_password_provider_is_not_reported_unused(tmp_path: Path, kind: str) -> 
         assert DiagnosticCode.PASSWORD_ARGUMENT_UNUSED not in reader.diagnostics.counts
     with open_archive(source, password="typed") as reader:
         assert reader.diagnostics.counts[DiagnosticCode.PASSWORD_ARGUMENT_UNUSED] == 1
+
+
+@pytest.mark.parametrize("lazy", [False, True], ids=["eager", "lazy"])
+def test_stream_diagnostics_count_its_unverifiable_digest(lazy: bool) -> None:
+    """A member stream's own ``diagnostics`` count the digest it cannot check.
+
+    The verifier reports ``DIGEST_UNVERIFIABLE`` while the stream is built, before
+    any read. A lazy stream enters its diagnostic scope there only when it has a
+    digest to check, so this pins that the case is still inside the scope.
+    """
+    from archivey.internal.streams.archive_stream import ArchiveStream
+
+    collector = DiagnosticCollector()
+    stream = ArchiveStream(
+        lambda: io.BytesIO(b"data"),
+        translate=lambda _e: None,
+        lazy=lazy,
+        collector=collector,
+        expected_hashes={"no-such-digest": b"\x00"},  # type: ignore[dict-item]
+    )
+    with stream:
+        assert stream.diagnostics.counts == {DiagnosticCode.DIGEST_UNVERIFIABLE: 1}
+        assert stream.read() == b"data"

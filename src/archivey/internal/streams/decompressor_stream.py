@@ -186,10 +186,16 @@ def _inflate_rest(
     """At the end of the input: the output of what ``decomp`` still holds.
 
     The caller checks ``decomp.eof`` after: when it is false, the stream is truncated.
+    The end is reached with ``decompress`` (with no input when nothing is left over:
+    zlib may still hold output that an earlier ``max_length`` cut short), not with
+    ``flush``: PyPy's ``flush`` never sets ``eof``, so a stream that ended there would
+    read as truncated. On CPython that ``decompress`` drains everything zlib holds, so
+    the ``flush`` after it returns nothing; it stays for a binding whose ``decompress``
+    holds output back, so a truncated stream still yields every byte decoded.
     """
-    out = b""
-    if decomp.unconsumed_tail:
-        out = _inflate(decomp, decomp.unconsumed_tail, -1, error)
+    out = _inflate(decomp, decomp.unconsumed_tail, -1, error)
+    if decomp.eof:
+        return out
     try:
         return out + decomp.flush()
     except zlib.error as exc:
@@ -432,6 +438,27 @@ MAX_SEEK_POINTS = 1 << 18
 SEEK_TABLE_THINNED = "SeekTableThinned"
 
 
+def emit_index_thinned(
+    collector: DiagnosticCollector | None,
+    codec_name: str,
+    scan: str,
+    *,
+    units: str = "entries",
+) -> None:
+    """Report that an index scan kept a spaced subset of its ``units``."""
+    resolve_collector(collector).emit(
+        code=DiagnosticCode.SEEK_INDEX_DEGRADED,
+        message=(
+            f"{codec_name} index has more than {MAX_SEEK_POINTS} {units}; kept a "
+            "spaced subset, so seeks may decode further"
+        ),
+        context=SeekIndexContext(
+            codec=codec_name, scan=scan, error_type=SEEK_TABLE_THINNED
+        ),
+        logger=logger,
+    )
+
+
 @dataclass(frozen=True)
 class IndexReport:
     """One diagnostic an index scan emitted, kept to be emitted again later.
@@ -615,17 +642,7 @@ def build_index_backwards(
         )
         return [], None
     if thinned:
-        resolve_collector(collector).emit(
-            code=DiagnosticCode.SEEK_INDEX_DEGRADED,
-            message=(
-                f"{codec_name} index has more than {MAX_SEEK_POINTS} entries; kept a "
-                "spaced subset, so seeks may decode further"
-            ),
-            context=SeekIndexContext(
-                codec=codec_name, scan=scan, error_type=SEEK_TABLE_THINNED
-            ),
-            logger=logger,
-        )
+        emit_index_thinned(collector, codec_name, scan)
     points = [
         to_point(b)
         for b in bounds

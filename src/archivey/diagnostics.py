@@ -54,41 +54,116 @@ class _JsonSafeContext:
 
 
 class DiagnosticCode(StrEnum):
-    """Stable machine codes for advisory events."""
+    """Stable machine codes for advisory events.
+
+    The codes in :data:`ARCHIVE_INTEGRITY_CODES` report the archive's own bytes or
+    metadata as anomalous, and ``DiagnosticPolicy.STRICT`` raises them. A diagnostic's
+    ``context`` carries the details, such as the member and the field involved.
+    """
 
     MEMBER_NAME_NORMALIZED = "member_name_normalized"
+    """A member's stored name was changed to give ``name``, for example its
+    separators or a ``.`` segment."""
     MEMBER_NAME_ENCODING_INFERRED = "member_name_encoding_inferred"
+    """A member's name was decoded with an encoding archivey inferred, not one the
+    archive or the caller declared."""
     MEMBER_NAME_BIDI_CONTROL = "member_name_bidi_control"
+    """A member's name or link target contains bidi controls, which change the order
+    the text displays in and can make an ``.exe`` look like a ``.png``."""
     MEMBER_NAME_ZERO_WIDTH_CHARACTER = "member_name_zero_width_character"
+    """A member's name or link target contains a zero-width space, word joiner or
+    byte-order mark, so two different names can look the same."""
     MEMBER_NAME_INVISIBLE_CHARACTER = "member_name_invisible_character"
+    """A member's name or link target contains another invisible format character,
+    such as a zero-width joiner or a soft hyphen. These occur in ordinary names, such
+    as in emoji."""
     FORMAT_EXTENSION_CONFLICT = "format_extension_conflict"
+    """The file name's extension suggests one format and the content another.
+    archivey goes by the content."""
     EXPLICIT_FORMAT_LISTED_EMPTY = "explicit_format_listed_empty"
+    """An archive opened with ``format=`` listed no members. The context's
+    ``detected_format`` says what detection finds in the content."""
     EXTENSION_FORMAT_UNCONFIRMED = "extension_format_unconfirmed"
+    """A format chosen from the file name alone, with nothing in the content to
+    confirm it, listed no members or failed to read."""
     PROBE_FORMAT_UNCONFIRMED = "probe_format_unconfirmed"
+    """A format found only by decoding a sample of the content failed to read, so the
+    file may not be in that format."""
     EMPTY_ARCHIVE = "empty_archive"
+    """The listing finished without error and found no members."""
     ENCODING_ARGUMENT_UNUSED = "encoding_argument_unused"
+    """``encoding=`` was passed for a format that decodes member names without it
+    (7z, a directory, a single-file format)."""
     PASSWORD_ARGUMENT_UNUSED = "password_argument_unused"
+    """A password was passed for a format with no encryption (TAR, ISO, a directory,
+    a single-file format). A password provider callable is not reported, since such a
+    format never calls it."""
     SCAN_DIRECTORY_VANISHED = "scan_directory_vanished"
+    """A directory opened as an archive changed while it was read: a subdirectory
+    listed earlier was gone."""
     SCAN_ENTRY_VANISHED = "scan_entry_vanished"
+    """A directory opened as an archive changed while it was read: an entry listed
+    earlier was gone."""
     ARCHIVE_EOF_MARKER_MISSING = "archive_eof_marker_missing"
+    """The record that marks the end of the archive is missing or short, such as a
+    TAR's two zero blocks or a ZIP's end of central directory record. The archive may
+    be truncated."""
     ARCHIVE_TRAILING_DATA = "archive_trailing_data"
+    """Bytes other than zeros follow the end of the archive or of the compressed
+    stream."""
     ARCHIVE_UNLISTED_DATA = "archive_unlisted_data"
+    """A ZIP read from a pipe holds a member its central directory does not list. It
+    is left out of the listing, as a read from a file never sees it."""
     MEMBER_TIMESTAMP_INVALID = "member_timestamp_invalid"
+    """A stored timestamp could not be used, so that time is left unset."""
     MEMBER_HEADER_RECORD_SKIPPED = "member_header_record_skipped"
+    """An optional record in a member's header could not be read and was dropped, so
+    the field it would fill is left unset rather than wrong."""
     SYMLINK_TARGET_UNAVAILABLE = "symlink_target_unavailable"
+    """A link's target could not be read: it is empty, too long, damaged, or needs a
+    codec or package that is missing. The link stays listed with ``link_target``
+    unset, and the context's ``reason`` says why."""
     DIGEST_UNVERIFIABLE = "digest_unverifiable"
+    """A member's data cannot be checked against a stored checksum, so damage may go
+    unnoticed."""
     MEMBER_DIRECTORY_DATA_IGNORED = "member_directory_data_ignored"
+    """A directory entry declares data, which extraction does not write. The
+    directory is still created."""
     MEMBER_LINK_DATA_IGNORED = "member_link_data_ignored"
+    """A TAR symlink or hard link header declares data, which nothing reads. The link
+    is listed and extracted as a link."""
     ENCRYPTED_MEMBER_UNVERIFIED = "encrypted_member_unverified"
+    """An encrypted member's stream was closed or seeked before its checksum
+    confirmed the password, and nothing stronger had confirmed it, so the bytes read
+    may come from a wrong password."""
     SEEK_INDEX_DEGRADED = "seek_index_degraded"
+    """Building a stream's seek index failed, was skipped or was thinned, so a seek
+    may decompress more than usual."""
     STREAM_REWIND_REDECOMPRESSES = "stream_rewind_redecompresses"
+    """A backward seek decompressed at least 1 MiB again from an earlier point."""
     MEMBER_SELECTOR_UNMATCHED = "member_selector_unmatched"
+    """An entry of ``members=`` matched no member of the archive."""
     MEMBER_SPECIAL_FILE_HAS_DATA = "member_special_file_has_data"
+    """An entry stored as a device, FIFO or socket carries data, so it is listed as a
+    ``FILE`` with that data, as unzip, 7-Zip and bsdtar extract it."""
     MEMBER_LOCAL_NAME_DIFFERS = "member_local_name_differs"
+    """A ZIP member's local header stores another name than its central directory
+    entry. The member keeps the central directory's name, as unzip and 7-Zip read it;
+    a tool that trusts the local header shows the other one."""
     MEMBER_LOCAL_CRC_USED = "member_local_crc_used"
+    """A ZIP member's central directory entry stores CRC-32 0 and its local header
+    another value, which the data is checked against. Adobe AIR writes such files."""
     ARCHIVE_OFFSET_WRAPPED = "archive_offset_wrapped"
+    """A ZIP stores an offset past 4 GiB in a 32-bit field without ZIP64, as macOS
+    Archive Utility does, and archivey corrected it."""
     MEMBER_SIZE_WRAPPED = "member_size_wrapped"
+    """A ZIP member's stored sizes are its real sizes modulo 2³², as macOS Archive
+    Utility writes a member over 4 GiB without ZIP64. archivey corrects them, or
+    lists ``size`` as ``None`` until a read can tell."""
     MEMBER_TYPE_UNKNOWN = "member_type_unknown"
+    """A TAR member has a typeflag archivey does not know. One that declares data is
+    listed as a ``FILE``, as GNU tar extracts it; one that declares none stays
+    ``OTHER``."""
     # No per-member extraction outcome has a code here. Extraction returns a structured
     # per-item report, so ``ExtractionResult`` is the sole carrier of those facts — see
     # the placement clause in ``openspec/specs/diagnostics``.
@@ -983,43 +1058,40 @@ def validate_code_context(code: DiagnosticCode, context: DiagnosticContext) -> N
 
 @dataclass(frozen=True)
 class Diagnostic:
-    """One immutable advisory occurrence.
+    """One immutable advisory occurrence: something archivey noticed and reported
+    instead of raising.
 
-    The two fields carry the same facts for different audiences, and that is why they
-    are treated differently:
-
-    - ``message`` is **display text**, and is stored **escaped**. It interpolates
-      archive-derived values — member names, link targets, paths — which are
-      attacker-controlled, and a name carrying ``\\x1b[2K\\r`` in text that reaches a
-      terminal can erase the line reporting it and write something else in its place.
-      Escaping happens at construction so it holds for every consumer, whatever it
-      does with the text.
-    - ``context`` is the **structured channel** (``member_name`` and its siblings,
-      surfaced through :meth:`to_dict`) and stays **raw**. A caller routing diagnostics
-      to a JSON sink, or matching on a name, needs the real value.
-
-    This mirrors :class:`~archivey.exceptions.ArchiveyError`, which escapes its
-    ``message`` and keeps ``member_name`` raw for the same reason.
-
-    Escaping here rather than trusting the sites that build messages: every one of them
-    today interpolates through :func:`~archivey.terminal.quoted` or ``!r``, so the text
-    would be inert either way — but that is a property of the current call sites, not of
-    the type. A future message written as ``f"...{name}"`` would pass review looking
-    exactly like its neighbours while emitting raw control bytes, and only for a hostile
-    archive.
-
-    Escaping runs in ``__post_init__``: on a frozen dataclass that is the hook that
-    covers every construction path. (A hand-written ``__init__`` would survive the
-    decorator — it does not overwrite one defined in the class body — but with no
-    dataclass base to delegate to it would mean spelling out all four fields and keeping
-    them in step with the declarations above.) Nothing reconstructs a ``Diagnostic``
-    with :func:`dataclasses.replace`, which would escape a second time.
+    ``message`` and ``context`` carry the same facts for different readers.
+    ``message`` is display text, and its control characters are escaped: it includes
+    names from the archive, and a name carrying ``\\x1b[2K\\r`` could otherwise
+    erase the terminal line reporting it and write something else in its place.
+    ``context`` keeps the raw values, for matching on a name or for a structured log
+    (see :meth:`to_dict`). :class:`~archivey.ArchiveyError` escapes its ``message``
+    and keeps ``member_name`` raw for the same reason.
     """
 
+    # Escaping here rather than trusting the sites that build messages: every one of
+    # them today interpolates through terminal.quoted or !r, so the text would be inert
+    # either way, but that is a property of the current call sites, not of the type. A
+    # future message written as f"...{name}" would pass review looking exactly like its
+    # neighbours while emitting raw control bytes, and only for a hostile archive.
+    #
+    # Escaping runs in __post_init__: on a frozen dataclass that is the hook that covers
+    # every construction path. Nothing reconstructs a Diagnostic with
+    # dataclasses.replace, which would escape a second time.
+
     occurrence_id: str
+    """A random id, unique to this occurrence."""
+
     code: DiagnosticCode
+    """What kind of event this is."""
+
     message: str
+    """A sentence describing the event, with control characters escaped."""
+
     context: DiagnosticContext
+    """The event's details as typed fields with raw values, such as the archive and
+    member names. Its ``kind`` field says which context class it is."""
 
     def __post_init__(self) -> None:
         # frozen dataclass — the escape has to go in through the back door.
@@ -1039,11 +1111,20 @@ class DiagnosticSummary:
     """Immutable point-in-time snapshot of diagnostic counts and retained detail."""
 
     total_count: int
+    """Every diagnostic emitted in the summary's scope, ignored ones included."""
+
     counts: Mapping[DiagnosticCode, int] = field(
         default_factory=lambda: MappingProxyType({})
     )
+    """The exact count for each code, ignored ones included."""
+
     retained: tuple[Diagnostic, ...] = ()
+    """The diagnostics kept in full, in the order they were emitted. Ignored codes are
+    not kept, and nor is anything past the
+    ``ArchiveyConfig.max_retained_diagnostic_references`` budget."""
+
     dropped_count: int = 0
+    """How many of ``total_count`` are not in ``retained``."""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "counts", _freeze_mapping(self.counts))
@@ -1101,7 +1182,10 @@ class DiagnosticPolicy:
     PEDANTIC: ClassVar[DiagnosticPolicy]
 
     ignore: frozenset[DiagnosticCode]
+    """Codes that are counted but not kept, logged or passed to ``on_diagnostic``."""
+
     raise_on: frozenset[DiagnosticCode]
+    """Codes that raise :class:`~archivey.DiagnosticRaisedError` once recorded."""
 
     # A hand-written __init__ (the decorator has init=False) so the parameters can
     # describe what a caller passes while the fields describe what every reader gets
@@ -1150,7 +1234,11 @@ class ExtractionReport:
     """
 
     results: tuple[ExtractionResult, ...]
+    """One result per member processed, in the order they were processed."""
+
     diagnostics: DiagnosticSummary
+    """The diagnostics emitted during this ``extract_all()`` call."""
+
     # A dry run's top-level entries, as (name, is a directory), read from its scratch
     # tree before removing it: what a real run would leave directly under ``dest``.
     # Private, for the CLI's hoist prediction; ``None`` after a real run.
@@ -1195,8 +1283,13 @@ class MemberListReport:
     """
 
     members: tuple[ArchiveMember, ...]
+    """The members listed, all of them when ``error`` is ``None``."""
+
     error: ArchiveyError | None
+    """The damage that stopped the listing, or ``None`` when it completed."""
+
     diagnostics: DiagnosticSummary
+    """The diagnostics emitted while listing."""
 
     def __iter__(self) -> Iterator[ArchiveMember]:
         return iter(self.members)

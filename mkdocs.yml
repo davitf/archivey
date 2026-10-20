@@ -36,7 +36,7 @@ plugins:
             heading_level: 3
             show_source: false
             show_root_heading: true
-            docstring_section_style: table
+            docstring_section_style: list
             extensions:
               - griffe_fieldz
               - scripts/griffe_extensions.py

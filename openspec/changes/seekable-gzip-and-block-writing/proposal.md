@@ -39,6 +39,10 @@ symmetry is designed in. No code lands here; implementation is sequenced under I
 
 ## What Changes
 
+> **Update (2026-10-20):** native BGZF reading shipped on its own, in the archived
+> `gzip-member-seek-points` change. What is left here is mgzip, `indexed_gzip` and
+> block-split writing; the blocked-gzip requirement in `specs/` now covers mgzip only.
+
 - **`seekable-decompressor-streams`** — two added requirements:
   - **Native blocked-gzip random access (BGZF / mgzip):** recognize the blocked structure
     from the first member's extra field, build a `SeekPoint` index by walking members via

@@ -20,21 +20,36 @@ images](https://github.com/davitf/archivey/blob/main/dev-docs/formats/dmg.md) an
 
 ## Quick matrix
 
-| Format | Core? | Extra / tool | Listing | Random member access | Notes |
-| --- | --- | --- | --- | --- | --- |
-| ZIP | yes | — | indexed (central directory); from a pipe, scan headers | direct | A pipe needs `streaming=True` |
-| TAR | yes | — | scan headers | direct on uncompressed seekable TAR | Compressed TAR is solid for random opens |
-| `.tar.gz` / `.bz2` / `.xz` | yes | — | needs decompression | solid | Prefer `stream_members()` |
-| Directory | yes | — | indexed | direct | Same stream-capability defaults as archives |
-| Single-file gz/bz2/xz | yes | — | one member | seek with `seekable_members=True` | See single-file section |
-| 7z | yes (common codecs) | `[recommended]` for PPMd, Deflate64, Brotli, LZ4, AES, and zstd before Python 3.14 | indexed | solid folders | Native reader; BCJ2 in pure Python |
-| RAR | yes (metadata) | **`unrar` or `rar` binary for compressed data**; `[recommended]` for header crypto and stored encrypted members | native metadata | solid when solid | No write |
-| ISO | no | `[recommended]` (`pycdlib`) | indexed | direct | Seekable source required |
-| `.zst` / `.tar.zst` | 3.14+ core; else `[recommended]` | `[recommended]` → `backports.zstd` | one member; the `.tar` form as `.tar.gz` | rewind seek unless indexed later | |
-| `.lz4` / `.tar.lz4` | no | `[recommended]` | one member; the `.tar` form as `.tar.gz` | rewind seek | |
-| `.br` | no | `[recommended]` | one member | rewind seek | No magic; detected by name |
-| `.lz` / `.lzma` / `.zz` | yes | — | one member | seek with `seekable_members=True` | `.lzma` and `.zz` detected by name |
-| `.Z` / `.tar.Z` | yes | — | one member; the `.tar` form as `.tar.gz` | CLEAR seek points when seekable | Best-effort truncation (nonzero leftover bits) |
+- **ZIP:** in core. Listing: indexed (central directory); from a pipe, scan headers. Random member
+  access: direct. A pipe needs `streaming=True`.
+- **TAR:** in core. Listing: scan headers. Random member access: direct on uncompressed seekable
+  TAR. Compressed TAR is solid for random opens.
+- **`.tar.gz` / `.bz2` / `.xz`:** in core. Listing: needs decompression. Random member access:
+  solid. Prefer `stream_members()`.
+- **Directory:** in core. Listing: indexed. Random member access: direct. Same stream-capability
+  defaults as archives.
+- **Single-file gz/bz2/xz:** in core. Listing: one member. Random member access: seek with
+  `seekable_members=True`. See the [single-file section](#single-file-compressors).
+- **7z:** in core for the common codecs; `[recommended]` for PPMd, Deflate64, Brotli, LZ4, AES, and
+  zstd before Python 3.14. Listing: indexed. Random member access: solid folders. Native reader;
+  BCJ2 in pure Python.
+- **RAR:** metadata in core; **`unrar` or `rar` binary for compressed data**; `[recommended]` for
+  header crypto and stored encrypted members. Listing: native metadata. Random member access: solid
+  when solid. No write.
+- **ISO:** `[recommended]` (`pycdlib`). Listing: indexed. Random member access: direct. Seekable
+  source required.
+- **`.zst` / `.tar.zst`:** in core on Python 3.14 and later; else `[recommended]`
+  (`backports.zstd`). Listing: one member; the `.tar` form as `.tar.gz`. Random member access:
+  seek by frame with `seekable_members=True`; a one-frame file rewinds. Reads the Seekable
+  Zstandard seek table.
+- **`.lz4` / `.tar.lz4`:** `[recommended]`. Listing: one member; the `.tar` form as `.tar.gz`.
+  Random member access: rewind seek.
+- **`.br`:** `[recommended]`. Listing: one member. Random member access: rewind seek. No magic;
+  detected by name.
+- **`.lz` / `.lzma` / `.zz`:** in core. Listing: one member. Random member access: seek with
+  `seekable_members=True`. `.lzma` and `.zz` detected by name.
+- **`.Z` / `.tar.Z`:** in core. Listing: one member; the `.tar` form as `.tar.gz`. Random member
+  access: CLEAR seek points when seekable. Best-effort truncation (nonzero leftover bits).
 
 **RAR member data needs RARLAB `unrar` or `rar` 6.0 or later on `PATH`, or `unar`.** No pip extra
 can supply either. Listing and metadata work without them, and so does reading a stored member. A

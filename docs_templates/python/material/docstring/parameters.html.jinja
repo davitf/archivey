@@ -1,0 +1,48 @@
+{% extends "_base/docstring/parameters.html.jinja" %}
+
+{#- A dataclass's fields are listed here and nowhere else (FieldDocsAndDefaults in
+    scripts/griffe_extensions.py drops their separate attribute sections), so each one
+    gets the anchor such a section had, `archivey.ArchiveMember.size`: references in
+    docstrings and the table of contents point at the list item. Unlike the base
+    template, the heading follows from the section being a field list, not from the
+    `parameter_headings` option, and its TOC entry has no symbol: both options are off
+    in mkdocs.yml, and function parameters keep no heading. -#}
+{% block list_style scoped %}
+  {% set is_fields = section.title == "Fields:" %}
+  <p><span class="doc-section-title">{{ section.title or lang.t("Parameters:") }}</span></p>
+  <ul>
+    {% for parameter in section.value %}
+      <li class="doc-section-item field-body">
+        {% if is_fields %}
+          {% filter heading(
+              heading_level + 1,
+              role="data",
+              id=html_id ~ "." ~ parameter.name,
+              class="doc doc-heading doc-heading-parameter",
+              toc_label=parameter.name,
+              skip_inventory=config.skip_local_inventory,
+            ) %}
+            <b><code>{{ parameter.name }}</code></b>
+          {% endfilter %}
+        {% else %}
+          <b><code>{{ parameter.name }}</code></b>
+        {% endif %}
+        {% if parameter.annotation %}
+          {% with expression = parameter.annotation, backlink_type = "used-by" %}
+            (<code>{% include "expression.html.jinja" with context %}</code>
+            {%- if parameter.default %}, {{ lang.t("default:") }}
+              {% with expression = parameter.default, backlink_type = "used-by" %}
+                <code>{% include "expression.html.jinja" with context %}</code>
+              {% endwith %}
+            {% endif %})
+          {% endwith %}
+        {% endif %}
+        {%- if parameter.description %} –
+        <div class="doc-md-description">
+          {{ parameter.description|convert_markdown(heading_level, html_id, autoref_hook=autoref_hook) }}
+        </div>
+        {%- endif %}
+      </li>
+    {% endfor %}
+  </ul>
+{% endblock list_style %}

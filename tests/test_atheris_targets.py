@@ -7,7 +7,6 @@ exist to reach: an SFX payload, a ZIP pipe, a UDIF refusal, a filter decode.
 
 from __future__ import annotations
 
-import importlib.util
 import io
 import shutil
 import subprocess
@@ -33,6 +32,7 @@ from tests.atheris_fuzz.targets import (
     sevenzip_open_one,
     zip_open_one,
 )
+from tests.conftest import has_package
 
 _PAYLOAD = b"sfx-member\n"
 
@@ -92,7 +92,7 @@ def test_sevenzip_open_reads_an_uncompressed_header(tmp_path: Path) -> None:
     assert [name for name, _blob, _package in built] == uncompressed_header_spec_names()
     for _name, blob, package in built:
         sevenzip_open_one(blob)
-        if package is not None and importlib.util.find_spec(package) is None:
+        if package is not None and not has_package(package):
             continue
         with open_archive(
             io.BytesIO(blob),
@@ -173,3 +173,14 @@ def test_workflow_sets_a_budget_for_every_atheris_target() -> None:
         if f"ARCHIVEY_FUZZ_BUDGET_{name.upper()}" not in text
     ]
     assert missing == []
+
+
+def test_soak_workflow_runs_every_accelerator_target() -> None:
+    text = (
+        Path(__file__).resolve().parents[1]
+        / ".github/workflows/accelerator-fuzz-soak.yml"
+    ).read_text(encoding="utf-8")
+    matrix = next(line for line in text.splitlines() if "target: [" in line)
+    accel = [name for name in TARGET_NAMES if name.endswith("_accel")]
+    assert accel
+    assert [name for name in accel if name not in matrix] == []
