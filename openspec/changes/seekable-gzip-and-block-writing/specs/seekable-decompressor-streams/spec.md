@@ -2,29 +2,13 @@
 
 ## ADDED Requirements
 
-### Requirement: Native random access for blocked gzip (BGZF / mgzip)
+### Requirement: Native random access for mgzip
 
-The system SHALL provide zero-dependency random access within **blocked gzip** streams —
-BGZF and mgzip — by reading the per-block size recorded in each gzip member's extra field,
-without decompressing to find block boundaries. Blocked gzip is a sequence of independent
-standalone gzip members; the system SHALL build a seek-point index by walking the members
-(each member's compressed size comes from its extra subfield; its uncompressed size from
-its gzip `ISIZE` trailer) and SHALL serve a seek by decoding only the member(s) containing
-the target offset. Recognition is by the member's extra subfield: BGZF's `BC` subfield
-(`BSIZE`, ≤64 KiB blocks) or mgzip's `MZ` subfield (4-byte compressed-member-size body).
-A gzip stream with **no** recognized blocked-gzip subfield is not treated as blocked; it
-falls back to the sequential path (or an accelerator, if enabled). Because blocked gzip is
-valid gzip, the same bytes remain decompressible by any gzip tool.
-
-When the blocked-gzip index is available, the reader SHALL report random-access capability
-in its cost (non-SOLID `access_cost` and a `seekable` flag), per
-`format-single-file-compressors`.
-
-#### Scenario: seeking within a BGZF file via the BC subfields
-
-- **WHEN** a seekable source whose first gzip member carries a `BC` extra subfield is opened
-- **THEN** the system walks the members using each block's `BSIZE` to build a block index without decompressing
-- **AND** a subsequent seek to an arbitrary uncompressed offset decodes only the block(s) containing that offset
+BGZF is walked natively already (`BGZF members are walked without decoding`). The system
+SHALL extend that member walk to **mgzip**, whose members carry their compressed size in
+an `MZ` extra subfield (4-byte body) with no 64 KiB cap, so mgzip files get the same
+zero-dependency random access. A gzip stream with neither subfield stays on the
+sequential path (or an accelerator, if enabled).
 
 #### Scenario: seeking within an mgzip file via the MZ subfield
 

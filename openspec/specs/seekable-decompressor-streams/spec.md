@@ -86,8 +86,9 @@ macOS. `use_indexed_bzip2` remains the bzip2 configuration flag but selects the
 rapidgzip-bundled decoder.
 
 When rapidgzip is unavailable or disabled, gzip and bzip2 SHALL use stdlib
-decoders; backward seek is serviced by re-decompressing from the start and MUST
-not degrade silently.
+decoders; backward seek is serviced by re-decompressing from the start, or for gzip
+from the nearest member start it knows (next requirement), and MUST not degrade
+silently.
 
 The system MUST NOT run any rapidgzip decoder in the caller's process. The bzip2 decoder
 SHALL run in a child process with the same rules as the DEFLATE family's (next
@@ -109,7 +110,7 @@ signature, so that whether the isolation is still needed stays measurable.
 | `use_indexed_bzip2` enabled and rapidgzip installed | bzip2 uses `rapidgzip.IndexedBzip2File` in a child process; the caller's process imports neither rapidgzip nor standalone `indexed_bzip2` |
 | `use_indexed_bzip2=AUTO`, no child process can start | stdlib decoder; one warning per process naming `use_indexed_bzip2=OFF` |
 | `use_indexed_bzip2=ON`, no child process can start | `ResourceLimitError`; never decoded in-process |
-| rapidgzip absent or flag `OFF` | stdlib decoder; backward seek re-decompresses and warns |
+| rapidgzip absent or flag `OFF` | stdlib decoder; backward seek re-decompresses from the start, or from a known gzip member start, and warns when it re-decodes past the threshold |
 
 ### Requirement: DEFLATE-family random access uses rapidgzip
 
@@ -564,3 +565,36 @@ seek-table cap SHALL be thinned and keep the exact total.
 | Seek into frame N | Decoding resumes at frame N's start |
 | Reserved descriptor bits set, or frame sizes that do not reach the table | `SEEK_INDEX_DEGRADED` (scan `zstd_seek_table`); reads decode from the start |
 | Zeros after the table | No table found, no diagnostic; reads decode from the start |
+
+### Requirement: gzip member starts are seek points
+
+Each gzip member starts a fresh DEFLATE stream. On declared seek demand the standard
+library engine SHALL record every member after the first that has output as a seek
+point when a forward read reaches it. A stream opened without seek demand SHALL keep no
+points.
+
+#### Scenario: member point matrix
+
+| Case | Expected |
+| --- | --- |
+| Multi-member gzip, read forward, then seek back | Resumes at the member start before the target |
+| Plain one-member gzip | No points, no diagnostic; seeks decode from the start |
+| Stream opened without seek demand | No walk, no points |
+
+### Requirement: BGZF members are walked without decoding
+
+A forward seek past the known points, a `SEEK_END`, or a size query SHALL walk a BGZF
+file's members from the start: each member's `BC` extra subfield gives its size and its
+ISIZE its output. The walk SHALL stop quietly at the first member without one, keeping
+the points before it; the size is known only when it reaches the end of the file. The
+sizes are trusted like the xz and lzip indexes (threat-model O17). A `.gzi` file is not
+read.
+
+#### Scenario: BGZF walk matrix
+
+| Case | Expected |
+| --- | --- |
+| `seek(0, SEEK_END)` | Total from the walk; headers and trailers read, nothing decoded |
+| Seek into block N | Decoding resumes at block N's start |
+| BGZF blocks, then a plain member | Points for the blocks; size from decoding to the end |
+| Walk over the seek-table cap | `SEEK_INDEX_DEGRADED` (scan `bgzf_blocks`, `SeekTableThinned`); exact total kept |

@@ -45,7 +45,7 @@ Two recurring notes:
 
 | Codec | Chosen backend | Availability | Efficient seek | Corruption | Truncation |
 |-------|----------------|--------------|----------------|------------|------------|
-| gzip | gzip-window `DecompressorStream` (+ `rapidgzip` for random access) | core (`[seekable]` for accel) | via `rapidgzip` | yes (CRC) | yes¹ |
+| gzip | gzip-window `DecompressorStream` (+ `rapidgzip` for random access) | core (`[seekable]` for accel) | via `rapidgzip`; natively per member and per BGZF block | yes (CRC) | yes¹ |
 | bzip2 | stdlib `bz2` (+ `rapidgzip.IndexedBzip2File`) | core (`[seekable]` for accel) | via `rapidgzip` | yes (block CRC) | yes |
 | xz | native `xz_decoder.py` over stdlib `lzma` | core | **yes** (block index) | yes (CRC) | yes |
 | lzip | native `lzip_decoder.py` over stdlib `lzma` | core | **yes** (trailer scan) | yes (CRC) | yes |

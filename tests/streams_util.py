@@ -355,6 +355,29 @@ def make_seekable_zstd(parts: list[bytes], *, checksums: bool = False) -> bytes:
     return b"".join(frames) + table
 
 
+def make_bgzf_block(data: bytes, *, extra_before: bytes = b"") -> bytes:
+    """One BGZF member holding ``data`` (SAM spec §4.1), as ``bgzip`` writes it.
+
+    ``extra_before`` is raw extra-field subfields put before the ``BC`` one.
+    """
+    compressor = zlib.compressobj(6, zlib.DEFLATED, -15)
+    body = compressor.compress(data) + compressor.flush()
+    xlen = len(extra_before) + 6
+    size = 12 + xlen + len(body) + 8
+    header = b"\x1f\x8b\x08\x04" + b"\x00" * 4 + b"\x00\xff" + struct.pack("<H", xlen)
+    extra = extra_before + b"BC" + struct.pack("<HH", 2, size - 1)
+    return header + extra + body + struct.pack("<II", zlib.crc32(data), len(data))
+
+
+# The empty member that ends every BGZF file, byte for byte as the spec gives it.
+BGZF_EOF = bytes.fromhex("1f8b08040000000000ff0600424302001b0003000000000000000000")
+
+
+def make_bgzf(parts: list[bytes], *, eof: bool = True) -> bytes:
+    """A BGZF file: one member per part, then the end-of-file marker."""
+    return b"".join(make_bgzf_block(p) for p in parts) + (BGZF_EOF if eof else b"")
+
+
 def make_unix_compress(data: bytes) -> bytes:
     """LZW-compress ``data`` into a standard unix-compress (`.Z`) stream.
 

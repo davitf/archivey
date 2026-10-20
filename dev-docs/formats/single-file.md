@@ -235,7 +235,8 @@ Where resume points come from, per codec:
 | xz | Every block, and every stream in a multi-stream file. Default `xz` writes one block; `xz -T0` and `--block-size` write many |
 | lzip | Every member. Default `lzip` writes one; `plzip` one per data block, many with a small `-B` |
 | `.Z` | Every CLEAR code, which `compress` emits when the dictionary stops paying |
-| gzip, zlib, raw DEFLATE, bzip2 | None natively. With `rapidgzip` engaged, its own index, built as it decodes |
+| gzip | On declared seek demand: every member after the first, recorded as a forward read reaches it, and every BGZF member, walked without decoding ([`gzip.md`](gzip.md) §2.3). With `rapidgzip` engaged, its own index, built as it decodes |
+| zlib, raw DEFLATE, bzip2 | None natively. With `rapidgzip` engaged, its own index, built as it decodes |
 | zstd | On declared seek demand: every regular frame after the first, recorded as a forward read reaches it, and every frame the seekable format's seek table lists ([`zstd-lz4.md`](zstd-lz4.md) §2.3) |
 | LZMA Alone, LZ4, Brotli | None |
 
@@ -393,8 +394,8 @@ Shared by the codecs; each page adds its own.
   decodes each block raw with its filter chain and a clamped LZMA2 dictionary, walking
   into later streams, and a chain Python's `lzma` cannot build raw (ARM64, RISC-V)
   leaves the inner TAR unclaimed, recorded as `CAPABILITY_UNAVAILABLE`.
-- **A crafted index misplaces bytes on a seek.** xz, lzip and seekable-zstd seeks trust
-  the file's own index; a forward read verifies it, a cold seek does not. Accepted:
+- **A crafted index misplaces bytes on a seek.** xz, lzip, seekable-zstd and BGZF seeks
+  trust the file's own index; a forward read verifies it, a cold seek does not. Accepted:
   threat-model O17.
 - **A seek table grows with the unit count the file declares.** An lzip member can be 26
   bytes, so a table could cost several times the file's size; capped by
