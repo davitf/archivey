@@ -63,11 +63,18 @@ and each change will be listed here. No major changes are expected.
 - **The `archivey` command:** list, test, extract (with the same safety defaults) and
   inspect archives from the shell. `uvx archivey-cli` runs it with the recommended
   extras, through the `archivey-cli` companion package.
-- **Glob helpers in `archivey.paths`** to pass as `members=`: `match_glob()` (`*` stays
-  inside one folder, `**` matches any depth) and `match_tar_glob()` (`tar`-style: `*`
-  also matches `/`, and a folder's name selects everything in it).
+- **Path helpers in `archivey.paths`:** glob matchers to pass as `members=`,
+  `match_glob()` (`*` stays inside one folder, `**` matches any depth) and
+  `match_tar_glob()` (`tar`-style: `*` also matches `/`, and a folder's name selects
+  everything in it), and `numbered_name()`, the `name (N)` spelling that
+  `OverwritePolicy.RENAME` writes.
 - Tested on Python 3.11 to 3.14 on Linux, macOS and Windows, plus free-threaded 3.13t on
   Linux.
+
+### Removed
+
+- `crc32_digest`, public in 0.2.0rc1. To compare a CRC-32 from `member.hashes` with
+  your own, use `zlib.crc32(data).to_bytes(4, "big")`.
 
 ### Security
 
@@ -77,8 +84,10 @@ and each change will be listed here. No major changes are expected.
 
 ## [0.2.0rc1] - 2026-10-18
 
-Release candidate for 0.2.0, to test the release flow. Its contents are the 0.2.0 entry
-above; 0.2.0 differs from it in that `crc32_digest` is no longer public, plus bug fixes.
+Release candidate for 0.2.0, to test the release flow. 0.2.0 differs from it in three
+ways: it adds the `archivey-cli` companion package (an `archivey-cli` 0.2.0rc1 was
+published after the tag), it removes `crc32_digest` (see Removed under 0.2.0), and it
+fixes bugs.
 
 <!--
 What goes in this file, from 0.2.0 on:
