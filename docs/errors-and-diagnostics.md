@@ -132,6 +132,13 @@ A cut-off member can also end early without an error. `stream.read(member.size)`
 bytes than the member should hold, and the next read raises `TruncatedError`. So code that reads a
 member in one call and then stops should check the length it got, or call `read()` once more.
 
+A member whose data is damaged doesn't end a `stream_members()` loop. Its own read raises, and the
+loop goes on to the next member, so one pass can find every damaged member in the archive. In a
+solid archive the members after the damage in the same solid block fail too, each from its own
+read, and with random access `open()` itself can raise for them. The loop raises and stops early
+only when the damage is to the archive's structure, such as a TAR cut off inside a member, so that
+archivey can't find the next member.
+
 No option makes archivey check a member before handing you its bytes. If you must never use
 unchecked data, read the whole member into memory or a temporary file first, and use it only once
 the read has finished without an error.
