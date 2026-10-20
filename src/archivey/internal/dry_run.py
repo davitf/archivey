@@ -214,9 +214,18 @@ class DryRun:
         spells dest some other way (``x/../out``, or through a symlink outside dest)
         is matched by the shortest leading part of it that resolves to dest, on the
         real filesystem: that part is outside dest, where a real run resolves it the
-        same way. What follows dest in the target is not resolved, so ``..``
-        components and symlinks there are left for the checks that resolve the link.
-        Any other target is returned as it is.
+        same way. A component that does not exist is kept as a name and taken off by
+        a later ``..``, as resolving the path does, so ``/srv/gone/../out/x`` matches
+        too. The OS cannot follow such a target past ``gone``, so its rewrite passes
+        through a name that does not exist either, in the private directory that holds
+        the scratch copy (dest and its parents do not count: a real run creates them).
+        What follows dest in the target is not resolved, so ``..`` components and
+        symlinks there are left for the checks that resolve the link. Any other target
+        is returned as it is.
+
+        The cost is linear in the target's depth, which the archive chooses: the
+        spellings are compared part by part, and the fallback resolves one component
+        at a time onto the prefix resolved before it.
         """
         pure = PurePath(target)
         if not pure.anchor:
@@ -225,26 +234,60 @@ class DryRun:
             # Windows root-relative (a target like \x): pathlib joins it onto the
             # link's own drive, which is dest's. A no-op elsewhere, where drive is "".
             pure = PurePath(self.dest_spellings[0].drive + target)
-        for spelling in self.dest_spellings:
-            if pure.is_relative_to(spelling):
-                return str(self.scratch / pure.relative_to(spelling))
-        # Resolved one component at a time, each onto the prefix resolved before it,
-        # and only while the prefix exists: dest exists, so a prefix that does not
-        # cannot resolve to it. Each step resolves a path no longer than an existing
-        # resolved path plus one component, so the cost is linear in the target's
-        # depth, which the archive chooses (``/tmp/../tmp/..`` repeated included).
         parts = pure.parts
+        for spelling in self.dest_spellings:
+            # As ``is_relative_to`` compares (case folded on Windows), without its
+            # walk over every parent of the target.
+            leading = spelling.parts
+            if len(parts) >= len(leading) and all(
+                os.path.normcase(mine) == os.path.normcase(theirs)
+                for mine, theirs in zip(parts, leading, strict=False)
+            ):
+                return str(self.scratch.joinpath(*parts[len(leading) :]))
+        # ``resolved`` is canonical while ``missing`` is 0. Past a component that does
+        # not exist it grows by name, as ``Path.resolve`` grows it, and the ``..`` that
+        # takes the last such name off brings it back to the canonical prefix; only
+        # steps that exist are resolved, each a resolved path plus one name.
+        dest = self.dest_spellings[1]
+        created = {dest, *dest.parents}
         resolved = PurePath(parts[0])
+        missing = 0
+        # Whether a missing component that a real run does not create (dest and its
+        # parents) is on the way.
+        detoured = False
         for end in range(2, len(parts) + 1):
-            step = os.path.join(resolved, parts[end - 1])
-            try:
-                if not os.path.lexists(long_path(step)):
+            part = parts[end - 1]
+            if missing and part == "..":
+                resolved = resolved.parent
+                missing -= 1
+            elif missing:
+                resolved = resolved / part
+                missing += 1
+            else:
+                try:
+                    step = os.path.join(resolved, part)
+                    if os.path.lexists(long_path(step)):
+                        resolved = PurePath(plain(os.path.realpath(long_path(step))))
+                    else:
+                        resolved = PurePath(step)
+                        missing = 1
+                except (OSError, ValueError):
                     return target
-                resolved = PurePath(plain(os.path.realpath(long_path(step))))
-            except (OSError, ValueError):
-                return target
-            if resolved == self.dest_spellings[1]:
+            if missing and part != ".." and resolved not in created:
+                detoured = True
+            if resolved != dest:
+                continue
+            if not detoured:
                 return str(self.scratch.joinpath(*parts[end:]))
+            # The OS does not take a missing name off with a later `..`: it stops
+            # there, and a link through it leads nowhere, while the checks, which
+            # resolve the path as ``Path.resolve`` does, find it inside dest. The
+            # rewritten target keeps one missing name on the way, in the private
+            # directory that holds the scratch copy, so both still hold.
+            gap = "missing" if self.scratch.name != "missing" else "missing_"
+            return str(
+                self.scratch.parent.joinpath(gap, "..", self.scratch.name, *parts[end:])
+            )
         return target
 
     def shown(self, path: Path) -> Path:

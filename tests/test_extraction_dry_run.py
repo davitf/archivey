@@ -379,6 +379,8 @@ def _dest_named_links(dest: Path) -> list[tuple[str, str, object]]:
         # Absolute, into dest: kept by a real extraction.
         ("abs", "sym", f"{dest}/data"),
         ("abs-dotdot", "sym", f"{dest}/sub/../data"),
+        # Absolute, into dest past a component that does not exist.
+        ("abs-gone", "sym", f"{dest.parent}/gone/../{dest.name}/data"),
         # A file written through an absolute link to a directory in dest.
         ("sub", "dir", None),
         ("abs-dir", "sym", f"{dest}/sub"),
@@ -417,6 +419,7 @@ def test_link_targets_that_name_dest_match(streaming: bool, tmp_path: Path) -> N
         statuses = {entry[0]: entry[1] for entry in dry}
         assert statuses["abs"] is ExtractionStatus.EXTRACTED
         assert statuses["up"] is ExtractionStatus.EXTRACTED
+        assert statuses["abs-gone"] is ExtractionStatus.EXTRACTED
         assert statuses["abs-dir/f"] is ExtractionStatus.EXTRACTED
         assert statuses["later"] is ExtractionStatus.BLOCKED
 
@@ -483,7 +486,8 @@ def _zip_blob(entries: dict[str, bytes]) -> bytes:
 
 def _put(dest: Path, entries: dict[str, object]) -> None:
     """Create ``entries`` under ``dest``: bytes for a file, ``None`` for a directory,
-    ``("sym", target)`` for a symlink, an int for a directory with that mode."""
+    ``("sym", target)`` for a symlink, an int for a directory with that mode. A
+    target's ``{dest}`` and ``{parent}`` name ``dest`` and the directory holding it."""
     dest.mkdir(parents=True, exist_ok=True)
     for name, what in entries.items():
         path = dest / name
@@ -497,7 +501,7 @@ def _put(dest: Path, entries: dict[str, object]) -> None:
             path.chmod(what)
         else:
             _, target = what  # type: ignore[misc]
-            os.symlink(str(target).format(dest=dest), path)
+            os.symlink(str(target).format(dest=dest, parent=dest.parent), path)
 
 
 # Each case: what dest holds before the run, and the archive's members.
@@ -554,6 +558,12 @@ _EXISTING_LINK_CASES: dict[
     "through-symlink-inside": (
         {"sub/x": b"mine", "ln": ("sym", "sub"), "abs": ("sym", "{dest}/sub")},
         [("ln/x", "file", b"theirs"), ("ln/y", "file", b"y"), ("abs/z", "file", b"")],
+    ),
+    # Under one whose absolute target reaches dest past a component that does not
+    # exist: written through it too.
+    "through-symlink-past-a-missing-name": (
+        {"sub/x": b"mine", "ln": ("sym", "{parent}/gone/../out/sub")},
+        [("ln/y", "file", b"y")],
     ),
     # And under one that leaves dest: refused.
     "through-symlink-outside": (
