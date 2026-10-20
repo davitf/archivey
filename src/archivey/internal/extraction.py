@@ -32,7 +32,7 @@ import uuid
 from collections.abc import Callable, Collection, Generator, Iterator
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO, assert_never, cast
+from typing import TYPE_CHECKING, BinaryIO, Protocol, assert_never, cast
 
 from archivey.config import ExtractionLimits
 from archivey.exceptions import (
@@ -46,6 +46,7 @@ from archivey.exceptions import (
     NameCollisionError,
     NameRewrittenError,
     _UsageTypeError,
+    exception_detail,
 )
 from archivey.internal.base_reader import MAX_LINK_TARGET_BYTES
 from archivey.internal.bomb_tracker import (
@@ -402,6 +403,33 @@ def _until_listing_damage(
         if exc is not reader._walk_error:
             raise
         found.append(exc)
+
+
+class _Closable(Protocol):
+    def close(self) -> None: ...
+
+
+@contextlib.contextmanager
+def _closing_pass(passing: _Closable) -> Iterator[None]:
+    """Close ``passing`` on the way out, without letting a failed close hide an error.
+
+    Closing the pass closes its open member stream, which can raise (an ``unrar``
+    exit status maps to a typed error). With an error already leaving the loop, that
+    error is the one the caller catches; the close failure rides on it as a note. On a
+    clean exit, a close failure raises as itself.
+    """
+    try:
+        yield
+    except BaseException as exc:
+        try:
+            passing.close()
+        except Exception as close_exc:  # noqa: BLE001  # kept as a note, not raised
+            exc.add_note(
+                "Closing the member pass also failed: "
+                + exception_detail(close_exc, with_type=True)
+            )
+        raise
+    passing.close()
 
 
 @dataclass
@@ -918,9 +946,11 @@ class ExtractionCoordinator:
         # completes, and then it is raised. A hardlink only points back, so every
         # source the second pass needs is in that prefix.
         # The pass is closed on the way out, so an error out of the loop body closes
-        # the open member stream (and any unrar child) at once. Dropping the pass is
-        # not enough: a held traceback keeps it alive, and an interpreter without
-        # reference counting (PyPy) closes it only when it is collected.
+        # the open member stream (and any unrar child) at once. CPython would close
+        # an unnamed pass as soon as the error left the loop; PyPy closes a dropped
+        # one only when it is collected. Binding the pass to ``pairs`` is safe only
+        # because ``_closing_pass`` closes it: without that, a caller holding the
+        # traceback would keep it (and the unrar child) alive on CPython too.
         listing_damage: list[CorruptionError] = []
         revises = reader._REVISES_YIELDED_MEMBERS
         # A member the walk can still rename or retype is selected on what it
@@ -934,7 +964,7 @@ class ExtractionCoordinator:
         pairs = _until_listing_damage(
             reader, reader._stream_members(walk_selector, copies), listing_damage
         )
-        with contextlib.closing(pairs):
+        with _closing_pass(pairs):
             for original, stream in pairs:
                 member_started = False
                 recorded_index: int | None = None
@@ -3305,7 +3335,7 @@ class ExtractionCoordinator:
         # Closed on the way out, so an error out of the loop body closes the open
         # member stream (and any unrar child) now, not when the pass is collected.
         passing = reader.stream_members(needed_sources)
-        with contextlib.closing(passing):
+        with _closing_pass(passing):
             for member, stream in passing:
                 group = orphans_by_source[member.member_id]
                 self._current = _MemberState()

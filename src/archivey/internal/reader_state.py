@@ -59,6 +59,13 @@ from typing import TYPE_CHECKING, TypeVar
 from archivey.exceptions import ArchiveyUsageError
 from archivey.types import MemberStreams
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from archivey.internal.open_site import OpenSite
+    from archivey.internal.streams.archive_stream import ArchiveStream
+
+
 T = TypeVar("T")
 
 # CPython ends a dropped pass or member stream at once: the generator or stream is
@@ -69,27 +76,27 @@ T = TypeVar("T")
 _REFCOUNTED = sys.implementation.name == "cpython"
 
 
+class _OverlapRefused(ArchiveyUsageError):
+    """A refusal because other work holds the reader: one that a dropped pass or
+    stream can be behind, so a collection may clear it. A closed reader or a callback
+    re-entry raises plain :class:`ArchiveyUsageError`, which no collection clears."""
+
+
 def _retry_after_collecting(attempt: Callable[[], T]) -> T:
-    """``attempt()``; refused on an interpreter without reference counting, ``attempt``
-    again after a collection has run the cleanup of passes and streams already dropped.
+    """``attempt()``; refused for an overlap on an interpreter without reference
+    counting, ``attempt`` again after a collection has run the cleanup of passes and
+    streams already dropped.
 
     The collection runs only on that refusal, outside the state lock (the cleanup
     takes it). A refusal that still holds afterwards is a real overlap and raises.
     """
     try:
         return attempt()
-    except ArchiveyUsageError:
+    except _OverlapRefused:
         if _REFCOUNTED:
             raise
     gc.collect()
     return attempt()
-
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
-
-    from archivey.internal.open_site import OpenSite
-    from archivey.internal.streams.archive_stream import ArchiveStream
 
 
 # Passes that may run beside workers and beside one another on a CONCURRENT reader.
@@ -326,12 +333,12 @@ class ReaderState:
             if self._root is not None and not (
                 overlap and self._pass_admits_overlap_locked(self._root.name)
             ):
-                raise ArchiveyUsageError(
+                raise _OverlapRefused(
                     f"Cannot start {name!r}: another reader operation "
                     f"({self._root.name!r}) is already active."
                 )
             if self._workers and not overlap:
-                raise ArchiveyUsageError(
+                raise _OverlapRefused(
                     f"Cannot start {name!r}: a concurrent open()/read() call is still "
                     "in progress."
                 )
@@ -458,7 +465,7 @@ class ReaderState:
             ):
                 # Side passes exist only beside a root that admits overlap, and they
                 # admit it too, so checking the root is enough.
-                raise ArchiveyUsageError(
+                raise _OverlapRefused(
                     f"Cannot call {name!r}: another reader operation "
                     f"({self._root.name!r}) is already active."
                 )
@@ -563,7 +570,7 @@ class ReaderState:
                 if self._live_streams or self._reservations:
                     site = self.open_site
                     loc = site.location if site is not None else "<unknown>"
-                    raise ArchiveyUsageError(
+                    raise _OverlapRefused(
                         "A member stream is already open on this reader. Close it "
                         "before opening another, or reopen the archive with "
                         "concurrent_operations=True "

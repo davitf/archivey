@@ -598,11 +598,13 @@ def no_refcounting(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     from archivey.internal import reader_state
 
     monkeypatch.setattr(reader_state, "_REFCOUNTED", False)
+    was_enabled = gc.isenabled()
     gc.disable()
     try:
         yield
     finally:
-        gc.enable()
+        if was_enabled:
+            gc.enable()
 
 
 @pytest.mark.usefixtures("no_refcounting")
@@ -640,6 +642,28 @@ def test_a_pass_still_held_is_refused_after_the_collection(tmp_path: Path) -> No
         passing.close()
 
 
+@pytest.mark.usefixtures("no_refcounting")
+def test_a_closed_reader_is_refused_without_a_collection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Only an overlap can be a dropped pass or stream; a closed reader cannot, so
+    # its refusal must not pay for a collection first.
+    import gc
+
+    collections: list[int] = []
+    monkeypatch.setattr(gc, "collect", lambda *a: collections.append(1) or 0)
+    state = _state()
+    assert state.mark_reader_closed()
+    for attempt in (
+        lambda: state.acquire_pass("stream_members"),
+        lambda: state.acquire_worker("open"),
+        state.reserve_live_stream,
+    ):
+        with pytest.raises(ArchiveyUsageError, match="has been closed"):
+            attempt()
+    assert collections == []
+
+
 def test_closing_a_stream_members_pass_closes_the_backend_pass(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -660,3 +684,94 @@ def test_closing_a_stream_members_pass_closes_the_backend_pass(
             next(iter(passing))
         (source,) = backend_passes
         assert source.gi_frame is None
+
+
+def _filter_raising_on(name: str) -> Callable[[ArchiveMember], ArchiveMember]:
+    def refuse(member: ArchiveMember) -> ArchiveMember:
+        if member.name == name:
+            raise RuntimeError(f"filter refused {name}")
+        return member
+
+    return refuse
+
+
+def test_an_error_out_of_extraction_closes_its_pass(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Keeping the pass in a list stands in for PyPy, where a dropped pass stays alive
+    # until a collection, and for a caller holding the traceback.
+    with open_archive(_zip_with_files(tmp_path)) as reader:
+        first = reader.members()[0]
+        passes = []
+        real = reader._stream_members
+
+        def kept(*args: object, **kwargs: object) -> Iterator[object]:
+            source = real(*args, **kwargs)  # type: ignore[arg-type]
+            passes.append(source)
+            return source
+
+        monkeypatch.setattr(reader, "_stream_members", kept)
+        with pytest.raises(RuntimeError, match="filter refused") as excinfo:
+            reader.extract_all(tmp_path / "out", filter=_filter_raising_on(first.name))
+        assert excinfo.value is not None  # the traceback is still held here
+        (source,) = passes
+        assert source.gi_frame is None
+
+
+def _tar_with_orphaned_hardlink(tmp_path: Path) -> Path:
+    path = tmp_path / "links.tar"
+    with tarfile.open(path, "w") as tf:
+        data = b"source data"
+        info = tarfile.TarInfo("source.txt")
+        info.size = len(data)
+        tf.addfile(info, io.BytesIO(data))
+        link = tarfile.TarInfo("link.txt")
+        link.type = tarfile.LNKTYPE
+        link.linkname = "source.txt"
+        tf.addfile(link)
+    return path
+
+
+def test_an_error_out_of_the_orphan_pass_closes_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Extracting only the link leaves its source for a second pass over the archive.
+    from archivey.internal.extraction import ExtractionCoordinator
+
+    def fail(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("linking failed")
+
+    monkeypatch.setattr(ExtractionCoordinator, "_link_orphan_group", fail)
+    with open_archive(_tar_with_orphaned_hardlink(tmp_path)) as reader:
+        passes = []
+        real = reader.stream_members
+
+        def kept(*args: object, **kwargs: object) -> object:
+            source = real(*args, **kwargs)  # type: ignore[arg-type]
+            passes.append(source)
+            return source
+
+        monkeypatch.setattr(reader, "stream_members", kept)
+        with pytest.raises(RuntimeError, match="linking failed") as excinfo:
+            reader.extract_all(tmp_path / "out", members=["link.txt"], policy="trusted")
+        assert excinfo.value is not None  # the traceback is still held here
+        (orphan_pass,) = passes
+        assert orphan_pass._pass.gi_frame is None
+
+
+def test_a_failed_pass_close_does_not_hide_the_extraction_error(
+    tmp_path: Path,
+) -> None:
+    from archivey.internal.extraction import _closing_pass
+
+    class FailingClose:
+        def close(self) -> None:
+            raise OSError("close failed")
+
+    with pytest.raises(RuntimeError, match="body failed") as excinfo:
+        with _closing_pass(FailingClose()):
+            raise RuntimeError("body failed")
+    assert any("close failed" in note for note in excinfo.value.__notes__)
+    with pytest.raises(OSError, match="close failed"):
+        with _closing_pass(FailingClose()):
+            pass
