@@ -2896,13 +2896,14 @@ def deps_built_under_pypy(
 def test_packages_unused_under_pypy_count_as_absent(
     deps_built_under_pypy: types.ModuleType,
 ) -> None:
-    """Under PyPy archivey treats lz4, pyppmd and rapidgzip as absent even when they are
-    installed, and has a reason for each."""
+    """Under PyPy archivey treats lz4, pyppmd, rapidgzip and inflate64 as absent even
+    when they are installed, and has a reason for each."""
     deps = deps_built_under_pypy
     assert deps.lz4_frame is None
     assert deps.lz4_block is None
     assert deps.pyppmd.available() is False
-    for package in ("lz4", "pyppmd", "rapidgzip"):
+    assert deps.inflate64.available() is False
+    for package in ("lz4", "pyppmd", "rapidgzip", "inflate64"):
         assert f"archivey does not use {package} under PyPy" in deps.unused_reason(
             package
         )

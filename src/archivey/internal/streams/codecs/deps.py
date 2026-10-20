@@ -115,6 +115,8 @@ _UNUSED_UNDER_PYPY = {
     "short",
     "rapidgzip": "archivey does not use rapidgzip under PyPy, where it misreads valid "
     "streams",
+    "inflate64": "archivey does not use inflate64 under PyPy, where it decodes larger "
+    "Deflate64 input wrong or crashes the interpreter",
 }
 
 
@@ -128,7 +130,9 @@ lz4_frame = None if unused_reason("lz4") else _optional("lz4.frame")
 lz4_block = None if unused_reason("lz4") else _optional("lz4.block")
 brotli = LazyOptional("brotli")
 pyppmd = LazyOptional("pyppmd", present=False if unused_reason("pyppmd") else None)
-inflate64 = LazyOptional("inflate64")
+inflate64 = LazyOptional(
+    "inflate64", present=False if unused_reason("inflate64") else None
+)
 # rapidgzip runs in a child process for every codec it decodes (gzip, zlib, raw deflate
 # and bzip2), so this process only needs to know it is installed. bzip2 uses rapidgzip's
 # bundled IndexedBzip2File, never the separate indexed_bzip2 package: the two loaded into
