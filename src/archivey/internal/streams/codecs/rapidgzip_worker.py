@@ -191,12 +191,14 @@ class _ParentSource(io.RawIOBase):
         return True
 
     def readinto(self, buf: Any) -> int:
-        view = memoryview(buf).cast("B")
-        answer, _, data = self._ask(SRC_READ, len(view))
-        if answer != SRC_DATA:
-            return 0
-        view[: len(data)] = data
-        return len(data)
+        # Views released on return (the rule in binaryio.try_readinto): the caller
+        # may resize or free ``buf`` next.
+        with memoryview(buf) as outer, outer.cast("B") as view:
+            answer, _, data = self._ask(SRC_READ, len(view))
+            if answer != SRC_DATA:
+                return 0
+            view[: len(data)] = data
+            return len(data)
 
     def seek(self, offset: int, whence: int = 0) -> int:
         answer, value, _ = self._ask(SRC_SEEK, offset, bytes([whence]))

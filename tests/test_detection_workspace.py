@@ -96,10 +96,10 @@ class InstrumentedBytesIO(io.RawIOBase):
         return data
 
     def readinto(self, b) -> int:  # type: ignore[override]
-        mv = memoryview(b).cast("B")
-        data = self.read(len(mv))
-        mv[: len(data)] = data
-        return len(data)
+        with memoryview(b) as outer, outer.cast("B") as mv:
+            data = self.read(len(mv))
+            mv[: len(data)] = data
+            return len(data)
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         before = self._inner.tell()
