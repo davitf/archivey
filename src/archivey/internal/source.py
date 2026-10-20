@@ -632,8 +632,13 @@ class ArchiveSource(ReadOnlyIOStream):
         """
         replay = self._replay
         assert replay is not None
-        head = bytes(replay[:n])
-        del replay[:n]
+        if n >= len(replay):
+            # The whole prefix: one copy, where a slice would copy it twice.
+            head = bytes(replay)
+            replay.clear()
+        else:
+            head = bytes(replay[:n])
+            del replay[:n]
         self._pos += len(head)
         return head
 
