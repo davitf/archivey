@@ -2863,12 +2863,24 @@ def test_absent_codec_backend_hint_is_installable(
     _assert_hint_is_installable(str(ei.value))
 
 
-def test_lz4_under_pypy_says_why_it_is_unused(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Under PyPy lz4 counts as absent even when installed, and the error says why."""
+@pytest.mark.parametrize(
+    ("codec", "absent_global"), [(Codec.LZ4, "lz4_frame"), (Codec.PPMD, "pyppmd")]
+)
+def test_a_package_unused_under_pypy_says_why(
+    codec: Codec, absent_global: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Under PyPy lz4 and pyppmd count as absent even when installed, and the error
+    says why."""
     monkeypatch.setattr(codecs_module.deps, "UNDER_PYPY", True)
-    monkeypatch.setattr(codecs_module.deps, "lz4_frame", None)
+    current = getattr(codecs_module.deps, absent_global)
+    absent = (
+        codecs_module.deps.LazyOptional(current.name, present=False)
+        if isinstance(current, codecs_module.deps.LazyOptional)
+        else None
+    )
+    monkeypatch.setattr(codecs_module.deps, absent_global, absent)
     with pytest.raises(PackageNotInstalledError, match="does not use it under PyPy"):
-        open_codec_stream(Codec.LZ4, io.BytesIO(b""))
+        open_codec_stream(codec, io.BytesIO(b""))
 
 
 def test_absent_crypto_hint_is_installable(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -40,13 +40,13 @@ class _TracemallocUnavailable(types.ModuleType):
 if importlib.util.find_spec("_tracemalloc") is None:
     sys.modules["tracemalloc"] = _TracemallocUnavailable("tracemalloc")
 
-# archivey never uses rapidgzip or lz4 under PyPy: rapidgzip misreads valid streams
-# there and lz4 crashes the interpreter (rapidgzip_child._UNDER_PYPY, deps.UNDER_PYPY).
-# The tests then see them as not installed: a ``None`` entry makes the import fail and
-# ``importlib.util.find_spec`` return ``None``, so tests that need them skip, and no test
-# loads lz4 into the process for it to crash.
+# archivey never uses rapidgzip, lz4 or pyppmd under PyPy, where they misread data or
+# crash the interpreter (rapidgzip_child._UNDER_PYPY, deps.UNDER_PYPY). The tests then
+# see them as not installed: a ``None`` entry makes the import fail and
+# ``importlib.util.find_spec`` return ``None``, so tests that need them skip, and no
+# test loads them into the process.
 if sys.implementation.name == "pypy":
-    for _unused_under_pypy in ("rapidgzip", "lz4"):
+    for _unused_under_pypy in ("rapidgzip", "lz4", "pyppmd"):
         sys.modules[_unused_under_pypy] = None  # type: ignore[assignment]
 
 # Per-test OS-resource leak oracle (child processes, owning streams, pipe fds).
