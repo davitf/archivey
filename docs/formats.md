@@ -966,8 +966,9 @@ yielded.
 
 `member.hashes` holds digests the archive **already stores** (or, for multi-member
 lzip, derives via CRC combine from per-member stored CRCs), keyed by
-[`HashAlgorithm`][archivey.HashAlgorithm] (values always ``bytes`` — CRC-32 is four
-big-endian bytes via [`crc32_digest()`][archivey.crc32_digest]). They are readable without
+[`HashAlgorithm`][archivey.HashAlgorithm] (values always ``bytes``; CRC-32 is four
+big-endian bytes, so a CRC you computed compares as
+`zlib.crc32(data).to_bytes(4, "big")`). They are readable without
 decompressing when the backend documents them. They are **not** computed digests —
 a full `read()` still verifies through the normal path.
 

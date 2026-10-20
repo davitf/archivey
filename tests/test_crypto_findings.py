@@ -48,9 +48,10 @@ from archivey.internal.backends.sevenzip_parser import (
 from archivey.internal.backends.sevenzip_reader import SevenZipReader
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.external.cli import terminate_process
+from archivey.internal.hashing import crc32_digest
 from archivey.internal.hashing.blake2sp import Blake2sp
 from archivey.internal.streams.verify import VerifyingStream
-from archivey.types import HashAlgorithm, crc32_digest
+from archivey.types import HashAlgorithm
 from tests.conftest import requires, requires_binary
 from tests.corruption_util import raises_corruption_not_truncation
 

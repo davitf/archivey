@@ -371,11 +371,6 @@ class HashAlgorithm(StrEnum):
     BLAKE2SP = "blake2sp"
 
 
-def crc32_digest(value: int) -> bytes:
-    """Encode a CRC-32 as four big-endian bytes for :attr:`ArchiveMember.hashes`."""
-    return (value & 0xFFFFFFFF).to_bytes(4, "big")
-
-
 class CompressionAlgorithm(Enum):
     """A compression/filter codec. Extensible: codecs Archivey does not recognize
     map to ``UNKNOWN`` rather than raising, so callers should treat the set as
@@ -883,7 +878,8 @@ class ArchiveMember:
     hashes: Mapping[HashAlgorithm, bytes] = field(default_factory=dict, compare=False)
     """Stored content digests keyed by :class:`HashAlgorithm` (values always ``bytes``).
 
-    CRC-32 is four big-endian bytes (:func:`crc32_digest`). Excluded from equality.
+    CRC-32 is four big-endian bytes: a CRC you computed yourself compares as
+    ``zlib.crc32(data).to_bytes(4, "big")``. Excluded from equality.
     """
 
     # compare=False: format-specific bags must not affect logical identity.

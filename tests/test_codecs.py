@@ -33,6 +33,7 @@ from archivey.internal.config import (
     StreamConfig,
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.hashing import crc32_digest
 from archivey.internal.streams import codecs as codecs_module
 from archivey.internal.streams import crypto
 from archivey.internal.streams.codecs import (
@@ -52,7 +53,7 @@ from archivey.internal.streams.codecs.unix_compress_decoder import (
     LzwState,
 )
 from archivey.internal.streams.verify import VerifyingStream
-from archivey.types import HashAlgorithm, StreamFormat, crc32_digest
+from archivey.types import HashAlgorithm, StreamFormat
 from tests.conftest import requires, requires_binary, requires_zstd, zstd_backend
 from tests.corruption_util import (
     is_corruption_not_truncation,

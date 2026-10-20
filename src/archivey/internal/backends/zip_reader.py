@@ -139,6 +139,7 @@ from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
 from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
+from archivey.internal.hashing import crc32_digest
 from archivey.internal.logs import backends as logger
 from archivey.internal.naming import (
     emit_member_name_normalized,
@@ -204,7 +205,6 @@ from archivey.types import (
     MemberExtra,
     MemberStreams,
     MemberType,
-    crc32_digest,
 )
 
 _new_tuple = tuple.__new__
