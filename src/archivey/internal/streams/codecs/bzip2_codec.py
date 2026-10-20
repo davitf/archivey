@@ -868,6 +868,7 @@ class Bzip2Codec(StreamCodec):
             suggest_install=not _bzip2_uses_accelerator(config)
             and not deps.rapidgzip.available()
             and not deps.unused_reason("rapidgzip"),
+            unused_reason=deps.unused_reason("rapidgzip"),
         )
 
     def _accelerator_data_error(self, exc: Exception) -> bool:

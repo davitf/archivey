@@ -105,7 +105,8 @@ zstd = _optional_zstd()
 # Packages archivey does not use under PyPy, with why. It reads as if they were absent, and
 # the reason replaces the install advice wherever a missing package is reported
 # (``MissingComponent.reason``). dev-docs/known-issues.md has the symptoms, the versions
-# measured and the upstream status.
+# measured and the upstream status. tests/conftest.py keeps its own copy of these names
+# (``UNUSED_UNDER_PYPY``), because it must block the imports before archivey loads.
 UNDER_PYPY = sys.implementation.name == "pypy"
 _UNUSED_UNDER_PYPY = {
     "lz4": "archivey does not use lz4 under PyPy, where its frame decoder crashes the "

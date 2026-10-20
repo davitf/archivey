@@ -158,8 +158,9 @@ def _rapidgzip_rewind_warning(
     The old "below the AUTO size threshold, stay quiet" arm is gone: the distance
     threshold covers it, and covers it better (a small member cannot produce a large
     re-decode distance). ``suggest_install`` stays False when the accelerator is present
-    or engaged, so a caller is never told to install what they already have, and on an
-    interpreter where archivey does not use it (``deps.unused_reason``).
+    or engaged, so a caller is never told to install what they already have. On an
+    interpreter where archivey does not use it, ``unused_reason`` carries why
+    (``deps.unused_reason``) and the report says that instead.
     """
     engaged = _deflate_family_uses_accelerator(config)
     return RewindWarning(
@@ -168,6 +169,7 @@ def _rapidgzip_rewind_warning(
         suggest_install=not engaged
         and not deps.rapidgzip.available()
         and not deps.unused_reason("rapidgzip"),
+        unused_reason=deps.unused_reason("rapidgzip"),
     )
 
 

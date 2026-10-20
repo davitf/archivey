@@ -113,8 +113,10 @@ GIL. rapidgzip decodes only in a child process, so the caller's process never im
 package that is installed but fails to import SHALL be treated as absent. So SHALL a package
 archivey does not use on the running interpreter because it misreads data or crashes there
 (today rapidgzip, lz4 and pyppmd under PyPy): its `MissingComponent` carries a `reason`, and
-both reporting channels SHALL give that reason in place of the install advice, since
-installing the package would not help.
+every report of that component SHALL give the reason in place of the install advice, since
+installing the package would not help. lz4 and pyppmd lower format support, so both
+reporting channels carry them. rapidgzip is an accelerator and never lowers support, so it
+reaches only the `ON` refusal and the rewind report.
 
 The system SHALL keep `[all]` as the conventional superset; it MUST resolve to
 `[recommended]` + `[seekable]`.

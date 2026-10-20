@@ -300,8 +300,10 @@ scenarios with it. Adversarial unfinished-decoder tests run in subprocess childr
 
 ## PyPy: rapidgzip, python-lz4 and pyppmd misbehave (open)
 
-**Symptom.** Under PyPy 3.11 (the allowed-to-fail `pypy3.11` CI job, with the releases
-`pyproject.toml` allows: rapidgzip 0.16, lz4 4.4, pyppmd 1.3):
+**Symptom.** Under PyPy 3.11 (the allowed-to-fail `pypy3.11` CI job). The versions below
+are what that job resolved on 2026-10-20, not floors: rapidgzip 0.16.0, lz4 4.4.5, pyppmd
+1.3.1. The job's install step prints the versions each run resolves, so check a newer run
+before assuming a later release still fails.
 
 - rapidgzip refuses valid gzip streams ("Failed to detect a valid file format"), reads a
   bzip2 stream as empty, and aborts the process when it reads a Python file object.
