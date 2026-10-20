@@ -139,9 +139,16 @@ can use an accelerator and a static ratio. A random-access walk reads through a 
 with Python's default buffer size. The view seeks the shared stream before a read when
 the handle is not already there, so a member read never moves the walk. A streaming walk
 is the only reader of the forward stream, buffered, and member data is read through it.
-The reader closes every stream it built.
+On a plain tar from a pipe, that buffer fills from what has arrived
+(`ArchiveSource.arrived_view`), while its own reads still gather a whole block. So a
+short tar whose writer keeps the pipe open opens at once, and its members can be read.
+The listing still waits at its end: the trailing-data scan reads up to 1 MiB past the
+trailer, so it waits for more bytes or for the end of the source
+([`docs/formats.md`](../../docs/formats.md#tar-and-compressed-tar)). A compressed tar
+from a pipe still waits at open for a full read-ahead or the end of the source
+([`detection.md`](../topics/detection.md) §5). The reader closes every stream it built.
 
-**Every buffer reads the stream under it at most once per read.** It is a
+**Every buffer over a codec stream reads it at most once per read.** It is a
 `ReadAheadStream`, not `io.BufferedReader`, which asks again after a short read. A
 decoder over a cut stream returns the bytes it could decode and raises
 `TruncatedError` on the next read, so asking again in the same read would drop those

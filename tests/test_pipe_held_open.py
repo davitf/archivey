@@ -114,13 +114,14 @@ def test_detect_format_does_not_wait_for_the_writer(
     assert info.format == expected
 
 
-# TAR and TAR_GZ are not here: their backends read ahead at open (an 8 KiB buffer
-# for TAR, a 64 KiB decoder feed for TAR_GZ) and still wait, also with ``format=``.
+# TAR_GZ is not here: its backend reads the first header through a decoder that
+# fills a full 8 KiB read-ahead from a full 64 KiB feed, and still waits, also with
+# ``format=``.
 @pytest.mark.parametrize("buffered", [False, True], ids=["raw", "buffered"])
 @pytest.mark.parametrize(
     ("make", "expected"),
-    [(_zip, ArchiveFormat.ZIP), (_gzip, ArchiveFormat.GZ)],
-    ids=["zip", "gz"],
+    [(_zip, ArchiveFormat.ZIP), (_gzip, ArchiveFormat.GZ), (_tar, ArchiveFormat.TAR)],
+    ids=["zip", "gz", "tar"],
 )
 def test_open_archive_does_not_wait_for_the_writer(
     make: Callable[[int], bytes], expected: ArchiveFormat, buffered: bool
@@ -129,6 +130,27 @@ def test_open_archive_does_not_wait_for_the_writer(
         with open_archive(stream, streaming=True) as reader:
             assert not closed.is_set(), "open_archive waited for the writer"
             assert reader.format == expected
+
+
+@pytest.mark.parametrize("buffered", [False, True], ids=["raw", "buffered"])
+def test_a_streaming_tar_yields_its_first_member_before_the_writer_closes(
+    buffered: bool,
+) -> None:
+    """The first member and its bytes arrive while the writer still holds the pipe.
+
+    The test leaves the pass after that member: the end of the listing waits for the
+    writer by design, because the trailing-data scan reads past the trailer.
+    """
+    payload = _tar(2000)
+    with _held_open_pipe(payload, buffered=buffered) as (stream, closed):
+        with open_archive(stream, streaming=True) as reader:
+            for member, member_stream in reader.stream_members():
+                assert member_stream is not None
+                data = member_stream.read()
+                assert not closed.is_set(), "the first member waited for the writer"
+                break
+    assert member.name == "a.bin"
+    assert data == payload[512 : 512 + 2000]
 
 
 class _Trickle(io.RawIOBase):
@@ -158,6 +180,32 @@ def test_an_early_signature_does_not_settle_before_an_earlier_table_entry() -> N
     payload = b"PK\x03\x04" + b"\0" * 253 + b"ustar" + b"\0" * 250
     assert detect_format(io.BytesIO(payload)).format == ArchiveFormat.TAR
     assert detect_format(_Trickle(payload, 100)).format == ArchiveFormat.TAR  # type: ignore[arg-type]  # RawIOBase double
+
+
+def test_a_streaming_tar_read_in_small_pieces_matches_the_whole_bytes() -> None:
+    """The TAR walk fills its buffer from what has arrived, and reads the same tar.
+
+    The source returns at most 7 bytes per read, so every 512-byte header and every
+    member's data is gathered from many short fills.
+    """
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as tf:
+        for i, size in enumerate((0, 1, 511, 513, 9000)):
+            info = tarfile.TarInfo(f"m{i}-" + "n" * 120)
+            info.size = size
+            tf.addfile(info, io.BytesIO(bytes([i]) * size))
+    payload = buf.getvalue()
+
+    def contents(source: BinaryIO) -> list[tuple[str, bytes]]:
+        with open_archive(source, streaming=True) as reader:
+            return [
+                (member.name, stream.read() if stream is not None else b"")
+                for member, stream in reader.stream_members()
+            ]
+
+    expected = contents(io.BytesIO(payload))
+    assert len(expected) == 5
+    assert contents(_Trickle(payload, 7)) == expected  # type: ignore[arg-type]  # RawIOBase double
 
 
 _KOLY = b"koly" + (4).to_bytes(4, "big") + (512).to_bytes(4, "big")
