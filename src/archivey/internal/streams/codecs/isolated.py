@@ -15,9 +15,10 @@ translate alongside the real ones.
 
 from __future__ import annotations
 
+import importlib
 import lzma
 import zlib
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any, Protocol
 
 from archivey.config import ProcessIsolation
@@ -99,6 +100,49 @@ def _zstd_errors() -> dict[tuple[str, str], type[Exception]]:
 def _lz4_errors() -> dict[tuple[str, str], type[Exception]]:
     block = deps.lz4_block
     return _known(getattr(block, "LZ4BlockError", None)) if block is not None else {}
+
+
+# liblzma's dictionary for the default preset (6), and zstd's largest window for the
+# levels a default compressor picks: what a decoder of an unknown stream most likely
+# allocates.
+_TYPICAL_DECODER_MEMORY = 8 << 20
+# PyPy's own module; no type checker knows it.
+_add_memory_pressure: Callable[[int], None] | None = (
+    importlib.import_module("__pypy__").add_memory_pressure if deps.UNDER_PYPY else None
+)
+
+
+def _note_native_memory(nbytes: int) -> None:
+    """Tell PyPy's GC that a decoder just built holds ``nbytes`` outside its heap.
+
+    CPython frees a dropped decoder's buffers at once. PyPy frees them at its next
+    major collection, and that collection is scheduled by the GC heap's growth only,
+    which a decoder hardly adds to. A run that drops thousands of decoders (an xz
+    file of many streams, a test suite) then keeps gigabytes of dictionaries
+    allocated, and once glibc has grown its heap for them, ``fork`` refuses to copy
+    that mapping: ``OSError: [Errno 12] Cannot allocate memory`` from ``subprocess``.
+    The pressure brings the collection forward, as PyPy's own ``LZMACompressor`` does.
+    """
+    if _add_memory_pressure is not None:
+        _add_memory_pressure(nbytes)
+
+
+def _lzma_decoder_memory(
+    memlimit: int | None, filters: list[dict[str, Any]] | None
+) -> int:
+    """What a liblzma decoder most likely allocates: the dictionary a raw filter chain
+    names, else the default one, never more than ``memlimit``."""
+    estimate = _TYPICAL_DECODER_MEMORY
+    if filters is not None:
+        estimate = max(
+            (
+                int(f.get("dict_size", _TYPICAL_DECODER_MEMORY))
+                for f in filters
+                if f.get("id") in (lzma.FILTER_LZMA1, lzma.FILTER_LZMA2)
+            ),
+            default=0,
+        )
+    return estimate if memlimit is None else min(estimate, memlimit)
 
 
 class _ChildProxy:
@@ -257,9 +301,11 @@ class Natives:
         filters: list[dict[str, Any]] | None = None,
     ) -> Decompressor:
         if not self.isolated:
-            return lzma.LZMADecompressor(
+            decoder = lzma.LZMADecompressor(
                 format=format, memlimit=memlimit, filters=filters
             )
+            _note_native_memory(_lzma_decoder_memory(memlimit, filters))
+            return decoder
         kwargs: dict[str, object] = {"format": format}
         if memlimit is not None:
             kwargs["memlimit"] = memlimit
@@ -274,7 +320,9 @@ class Natives:
         if not self.isolated:
             zstd = deps.zstd
             assert zstd is not None
-            return zstd.ZstdDecompressor(options=options)
+            decoder = zstd.ZstdDecompressor(options=options)
+            _note_native_memory(_TYPICAL_DECODER_MEMORY)
+            return decoder
         # The option keys are ``DecompressionParameter`` members, an ``IntEnum`` that
         # ``marshal`` does not carry; the decoder takes their integer values too.
         kwargs: dict[str, object] = {}
