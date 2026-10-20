@@ -341,8 +341,11 @@ def _fmt_rung(rung: tuple[int, int]) -> str:
 
 
 def _fmt_open(open_ms: float) -> str:
-    """The fitted open cost. It is an intercept, so noise can push a very small
-    one below zero, which would read as a bug rather than as "about nothing"."""
+    """The fitted open cost. It is the listing fit's intercept, so a negative one
+    means that fit did not resolve the open cost (it is below what the ladder can
+    separate from the per-member cost), not that the cost is near zero."""
+    if open_ms < 0:
+        return "not resolved"
     return f"{open_ms:.2f} ms" if open_ms >= 0.01 else "under 0.01 ms"
 
 

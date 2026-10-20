@@ -656,6 +656,7 @@ def test_format_text_report_cost_model_section() -> None:
             {
                 "format": "zip",
                 "peer": "zipfile",
+                "codec": True,
                 "sides": {
                     "archivey": {
                         "fit": fit_row,
@@ -696,11 +697,30 @@ def test_format_text_report_cost_model_section() -> None:
                         ],
                     },
                 },
-            }
+            },
+            {
+                "format": "tar",
+                "peer": "tarfile",
+                "codec": False,
+                "sides": {
+                    "archivey": {
+                        "fit": {**fit_row, "open_ms": 0.005},
+                        "rungs": [],
+                        "checks": [],
+                    },
+                    "tarfile": {
+                        "fit": {**fit_row, "open_ms": -0.06},
+                        "rungs": [],
+                        "checks": [],
+                    },
+                },
+            },
         ],
     }
     report = format_text_report(payload)
     assert "## Cost model" in report
+    assert "| tar | archivey | under 0.01 ms | 8k members/s | no codec |" in report
+    assert "| tar | tarfile | not resolved | 8k members/s | no codec |" in report
     assert "| zip | archivey \\* | 0.40 ms | 8k members/s | 800 MiB/s |" in report
     assert "zip archivey read 64 × 256 KiB" in report
     assert "| zip | zipfile \\* |" in report
