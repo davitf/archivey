@@ -51,7 +51,6 @@ from __future__ import annotations
 
 import enum
 import gc
-import sys
 import threading
 import weakref
 from dataclasses import dataclass, field
@@ -69,12 +68,12 @@ if TYPE_CHECKING:
 
 T = TypeVar("T")
 
-# CPython ends a dropped pass or member stream at once: the generator or stream is
-# freed when its last reference goes (the end of a ``for`` loop left with ``break``,
-# ``reader.open(m).read()``), and its cleanup releases what it held here. Other
-# interpreters (PyPy) free it only at a later collection, so until then the next call
-# would be refused as overlapping something nobody can reach.
-_REFCOUNTED = sys.implementation.name == "cpython"
+# A dropped pass or member stream releases what it held here only when it is freed.
+# CPython usually frees it at once, when its last reference goes (the end of a ``for``
+# loop left with ``break``, ``reader.open(m).read()``), but not when it sits in a
+# reference cycle: then it waits for the cycle collector. PyPy frees every dropped
+# object only at a later collection. Until then the next call would be refused as
+# overlapping something nobody can reach, at a moment memory pressure decides.
 
 
 class _OverlapRefused(ArchiveyUsageError):
@@ -84,18 +83,19 @@ class _OverlapRefused(ArchiveyUsageError):
 
 
 def _retry_after_collecting(attempt: Callable[[], T]) -> T:
-    """``attempt()``; refused for an overlap on an interpreter without reference
-    counting, ``attempt`` again after a collection has run the cleanup of passes and
-    streams already dropped.
+    """``attempt()``; refused for an overlap, ``attempt`` again after a collection has
+    run the cleanup of passes and streams already dropped.
 
-    The collection runs only on that refusal, outside the state lock (the cleanup
-    takes it). A refusal that still holds afterwards is a real overlap and raises.
+    This runs on every interpreter, so whether a call is refused depends only on
+    whether the earlier pass or stream is still reachable, never on when a collection
+    happened to run. The collection runs only on that refusal, outside the state lock
+    (the cleanup takes it). A refusal that still holds afterwards is a real overlap
+    and raises.
     """
     try:
         return attempt()
     except _OverlapRefused:
-        if _REFCOUNTED:
-            raise
+        pass
     gc.collect()
     return attempt()
 

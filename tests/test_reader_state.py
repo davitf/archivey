@@ -584,20 +584,19 @@ def test_memoized_terminals_match_a_fresh_walk_per_member(
 
 def _unreachable_but_alive(obj: object) -> None:
     """Leave ``obj`` reachable only through a reference cycle, so reference counting
-    never frees it and only a collection does: how PyPy treats every dropped object."""
+    never frees it and only a collection does: a dropped object caught in a cycle on
+    CPython, and every dropped object on PyPy."""
     cycle: list[object] = [obj]
     cycle.append(cycle)
 
 
 @pytest.fixture
-def no_refcounting(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """Take the path of an interpreter without reference counting, with the collector
-    paused so that only the refusal path collects."""
+def collector_paused() -> Iterator[None]:
+    """Pause the cycle collector, so that only the refusal path collects. On CPython
+    the tests using it fail if the retry is limited to interpreters without
+    reference counting."""
     import gc
 
-    from archivey.internal import reader_state
-
-    monkeypatch.setattr(reader_state, "_REFCOUNTED", False)
     was_enabled = gc.isenabled()
     gc.disable()
     try:
@@ -607,7 +606,7 @@ def no_refcounting(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
             gc.enable()
 
 
-@pytest.mark.usefixtures("no_refcounting")
+@pytest.mark.usefixtures("collector_paused")
 def test_a_dropped_pass_is_collected_before_a_new_one_is_refused(
     tmp_path: Path,
 ) -> None:
@@ -619,7 +618,7 @@ def test_a_dropped_pass_is_collected_before_a_new_one_is_refused(
         assert len(reader.members_report().members) == 2
 
 
-@pytest.mark.usefixtures("no_refcounting")
+@pytest.mark.usefixtures("collector_paused")
 def test_a_dropped_member_stream_is_collected_before_a_new_open_is_refused(
     tmp_path: Path,
 ) -> None:
@@ -632,7 +631,7 @@ def test_a_dropped_member_stream_is_collected_before_a_new_open_is_refused(
             assert again.read()
 
 
-@pytest.mark.usefixtures("no_refcounting")
+@pytest.mark.usefixtures("collector_paused")
 def test_a_pass_still_held_is_refused_after_the_collection(tmp_path: Path) -> None:
     with open_archive(_zip_with_files(tmp_path), streaming=True) as reader:
         passing = iter(reader)
@@ -642,7 +641,7 @@ def test_a_pass_still_held_is_refused_after_the_collection(tmp_path: Path) -> No
         passing.close()
 
 
-@pytest.mark.usefixtures("no_refcounting")
+@pytest.mark.usefixtures("collector_paused")
 def test_a_closed_reader_is_refused_without_a_collection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
