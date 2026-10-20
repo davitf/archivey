@@ -607,29 +607,27 @@ end of the pass, with the parse error as the reason. A stub with no local header
 scan's 2 MiB window, ending within it on an end record, is read the same way, so an
 empty archive, or one whose members are gone, behind a stub opens as from a file.
 
-**Extraction** writes each member as it arrives and settles at the end of the pass
-(`ExtractionCoordinator._settle_revised_members`): modes and owners applied, a member the
-directory makes a symlink turned into a link after the `filter` and policy run again on
-it, what a member the directory makes `OTHER` wrote removed, a renamed member moved, and
-the selection made again on what each member became (`design.md`, "The selection is made
-again"). A caller's entry the pass replaces is moved aside and put back unless the member
-still lands there. A run that stops before the end of the pass settles a member never
-learns whether it is a link, so it takes back each such file whose data could be a
-link's (`_take_back_possible_links`): 4096 bytes or less (`MAX_LINK_TARGET_BYTES`), or data
-that starts with a Windows symlink or junction reparse tag. A longer file stays, with
-no mode applied; as a link its target would be over the cap, which no read gives.
+**Extraction** stages, then places (`ExtractionCoordinator._stage_then_place`; the
+`pipe-zip-stage-then-commit` change has the design). During the pass each member the
+selection may take has its data written to one `.archivey-tmp-<random>` directory under
+the destination, after the universal checks and the name policy pass on its local
+header's name. Once the directory is read, the members are placed in listing order by the
+same per-member code a file read uses: the selection made for good, the `filter` once,
+the policy checks, the overwrite policy and collisions on the final member, and each staged
+file landing by a rename. A run that stops before placement leaves nothing of its own in
+the destination, so no link is ever written as a file holding its target.
 
 **Failures found at the end of the pass** (`_failed_at_end`,
-`_settle_failures_at_end`): a data descriptor the directory contradicts, a local header
+`_placement_data`): a data descriptor the directory contradicts, a local header
 whose CRC, sizes or encryption flag the directory contradicts (not a central CRC-32 of
 0 over data against a local value, §5), a same-name pair whose directory order reverses the
 file order, and a directory entry with no local entry. Each fails its member
 (`CorruptionError`; the reversed pair only updates the members in `stream_members()`),
-and extraction removes what it wrote for it. A directory entry pointing at a local
+and extraction does not place it. A directory entry pointing at a local
 header an earlier entry took ends the pass with `CorruptionError`. Two headers storing
 different names fail nothing: the member takes the directory's name, and a file or link
 reports `MEMBER_LOCAL_NAME_DIFFERS` as a file read does when it opens the member (§5);
-extraction moves what it wrote.
+extraction places it under the directory's name.
 
 **Where the pass and a file read differ**, each pinned in
 `tests/test_zip_pipe_parity.py` (`_DIFFERS`) or the tests named in §8. The first four

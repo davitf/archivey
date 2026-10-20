@@ -266,6 +266,11 @@ helpers stay for TAR from a pipe.
 
 ## Open Questions
 
+Both were taken as this design recommends when the change was implemented, with no
+ruling yet: staged data is extraction output (the `archive-reading` delta says "Bounded
+implicit temporary storage" does not reach it), and progress uses the order of
+Decision 5. The maintainer may still rule otherwise.
+
 - **Is staged data extraction output, or implicit temporary storage?** Three rules bear
   on it: ADR 0010, the `format-zip` rule against copying the source, and
   `archive-reading`'s "Bounded implicit temporary storage". Decision 1 argues output.

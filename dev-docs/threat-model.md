@@ -105,12 +105,16 @@ no member replaces the destination itself.
 - Overwrites replace a symlink rather than follow it (`_prepare_destination`,
   `_place_link`), and file data is written to a `.archivey-tmp-<random>` sibling
   (`_temp_sibling`) and moved with `os.replace` (`_write_file_atomic`), so an
-  interrupted run never leaves a half-written file.
+  interrupted run never leaves a half-written file. A ZIP from a pipe writes its
+  members' data into one private `.archivey-tmp-<random>` directory under the
+  destination and moves each file from there once the central directory is read
+  (`_stage_then_place`); nothing else of the run is in the destination before then.
 - `_apply_metadata` strips setuid, setgid and sticky except under `TRUSTED`, and applies
   ownership only under `TRUSTED` as root.
 
 **Residual.** A local process racing the destination (out of scope, §1). A hard kill, or a removal the filesystem
-refuses (logged), can leave `.archivey-tmp-*` files, which are safe to delete.
+refuses (logged), can leave `.archivey-tmp-*` files, or a pipe ZIP's staging directory of them,
+which are safe to delete once no extraction is running.
 
 **Tests.** `tests/test_extraction.py`: `test_check_universal_rejects_traversal`,
 `test_check_universal_rejects_root_named_file`,

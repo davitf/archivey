@@ -1,6 +1,6 @@
 # pipe-zip-stage-then-commit — stage a pipe ZIP's members, then place them once the directory is read
 
-**Status:** Blocked on a decision. It depends on nothing and blocks nothing. It is breaking for ZIP extraction from a pipe only. Effort: medium.
+**Status:** Implemented, with the two open questions taken as the design recommends. It depends on nothing and blocks nothing. It is breaking for ZIP extraction from a pipe only. Effort: medium.
 
 **Why it matters:** A ZIP read from a pipe learns which members are links, their modes, and which copy of a name is current only at the very end. Today extraction writes every member into the destination as it arrives, then revises it: it turns files into links, takes back members, and moves the caller's own files aside and puts them back. That takes about six hundred lines, and it keeps producing review findings.
 

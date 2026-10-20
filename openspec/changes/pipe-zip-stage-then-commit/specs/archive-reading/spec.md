@@ -68,3 +68,31 @@ the pass: it is called once per member, at placement, on the final member.
 | `extract_all(members=["a.txt", "typo.txt"])` on TAR with the code set to `RAISE` | `a.txt` written, then `DiagnosticRaisedError`; no report |
 | The same call on a ZIP from a pipe | `DiagnosticRaisedError` before any member is placed, as from a file; nothing of the run in the destination |
 | `extract_all(members=["typo.txt", "a.txt"])` on a listing that ends in damage after `a.txt`, code set to `RAISE` | `a.txt` written, then the listing's error; no `MEMBER_SELECTOR_UNMATCHED` |
+
+### Requirement: Bounded implicit temporary storage
+
+Reader ops SHALL NOT consume memory or temp storage proportional to member/archive
+size as an implicit side effect of open/read/validate/password-confirm. Silently
+spooling plaintext to a temp file is forbidden. A per-format strategy that
+inherently needs proportional temp storage (e.g. `format-rar`'s documented copy of
+a non-path archive source to disk, so `unrar` can seek it) is allowed only when
+declared in that format's capability spec, and a strategy that copies the archive
+source SHALL be bounded by `ArchiveyConfig.spool_limits`. A declared strategy that keeps
+decoded member data to spare a decode it would otherwise repeat (`format-rar`: a solid
+pass keeping the sources of file copies) SHALL keep it in memory only up to a constant
+the format spec states, and SHALL charge anything written to temporary storage to the
+same `spool_limits` budget. Such a keep is optional: when the budget has no room it SHALL
+be declined, the read SHALL fall back to decoding again, and nothing SHALL be refused.
+Caller's own buffering of a returned stream is unrestricted. This requirement does not
+reach extraction output: the member data `extract_all` stages in the destination for a
+ZIP read from a non-seekable source (`safe-extraction`) is output of the extraction,
+bounded by `ExtractionLimits`, not by `spool_limits`.
+
+#### Scenario: bounded storage matrix
+
+| Case | Expected |
+| --- | --- |
+| Encrypted member, many candidates | Confirmation temp use bounded by a constant |
+| Backend can only serve via materialization | Strategy declared in format spec, not adopted silently |
+| Declared copy of the archive source | Bounded by `SpoolLimits.max_bytes`; over it, `ResourceLimitError` |
+| Declared keep of decoded member data, over the memory constant | Written within `SpoolLimits.max_bytes`; with no room left, not kept and decoded again; never `ResourceLimitError` |
