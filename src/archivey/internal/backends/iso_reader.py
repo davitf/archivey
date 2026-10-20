@@ -115,6 +115,11 @@ from archivey.internal.password import _PasswordCandidates
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import ArchiveStream
+from archivey.internal.streams.codecs.isolated import (
+    IN_PROCESS,
+    Natives,
+    natives_for,
+)
 from archivey.internal.streams.streamtools import (
     DelegatingStream,
     LockedStream,
@@ -1389,10 +1394,15 @@ class _ZisofsStream(io.RawIOBase):
     """
 
     def __init__(
-        self, inner: BinaryIO, entry: _ZisofsEntry, stored_size: int | None
+        self,
+        inner: BinaryIO,
+        entry: _ZisofsEntry,
+        stored_size: int | None,
+        natives: Natives = IN_PROCESS,
     ) -> None:
         super().__init__()
         self._inner = inner
+        self._natives = natives
         self._stored_size = stored_size
         header = inner.read(_ZISOFS_HEADER_SIZE)
         if len(header) < _ZISOFS_HEADER_SIZE:
@@ -1478,7 +1488,7 @@ class _ZisofsStream(io.RawIOBase):
                 raise TruncatedError(f"zisofs block {index} is cut short")
             # One byte past the block size, so a block that inflates further is seen
             # rather than cut to fit.
-            decompressor = zlib.decompressobj()
+            decompressor = self._natives.zlib_decompressobj()
             try:
                 data = decompressor.decompress(packed, expected + 1)
             except zlib.error as exc:
@@ -2690,7 +2700,12 @@ class IsoReader(BaseArchiveReader):
         try:
             return cast(
                 BinaryIO,
-                _ZisofsStream(stream, zisofs, member.compressed_size),
+                _ZisofsStream(
+                    stream,
+                    zisofs,
+                    member.compressed_size,
+                    natives_for(self._config.process_isolation),
+                ),
             )
         except BaseException:
             stream.close()

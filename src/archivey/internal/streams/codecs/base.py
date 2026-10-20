@@ -17,6 +17,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from typing import BinaryIO, ClassVar
 
+from archivey.config import ProcessIsolation
 from archivey.exceptions import (
     ArchiveyError,
     PackageNotInstalledError,
@@ -406,6 +407,7 @@ class StreamCodec:
         source_length: int | None = None,
         read_at: ProbeReadAt | None = None,
         charge_decode: ProbeChargeDecode | None = None,
+        isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
     ) -> bool:
         """Whether ``prefix`` is recognized as this codec's stream.
 
@@ -498,6 +500,7 @@ class StreamCodec:
         source_length: int | None = None,
         require_output: bool = False,
         sample_bytes: int = _PROBE_PREFIX,
+        isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
     ) -> bool:
         """Whether a bounded ``prefix`` decodes cleanly through this codec (the probe primitive).
 
@@ -533,7 +536,11 @@ class StreamCodec:
             else max(len(sample), _PROBE_PREFIX)
         )
         # The most output read below: the budget, then one byte past it.
-        config = replace(_PROBE_STREAM_CONFIG, probe_read_bound=out_budget + 1)
+        config = replace(
+            _PROBE_STREAM_CONFIG,
+            probe_read_bound=out_budget + 1,
+            process_isolation=isolation,
+        )
         try:
             with open_codec_stream(
                 self.codec, _ProbeSample(sample), config=config

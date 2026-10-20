@@ -31,21 +31,18 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
 
 - **A crash in native code can take your process with it.** Decoders written in C, such as the
   standard library's zlib, bz2 and lzma, run inside your process. Archivey runs the decoders known
-  to crash in a child process, or feeds them in a way that avoids the crash, but one nobody has
-  found yet would still abort yours. Members compressed with PPMd, a method some 7z and ZIP archives
-  use, are decoded in your process up to `decoder_limits.max_ppmd_in_process_input` (16 MiB of
-  compressed data by default) and in a child process above it. A ZIP member read from a pipe whose
-  size is stored after its data always goes to a child process, so with the limit set to `None`
-  archivey refuses it. Under a tight memory limit, such as a container's, the in-process decoder
-  can crash instead of raising an error.
+  to crash in a child process: rapidgzip, and pyppmd for every member compressed with PPMd, a
+  method some 7z and ZIP archives use. A crash nobody has found yet in another decoder would still
+  abort yours, unless you [run every decoder in a child process](#decoders-in-a-child-process).
 
-    ??? note "Why the split at 16 MiB?"
-        pyppmd, the PPMd decoder, crashes when it's asked to keep decoding after a damaged stream
-        has ended early, and a wrong password or a crafted member gets it there. Handing it the
-        whole member at once avoids that, since nothing more is asked of it afterwards. The cost is
-        memory: archivey holds the whole compressed member, and about as much again while pyppmd
-        copies it. A child process doesn't need that, but it takes time to start for every member,
-        so archivey uses one only for members large enough that the memory matters.
+    ??? note "Why every PPMd member?"
+        pyppmd, the PPMd decoder, can crash when it's asked to keep decoding after a damaged
+        stream has ended early, and a wrong password or a crafted member gets it there. Archivey
+        stops asking once it sees the end, but stopping a decoder that might still be waiting for
+        input takes one more call, and that call can crash it too, on members of any size. In a
+        child process the crash becomes a `CorruptionError` for that member. Archivey reuses the
+        processes, so a run of small members costs about 1 ms more per member than decoding in
+        your process.
 
 - **Running out of memory raises `MemoryError`, not an `ArchiveyError`,** so it's never mistaken for
   a damaged archive. `DecoderLimits` caps the memory an archive can ask one decoder for, 2 GiB by
@@ -58,7 +55,23 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   the callback only runs between chunks of written data, so a decompressor that's slow to produce
   the next chunk can't be interrupted. If you need a hard time limit, run archivey in a process you
   can stop. Archivey's exceptions can be pickled, so an error raised in that process comes back
-  with its details.
+  with its details. The simplest way is the command line in a subprocess with a timeout:
+
+    ```python
+    import subprocess
+    import sys
+
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "archivey", "extract", "archive.7z", "-d", "out"],
+            check=True,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        ...  # the subprocess was killed; "out" may hold some of the files
+    except subprocess.CalledProcessError:
+        ...  # archivey refused the archive or stopped part-way; it said why on stderr
+    ```
 - **Reading a member has no size limit.** `read()` returns the whole decompressed member as bytes in
   memory. A stream from `open()` decodes only as much as you ask for, so `stream.read(n)` holds
   about `n` bytes however large the member is, but a `stream.read()` with no size returns the rest
@@ -124,6 +137,38 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   identities. Where it doesn't, only the last part of the path is checked, after the file is opened,
   so a folder above it swapped for a link can serve a same-size file from outside.
 
+## Decoders in a child process
+
+`ArchiveyConfig(process_isolation=...)` says which decoders run in a child process, where a crash
+costs only the member being read:
+
+- **`ProcessIsolation.KNOWN_CRASHES`**, the default, isolates the decoders that have crashed on
+  some input: rapidgzip and pyppmd. Where no child process can start, such as in a frozen
+  application, a PPMd member raises `ResourceLimitError`, and rapidgzip gives way to the standard
+  library's decoder with one warning.
+- **`ProcessIsolation.NATIVE_DECODERS`** also isolates zlib, bz2, lzma, zstd, lz4, brotli and
+  inflate64 (Deflate64), detection's trial decodes included. Reads take longer, mostly copying data
+  between processes: on Linux, about 1.05 times as long for bzip2 and xz, 1.2 to 1.5 times for
+  gzip and deflate, and about 5 times for zstd, plus about 0.6 ms per member. Each process holds
+  about 9 MB while it waits to be reused. Where no child process can start, reading raises
+  `ResourceLimitError`; nothing is decoded in your process instead.
+- **`ProcessIsolation.NONE`** decodes everything in your process. It's for trusted files, tests,
+  and places that can't start processes. A damaged or crafted PPMd member can crash your process,
+  and rapidgzip isn't used.
+
+AES decryption and checksums always run in your process. A child that crashes raises
+`CorruptionError`, and one killed from outside raises `ResourceLimitError` (most often the
+out-of-memory killer) or `ReadError`. No setting limits how long a decoder takes; for that, see
+the time-limit recipe [above](#where-the-guarantees-stop).
+
+??? note "Why are processes reused, and what if a member damages one?"
+    Starting a process costs 12 to 18 ms, which on an archive of thousands of small members
+    would be minutes, so a process that finished a member cleanly decodes the next one. One that
+    reported an error, or a PPMd member that ended early, isn't reused. A crash in a reused process
+    isn't blamed on the member being read, since an earlier member may have caused it: that member
+    is decoded again in a new process, and only a crash there counts. A process decodes at most 64
+    members before it's replaced.
+
 ## Hardening
 
 RAR data is decompressed by an external program found on your `PATH`: `unrar` or `rar`, or `unar`
@@ -164,8 +209,9 @@ in the repository measures what each limit costs in time and memory on your mach
 - **`decoder_limits.max_key_derivation_rounds`**, default 2^25, caps the password-hashing work per
   open archive. It costs 0.2-0.7 µs per round, 7-25 s at the default.
 - **`decoder_limits.max_ppmd_in_process_input`**, default 16 MiB, caps the largest PPMd member
-  decoded in your process rather than a child process. It costs up to twice the limit in memory
-  while a PPMd member decodes, 32 MiB at the default.
+  that's held and handed to the decoder whole. A larger one is fed in pieces, which pyppmd handles
+  worse: it can stop a few KiB short of the end of a valid member. It costs up to twice the limit
+  in memory while a PPMd member decodes, 32 MiB at the default.
 - **`spool_limits.max_bytes`**, default 1 GiB, caps the temporary disk space for RAR archives.
   `unrar` and `unar` need the archive as a file, so a RAR opened from a file object is copied, and
   so are volumes archivey can't link into its temporary folder and, for `unar`, an archive with data

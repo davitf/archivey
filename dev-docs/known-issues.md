@@ -244,13 +244,16 @@ crash affects 1.2.0 and 1.3.x.
 the exact remaining `unpack_size` and never passes `-1`; refuses unsized PPMd7 at
 construction; decodes unsized PPMd8 in bounded 64 KiB requests; injects at most one capped
 NUL at the end; stops at a spent payload; and hands pyppmd the whole member in one
-`decode`, so a short return is the end. The one exception is a ZIP member read from a
-stream that cannot seek, whose sizes follow its data: its input runs on into the rest of
-the archive, so it is fed in pieces and always decoded in a child process
-(`ResourceLimitError` when `max_ppmd_in_process_input` is `None`). Members over
-`DecoderLimits.max_ppmd_in_process_input` (16 MiB by default) decode in a child process
-(`ppmd_child.py`), where a crash becomes `CorruptionError` (`ResourceLimitError` for
-SIGKILL or a refused `mem_size`, `ReadError` for other deaths). Pinned by
+`decode`, so a short return is the end. Two exceptions are fed in pieces: members over
+`DecoderLimits.max_ppmd_in_process_input` (16 MiB by default), and a ZIP member read from
+a stream that cannot seek, whose sizes follow its data, so its input runs on into the rest
+of the archive. Fed in pieces, pyppmd 1.3.1 can return short at a false `eof` with input
+unread, which reads as a spent payload: a valid member then raises `TruncatedError` a few
+KiB short (tracked internally). Every PPMd member decodes in a child process unless
+`process_isolation` is `NONE` (`ppmd_child.py`), because the quiesce NUL can crash pyppmd
+on small members too; a crash becomes `CorruptionError` (`ResourceLimitError` for SIGKILL
+or a refused `mem_size`, `ReadError` for other deaths). A child is reused only after a
+member that ended cleanly. Pinned by
 `tests/test_ppmd_crash_isolation.py` and `tests/test_ppmd_raw_streams.py`; the
 non-blocking PPMd native stress workflow watches for regressions.
 

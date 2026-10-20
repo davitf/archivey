@@ -82,11 +82,11 @@ surface as `CorruptionError`. A child killed by SIGKILL, or one that dies alloca
 member's model, SHALL raise `ResourceLimitError`, as SHALL a member where no child process
 can be started. A child that ends any other way (another signal, a plain exit status)
 SHALL raise `ReadError`, which is not a verdict on the data. `max_ppmd_in_process_input`
-applies under `process_isolation=NONE` only: it SHALL bound the compressed bytes of one
-PPMd member the process holds to hand to pyppmd whole; a larger member, and one whose size
-is known only once it has been read (a ZIP member with bit 3 set, read from a non-seekable
-source), SHALL be fed to pyppmd in pieces in-process. `None` SHALL hold every member whose
-size is known.
+SHALL bound the compressed bytes of one PPMd member the process holds to hand to pyppmd
+whole, in the child or, under `process_isolation=NONE`, in-process; a larger member, and
+one whose size is known only once it has been read (a ZIP member with bit 3 set, read from
+a non-seekable source), SHALL be fed to pyppmd in pieces. `None` SHALL hold every member
+whose size is known.
 `process_isolation` SHALL be converted from the member or its name at construction, as
 the accelerator fields are. `process_isolation=NONE` together with `use_rapidgzip=ON` or
 `use_indexed_bzip2=ON` SHALL raise `ArchiveyUsageError` at construction: rapidgzip runs
@@ -143,6 +143,7 @@ Callbacks hold no Archivey collector/reader/stream/backend/registry lock
 | 7z PPMd member of 200 KB compressed, no child process possible | `ResourceLimitError` on the first read, naming `process_isolation` |
 | Same member; the child crashes / is killed by SIGKILL / by SIGTERM | `CorruptionError` / `ResourceLimitError` / `ReadError`, not `CorruptionError` |
 | Same member, `process_isolation=NONE`, `max_ppmd_in_process_input=1024` / default | In-process, fed in pieces / held and decoded whole |
+| Valid 7z PPMd member of 8 MiB that pyppmd fed in pieces stops short of, default config | Held, decoded whole in a child, read in full |
 | `ArchiveyConfig(process_isolation="none")` | Holds `ProcessIsolation.NONE` |
 | `ArchiveyConfig(process_isolation=ProcessIsolation.NONE, use_rapidgzip=AcceleratorMode.ON)` | `ArchiveyUsageError` at construction |
 | Password list `["wrong", right]`, budget covering only the right candidate's derivations | `ResourceLimitError`, not `EncryptionError`; the list does not continue |

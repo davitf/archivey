@@ -26,13 +26,14 @@ and a third, fourth or eighth isolated codec would copy it again.
   child per open decoder. The PPMd child moves onto it.
 - Every PPMd member decodes in a reused child under `KNOWN_CRASHES` (maintainer,
   2026-10-20), not only those over `max_ppmd_in_process_input`: small members can crash
-  pyppmd in-process too, on the one-symbol decode that stops a worker after an early end
-  (reports/ppmd-in-process-crash-2026-10-20.md), and the pool makes a child cheap. A PPMd
+  pyppmd in-process too, on the one-symbol decode that stops a worker after an early end,
+  and the pool makes a child cheap. A PPMd
   child is reused only after a member that decoded cleanly to its end.
 - rapidgzip keeps its own message set (it serves source reads and index queries), but
   moves onto the shared framing, error payload and helpers.
-- Under `NONE`, PPMd decodes in-process at any size (`max_ppmd_in_process_input` now
-  only decides whether it is handed over whole or in pieces), and rapidgzip is not used: `AUTO`
+- `max_ppmd_in_process_input` keeps deciding whether a member is handed to pyppmd whole
+  or in pieces, now in the child too: fed in pieces, pyppmd can stop short on valid data.
+- Under `NONE`, PPMd decodes in-process at any size, and rapidgzip is not used: `AUTO`
   falls back to the standard library and `ON` is refused at configuration.
 - AES and checksums stay in the caller's process. No time limit per call; the docs show
   how to run the CLI in a subprocess to get a hard limit on a whole operation.
@@ -43,7 +44,7 @@ and a third, fourth or eighth isolated codec would copy it again.
 
 - `compressed-streams`: new requirement on where native decoders run.
 - `archive-reading`: `ArchiveyConfig` gains the field; every PPMd member decodes in a
-  child by default; `max_ppmd_in_process_input` applies under `NONE` only.
+  child by default; `max_ppmd_in_process_input` bounds what is held whole, in the child too.
 - `format-zip`: a bit-3 PPMd member from a pipe decodes in-process under `NONE`.
 
 ## Impact

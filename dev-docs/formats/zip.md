@@ -551,8 +551,8 @@ passed by the same scan on its stored bytes. The scan starts at the bytes the wa
 of what the decode read (`_CODEC_RETAIN`, 4 MiB) and counts the ones before them into
 the size it matches, so the descriptor is found unless the decode read more than that
 past the data's end; then the scan runs to the end of the stream and the pass ends with
-its error. A bit-3 PPMd member is always decoded in a child process
-(`max_ppmd_in_process_input=None` refuses it with `ResourceLimitError`). Several
+its error. A bit-3 PPMd member is fed to pyppmd in pieces, in a child process unless
+`process_isolation` is `NONE`. Several
 password candidates are confirmed on the first 1 MiB, kept and replayed (§2.3).
 
 **What the pass yields, and what changes at the end.** Each member is yielded with what

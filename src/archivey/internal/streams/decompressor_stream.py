@@ -162,8 +162,19 @@ def truncated_message(label: str) -> str:
     return f"{label} stream is truncated"
 
 
+class _Inflater(Protocol):
+    """``zlib.decompressobj()``'s surface, in this process or a child."""
+
+    def decompress(self, data: bytes, max_length: int = ..., /) -> bytes: ...
+
+    def flush(self, length: int = ..., /) -> bytes: ...
+
+    @property
+    def unconsumed_tail(self) -> bytes: ...
+
+
 def _inflate(
-    decomp: zlib._Decompress,
+    decomp: _Inflater,
     data: bytes,
     max_length: int,
     error: Callable[[zlib.error], Exception],
@@ -180,9 +191,7 @@ def _inflate(
         raise error(exc) from exc
 
 
-def _inflate_rest(
-    decomp: zlib._Decompress, error: Callable[[zlib.error], Exception]
-) -> bytes:
+def _inflate_rest(decomp: _Inflater, error: Callable[[zlib.error], Exception]) -> bytes:
     """At the end of the input: the output of what ``decomp`` still holds.
 
     The caller checks ``decomp.eof`` after: when it is false, the stream is truncated.
@@ -295,10 +304,11 @@ class Decoder(Protocol):
     def close(self) -> None:
         """Release decoder-owned native resources deterministically.
 
-        Optional teardown hook: most decoders need nothing here (GC frees the
-        underlying object), but a decoder holding a native worker whose lifetime
-        is unsafe under GC (PPMd) uses this to reach a clean state before it is
-        dropped. Idempotent; never raises.
+        A decoder whose native object lives in a child process gives the process
+        back here, so it can serve the next decoder without waiting for GC. A
+        decoder holding a native worker whose lifetime is unsafe under GC (PPMd)
+        uses this to reach a clean state before it is dropped. Idempotent; never
+        raises.
         """
         ...
 
@@ -367,7 +377,14 @@ class BaseDecoder:
         return False
 
     def close(self) -> None:
-        """No-op teardown hook (see :meth:`Decoder.close`); overridden by PPMd."""
+        """Give back the decoder processes this decoder holds (see
+        :meth:`Decoder.close`); overridden by PPMd."""
+        release_decoder_children(self)
+
+    def spoil_child(self) -> None:
+        """The member failed a check above the decoder (a digest mismatch): a decoder
+        whose child process must then not serve another member ends it at close. A
+        no-op here; overridden by PPMd."""
 
     def build_index(
         self, inner: BinaryIO, last_known: SeekPoint
@@ -1490,3 +1507,41 @@ def report_trailing_data(
         ),
         logger=logger,
     )
+
+
+_CODECS_PACKAGE = "archivey.internal.streams.codecs."
+
+
+def release_decoder_children(holder: object, depth: int = 3) -> None:
+    """Give back every decoder process ``holder`` holds now, not when GC frees it.
+
+    A decoder keeps its native object in an attribute, sometimes inside a small helper
+    of its own (the xz and lzip state, the clamped Alone header, the lz4 picker), so
+    this looks through the attributes of codec-layer helpers a few levels down for a
+    child proxy (``holds_decoder_child``, codecs/isolated.py). An archive reader can
+    sit in a reference cycle, and without this its decoders' child processes would
+    stay leased until the cycle collector ran.
+    """
+    for value in list(getattr(holder, "__dict__", {}).values()):
+        if getattr(type(value), "holds_decoder_child", False):
+            value.close()
+        elif (
+            depth > 0
+            and type(value).__module__.startswith(_CODECS_PACKAGE)
+            and not isinstance(value, io.IOBase)
+        ):
+            release_decoder_children(value, depth - 1)
+
+
+def retire_decoder_children(stream: object) -> None:
+    """Tell the decoder under ``stream`` that its member failed a check (see
+    :meth:`BaseDecoder.spoil_child`), looking through the wrappers' ``_inner``."""
+    for _ in range(16):
+        if isinstance(stream, DecompressorStream):
+            spoil = getattr(stream._decoder, "spoil_child", None)
+            if spoil is not None:
+                spoil()
+            return
+        stream = getattr(stream, "_inner", None)
+        if stream is None:
+            return

@@ -11,7 +11,7 @@ import threading
 from collections.abc import Callable
 from typing import BinaryIO
 
-from archivey.config import RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE
+from archivey.config import RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE, ProcessIsolation
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
@@ -95,8 +95,11 @@ def _rapidgzip_wanted(config: StreamConfig, *, available: bool) -> bool:
     ``expected_decompressed_size``, or (gzip only) a readable ISIZE trailer flagged
     via ``gzip_isize_backstop``. Without one of those, AUTO falls back to the stdlib
     backend that raises ``TruncatedError``. ``ON`` ignores this — the caller asked for
-    the accelerator explicitly.
+    the accelerator explicitly. ``process_isolation=NONE`` never uses it: rapidgzip
+    runs only in a child process.
     """
+    if config.process_isolation is ProcessIsolation.NONE:
+        return False
     if (
         config.use_rapidgzip is AcceleratorMode.AUTO
         and config.expected_decompressed_size is None

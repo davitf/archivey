@@ -24,6 +24,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import BinaryIO
 
+from archivey.config import ProcessIsolation
 from archivey.detection_cost import (
     DetectionBudget,
     DetectionCostReceipt,
@@ -61,8 +62,12 @@ class PrefixWorkspace:
         source: str | Path | BinaryIO,
         budget: DetectionBudget,
         receipt: MutableDetectionCostReceipt | None = None,
+        *,
+        isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
     ) -> None:
         self._budget = budget
+        # The caller's ``process_isolation``: where the probes' trial decodes run.
+        self.isolation = isolation
         # A caller-supplied receipt accumulates across workspaces: ``detect_format``
         # passes one to both the stub pass and the sibling-volume pass.
         self._receipt = (

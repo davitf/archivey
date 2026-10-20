@@ -1,65 +1,67 @@
-"""The child-process worker scripts, as files: what they must share without importing.
+"""The decoder worker script, as a file: what it may import, and how it starts.
 
-Each worker runs as a script (``python -P <worker>.py``) and imports nothing from
-``archivey`` or from the other worker, so code both need is copied. This module checks
-that the copies stay the same. It needs neither rapidgzip nor pyppmd: the workers
-import only the standard library at module level.
+Every decoder child runs ``decoder_worker.py`` as a script (``python -P``), rapidgzip's
+included (it hands over to ``rapidgzip_worker.py``). The parent imports the same file
+for its constants. Neither may import ``archivey`` or a codec library at module level.
 """
 
 from __future__ import annotations
 
-import ast
-import inspect
 import subprocess
 import sys
 import textwrap
-from types import FunctionType
 
-import pytest
-
-from archivey.internal.streams.codecs import ppmd_worker, rapidgzip_worker
+from archivey.internal.streams.codecs import decoder_child
 
 
-def _code_without_docstring(function: FunctionType) -> str:
-    """``function``'s code as an AST dump, without its docstring, comments or layout."""
-    tree = ast.parse(textwrap.dedent(inspect.getsource(function)))
-    body = tree.body[0]
-    assert isinstance(body, ast.FunctionDef)
-    if (
-        body.body
-        and isinstance(body.body[0], ast.Expr)
-        and isinstance(body.body[0].value, ast.Constant)
-        and isinstance(body.body[0].value.value, str)
-    ):
-        body.body = body.body[1:]
-    return ast.dump(body)
+def _run(probe: str) -> str:
+    proc = subprocess.run(
+        [sys.executable, "-P", "-c", probe], capture_output=True, text=True, timeout=60
+    )
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout.strip()
 
 
-def test_both_workers_turn_off_core_dumps_the_same_way() -> None:
-    """``disable_core_dumps`` is copied into both workers; only the docstrings, which
-    say why each worker crashes, may differ. A change to one copy fails here until the
-    other matches."""
-    assert _code_without_docstring(
-        rapidgzip_worker.disable_core_dumps
-    ) == _code_without_docstring(ppmd_worker.disable_core_dumps)
+def test_loading_the_worker_imports_nothing_new() -> None:
+    """At module level the worker imports a few small standard-library modules and no
+    codec library or ``archivey``, so each child imports only its own codec."""
+    probe = textwrap.dedent(
+        f"""
+        import importlib.util, sys
+        before = set(sys.modules)
+        spec = importlib.util.spec_from_file_location("w", {str(decoder_child.WORKER)!r})
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        new = sorted(set(sys.modules) - before - {{"w"}})
+        print(",".join(new))
+        """
+    )
+    new = {m for m in _run(probe).split(",") if m}
+    allowed = {
+        "__future__",
+        "enum",
+        "signal",
+        "_signal",
+        "marshal",
+        "struct",
+        "_struct",
+    }
+    assert new <= allowed, sorted(new - allowed)
 
 
-@pytest.mark.parametrize("worker", ["ppmd_worker", "rapidgzip_worker"])
-def test_turning_off_core_dumps_survives_a_python_without_ctypes(worker: str) -> None:
+def test_turning_off_core_dumps_survives_a_python_without_ctypes() -> None:
     """A Python built without ``_ctypes`` (no libffi at build time, some minimal images)
-    still runs the workers: turning dumps off is best effort, so a missing ``ctypes``
+    still runs the worker: turning dumps off is best effort, so a missing ``ctypes``
     skips the ``prctl`` step instead of ending the child before it decodes."""
     probe = textwrap.dedent(
         f"""
-        import sys
+        import importlib.util, sys
         sys.modules["ctypes"] = None  # import ctypes now raises ImportError
-        from archivey.internal.streams.codecs.{worker} import disable_core_dumps
-        disable_core_dumps()
+        spec = importlib.util.spec_from_file_location("w", {str(decoder_child.WORKER)!r})
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        module.prepare_child()
         print("returned")
         """
     )
-    proc = subprocess.run(
-        [sys.executable, "-c", probe], capture_output=True, text=True, timeout=60
-    )
-    assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.strip() == "returned"
+    assert _run(probe) == "returned"

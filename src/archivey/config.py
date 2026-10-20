@@ -13,6 +13,7 @@ from archivey.detection_cost import (
     DetectionBudgetPreset,
 )
 from archivey.diagnostics import DiagnosticPolicy, OnDiagnostic
+from archivey.exceptions import ArchiveyUsageError
 from archivey.internal.arg_checks import (
     check_callable,
     check_encoding,
@@ -71,6 +72,48 @@ class AcceleratorMode(Enum):
         if min_size is not None and input_size is not None and input_size < min_size:
             return False
         return True
+
+
+class ProcessIsolation(Enum):
+    """Which native decoders run in a child process, where a crash on hostile input
+    costs the member being read instead of the caller's process.
+
+    A decoder in a child process whose process crashes raises
+    :class:`~archivey.CorruptionError`; one killed from outside raises
+    :class:`~archivey.ResourceLimitError` (SIGKILL, most often the out-of-memory killer)
+    or :class:`~archivey.ReadError`. Checksums and AES decryption always run in the
+    caller's process, and no setting bounds how long a decoder takes.
+    """
+
+    KNOWN_CRASHES = "known_crashes"
+    """The default: only the decoders seen to crash on some input run in a child
+    process: rapidgzip (``use_rapidgzip``, ``use_indexed_bzip2``) and pyppmd (every PPMd
+    member). Every other decoder runs in the caller's process. Processes are reused for
+    later members, so a run of small PPMd members costs little more than in-process.
+    Where no child process can be started, a PPMd member raises
+    :class:`~archivey.ResourceLimitError` and rapidgzip under ``AUTO`` falls back to the
+    standard library."""
+    NATIVE_DECODERS = "native_decoders"
+    """Every native decoder runs in a child process: zlib, bz2, lzma, zstd, lz4, brotli,
+    inflate64, pyppmd and rapidgzip, including the trial decodes format detection runs.
+
+    Each open decoder has a process of its own, and processes are reused for later
+    members, so the cost is mostly copying data between processes: measured on Linux,
+    reads took about 1.05 times as long for bzip2 and xz, 1.2 to 1.5 times for gzip and
+    deflate, and about 5 times for zstd. An idle process holds about 9 MB. Where no child
+    process can be started (a frozen application, archivey imported from a zip, a
+    refused spawn), opening a decoder raises :class:`~archivey.ResourceLimitError`;
+    nothing is decoded in the caller's process."""
+    NONE = "none"
+    """No child process at all: every decoder runs in the caller's process.
+
+    Not recommended for archives you do not trust: rapidgzip and pyppmd are isolated by
+    default because they crash the process on some input, and here a crash takes the
+    caller with it. It suits trusted files where speed matters, tests, and environments
+    that cannot start processes. PPMd members decode in-process at any size, and
+    rapidgzip is not used: ``use_rapidgzip`` and ``use_indexed_bzip2`` under ``AUTO`` use
+    the standard library, and ``ON`` is refused with
+    :class:`~archivey.ArchiveyUsageError` when the config is built."""
 
 
 class RarDecompressor(Enum):
@@ -359,8 +402,9 @@ class DecoderLimits:
     writes to the whole declared dictionary, so the declared size counts. ``unrar``
     writes to it only as output is produced, so the declared size counts only up
     to the unpacked bytes the read decodes: the member's own size, or in a solid
-    archive the members up to and including it. The two in-process hazards, pyppmd
-    and liblzma, differ. A refused allocation inside pyppmd takes the process down.
+    archive the members up to and including it. The two decoders that allocate what
+    the header says, pyppmd and liblzma, differ. A refused allocation inside pyppmd
+    takes its process down (a child process unless ``process_isolation`` is ``NONE``).
     liblzma does raise ``MemoryError`` when it cannot reserve the dictionary, but a
     reservation that succeeds is its real cost: the dictionary fills as output is
     written, so a 151 KB stream declaring 4 GiB held 1.1 GiB resident after
@@ -395,10 +439,7 @@ class DecoderLimits:
     lifetime, as :class:`ListingLimits` is: the codec-layer view is built once
     when the reader is.
 
-    ``None`` on a field disables that guard. :attr:`UNLIMITED` disables every
-    one, with one exception: ``None`` on ``max_ppmd_in_process_input`` refuses
-    a ZIP PPMd member whose sizes follow its data, read from a stream that cannot
-    seek, since such a member decodes only in a child process.
+    ``None`` on a field disables that guard. :attr:`UNLIMITED` disables every one.
 
     Where an archive declares the size, exceeding a guard raises
     :class:`~archivey.exceptions.ResourceLimitError` *before* the allocation,
@@ -513,41 +554,18 @@ class DecoderLimits:
     did not choose may want ``2**24``, one maximum-cost derivation."""
 
     max_ppmd_in_process_input: int | None = 16 * 2**20
-    """Largest PPMd member, in compressed bytes, decoded inside this process. 16 MiB.
+    """Largest PPMd member, in compressed bytes, held and handed to the decoder whole.
+    16 MiB.
 
-    pyppmd, the PPMd decoder, crashes the whole process when asked to keep
-    decoding after a corrupt stream has ended early, and random bytes (a
-    wrong password, a crafted member) reach that state. A decoder fed in
-    pieces cannot tell it apart from a valid stream waiting for input, so
-    archivey holds a member's compressed input and hands it over whole,
-    after which nothing more is asked of pyppmd. That costs memory: the
-    held input, and about as much again while pyppmd copies it. A member
-    larger than this field is decoded in a child Python process instead,
-    where a crash (a fault signal such as SIGSEGV) becomes
-    :class:`~archivey.exceptions.CorruptionError`; it still holds this
-    much before handing over. A child killed by SIGKILL (most often the
-    out-of-memory killer), or one that dies allocating the member's model
-    under a memory cap, raises
-    :class:`~archivey.exceptions.ResourceLimitError` instead. So does
-    such a member where no child process can be started (a frozen
-    application, an interpreter that does not know its own path, a spawn
-    the operating system refuses, or a child that cannot import pyppmd).
-    A child ended any other way (SIGTERM, a plain exit status) raises
-    :class:`~archivey.exceptions.ReadError`: not a verdict on the data.
-
-    16 MiB keeps the in-process peak near 32 MiB. At pyppmd's 2 to 8 MB/s
-    a member that size takes seconds to decode, so the child's start-up
-    (about 75 ms) is small beside the members it applies to, and so is
-    moving the data: the pipe carries about 450 MB/s, compressed input in
-    and decoded output back. A password check reads at most 1 MiB of a
-    member, so it always runs in-process. ``None`` decodes every member
-    in-process and never starts a child process, at a memory cost that
-    grows with the member.
-
-    A ZIP member read from a stream that cannot seek, its sizes stored
-    after its data, has no size to hold it to: it is fed to pyppmd in
-    pieces, always in a child process, whatever its size. With ``None``
-    such a member raises :class:`~archivey.exceptions.ResourceLimitError`."""
+    The decoder is pyppmd, in a child process unless ``process_isolation`` is
+    ``ProcessIsolation.NONE``. Fed whole, it decodes a valid member in full and is
+    asked little after a corrupt one ends early, the state in which it can crash. Fed in
+    pieces, it can stop at a false end on valid data (``TruncatedError`` a few KiB
+    short), and it cannot tell a corrupt stream that ended from a valid one waiting for
+    input. Holding costs memory in this process: the held input, and about as much
+    again while it is copied. A larger member, and a ZIP member read from a stream that
+    cannot seek with its sizes stored after its data, is fed in pieces. ``None`` holds
+    every member whose size is known, at a memory cost that grows with the member."""
 
     UNLIMITED: ClassVar[DecoderLimits]
 
@@ -659,6 +677,13 @@ class ArchiveyConfig:
     be started, ``AUTO`` uses the standard library, logging one warning per process on
     the ``archivey.streams`` logger, and ``ON`` raises
     :class:`~archivey.exceptions.ResourceLimitError`.
+    """
+
+    process_isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES
+    """Which native decoders run in a child process. See :class:`ProcessIsolation`.
+
+    Accepts the member or its name (``"known_crashes"``, ``"native_decoders"``,
+    ``"none"``).
     """
 
     zip_unflagged_fallback_encoding: str = "cp437"
@@ -880,6 +905,24 @@ class ArchiveyConfig:
                 param="rar_decompressor=",
             ),
         )
+        object.__setattr__(
+            self,
+            "process_isolation",
+            coerce_enum(
+                self.process_isolation,
+                ProcessIsolation,
+                call="ArchiveyConfig()",
+                param="process_isolation=",
+            ),
+        )
+        if self.process_isolation is ProcessIsolation.NONE:
+            for field_name in ("use_rapidgzip", "use_indexed_bzip2"):
+                if getattr(self, field_name) is AcceleratorMode.ON:
+                    raise ArchiveyUsageError(
+                        f"ArchiveyConfig({field_name}=ON) cannot be combined with "
+                        "process_isolation=NONE: rapidgzip runs only in a child "
+                        "process. Use AUTO or OFF, or another process_isolation."
+                    )
 
 
 DEFAULT_ARCHIVEY_CONFIG = ArchiveyConfig()

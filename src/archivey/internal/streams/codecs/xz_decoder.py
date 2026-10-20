@@ -46,6 +46,7 @@ from archivey.internal.diagnostics_collector import (
     resolve_collector,
 )
 from archivey.internal.logs import streams as logger
+from archivey.internal.streams.codecs.isolated import IN_PROCESS, Decompressor, Natives
 from archivey.internal.streams.decompressor_stream import (
     SEEK_TABLE_THINNED,
     TRAILING_DATA_CANDIDATES,
@@ -553,8 +554,10 @@ _LIBLZMA_MEMLIMIT_MAX = 2**64 - 1
 
 
 def new_capped_decompressor(
-    limits: DecoderLimits, format: int = lzma.FORMAT_XZ
-) -> lzma.LZMADecompressor:
+    limits: DecoderLimits,
+    format: int = lzma.FORMAT_XZ,
+    natives: Natives = IN_PROCESS,
+) -> Decompressor:
     """A liblzma decompressor that refuses a dictionary over ``max_decoder_memory``.
 
     xz and LZMA Alone (``format``) let liblzma read the dictionary size: an xz block
@@ -569,8 +572,8 @@ def new_capped_decompressor(
     # liblzma's memlimit is a uint64. A cap whose allowance-padded value does not fit
     # refuses nothing liblzma could be asked for, so it is left off, as for no cap.
     if cap is None or cap + _LIBLZMA_OVERHEAD_ALLOWANCE > _LIBLZMA_MEMLIMIT_MAX:
-        return lzma.LZMADecompressor(format=format)
-    return lzma.LZMADecompressor(
+        return natives.lzma_decompressor(format=format)
+    return natives.lzma_decompressor(
         format=format, memlimit=cap + _LIBLZMA_OVERHEAD_ALLOWANCE
     )
 
@@ -660,16 +663,18 @@ class _XzState:
         *,
         after_stream: bool = False,
         start_offset: int = 0,
+        natives: Natives = IN_PROCESS,
     ) -> None:
         """``after_stream``: start just past a stream decoded elsewhere, where padding,
         more streams or the end of the data may follow, as after any stream here.
         ``on_check`` is given each stream's check ID once its header has decoded.
         ``start_offset`` is the source offset of the first byte fed, for errors."""
         self._limits = limits
+        self._natives = natives
         self._on_check = on_check
         self._state = self._NEED_HEADER
         self._buf = bytearray()
-        self._dec: lzma.LZMADecompressor | None = None
+        self._dec: Decompressor | None = None
         self._bytes_fed = 0
         self._streams_seen = 1 if after_stream else 0
         self._finished = False
@@ -789,7 +794,9 @@ class _XzState:
                     break
                 del self._buf[:_STREAM_HEADER_SIZE]
                 try:
-                    self._dec = new_capped_decompressor(self._limits)
+                    self._dec = new_capped_decompressor(
+                        self._limits, natives=self._natives
+                    )
                     remaining = max_length - len(output) if max_length >= 0 else -1
                     plain = self._dec.decompress(header, remaining)
                 except lzma.LZMAError as e:
@@ -864,6 +871,7 @@ class _XzBlockResume:
         inner: BinaryIO,
         limits: DecoderLimits,
         on_check: Callable[[int], None],
+        natives: Natives = IN_PROCESS,
     ) -> None:
         self._limits = limits
         self._to_feed = start.blocks_end - start.compressed_start
@@ -871,7 +879,7 @@ class _XzBlockResume:
         self._finished = False
         self.truncated = False
         inner.seek(start.compressed_start)
-        self._dec = new_capped_decompressor(limits)
+        self._dec = new_capped_decompressor(limits, natives=natives)
         stream_flags = bytes([0x00, start.check])
         header_crc = zlib.crc32(stream_flags) & 0xFFFFFFFF
         synthetic_header = (
@@ -950,8 +958,10 @@ class XzDecoder(BaseDecoder):
         limits: DecoderLimits,
         reported_checks: set[int],
         handoff: SeekPoint | None = None,
+        natives: Natives = IN_PROCESS,
     ) -> None:
         self._engine = engine
+        self._natives = natives
         self._reported_checks = reported_checks
         self._limits = limits
         self._handoff = handoff
@@ -973,6 +983,7 @@ class XzDecoder(BaseDecoder):
         index_built: Callable[[], bool],
         limits: DecoderLimits,
         reported_checks: set[int],
+        natives: Natives = IN_PROCESS,
     ) -> XzDecoder:
         """``reported_checks`` is shared by every decoder of one file (see
         :func:`_report_unverifiable_check`)."""
@@ -983,11 +994,14 @@ class XzDecoder(BaseDecoder):
         handoff: SeekPoint | None = None
         if point.state is None:
             engine: _XzState | _XzBlockResume = _XzState(
-                limits, on_check, start_offset=point.compressed_offset
+                limits,
+                on_check,
+                start_offset=point.compressed_offset,
+                natives=natives,
             )
         else:
             start: _XzBlockBounds = point.state
-            engine = _XzBlockResume(start, inner, limits, on_check)
+            engine = _XzBlockResume(start, inner, limits, on_check, natives)
             handoff = SeekPoint(
                 start.stream_decompressed_end, start.stream_compressed_end
             )
@@ -1002,6 +1016,7 @@ class XzDecoder(BaseDecoder):
             limits=limits,
             reported_checks=reported_checks,
             handoff=handoff,
+            natives=natives,
         )
 
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> XzDecoder:
@@ -1013,6 +1028,7 @@ class XzDecoder(BaseDecoder):
             index_built=self._index_built,
             limits=self._limits,
             reported_checks=self._reported_checks,
+            natives=self._natives,
         )
 
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
@@ -1053,6 +1069,7 @@ class XzDecoder(BaseDecoder):
             ),
             after_stream=True,
             start_offset=point.compressed_offset,
+            natives=self._natives,
         )
         self._comp_cursor = point.compressed_offset
         self._decomp_cursor = point.decompressed_offset
@@ -1198,6 +1215,7 @@ def XzDecompressorStream(
     decoder_limits: DecoderLimits = DecoderLimits(),
     report_trailing_data: bool = False,
     initial_index: PrebuiltIndex | None = None,
+    natives: Natives = IN_PROCESS,
 ) -> DecompressorStream:
     """Seekable XZ decompressor backed by stdlib ``lzma``.
 
@@ -1229,6 +1247,7 @@ def XzDecompressorStream(
             index_built=index_built,
             limits=decoder_limits,
             reported_checks=reported_checks,
+            natives=natives,
         )
 
     stream = DecompressorStream(
@@ -1439,7 +1458,9 @@ def _starts_next_stream(source: _HeadInput) -> bool:
     return source.fill(6) and source.pending[:6] == _XZ_STREAM_MAGIC
 
 
-def _decode_xz_head(read: Callable[[int], bytes], size: int) -> bytes:
+def _decode_xz_head(
+    read: Callable[[int], bytes], size: int, natives: Natives = IN_PROCESS
+) -> bytes:
     """Up to ``size`` bytes of the xz data ``read`` returns, its dictionaries clamped.
 
     Each block is decoded raw, with the filter chain its header declares and the LZMA2
@@ -1464,7 +1485,7 @@ def _decode_xz_head(read: Callable[[int], bytes], size: int) -> bytes:
         (stored,) = struct.unpack_from("<I", header, len(header) - 4)
         if zlib.crc32(header[:-4]) & 0xFFFFFFFF != stored:
             raise CorruptionError("XZ block header CRC32 mismatch")
-        dec = lzma.LZMADecompressor(
+        dec = natives.lzma_decompressor(
             format=lzma.FORMAT_RAW, filters=_head_filter_chain(header, size)
         )
         fed = 0
@@ -1482,7 +1503,9 @@ def _decode_xz_head(read: Callable[[int], bytes], size: int) -> bytes:
     return bytes(out)
 
 
-def open_xz_head(source: BinaryIO, size: int) -> BinaryIO:
+def open_xz_head(
+    source: BinaryIO, size: int, natives: Natives = IN_PROCESS
+) -> BinaryIO:
     """The first ``size`` bytes an xz source decodes to, for a detection probe.
 
     liblzma reserves the dictionary a block header declares, up to 4 GiB, when its
@@ -1492,4 +1515,4 @@ def open_xz_head(source: BinaryIO, size: int) -> BinaryIO:
     at ``size``. ``source`` is the probe's bounded reader: nothing here limits how
     much input a block reads to reach ``size`` bytes.
     """
-    return io.BytesIO(_decode_xz_head(source.read, size))
+    return io.BytesIO(_decode_xz_head(source.read, size, natives))
