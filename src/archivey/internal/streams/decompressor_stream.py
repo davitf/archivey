@@ -459,6 +459,14 @@ MAX_SEEK_POINTS = 1 << 18
 # ``SeekIndexContext.error_type`` when a table was thinned; no exception is involved.
 SEEK_TABLE_THINNED = "SeekTableThinned"
 
+# What each codec's seek index is read from, for the error a mismatched index raises.
+_INDEX_SOURCES = {
+    "xz": "xz block index",
+    "lzip": "lzip member trailers",
+    "zstd": "zstd seek table",
+    "gzip": "BGZF block sizes",
+}
+
 
 def emit_index_thinned(
     collector: DiagnosticCollector | None,
@@ -924,9 +932,18 @@ class DecompressorStream(ReadOnlyIOStream):
             return
         if existing.state is not None and point.state is None:
             return
+        # A trusted index (threat-model O17) and the decode, or two index entries, put
+        # one output offset at two places in the input. Two decode-discovered points
+        # cannot collide: a point is recorded only once its unit has output, so they
+        # rise in both coordinates. The index is what can disagree.
+        codec = self._codec_name or "compressed"
+        index_source = _INDEX_SOURCES.get(codec, f"{codec} seek index")
         raise CorruptionError(
-            "seek-point collision at the same decompressed_offset with "
-            f"differing resume data: existing={existing!r} new={point!r}"
+            f"The {index_source} and the data do not agree. Output offset "
+            f"{point.decompressed_offset} starts at compressed offset "
+            f"{existing.compressed_offset} and also at compressed offset "
+            f"{point.compressed_offset}. The file is damaged or was made to "
+            f"mislead a seek. Seek points: {existing!r} and {point!r}"
         )
 
     def _find_best_seek_point(self, pos: int) -> SeekPoint:
