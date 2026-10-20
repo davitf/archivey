@@ -149,8 +149,8 @@ def test_modes_from_the_directory_reach_the_files(
 
 def test_a_time_only_the_directory_holds_is_applied(tmp_path: Path) -> None:
     """The central entry's extended-timestamp field gives the modification time; the
-    local header's copy is renamed to a field no reader knows, so the pass writes
-    the DOS time first and the directory's time replaces it."""
+    local header's copy is renamed to a field no reader knows, so only the
+    directory gives that time, and the member is placed with it."""
     when = 1_600_000_000
     info = _entry("a.txt", mode=0o100644)
     info.extra = struct.pack("<HHBl", 0x5455, 5, 1, when)
@@ -266,7 +266,7 @@ def _dos_docs() -> bytes:
     [
         (["docs/r.txt"], ["docs/r.txt"]),
         # The name a DOS host's directory never gives: nothing matches, from a pipe
-        # too, though the pass wrote the member before it knew.
+        # too, though the pass staged the member before it knew.
         (["docs\\r.txt"], []),
         (["docs/"], ["docs/"]),
     ],
@@ -348,9 +348,9 @@ def _seed(dest: Path, files: dict[str, bytes]) -> None:
 def test_a_member_the_list_leaves_out_in_the_end_keeps_the_callers_file(
     overwrite: str, tmp_path: Path
 ) -> None:
-    """The pass writes ``x\\y`` at ``x/y`` while the list could take it by its DOS
-    spelling; a Unix host leaves it ``x\\y``, which the list does not take, and
-    what the caller had at ``x/y`` is back."""
+    """The pass stages ``x\\y`` while the list could take it by its DOS spelling
+    ``x/y``; a Unix host leaves it ``x\\y``, which the list does not take, so it is
+    not placed, and what the caller has at ``x/y`` is never touched."""
     data = _zip([(_entry("x\\y"), b"ARCHIVE")])
     for where in ("file", "pipe"):
         _seed(tmp_path / where, {"x/y": b"MINE"})
@@ -766,18 +766,26 @@ def test_a_unix_name_ending_in_a_backslash_is_a_file(
 
 
 @posix_modes
+@pytest.mark.parametrize("policy", list(ExtractionPolicy))
 def test_a_unix_file_ending_in_a_backslash_with_data_fails_from_a_pipe(
-    tmp_path: Path,
+    policy: ExtractionPolicy, tmp_path: Path
 ) -> None:
-    """Its bytes went by while the pass took it for a folder (a crafted shape)."""
+    """The pass takes it for a folder and stages none of its bytes, so a Unix host
+    that makes it a file leaves nothing to place: it fails from a pipe, where the
+    file read writes it (a crafted shape; ``dev-docs/formats/zip.md`` §9)."""
     data = _zip([(_entry("odd\\", mode=0o100644), b"data")])
-    assert _extract(data, tmp_path / "file", piped=False, policy="trusted") == [
-        ("odd\\", ExtractionStatus.EXTRACTED, "odd\\")
+    from_file = _extract(data, tmp_path / "file", piped=False, policy=policy)
+    assert [(name, status) for name, status, _ in from_file] == [
+        ("odd\\", ExtractionStatus.EXTRACTED)
     ]
-    piped = _extract(
-        data, tmp_path / "pipe", piped=True, policy="trusted", on_error="continue"
-    )
-    assert piped == [("odd\\", ExtractionStatus.FAILED, None)]
+    source = NonSeekableBytesIO(data)
+    with archivey.open_archive(source, streaming=True) as reader:
+        report = reader.extract_all(
+            tmp_path / "pipe", policy=policy, on_error="continue"
+        )
+    [result] = report.results
+    assert (result.member.name, result.status) == ("odd\\", ExtractionStatus.FAILED)
+    assert isinstance(result.error, ExtractionError)
     assert list((tmp_path / "pipe").iterdir()) == []
 
 
@@ -854,7 +862,7 @@ def _reversed_pair() -> bytes:
 
 
 def test_a_reversed_same_name_pair_fails_the_current_copy(tmp_path: Path) -> None:
-    """The pass wrote the second copy; the directory makes the first current, whose
+    """The pass staged the second copy; the directory makes the first current, whose
     bytes have gone by. Random access writes "first" there."""
     data = _reversed_pair()
     report = _piped_report(data, tmp_path / "pipe", on_error=OnError.CONTINUE)
@@ -971,7 +979,7 @@ def test_a_directory_entry_with_no_local_entry_gets_a_failed_result(
         ("a.txt", ExtractionStatus.EXTRACTED, None),
         ("b.txt", ExtractionStatus.FAILED, CorruptionError),
     ]
-    # b.txt's local entry is one the directory does not list, so it is taken back.
+    # b.txt's local entry is one the directory does not list, so it is not placed.
     assert sorted(p.name for p in tmp_path.iterdir()) == ["a.txt"]
 
 
@@ -1221,6 +1229,18 @@ def test_a_refused_first_member_stops_the_run_before_the_rest_is_decoded(
         _extract(data, tmp_path, piped=True, abort_on={AbortOn.BLOCKED_MEMBER})
     assert staged == []
     assert list(tmp_path.iterdir()) == []
+
+
+def test_a_refused_local_name_blocks_and_the_stop_run_goes_on(tmp_path: Path) -> None:
+    """``on_error="stop"`` does not stop on a refusal: the member is blocked, from a
+    pipe as from a file, and the members after it are extracted."""
+    data = _zip([(_entry("../../etc/passwd"), b"root"), (_entry("big"), b"\0" * 4096)])
+    results, tree = _both(data, tmp_path, on_error="stop")
+    assert [(name, status) for name, status, _ in results] == [
+        ("../../etc/passwd", ExtractionStatus.BLOCKED),
+        ("big", ExtractionStatus.EXTRACTED),
+    ]
+    assert sorted(tree) == ["big"]
 
 
 def test_a_data_failure_while_staging_stops_a_stop_run_at_once(

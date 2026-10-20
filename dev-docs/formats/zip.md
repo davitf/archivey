@@ -631,9 +631,11 @@ extraction places it under the directory's name.
 
 **Where the pass and a file read differ**, each pinned in
 `tests/test_zip_pipe_parity.py` (`_DIFFERS`) or the tests named in §8. The first four
-are shapes only crafted archives have (DR-5a); the rest come from damage, from the
-directory's refusals the file read is to drop, or, for the last one only, from the bound
-the pass puts on the data it keeps for link targets, which an ordinary archive can reach:
+are shapes only crafted archives have (DR-5a). The next five come from staging the
+members before the directory is read, and DR-5a names each of them. The rest come from
+damage, from the directory's refusals the file read is to drop, or, for the last one
+only, from the bound the pass puts on the data it keeps for link targets, which an
+ordinary archive can reach:
 
 - A data descriptor that understates a STORED member, or a bit-3 codec member the pass
   reads past, and the reversed same-name pair, fail a member the file read writes.
@@ -648,11 +650,17 @@ the pass puts on the data it keeps for link targets, which an ordinary archive c
   (`test_zip_local_walk.py::test_an_unheld_local_size_reads_by_file`).
 - Under `on_error="stop"`, a member whose data fails as the pass stages it stops the
   run, though the directory may then not list or select it. A refusal of the local
-  header's name by the universal checks or the name policy stops it the same way, under
-  `abort_on` or `on_error="stop"`.
+  header's name by the universal checks or the name policy stops the run the same way
+  only under `abort_on` (`blocked_member` for a refusal, `name_sanitized` for a
+  rewrite). `on_error="stop"` alone does not stop on it: the refusal blocks the member,
+  as a refusal at placement does, and the run goes on, as from a file.
 - A member refused on its local header's name and accepted on the directory's (a
   crafted pair of names, or a `filter` that renames an unsafe name such as
   `../evil.txt`) fails at placement, its data not staged, where the file read writes it.
+- A member whose local name ends in a backslash is a folder to the pass, which stages no
+  data for it. When the directory names a host that makes it a file with data (`d\`
+  from a Unix host), it fails at placement (`ExtractionError`), where the file read
+  writes it.
 - The bomb limits count what the pass stages while it is staged, so a member staged and
   then not placed, a member the `filter` drops included, can still stop a run under
   `max_entries` or `max_extracted_bytes` that the file read completes.
@@ -683,7 +691,7 @@ the pass puts on the data it keeps for link targets, which an ordinary archive c
   `UnsupportedFeatureError`, a codec one `CorruptionError`. A file read knows its size
   and reads every member. After a sized member the same bytes are read past
   (§"Bytes after a member that are no local header").
-- A link member the pass wrote as a file keeps the error its data read gave: under no
+- A link member the pass staged as a file keeps the error its data read gave: under no
   password an encrypted link fails with `EncryptionError`, where the file read reports
   `LinkTargetNotFoundError`.
 - A damaged directory lists the directory's entries before the damage and the local

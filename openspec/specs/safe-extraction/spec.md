@@ -1194,10 +1194,12 @@ from its staged data:
   every member is known.
 - During the pass, the universal path-safety checks and the name policy SHALL also run
   on each member as its local header names it, before its data is staged. A member
-  they refuse SHALL NOT be staged, and `AbortOn.BLOCKED_MEMBER`, `AbortOn.NAME_SANITIZED`
-  and `OnError.STOP` SHALL act on that refusal at once, as on a refusal at placement.
-  A member's data failure while it is staged SHALL stop an `OnError.STOP` run at once
-  too. So a hostile or damaged archive is refused without decoding the rest of it.
+  they refuse SHALL NOT be staged, and `AbortOn.BLOCKED_MEMBER` and
+  `AbortOn.NAME_SANITIZED` SHALL act on that refusal at once, as on a refusal at
+  placement. A refusal blocks the member, so under `OnError.STOP` alone the run goes
+  on, as at placement. A member's data failure while it is staged SHALL stop an
+  `OnError.STOP` run at once. So a hostile archive is refused under `abort_on`, and a
+  damaged one under `OnError.STOP`, without decoding the rest of it.
 - Five things are known only once the directory has been read, and each SHALL fail
   the member it names, under "Error Policy (OnError)" above: a size or CRC from a
   data descriptor that differs from the central entry; a local header whose CRC, sizes
@@ -1227,10 +1229,11 @@ Where the two reads MAY differ (DR-5a, shapes only crafted archives have): the
 descriptor mismatch and the reversed pair fail a member the extraction from a file
 writes; a refusal on the local header's name, or a data failure, can stop a run for a
 member the directory then does not select or does not list; a member refused on the
-local header's name and accepted on the directory's fails, its data not staged; and the
-bomb limits count what the pass stages, so a member staged and then not placed can
-still stop a run under `max_entries` or `max_extracted_bytes`, a member the filter skips
-included.
+local header's name and accepted on the directory's fails, its data not staged; so
+does a member whose local name ends in a backslash, which the pass takes for a folder,
+when the directory makes it a file with data; and the bomb limits count what the pass
+stages, so a member staged and then not placed can still stop a run under
+`max_entries` or `max_extracted_bytes`, a member the filter skips included.
 
 #### Scenario: ZIP from a pipe, settled at the end of the pass
 

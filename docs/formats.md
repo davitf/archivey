@@ -142,10 +142,9 @@ yielded.
   Extraction keeps each member's data in a private ``.archivey-tmp-`` folder inside the
   destination and puts the members in place only once the pass has read the directory, calling
   your ``filter`` once on each member as the directory describes it, so the files on disk match a
-  read from a file. A member the
-  directory does not list (an appended update, a planted entry) is still yielded by the pass when it
-  is met. When the pass reaches the directory, it is dropped from the listing and reported as
-  ``ARCHIVE_UNLISTED_DATA``, and extraction does not keep it.
+  read from a file. A member the directory does not list (an appended update, a planted entry) is
+  still yielded by the pass when it is met. When the pass reaches the directory, it is dropped from
+  the listing and reported as ``ARCHIVE_UNLISTED_DATA``, and extraction does not keep it.
 - What a pipe cannot read: a member whose sizes come after its data (bit 3) under LZMA
   without an end marker raises ``UnsupportedFeatureError``, as no end can be found; a
   bit-3 PPMd member is decoded in a child process, so
@@ -158,7 +157,9 @@ yielded.
   reaches the directory, where a read from a file reads it. Two same-named members whose
   directory order reverses their file order list and stream from a pipe as from a file,
   but extraction from a pipe raises `CorruptionError` for that name, where extraction
-  from a file writes the copy the directory lists last.
+  from a file writes the copy the directory lists last. A member whose local header's
+  name the safety checks refuse fails extraction from a pipe even when the directory, or
+  your `filter`, gives it a safe name, since its data was not kept.
 - The pass reads the pipe to its end before it reads the directory, so it ends, and the
   members are final, only when the sender closes the pipe. A sender that keeps the pipe
   open after the ZIP keeps the pass waiting after the last member.

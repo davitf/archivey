@@ -187,12 +187,12 @@ def test_a_damaged_reparse_buffer_over_the_cap_says_why_as_from_a_file() -> None
     assert "deflate" in piped[0] and "deflate" in from_file[0]
 
 
-def test_parent_folders_of_a_file_the_pass_made_a_refused_link_are_taken_back(
+def test_parent_folders_of_a_link_refused_at_placement_are_never_made(
     tmp_path: Path,
 ) -> None:
-    """The pass writes ``d/f`` as a file; the directory makes it a link to an
-    absolute target, which is refused, and ``d`` goes with it, as the file read never
-    makes it."""
+    """The pass stages ``d/f`` as a file; the directory makes it a link to an
+    absolute target, which placement refuses, so neither ``d`` nor ``d/f`` is made,
+    as the file read never makes them."""
     buffer = _reparse_buffer(
         IO_REPARSE_TAG_SYMLINK, "C:\\tree\\target", "C:\\tree\\target"
     )
