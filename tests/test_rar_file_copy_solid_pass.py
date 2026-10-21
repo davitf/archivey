@@ -341,6 +341,8 @@ def test_each_pass_keeps_its_source_within_the_same_spool_limit(
                 data = stream.read()
                 if member.name in _COPY_NAMES:
                     assert data == payload, member.name
+        # The reader's private resource-usage record keeps the peak, not the sum.
+        assert reader._resource_usage().spool_bytes == len(payload)
     assert spawns == ["unrar", "unrar"]
 
 

@@ -13,7 +13,6 @@ import importlib.util
 import json
 import logging
 import os
-import subprocess
 import sys
 import zlib
 from pathlib import Path
@@ -86,9 +85,8 @@ def test_near_excludes_over_in_flags_and_summary() -> None:
 def test_main_writes_csv_and_log(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # ``main`` wraps library internals and reroutes the ``archivey`` logger for the
-    # life of the process; neither may leak into the rest of the test session.
-    monkeypatch.setattr(scan, "_install_probes", list)
+    # ``main`` reroutes the ``archivey`` logger for the life of the process, which
+    # may not leak into the rest of the test session.
     logger = logging.getLogger("archivey")
     monkeypatch.setattr(logger, "handlers", list(logger.handlers))
     monkeypatch.setattr(logger, "propagate", logger.propagate)
@@ -123,30 +121,27 @@ def test_detection_probes_do_not_count_as_decoder_memory(tmp_path: Path) -> None
     # Detection opens the LZMA Alone codec on every file it cannot place by magic. When
     # that codec checked bytes 1-4 as a dictionary size itself, a git loose object
     # (bare zlib) read that way declared 3.4 GB, and a scan of a home directory flagged
-    # every git object ``over:max_decoder_memory``. The probes patch library internals
-    # for the life of the process, so the script runs in its own interpreter.
+    # every git object ``over:max_decoder_memory``. A detection probe builds its own
+    # stream config, without the reader's usage record, so it is never counted.
     tree = tmp_path / "in"
     tree.mkdir()
     (tree / "object").write_bytes(zlib.compress(b"blob 12\x00hello world\n" * 50))
     (tree / "real.lz").write_bytes(make_lzip_member(b"a" * 100_000, 20))
-    out = tmp_path / "scan.csv"
-    subprocess.run(
-        [sys.executable, str(SCRIPT), str(tree), "-o", str(out)],
-        check=True,
-        capture_output=True,
-    )
-    with out.open(encoding="utf-8", newline="") as fh:
-        rows = {Path(row["path"]).name: row for row in csv.DictReader(fh)}
+    config = scan._scan_config(False)
+    rows = {}
+    for name in ("object", "real.lz"):
+        row = scan.scan_one(tree / name, config)
+        assert row is not None
+        rows[name] = row.csv_row()
     assert rows["object"]["format"] == "raw_stream.zz"
-    assert rows["object"]["decoder_memory"] == ""
+    assert rows["object"].get("decoder_memory", "") == ""
     assert "max_decoder_memory" not in rows["object"]["flags"]
     # A real lzip member's dictionary is still measured: the 1 MiB its header declares.
     # (xz, .lzma and zstd hand the cap to their library and are not measured.)
-    assert rows["real.lz"]["decoder_memory"] == str(1024 * 1024)
+    assert rows["real.lz"]["decoder_memory"] == 1024 * 1024
 
 
 def _quiet_main(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(scan, "_install_probes", list)
     logger = logging.getLogger("archivey")
     monkeypatch.setattr(logger, "handlers", list(logger.handlers))
     monkeypatch.setattr(logger, "propagate", logger.propagate)

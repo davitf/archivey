@@ -103,6 +103,7 @@ class PpmdCodec(StreamCodec):
                 params.ppmd_mem_size,
                 limits=config.decoder_limits,
                 what="ZIP PPMd8 memory size",
+                usage=config.usage,
             )
             return PpmdDecompressorStream(
                 source,
@@ -122,7 +123,10 @@ class PpmdCodec(StreamCodec):
             raise ValueError("input_runs_on needs PPMd8: PPMd7 has no end mark")
         order, mem_size = parse_ppmd_var_h_properties(params.properties)
         check_decoder_memory(
-            mem_size, limits=config.decoder_limits, what="7z PPMd var.H memory size"
+            mem_size,
+            limits=config.decoder_limits,
+            what="7z PPMd var.H memory size",
+            usage=config.usage,
         )
         # After the cap, so a declaration over it still names the cap.
         _check_ppmd7_properties(order, mem_size)

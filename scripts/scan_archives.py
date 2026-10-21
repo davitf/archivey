@@ -58,14 +58,15 @@ member a real extraction would write. And the scratch tree is one filesystem, so
 hardlink never falls back to a copy: ``bytes_written`` is a floor for
 ``max_extracted_bytes`` when a real destination spans a mount point.
 
-**Best-effort columns.** ``decoder_memory``, ``kdf_rounds`` and ``spool_bytes`` have no
-public API yet. The script reads them by wrapping three internal functions for the
-duration of the scan, and ``metadata_bytes`` reads the reader's private listing tracker.
-Any of them can stop working when those internals change; the script then prints which
-on its ``warning: probes not installed`` line rather than leaving a column silently
-empty. ``decoder_memory`` is the largest allocation an archive *declared* that archivey
-checks itself; xz, LZMA Alone and zstd hand the limit to liblzma / libzstd and are not
-counted.
+**Resource columns.** ``decoder_memory``, ``kdf_rounds``, ``spool_bytes`` and
+``metadata_bytes`` come from the reader's private resource-usage record
+(``reader._resource_usage()``), read once the dry run is over. It is internal, so the
+script checks it is there and prints ``warning: resource usage not recorded`` rather
+than leaving the columns silently empty. ``decoder_memory`` is the largest allocation
+an archive *declared* that archivey checks itself; xz, LZMA Alone and zstd hand the
+limit to liblzma / libzstd and are not counted, and neither is a size a detection
+probe checks. A file the reader could not open has no record, so its row leaves these
+columns empty.
 """
 
 from __future__ import annotations
@@ -73,12 +74,10 @@ from __future__ import annotations
 import argparse
 import contextlib
 import csv
-import importlib
 import io
 import json
 import logging
 import os
-import pkgutil
 import sys
 import tempfile
 import time
@@ -105,101 +104,21 @@ from archivey import (
     SpoolLimits,
 )
 
-# --- Best-effort probes into internals (see the module docstring). ---------------
+# --- Per-archive capture ---------------------------------------------------------
 
 
 @dataclass
 class _Probe:
-    decoder_memory_peak: int = 0
-    decoder_memory_what: str = ""
-    kdf_rounds: int = 0
-    spool_bytes: int = 0
-    # Nesting depth of format detection in progress. Its content probes open codecs
-    # on every unplaced file, and a size such a probe checks is not an allocation.
-    detecting: int = 0
     # Archivey's own WARNING log records for the archive being scanned.
     warnings: list[str] = field(default_factory=list)
 
     def reset(self) -> None:
-        self.decoder_memory_peak = 0
-        self.decoder_memory_what = ""
-        self.kdf_rounds = 0
-        self.spool_bytes = 0
         self.warnings = []
 
 
 PROBE = _Probe()
-# Names of probes that turned out not to work; reported once, with the install ones.
-BROKEN_PROBES: set[str] = set()
-
-
-def _install_probes() -> list[str]:
-    """Wrap the internal check points; return the names of the ones that failed."""
-    failed: list[str] = []
-    # Backends import lazily, and a module imported after the patch keeps the
-    # original binding, so everything is imported first.
-    for mod in pkgutil.walk_packages(archivey.__path__, "archivey."):
-        try:
-            importlib.import_module(mod.name)
-        except Exception:  # noqa: BLE001, S112 - an optional dependency is missing
-            continue
-    try:
-        from archivey.internal import config as internal_config
-
-        original_check = internal_config.check_decoder_memory
-
-        def check(declared: int, **kwargs: Any) -> None:
-            if not PROBE.detecting and declared > PROBE.decoder_memory_peak:
-                PROBE.decoder_memory_peak = declared
-                PROBE.decoder_memory_what = str(kwargs.get("what", ""))
-            original_check(declared, **kwargs)
-
-        # The codecs import the name, so every module's binding is replaced.
-        for name, module in list(sys.modules.items()):
-            if not name.startswith("archivey"):
-                continue
-            if getattr(module, "check_decoder_memory", None) is original_check:
-                module.check_decoder_memory = check
-
-        from archivey.internal import detection
-
-        original_detect = detection._detect_format_body
-
-        def detect(*args: Any, **kwargs: Any) -> Any:
-            PROBE.detecting += 1
-            try:
-                return original_detect(*args, **kwargs)
-            finally:
-                PROBE.detecting -= 1
-
-        # Called through its module's global by both detection entry points.
-        detection._detect_format_body = detect
-
-        budget_cls = internal_config.KeyDerivationBudget
-        original_spend = budget_cls.spend
-
-        def spend(self: Any, rounds: int, *, what: str) -> None:
-            original_spend(self, rounds, what=what)
-            PROBE.kdf_rounds += rounds
-
-        budget_cls.spend = spend
-    except Exception:  # noqa: BLE001 - a probe that cannot install is only reported
-        failed.append("decoder_memory/kdf_rounds")
-    try:
-        from archivey.internal.spool import SpoolBudget
-
-        original_copy = SpoolBudget.copy
-
-        def copy(self: Any, src: Any, out: Any) -> None:
-            try:
-                original_copy(self, src, out)
-            finally:
-                PROBE.spool_bytes = max(PROBE.spool_bytes, self._written)
-
-        SpoolBudget.copy = copy
-    except Exception:  # noqa: BLE001
-        failed.append("spool_bytes")
-    return failed
+# Set when a reader had no resource-usage record; reported once, in the summary.
+USAGE_MISSING = [False]
 
 
 class _WarningCapture(logging.Handler):
@@ -396,19 +315,7 @@ def scan_one(
 
 
 def _finish(row: _Row) -> _Row:
-    """Fold the probes into the row and derive the flags from everything recorded."""
-    for column, value in (
-        ("decoder_memory", PROBE.decoder_memory_peak),
-        ("kdf_rounds", PROBE.kdf_rounds),
-        ("spool_bytes", PROBE.spool_bytes),
-    ):
-        if value:
-            row.numbers[column] = value
-    if PROBE.decoder_memory_what:
-        row.log.append(
-            f"largest decoder allocation: {PROBE.decoder_memory_peak} bytes, "
-            f"{PROBE.decoder_memory_what}"
-        )
+    """Derive the flags from everything recorded."""
     for message in PROBE.warnings:
         row.log.append(f"warning: {message}")
         if message.startswith("Could not remove dry-run scratch directory"):
@@ -480,16 +387,34 @@ def _open_and_extract(
             )
             if any(m.type is MemberType.OTHER for m in members):
                 row.flag("device_or_fifo")
-        tracker = getattr(reader, "_listing_tracker", None)
-        if tracker is None:
-            BROKEN_PROBES.add("metadata_bytes")
-        else:
-            row.numbers["metadata_bytes"] = tracker.metadata_bytes
+        _read_usage(reader, row)
         for code, count in reader.diagnostics.counts.items():
             row.diagnostics[code.value] += count
 
         if report is not None:
             _read_report(report, members, member_bytes, config, row)
+
+
+def _read_usage(reader: archivey.ArchiveReader, row: _Row) -> None:
+    """Copy the reader's private resource-usage record into the row."""
+    snapshot = getattr(reader, "_resource_usage", None)
+    if snapshot is None:
+        USAGE_MISSING[0] = True
+        return
+    usage = snapshot()
+    for column, value in (
+        ("decoder_memory", usage.decoder_memory),
+        ("kdf_rounds", usage.key_derivation_rounds),
+        ("spool_bytes", usage.spool_bytes),
+        ("metadata_bytes", usage.listing_metadata_bytes),
+    ):
+        if value:
+            row.numbers[column] = value
+    if usage.decoder_memory_what:
+        row.log.append(
+            f"largest decoder allocation: {usage.decoder_memory} bytes, "
+            f"{usage.decoder_memory_what}"
+        )
 
 
 def _read_report(
@@ -849,7 +774,6 @@ def main(argv: list[str] | None = None) -> int:
     archivey_logger.addHandler(_WarningCapture(logging.WARNING))
     # The capture keeps every record for the log; stderr is for the progress lines.
     archivey_logger.propagate = False
-    failed_probes = _install_probes()
     config = _scan_config(args.default_limits)
     log_path = args.output.with_suffix(".log")
 
@@ -962,9 +886,8 @@ def main(argv: list[str] | None = None) -> int:
         summary = _summary(rows)
         if skipped:
             summary += f"not read: {len(skipped)} files or directories (see above)\n"
-        broken = sorted({*failed_probes, *BROKEN_PROBES})
-        if broken:
-            summary += f"warning: probes not installed: {', '.join(broken)}\n"
+        if USAGE_MISSING[0]:
+            summary += "warning: resource usage not recorded (internals changed)\n"
         log.write(summary)
     print(f"\n{summary}\nwrote {args.output} and {log_path}", file=sys.stderr)
     return 0

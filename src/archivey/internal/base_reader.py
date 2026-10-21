@@ -104,6 +104,7 @@ from archivey.internal.reader_state import (
     LiveStreamReservation,
     ReaderState,
 )
+from archivey.internal.resource_usage import ResourceUsage, ResourceUsageRecorder
 from archivey.internal.selection import (
     CollectionSelector,
     normalize_member_selector,
@@ -648,6 +649,10 @@ class BaseArchiveReader(ArchiveReader):
         # Makes the test-and-set of ``_unconfirmed_failure_emitted`` one step.
         self._unconfirmed_failure_lock = threading.Lock()
         self._listing_tracker = ListingLimitTracker(self._config.listing_limits)
+        # How close this reader came to each reader-lifetime limit (private; read by
+        # the scan script and ``archivey extract --dry-run``).
+        self._usage = ResourceUsageRecorder()
+        self._usage.watch_listing(self._listing_tracker)
         self._forward_pass_started: bool = False
         self._progressive_gen: Iterator[ArchiveMember] | None = None
         self._closed = False
@@ -3298,6 +3303,10 @@ class BaseArchiveReader(ArchiveReader):
         finally:
             self._state.release_worker(token)
 
+    def _resource_usage(self) -> ResourceUsage:
+        """How close this reader has come to each reader-lifetime limit so far."""
+        return self._usage.snapshot()
+
     def _open_with_link_follow(
         self,
         member: ArchiveMember,
@@ -3596,6 +3605,7 @@ class BaseArchiveReader(ArchiveReader):
             _dry_run_top_level=coordinator.dry_run_top_level,
             _dry_run_links=coordinator.dry_run_links,
             _dry_run_entries=coordinator.dry_run_entries,
+            _resource_usage=self._resource_usage(),
         )
 
     def close(self) -> None:

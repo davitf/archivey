@@ -529,9 +529,9 @@ class SevenZipReader(BaseArchiveReader):
         del encoding  # 7z stores names as UTF-16LE.
         self._source = source
         self._passwords = passwords or _PasswordCandidates()
-        self._key_cache = SevenZipKeyCache(
-            budget=KeyDerivationBudget(self._config.decoder_limits)
-        )
+        kdf_budget = KeyDerivationBudget(self._config.decoder_limits)
+        self._usage.watch_key_derivation(kdf_budget)
+        self._key_cache = SevenZipKeyCache(budget=kdf_budget)
         self._folder_passwords: dict[int, bytes | None] = {}
         # Folders whose password was accepted on an INCONCLUSIVE confirm: no checksum
         # vouched for the key, so a member stream abandoned before its digest reports
@@ -563,6 +563,7 @@ class SevenZipReader(BaseArchiveReader):
             streaming=streaming,
             seekable=MemberStreams.SEEKABLE in member_streams,
             refuse_input_after_end=True,
+            usage=self._usage,
         )
         if not source.seekable():
             raise StreamNotSeekableError(

@@ -899,6 +899,7 @@ def open_folder_pipeline(
             limits=config.decoder_limits,
             what=f"the sum over a {folder_kind}'s decoders "
             "(LZMA dictionaries, PPMd memory, zstd windows)",
+            usage=config.usage,
         )
 
     def open_chain(chain: _Chain, *, seekable: bool) -> BinaryIO:
