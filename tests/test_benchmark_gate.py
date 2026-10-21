@@ -113,7 +113,7 @@ def test_benchmark_structural_gate(tmp_path: Path) -> None:
             "the CI matrix gets it via --extra all."
         )
 
-    if _rapidgzip_available():
+    if accel_used and _rapidgzip_available():
         # Engagement signal: ON seeks more than OFF on the same deflate ZIP.
         assert (
             by_case["zip_read_all_accel_on"].source_seek_count

@@ -104,8 +104,10 @@ def _7z_write(tmp_path: Path, archive_type: str, switches: list[str]) -> Path:
 def test_7z_written_archives_read_the_same_under_every_value(
     tmp_path: Path, archive_type: str, switches: list[str]
 ) -> None:
-    importorskip("inflate64") if "Deflate64" in str(switches) else None
-    importorskip("pyppmd") if "PPMd" in str(switches) else None
+    if "Deflate64" in str(switches):
+        importorskip("inflate64")
+    if "PPMd" in str(switches):
+        importorskip("pyppmd")
     _assert_same_under_every_value(_7z_write(tmp_path, archive_type, switches))
 
 
