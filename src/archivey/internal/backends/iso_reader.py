@@ -19,7 +19,7 @@ offsets, so the image must start at ``tell() == 0`` — ``open_archive`` wraps
 mid-positioned streams (stream-position contract). A compressed ``.iso.xz`` is a
 single-file compressor wrapping the image, not mounted here.
 
-**Process-global side effect.** Importing this module (which ``import archivey`` does
+**Installed at import.** Importing this module (which ``import archivey`` does
 eagerly, to register backends) wraps four pycdlib methods and two pycdlib functions:
 
 - ``pycdlib.rockridge.RockRidge.parse`` (:func:`_install_pycdlib_system_use_filter`),

@@ -425,7 +425,8 @@ def test_a_cut_image_keeps_pycdlib_text_without_its_repr() -> None:
 
 
 # What pycdlib raises for a directory tree that loops back on itself.
-_LOOP = r"form a loop"
+_ISO_LOOP = r"ISO Directory Records form a loop"
+_UDF_LOOP = r"UDF File Entries form a loop"
 
 
 @pytest.mark.timeout(5)
@@ -471,7 +472,7 @@ def test_pycdlib_directory_cycle_does_not_hang(
         bitflip_offset=bitflip_offset,
         byte_before_flip=byte_before_flip,
     )
-    with pytest.raises(CorruptionError, match=_LOOP):
+    with pytest.raises(CorruptionError, match=_ISO_LOOP):
         open_archive(io.BytesIO(image), format=ArchiveFormat.ISO)
 
 
@@ -539,7 +540,7 @@ def test_pycdlib_udf_directory_cycle_does_not_hang() -> None:
     at open, although its ISO 9660 tree is intact.
     """
     image = _udf_directory_cycle_image()
-    with pytest.raises(CorruptionError, match=_LOOP):
+    with pytest.raises(CorruptionError, match=_UDF_LOOP):
         open_archive(io.BytesIO(image), format=ArchiveFormat.ISO)
 
 
