@@ -121,7 +121,7 @@ def test_archive_stream_close_failure_still_closes_wrapper() -> None:
     from archivey.internal.streams.archive_stream import ArchiveStream
 
     class _FailingClose(io.BytesIO):
-        def close(self) -> None:  # noqa: D102
+        def close(self) -> None:
             raise RuntimeError("simulated close failure")
 
     def _translate(exc: Exception) -> ArchiveyError | None:
