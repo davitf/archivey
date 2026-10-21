@@ -548,7 +548,14 @@ def _put(dest: Path, entries: dict[str, object]) -> None:
             path.chmod(what)
         else:
             _, target = what  # type: ignore[misc]
-            os.symlink(str(target).format(dest=dest, parent=dest.parent), path)
+            os.symlink(_expand(str(target), dest), path)
+
+
+def _expand(text: str, dest: Path) -> str:
+    """A row's ``{dest}`` and ``{parent}`` placeholders, filled for one run's
+    ``dest``. Any other placeholder raises ``KeyError`` rather than staying a
+    literal that both runs would build alike."""
+    return text.format(dest=dest, parent=dest.parent) if "{" in text else text
 
 
 # Each case: what dest holds before the run, and the archive's members.
@@ -706,15 +713,17 @@ def _run_existing_case(
     dest_name: str = "out",
 ) -> None:
     def source() -> io.BytesIO:
-        # A "{dest}" in a link target names the run's own dest, as given, so each
-        # run builds its own archive. ``_both`` calls this in the run's directory.
+        # A "{dest}" or "{parent}" in a link target names the run's own dest, as
+        # given, so each run builds its own archive. ``_both`` calls this in the run's directory.
         dest = Path.cwd() / dest_name
         return io.BytesIO(
             _tar(
                 [
-                    (name, kind, extra.format(dest=dest))
-                    if isinstance(extra, str) and "{dest}" in extra
-                    else (name, kind, extra)
+                    (
+                        name,
+                        kind,
+                        _expand(extra, dest) if isinstance(extra, str) else extra,
+                    )
                     for name, kind, extra in members
                 ]
             )
@@ -1148,6 +1157,8 @@ def test_cli_dry_run_into_a_populated_cwd_matches(
     case: str, overwrite: str, tmp_path: Path
 ) -> None:
     held, members = _EXISTING_CASES[case]
+    # The CLI runs build one archive for both runs, so a row here cannot name dest.
+    assert not any(isinstance(extra, str) and "{" in extra for _, _, extra in members)
     real, dry = _cli_both(
         _tar(members), held, ["-d", ".", "--overwrite", overwrite], tmp_path
     )
