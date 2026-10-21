@@ -1040,15 +1040,21 @@ def test_archivey_ppmd7_fed_in_pieces_decodes_in_full(
     _run_ppmd_child(script)
 
 
+@pytest.mark.parametrize("request_size", [4096, 1], ids=["4KiB-requests", "1-byte"])
 @pytest.mark.parametrize("overstate", [0, 1 << 40], ids=["exact", "plus-1TiB"])
 def test_archivey_ppmd7_fed_a_byte_at_a_time_never_resumes_a_parked_worker_empty(
-    overstate: int,
+    overstate: int, request_size: int
 ) -> None:
     """Fed one compressed byte per piece, a resumed worker often parks again before
     its first symbol: the 1-byte call comes back empty. ``_native_decode`` must then
     not ask the rest with ``b""``, which would resume that worker on empty input
     (pyppmd reads past its input and raises ``MemoryError``). The exact size reads in
-    full; an overstated one ends in ``TruncatedError`` with the payload intact."""
+    full; an overstated one ends in ``TruncatedError`` with the payload intact.
+
+    ``1-byte`` asks one byte of every call, as ``read(1)`` does, so each piece resumes
+    the worker with a request ``_native_decode`` does not split. The stream layer
+    cannot reach that shape cheaply: it reads 64 KiB of compressed input per piece,
+    and a member of two pieces read a byte at a time is 64 K stream reads."""
     _run_ppmd_child(
         textwrap.dedent(
             f"""\
@@ -1078,12 +1084,21 @@ def test_archivey_ppmd7_fed_a_byte_at_a_time_never_resumes_a_parked_worker_empty
             # The stream layer reads its source in large chunks; drive the decoder
             # itself to feed it one byte at a time. The first piece holds the range
             # coder's 5 start bytes.
-            got += decoder.feed(packed[:5], 4096).data
+            request = {request_size}
+
+            def feed(piece):
+                out = bytearray(decoder.feed(piece, request).data)
+                # Take what the piece holds before the next one, as the stream does.
+                while request == 1 and (more := decoder.feed(b"", request).data):
+                    out += more
+                return out
+
+            got += feed(packed[:5])
             for i in range(5, len(packed)):
-                got += decoder.feed(packed[i : i + 1], 4096).data
+                got += feed(packed[i : i + 1])
             got += decoder.flush().data
             while decoder.drains_after_flush:
-                got += decoder.feed(b"", 4096).data
+                got += decoder.feed(b"", request).data
             error = decoder._pending_error
             calls = list(spy.calls)
             decoder.close()
@@ -1093,6 +1108,64 @@ def test_archivey_ppmd7_fed_a_byte_at_a_time_never_resumes_a_parked_worker_empty
                 assert isinstance(error, TruncatedError), error
             else:
                 assert error is None, error
+            print("ok")
+            """
+        )
+    )
+
+
+def test_archivey_ppmd7_truncated_in_pieces_sends_one_nul_and_no_empty_decode() -> None:
+    """A pack cut short and fed in pieces gets the documented extra NUL at compressed
+    EOF as one ``decode``, not split into a NUL and an empty decode: with the pack
+    known short, this decoder makes no empty decode past what it was given. The read
+    ends in ``TruncatedError`` with the bytes before it intact."""
+    _run_ppmd_child(
+        textwrap.dedent(
+            """\
+            import io
+            from archivey.config import ProcessIsolation
+            from archivey.exceptions import TruncatedError
+            from archivey.internal.streams.codecs.ppmd_decoder import PpmdDecompressorStream
+            from tests.test_ppmd_raw_streams import (
+                _ORDER, _PIECES_MEM, _PIECES_PAYLOAD, _DecodeCallSpy, _encode_ppmd7,
+            )
+
+            packed = _encode_ppmd7(_PIECES_PAYLOAD, mem=_PIECES_MEM)
+            cut = packed[: len(packed) * 6 // 10]
+            stream = PpmdDecompressorStream(
+                io.BytesIO(cut),
+                order=_ORDER,
+                mem_size=_PIECES_MEM,
+                variant=7,
+                unpack_size=len(_PIECES_PAYLOAD),
+                pack_size=len(packed),
+                in_process_max_input=0,
+                isolation=ProcessIsolation.NONE,
+            )
+            stream._decoder._open_native(in_child=False)
+            spy = _DecodeCallSpy(stream._decoder._decomp)
+            stream._decoder._decomp = spy
+            got = bytearray()
+            try:
+                while chunk := stream.read(65536):
+                    got += chunk
+            except TruncatedError:
+                pass
+            else:
+                raise SystemExit("expected TruncatedError")
+            calls = list(spy.calls)
+            stream.close()
+            assert _PIECES_PAYLOAD.startswith(bytes(got)), len(got)
+            fed = 0
+            for i, (data_len, length, _, _) in enumerate(calls):
+                fed += data_len
+                if fed > len(cut):
+                    break
+            else:
+                raise SystemExit(f"no NUL after the cut: {calls[-4:]}")
+            # Call i is the NUL; nothing after it decodes from empty input.
+            assert calls[i][0] == 1, calls[i - 1 :]
+            assert all(n for n, _, _, _ in calls[i + 1 :]), calls[i:]
             print("ok")
             """
         )

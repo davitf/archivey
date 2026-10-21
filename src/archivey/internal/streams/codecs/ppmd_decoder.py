@@ -351,13 +351,16 @@ class PpmdDecoder(BaseDecoder):
         ``MemoryError`` (it reads past the input buffer) rather than returning. So
         ``feed`` and ``flush`` make no further call; ``_quiesce_worker`` still sends
         its bounded NUL at teardown, which is what keeps the parked worker from
-        writing into freed memory when the decoder is freed. A valid member never gets
-        here, because its ``unpack_size`` matches the payload and every request is
-        met in full (fed in pieces, because :meth:`_native_decode` keeps a resumed
-        worker from returning short) — premature ``eof`` (the ``Code == 0`` proxy)
-        arrives on a *full* return, which is why ``eof`` alone cannot be the stop.
-        Reached when the container overstates ``unpack_size``; ``flush`` then
-        reports ``TruncatedError``.
+        writing into freed memory when the decoder is freed. While input is still
+        arriving, a short return is the worker waiting for the next piece, and
+        ``eof`` can already be up then (the ``Code == 0`` proxy rises early), so the
+        stop needs all three: short, ``eof``, and every compressed byte fed. A valid
+        member never meets them, because its ``unpack_size`` matches the payload:
+        once all input is in, its requests are met in full. Fed in pieces, that
+        holds because :meth:`_native_decode` makes a short return there mean that
+        the worker waited for input, not a resumed worker's miscount. Reached when
+        the container overstates ``unpack_size``; ``flush`` then reports
+        ``TruncatedError``.
 
         ``_decode_unsized`` (PPMd8 without ``unpack_size``) is deliberately not
         wrapped: its end mark stops the worker on valid data, ``_decode`` refuses to
@@ -392,6 +395,11 @@ class PpmdDecoder(BaseDecoder):
         spurious ``MemoryError``). An empty return means the worker parked again, and
         no second call is made. The first call is not split: no worker exists yet,
         and a member handed over whole goes to pyppmd in one ``decode``, as before.
+        A request of 1 byte is not split either: it already is the first half. Its
+        output buffer holds 1 byte, so a resumed worker stops after one symbol, and
+        the return is that byte or empty, never short of it by a miscount. The two
+        1-byte calls made without this helper (``_check_end``'s end-mark probe and
+        ``_quiesce_worker``'s NUL) rely on the same.
         """
         native = self._native
         if not data or length <= 1 or not self._native_called:
@@ -419,14 +427,26 @@ class PpmdDecoder(BaseDecoder):
         return budget
 
     def _inject_nul_once(self, max_length: int) -> bytes:
-        """Documented single extra NUL (pyppmd / py7zr); never loop fabricated input."""
+        """Documented single extra NUL (pyppmd / py7zr); never loop fabricated input.
+
+        The NUL resumes a worker parked for input, so on a pack known complete it goes
+        through :meth:`_native_decode` like any other new input, so a resumed
+        worker's miscount cannot make the payload look spent. On a pack known
+        short, or of unknown size, it stays one ``decode(b"\\0", budget)``: the split's
+        second half is an empty decode, and at compressed EOF this class drains with
+        empty decodes only when every compressed byte is in (``_finish_input``).
+        """
         if self._exhausted or self._nul_injected or self._native.eof:
             return b""
         if not getattr(self._native, "needs_input", False):
             return b""
         self._nul_injected = True
         budget = self._nul_budget(max_length)
-        return self._note_decoded(self._native_decode(b"\0", budget), budget)
+        if self._pack_complete() is True:
+            out = self._native_decode(b"\0", budget)
+        else:
+            out = self._native.decode(b"\0", budget)
+        return self._note_decoded(out, budget)
 
     def _drain_empty_chunked(self, max_length: int) -> bytes:
         """Pull remaining output in ``_PPMD_EXTRA_NUL_MAX_OUTPUT`` empty decodes.
