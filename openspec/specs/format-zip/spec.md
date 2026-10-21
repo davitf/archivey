@@ -255,10 +255,11 @@ reparse buffer stays a file. The cost receipt SHALL be `REQUIRES_SCANNING`, `DIR
 
 Four things SHALL fail the member they name once the directory has been read: a size
 or CRC from a data descriptor that differs from the central entry; a local header whose
-compression method, CRC, sizes or encryption flag the central entry contradicts (a central CRC-32 of 0 over
-data against a non-zero local one is none: a file or link takes the local value, and a
-directory keeps no digest, as from a file); two same-name members whose directory
-order reverses their file order; and a directory entry with no local entry.
+compression method, CRC, sizes or encryption flag the central entry contradicts (a
+central CRC-32 of 0 over data against a non-zero local one is none: a file or link
+takes the local value, and a directory keeps no digest, as from a file); two same-name
+members whose directory order reverses their file order; and a directory entry with no
+local entry.
 `stream_members()` SHALL raise `CorruptionError` at the end of the pass for each but
 the reversed pair, which only updates the members. A local header that stores another
 name than the directory entry SHALL NOT fail the member: the member takes the
