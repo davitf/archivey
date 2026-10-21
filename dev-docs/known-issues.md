@@ -257,9 +257,9 @@ false `eof` with input unread, which reads as a spent payload; a valid member ra
 that brings new input after the first, which stops a resumed worker after one symbol, and
 the rest of a new worker; a request of 1 byte needs no split. Every PPMd member decodes in
 a child process unless `process_isolation` is `NONE` (`ppmd_child.py`), because the
-quiesce NUL can crash pyppmd on small members too; a crash becomes `CorruptionError` (`ResourceLimitError` for SIGKILL
-or a refused `mem_size`, `ReadError` for other deaths). A child is reused only after a
-member that ended cleanly. Pinned by
+quiesce NUL can crash pyppmd on small members too; a crash becomes `CorruptionError`
+(`ResourceLimitError` for SIGKILL or a refused `mem_size`, `ReadError` for other deaths).
+A child is reused only after a member that ended cleanly. Pinned by
 `tests/test_ppmd_crash_isolation.py` and `tests/test_ppmd_raw_streams.py`; the
 non-blocking PPMd native stress workflow watches for regressions.
 
