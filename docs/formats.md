@@ -179,8 +179,8 @@ yielded.
   members are final, only when the sender closes the pipe. A sender that keeps the pipe
   open after the ZIP keeps the pass waiting after the last member, and, when the sizes
   come after each member's data (bit 3), in the read that ends the last member's data.
-  A ZIP under 262 bytes also waits at `open_archive`, because a tar header could still
-  start at offset 257. Close the sending side when the ZIP is done.
+  A ZIP under 258 bytes also waits at `open_archive`: a tar header starts at offset 257,
+  and until that byte has arrived the file could still be a tar. Close the sending side when the ZIP is done.
 - **A member whose local header disagrees with the central directory on its name, or
   stores a real CRC-32 where the directory stores 0, is read**, from a file and a pipe
   alike, as `unzip` reads it. The directory's name is used, reported as
@@ -971,8 +971,10 @@ yielded.
   wait for the sender to close the pipe. These are the places it waits:
     - `open_archive` of a short file, because archivey reads a fixed amount from the
       start before it decides:
-        - Under 262 bytes. A tar header could still start at offset 257, so even a
-          `.gz` whose first two bytes say gzip could still be something else.
+        - Under 258 bytes. A tar header starts at offset 257, and until that byte has
+          arrived the file could still be a tar, even a `.gz` whose first two bytes say
+          gzip. A few files up to 261 bytes wait too, when their bytes from offset 257
+          spell the start of a tar header.
         - A `.gz` under 512 bytes, whose first 512 bytes are read for the stored name.
         - A `.bz2` or `.xz` under 4 KiB, and a `.tar.bz2` or `.tar.xz` too. These are
           checked for a disk image, which needs the length of the file.

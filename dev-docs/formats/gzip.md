@@ -101,6 +101,10 @@ Raw DEFLATE is never detected; it exists only inside a container that names it.
   not taken from `FNAME` ([`single-file.md`](single-file.md) §2.4). A name that ends past
   byte 512, behind a large `FEXTRA`, is not reported.
 
+On a non-seekable source those 512 bytes come from `ArchiveSource.peek`, which is
+full-count, so a `.gz` under 512 bytes on a held-open pipe waits at `open_archive`
+([`topics/detection.md`](../topics/detection.md) §5).
+
 `FCOMMENT`, `XFL`, `OS` and `FEXTRA` subfields (bgzip's `BC` block size among them) are not
 reported. `size` is `None` and `hashes` is empty (§6). A zlib stream reports nothing beyond
 the shared fields. `compressed_size` is the source's length on a seekable source, and a

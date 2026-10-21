@@ -118,7 +118,10 @@ def _releasable_pipe(
                 view = view[os.write(write_fd, view) :]
             release.wait(_HOLD_SECONDS)
         except OSError:
-            pass  # the reader closed its end early: the test has already failed
+            # The reader closed its end before it read the whole payload: the test
+            # failed early, or it passed without draining a payload larger than the
+            # pipe buffer.
+            pass
         finally:
             closed.set()
             os.close(write_fd)
@@ -143,9 +146,28 @@ def _releasable_pipe(
 def _held_open_pipe(
     payload: bytes, *, buffered: bool
 ) -> Iterator[tuple[BinaryIO, threading.Event]]:
-    """A pipe holding ``payload`` and a flag set when the writer closes its end."""
+    """A pipe holding ``payload`` and a flag set when the writer closes its end.
+
+    The writer holds the pipe open until the test ends, or ``_HOLD_SECONDS`` at most.
+    ``payload`` need not fit the pipe buffer: the reader's reads unblock the writer,
+    and no test that uses this needs the end of the source, so a payload the reader
+    leaves in the pipe only makes the writer's last write fail on exit.
+    """
     with _releasable_pipe(payload, buffered=buffered) as (stream, closed, _):
         yield stream, closed
+
+
+def _members(payload: bytes) -> list[tuple[str, bytes]]:
+    """Every member's name and data, read from memory: what a pipe read must match."""
+    with open_archive(io.BytesIO(payload), streaming=True) as reader:
+        return _read_members(reader)
+
+
+def _read_members(reader: ArchiveReader) -> list[tuple[str, bytes]]:
+    return [
+        (member.name, stream.read() if stream is not None else b"")
+        for member, stream in reader.stream_members()
+    ]
 
 
 _CASES: list[tuple[str, Callable[[int], bytes], ArchiveFormat]] = [
@@ -388,16 +410,10 @@ def test_a_streaming_tar_read_in_small_pieces_matches_the_whole_bytes() -> None:
             tf.addfile(info, io.BytesIO(bytes([i]) * size))
     payload = buf.getvalue()
 
-    def contents(source: BinaryIO) -> list[tuple[str, bytes]]:
-        with open_archive(source, streaming=True) as reader:
-            return [
-                (member.name, stream.read() if stream is not None else b"")
-                for member, stream in reader.stream_members()
-            ]
-
-    expected = contents(io.BytesIO(payload))
+    expected = _members(payload)
     assert len(expected) == 5
-    assert contents(_Trickle(payload, 7)) == expected  # type: ignore[arg-type]  # RawIOBase double
+    with open_archive(_Trickle(payload, 7), streaming=True) as reader:  # type: ignore[arg-type]  # RawIOBase double
+        assert _read_members(reader) == expected
 
 
 _KOLY = b"koly" + (4).to_bytes(4, "big") + (512).to_bytes(4, "big")
@@ -486,19 +502,6 @@ def test_an_inner_tar_probe_waits_only_for_the_bytes_it_needs() -> None:
     assert info.format == ArchiveFormat.TAR_GZ
 
 
-def _members(payload: bytes) -> list[tuple[str, bytes]]:
-    """Every member's name and data, read from memory: what a pipe read must match."""
-    with open_archive(io.BytesIO(payload), streaming=True) as reader:
-        return _read_members(reader)
-
-
-def _read_members(reader: ArchiveReader) -> list[tuple[str, bytes]]:
-    return [
-        (member.name, stream.read() if stream is not None else b"")
-        for member, stream in reader.stream_members()
-    ]
-
-
 def _open_waits_for_the_writer(payload: bytes) -> None:
     """``open_archive`` returns only after the close, and then reads the same members.
 
@@ -575,12 +578,12 @@ def test_a_bzip2_file_of_one_block_waits_at_its_first_read() -> None:
 
 
 _SHORT_WAITS = [
-    # Under 262 bytes: TAR's ``ustar`` at offset 257 is ahead of every other row in the
-    # signature table, so no match settles before that offset. The zstd stream holds
+    # Under 258 bytes: TAR's ``ustar`` at offset 257 is ahead of every other row in the
+    # signature table, so no match settles before byte 257 has arrived. The zstd stream holds
     # zeros, so it decodes past the 512 bytes the inner-TAR probe needs.
-    pytest.param(lambda: _zip(20), id="zip-under-262-bytes"),
+    pytest.param(lambda: _zip(20), id="zip-under-258-bytes"),
     pytest.param(
-        lambda: _zstd(bytes(2000)), id="zst-under-262-bytes", marks=requires_zstd()
+        lambda: _zstd(bytes(2000)), id="zst-under-258-bytes", marks=requires_zstd()
     ),
     # A bzip2 or xz hit under 4 KiB: the trailer step needs the source length.
     pytest.param(lambda: bz2.compress(os.urandom(2000)), id="bz2-under-4-kib"),
@@ -592,7 +595,7 @@ _SHORT_WAITS = [
         marks=requires_zstd(),
     ),
     # A .gz under 512 bytes: the reader peeks a 512-byte header for the stored name.
-    # Past 262 bytes, and decoding past 512, so only that peek waits.
+    # Past 261 bytes, and decoding past 512, so only that peek waits.
     pytest.param(
         lambda: _gzip_bytes(os.urandom(380) + bytes(1000)), id="gz-under-512-bytes"
     ),
