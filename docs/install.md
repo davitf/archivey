@@ -111,8 +111,8 @@ are tested on Linux only.
 
 ## PyPy
 
-Every change also runs the whole test suite on PyPy 3.11, with and without the optional packages,
-and it has to pass there.
+PyPy isn't supported yet, but every change runs the whole test suite on PyPy 3.11, with and
+without the optional packages, and it has to pass there.
 
 Under PyPy, archivey doesn't use rapidgzip, lz4, pyppmd or inflate64, even when they are
 installed, because there they misread data or crash the interpreter. It reads as if they weren't

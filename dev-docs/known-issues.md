@@ -483,7 +483,7 @@ with `None`, which raises the same way, so no 0 arrives to be asked again. The z
 `read` directly.
 
 **What remains.** A new `readinto` that keeps a view fails CI only if a test resizes its
-buffer under PyPy.
+buffer under PyPy, and the 0-confirm is still exercised on CPython only.
 
 **Upstream.** Not filed; both are documented PyPy behaviour rather than bugs.
 
@@ -517,7 +517,9 @@ Pinned by `tests/test_decoder_memory_pressure.py`.
 `max_decoder_memory`) and nothing frees it before a collection, nor a brotli window over
 4 MiB: neither library can free its state early under PyPy, and reporting the cap would
 force a major collection per decoder. A caller who drops streams unclosed relies on the
-estimates alone. The PyPy CI job runs the pins above; nothing measures real memory use.
+estimates alone. The PyPy CI job runs the pins above, including the dropped-xz growth
+measured through `/proc`; nothing measures the zstd or brotli windows, or what a caller who
+leaves streams unclosed really uses.
 
 **Upstream.** Not filed; PyPy documents that native memory needs
 `add_memory_pressure` from whoever allocates it.

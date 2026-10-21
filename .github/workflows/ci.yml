@@ -607,9 +607,12 @@ jobs:
           --with pytest --with pyppmd --with inflate64 --with brotli --with rapidgzip
           pytest tests/test_lazy_optional_imports.py -q -o addopts=
 
-  # PyPy. The whole suite has to pass, once with the zero-dependency core and once with
-  # every optional package that installs. The check and test steps carry `if: always()`
-  # so a failure in one does not hide the later ones; any failed step still fails the job.
+  # PyPy. It is still not a supported interpreter (docs/install.md §PyPy), but the whole
+  # suite has to pass there, once with the zero-dependency core and once with every
+  # optional package that installs, so a PyPy regression fails the run instead of sitting
+  # in a log. The check and test steps carry `if: ${{ !cancelled() }}` so a failure in
+  # one does not hide the later ones; any failed step still fails the job, and a
+  # superseded run stops at once.
   # Dependencies come one at a time rather than through `--extra all`, because several
   # native packages have no PyPy wheel and one failed build would hide what does install;
   # the "Install what installs" step writes the outcome per package to the job summary.
@@ -643,10 +646,10 @@ jobs:
       - name: Sync zero-dep core
         run: uv sync --python ${{ matrix.python }} --no-dev
       - name: Assert zero-dependency core
-        if: always()
+        if: ${{ !cancelled() }}
         run: uv run --python ${{ matrix.python }} --no-sync python tests/check_zero_dep_core.py
       - name: Run full suite (core-only)
-        if: always()
+        if: ${{ !cancelled() }}
         env:
           PYTHONFAULTHANDLER: "1"
         run: >
@@ -655,10 +658,10 @@ jobs:
           pytest tests/ -q -n auto --timeout=300 -o addopts= --tb=no -p no:warnings
           -m 'not ppmd_native_stress' --junitxml=pypy-core.xml -o junit_family=xunit1
       - name: Failures (core-only), one line each
-        if: always()
+        if: ${{ !cancelled() }}
         run: python3 scripts/junit_failure_lines.py pypy-core.xml
       - name: Install what installs (runtime extras, then test-only packages)
-        if: always()
+        if: ${{ !cancelled() }}
         run: |
           {
             echo "### ${{ matrix.python }}: optional packages"
@@ -679,7 +682,7 @@ jobs:
             fi
           done
       - name: Run full suite (with what installed)
-        if: always()
+        if: ${{ !cancelled() }}
         env:
           PYTHONFAULTHANDLER: "1"
         run: >
@@ -687,7 +690,7 @@ jobs:
           pytest tests/ -q -n auto --timeout=300 -o addopts= --tb=no -p no:warnings
           -m 'not ppmd_native_stress' --junitxml=pypy-extras.xml -o junit_family=xunit1
       - name: Failures (with what installed), one line each
-        if: always()
+        if: ${{ !cancelled() }}
         run: python3 scripts/junit_failure_lines.py pypy-extras.xml
 
   # Blocking gate = **structural only** (seek baselines + solid decode-once).
