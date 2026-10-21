@@ -94,6 +94,11 @@ opened and the attempt number. When the password is needed to read an encrypted 
 which 7z and RAR support, `PasswordRequest.member` is `None`. Return a password to try, or `None` to
 give up, which raises `EncryptionError`.
 
+A RAR password can't contain a line break or a NUL character. When a read goes through `unrar`,
+the program would use only the part of the password before one, so archivey raises
+`UnsupportedFeatureError` instead of passing it on. A password read from a file usually ends with a
+newline, which `.strip()` removes.
+
 A password or list of passwords given for a format with no encryption, such as TAR, is ignored and
 noted in the [diagnostics](errors-and-diagnostics.md), which log a warning for each such archive by
 default. One list can then serve a whole batch of archives, and the diagnostics page shows how to
