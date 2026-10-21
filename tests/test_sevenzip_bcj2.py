@@ -530,6 +530,26 @@ def test_decoder_seeks_backward_and_forward() -> None:
         stream.seek(-1)
 
 
+@pytest.mark.parametrize(
+    ("offset", "whence"), [(-100, io.SEEK_CUR), (-100, io.SEEK_END)]
+)
+def test_decoder_clamps_a_relative_seek_before_the_start(
+    offset: int, whence: int
+) -> None:
+    """The member-stream seek convention (archive-reading spec): a relative seek that
+    lands before the start goes to 0, as ``io.BytesIO`` does. Only a negative
+    ``SEEK_SET`` is refused."""
+    main, call = b"\xe8\xe8", _be(_T1, _T2)
+    expected = b"\xe8" + _le(_T1, 1) + b"\xe8" + _le(_T2, 6)
+    stream = Bcj2DecoderStream(
+        *map(io.BytesIO, [main, call, b"", _RC_CONVERT]), unpack_size=len(expected)
+    )
+    assert stream.read(3) == expected[:3]
+    assert stream.seek(offset, whence) == 0
+    assert stream.tell() == 0
+    assert stream.read() == expected
+
+
 def test_decoder_over_a_non_seekable_input_does_not_seek() -> None:
     class _Forward(io.BytesIO):
         def seekable(self) -> bool:

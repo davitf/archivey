@@ -357,16 +357,18 @@ class Bcj2DecoderStream(ReadOnlyIOStream):
         here = self.tell()
         if not self._seekable:
             raise io.UnsupportedOperation("seek")
+        # The member-stream convention, as io.BytesIO: a negative absolute position is
+        # refused, and a relative seek that lands before the start goes to 0.
         if whence == io.SEEK_SET:
+            if offset < 0:
+                raise ValueError(f"Invalid offset: {offset}")
             target = offset
         elif whence == io.SEEK_CUR:
-            target = here + offset
+            target = max(0, here + offset)
         elif whence == io.SEEK_END:
-            target = self._size + offset
+            target = max(0, self._size + offset)
         else:
             raise ValueError(f"Invalid whence: {whence}")
-        if target < 0:
-            raise ValueError(f"Invalid offset: {offset}")
         if target >= self._size:
             self._past_end = target
             return target
