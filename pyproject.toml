@@ -196,6 +196,17 @@ fuzz = [
     "atheris>=3.0.0; python_version >= '3.12'",
 ]
 
+# The sdist carries what a build needs, plus the changelog. Without this list hatch
+# packs every tracked file (openspec/, review/, dev-docs/, .claude/, tests/ ...), which
+# made the 0.2.0rc1 sdist about 7.5 MB. tests/ stays out on purpose: it would add about
+# 2.3 MB, and dozens of its tests read files that exist only in a git checkout (scripts/,
+# review/, openspec/, .github/), so the suite does not pass from an unpacked sdist. Run
+# the tests from the git tag instead. hatch adds pyproject.toml, PKG-INFO and the
+# repo-root .gitignore. publish.yml's build job fails when the sdist holds another
+# top-level path; tests/test_sdist_contents.py ties its list to this one.
+[tool.hatch.build.targets.sdist]
+only-include = ["src", "LICENSE", "README.md", "CHANGELOG.md"]
+
 [tool.ruff]
 target-version = "py311"
 
