@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import lzma
 import random
+import subprocess
 import sys
 from pathlib import Path
 
@@ -155,7 +156,19 @@ def test_closing_an_archive_member_ends_its_liblzma_decoder(
     assert any(type(d) is lzma.LZMADecompressor for d in ended), kind
 
 
-def _private_writable_mib() -> int:
+# Run in a fresh interpreter: PyPy starts a major collection once the native memory it
+# was told about outgrows a threshold scaled from the heap left by the last one, so in a
+# test worker that has already built a large heap the same 800 drops can legitimately
+# grow past the cap before a collection comes. A fresh process measures the
+# add_memory_pressure accounting itself, not what earlier tests left behind.
+_PILE_UP_CHILD = """
+import lzma
+from pathlib import Path
+
+from archivey.internal.streams.codecs.isolated import IN_PROCESS
+
+
+def private_writable_mib():
     total = 0
     for line in Path("/proc/self/maps").read_text().splitlines():
         span, perms = line.split()[:2]
@@ -165,14 +178,25 @@ def _private_writable_mib() -> int:
     return total >> 20
 
 
+data = lzma.compress(b"x" * 100)
+before = private_writable_mib()
+for _ in range(800):
+    IN_PROCESS.lzma_decompressor(format=lzma.FORMAT_XZ).decompress(data)
+print(private_writable_mib() - before)
+"""
+
+
 @pytest.mark.skipif(
     not native_memory.UNDER_PYPY or not sys.platform.startswith("linux"),
     reason="PyPy's deferred freeing of native buffers, measured through /proc",
 )
 def test_dropped_xz_decoders_do_not_pile_up_on_pypy() -> None:
     """800 default-preset decoders hold 6.4 GiB if nothing frees them between drops."""
-    data = lzma.compress(b"x" * 100)
-    before = _private_writable_mib()
-    for _ in range(800):
-        IN_PROCESS.lzma_decompressor(format=lzma.FORMAT_XZ).decompress(data)
-    assert _private_writable_mib() - before < 2048
+    done = subprocess.run(
+        [sys.executable, "-c", _PILE_UP_CHILD],
+        capture_output=True,
+        text=True,
+        timeout=240,
+        check=True,
+    )
+    assert int(done.stdout) < 2048
