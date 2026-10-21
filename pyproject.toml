@@ -319,6 +319,12 @@ addopts = "--cov=archivey --cov-report=term-missing --cov-report=xml --timeout=6
 # each new override site must remember to repeat it. The ini key is untouched by
 # `-o addopts=`, so they all inherit it and none of them names it.
 timeout_method = "thread"
+# A per-test timeout also covers fixture setup and teardown: a module-scoped fixture's
+# setup counts against the first test that uses it on a worker, and its teardown against
+# the last test of the module there, often an unrelated one on the 60 s default. A slow
+# module fixture once killed a Windows xdist worker that way, with no traceback. Keep
+# module fixtures fast, or mark the test `@pytest.mark.timeout(N, func_only=True)` so the
+# budget covers only the test body.
 
 markers = [
     "sample_archives: declarative parametrization over sample archives and config variants",
