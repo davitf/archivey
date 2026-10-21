@@ -710,10 +710,9 @@ def apply_name_policy(member: ArchiveMember, policy: ExtractionPolicy) -> Archiv
     # faithful. The O2 collision map catches any clash the rewrite creates. A segment of
     # only dots and spaces has no spelling Win32 keeps (``a/.../b`` would merge into
     # ``a/b``), so STANDARD refuses it as STRICT does.
+    stripped = _strip_trailing_dot_space(name)  # refuses an all-dots segment under both
     if policy is ExtractionPolicy.STRICT:
-        name = _strip_trailing_dot_space(name)
-    elif policy is ExtractionPolicy.STANDARD:
-        _strip_trailing_dot_space(name)
+        name = stripped
     # A TAR name keeps ``\`` as a literal character, and Windows writes it as a
     # separator. Writing it as ``/`` everywhere gives the tree Windows would create, on
     # every OS. The collision key already treats the two separators as one.
@@ -874,9 +873,10 @@ def collision_key(name: str, policy: ExtractionPolicy) -> str:
     A trailing dot or space on a segment is dropped from the key too: Win32 trims it, so
     ``foo.`` and ``foo`` are one file on Windows. ``STRICT`` has already rewritten the name;
     ``STANDARD`` keeps it, and without this the second member would silently replace the
-    first on Windows and land beside it elsewhere. ``apply_name_policy`` has refused a
-    segment of only dots and spaces under both policies; the path spellings ``.`` and
-    ``..`` keep theirs.
+    first on Windows and land beside it elsewhere. A segment with nothing else left keeps
+    its spelling: ``.``, ``..``, and a segment of only dots and spaces, which
+    ``apply_name_policy`` refuses under both policies but which reaches ``_physical_key``
+    under ``TRUSTED`` (it keys as ``STANDARD``).
     """
     rel = name.replace("\\", "/").rstrip("/")
     if policy is ExtractionPolicy.TRUSTED:

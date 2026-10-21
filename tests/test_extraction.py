@@ -4061,14 +4061,6 @@ def test_o3_trailing_dot_rename_skips_trimmed_claim(tmp_path: Path) -> None:
     assert third.read_bytes() == b"C"
 
 
-@pytest.mark.parametrize("name", ["a/.../b", "a/ /b"])
-def test_o3_all_dots_segment_rejected_under_standard(name: str) -> None:
-    # STANDARD keeps a trailing dot, but a segment of only dots or spaces has no
-    # spelling Win32 keeps: 'a/.../b' would merge into 'a/b' there.
-    with pytest.raises(FilterRejectionError, match="entirely dots/spaces"):
-        apply_name_policy(_member(name), ExtractionPolicy.STANDARD)
-
-
 def test_o3_trailing_dot_directory_tree_stays_connected(tmp_path: Path) -> None:
     # The reported real-world case: a macOS folder named 'stuff_etc.' with a file inside.
     # STRICT must strip the same segment identically in the dir entry and its children, so
@@ -4175,10 +4167,15 @@ def test_o3_strip_treats_a_backslash_as_a_separator(name: str, expected: str) ->
     assert out.name == expected
 
 
-@pytest.mark.parametrize("name", ["a/.../b", "a\\...\\b", "a/. \\b"])
-def test_o3_all_dots_segment_rejected_after_either_separator(name: str) -> None:
+@pytest.mark.parametrize("policy", [ExtractionPolicy.STRICT, ExtractionPolicy.STANDARD])
+@pytest.mark.parametrize("name", ["a/.../b", "a/ /b", "a\\...\\b", "a/. \\b"])
+def test_o3_all_dots_segment_rejected_after_either_separator(
+    name: str, policy: ExtractionPolicy
+) -> None:
+    # STANDARD keeps a trailing dot, but a segment of only dots or spaces has no
+    # spelling Win32 keeps: 'a/.../b' would merge into 'a/b' there.
     with pytest.raises(FilterRejectionError, match="entirely dots/spaces"):
-        apply_name_policy(_member(name), ExtractionPolicy.STRICT)
+        apply_name_policy(_member(name), policy)
 
 
 # --- OverwritePolicy.RENAME ------------------------------------------------
