@@ -240,6 +240,7 @@ def run_7z(
     text: Literal[False] = False,
     input: bytes | None = None,
     timeout: float = SEVEN_ZIP_CLI_TIMEOUT,
+    program: str = "7z",
 ) -> subprocess.CompletedProcess[bytes]: ...
 
 
@@ -252,6 +253,7 @@ def run_7z(
     text: Literal[True],
     input: str | None = None,
     timeout: float = SEVEN_ZIP_CLI_TIMEOUT,
+    program: str = "7z",
 ) -> subprocess.CompletedProcess[str]: ...
 
 
@@ -263,6 +265,7 @@ def run_7z(
     text: bool = False,
     input: bytes | str | None = None,
     timeout: float = SEVEN_ZIP_CLI_TIMEOUT,
+    program: str = "7z",
 ) -> subprocess.CompletedProcess[bytes] | subprocess.CompletedProcess[str]:
     """Run the ``7z`` CLI with ``args``, capture its output, and bound how long it runs.
 
@@ -273,10 +276,10 @@ def run_7z(
     ``timeout`` the hang becomes a ``subprocess.TimeoutExpired`` in the test that
     caused it. Stdin is ``subprocess.DEVNULL`` unless ``input`` is given, so a prompt
     (for example a password or overwrite question) gets end-of-file instead of
-    waiting.
+    waiting. ``program`` names another 7-Zip CLI, such as ``7zz``.
     """
     return subprocess.run(
-        ["7z", *args],
+        [program, *args],
         cwd=cwd,
         check=check,
         capture_output=True,
@@ -305,6 +308,27 @@ def sevenzip_lists_arm64() -> bool:
         print(f"7z i did not finish: {exc}", file=sys.stderr)
         return False
     return re.search(r"\bARM64\b", listing) is not None
+
+
+@functools.cache
+def sevenzip_with_riscv() -> str | None:
+    """The first of ``7zz`` and ``7z`` on ``PATH`` whose ``7z i`` lists RISCV, or None.
+
+    7-Zip 24 added the RISC-V filter; Ubuntu's ``7z`` (23.01) and p7zip predate it.
+    ``scripts/install-7zip-from-source.sh`` builds a ``7zz`` that has it. A run that
+    does not finish counts as not listing it and is written to stderr once.
+    """
+    for program in ("7zz", "7z"):
+        if shutil.which(program) is None:
+            continue
+        try:
+            listing = run_7z(["i"], text=True, program=program).stdout
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            print(f"{program} i did not finish: {exc}", file=sys.stderr)
+            continue
+        if re.search(r"\bRISCV\b", listing):
+            return program
+    return None
 
 
 def requires_zstd() -> pytest.MarkDecorator:

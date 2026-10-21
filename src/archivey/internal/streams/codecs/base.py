@@ -35,6 +35,7 @@ from archivey.internal.streams.archive_stream import (
     RewindWarning,
 )
 from archivey.internal.streams.codecs.arm64_filter import FILTER_ARM64
+from archivey.internal.streams.codecs.riscv_filter import FILTER_RISCV
 from archivey.internal.streams.decompressor_stream import truncated_message
 from archivey.types import (
     ArchiveFormat,
@@ -82,10 +83,11 @@ class Codec(Enum):
     BCJ_SPARC = "bcj_sparc"
     BCJ_IA64 = "bcj_ia64"
     BCJ_ARM64 = "bcj_arm64"
+    BCJ_RISCV = "bcj_riscv"
 
 
-# liblzma raw-filter ids for the filter-only codecs. Each one but ARM64 can join a 7z
-# raw liblzma chain; ARM64 is decoded in Python (see sevenzip_pipeline).
+# liblzma raw-filter ids for the filter-only codecs. Each one but ARM64 and RISC-V can
+# join a 7z raw liblzma chain; those two are decoded in Python (see sevenzip_pipeline).
 LZMA_FILTER_IDS: dict[Codec, int] = {
     Codec.DELTA: lzma.FILTER_DELTA,
     Codec.BCJ_X86: lzma.FILTER_X86,
@@ -94,8 +96,9 @@ LZMA_FILTER_IDS: dict[Codec, int] = {
     Codec.BCJ_PPC: lzma.FILTER_POWERPC,
     Codec.BCJ_SPARC: lzma.FILTER_SPARC,
     Codec.BCJ_IA64: lzma.FILTER_IA64,
-    # liblzma's id; Python's lzma refuses it, so archivey decodes it in Python.
+    # liblzma's ids; Python's lzma refuses them, so archivey decodes them in Python.
     Codec.BCJ_ARM64: FILTER_ARM64,
+    Codec.BCJ_RISCV: FILTER_RISCV,
 }
 
 

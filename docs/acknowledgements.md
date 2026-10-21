@@ -15,8 +15,9 @@ the files that hold it:
 | [uncompresspy](https://github.com/kYwzor/uncompresspy) (Tiago Gomes) | The LZW decoder for `.Z` files ([notice](https://github.com/davitf/archivey/blob/main/src/archivey/internal/streams/codecs/unix_compress_decoder.py)) | BSD-3-Clause |
 | [rarfile](https://github.com/markokr/rarfile) (Marko Kreen) | RAR3 password key derivation and the RAR3 Unicode filename decoder ([notice](https://github.com/davitf/archivey/blob/main/src/archivey/internal/backends/rar_parser.py)) | ISC |
 
-The ARM64 branch filter used in 7z archives follows the algorithm in liblzma, from the
-[xz](https://github.com/tukaani-project/xz) project, and is checked against 7-Zip's.
+The ARM64 and RISC-V branch filters used in 7z archives follow the algorithms in liblzma,
+from the [xz](https://github.com/tukaani-project/xz) project, and are checked against
+7-Zip's.
 
 ## Projects archivey learned from
 

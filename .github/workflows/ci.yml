@@ -272,6 +272,23 @@ jobs:
           DEST="${RUNNER_TEMP}/unar-1.10.8"
           ./scripts/install-unar-from-source.sh --dest "$DEST"
           echo "$DEST" >> "$GITHUB_PATH"
+      # 7-Zip 26.05: the runner's 7z predates the RISC-V filter (7-Zip 24), which
+      # tests/test_sevenzip_riscv.py writes with a live 7-Zip as its oracle; without one
+      # those checks skip. Built from the pinned ip7z/7zip commit; the binary links
+      # against the image's libstdc++, so the key names the image too. The script
+      # refuses a binary whose `7zz i` does not list RISCV, cached or not.
+      - name: Cache 7-Zip 26.05 built from source (Linux)
+        if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Linux'
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/7zip-26.05
+          key: 7zip-26.05-${{ hashFiles('scripts/install-7zip-from-source.sh') }}-${{ steps.unar-image.outputs.image }}-${{ runner.arch }}
+      - name: Build 7-Zip 26.05 and put 7zz on PATH (Linux)
+        if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Linux'
+        run: |
+          DEST="${RUNNER_TEMP}/7zip-26.05"
+          ./scripts/install-7zip-from-source.sh --dest "$DEST"
+          echo "$DEST" >> "$GITHUB_PATH"
       # Homebrew disabled the `rar` cask on 2026-09-01 (official binaries fail
       # Gatekeeper notarization). Compile RARLAB UnRAR from a pinned git commit
       # of the pmachapman/unrar GitHub mirror (not rarlab, not GitHub's generated

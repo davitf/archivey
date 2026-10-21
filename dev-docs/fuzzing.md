@@ -43,8 +43,8 @@ uv run --no-sync python -m tests.atheris_fuzz --target filters
 ```
 
 `open_detected` opens whatever `detect_format` names (SFX payload offset, single-file
-readers, compressed tar, UDIF refusal). `filters` feeds BCJ2, ARM64, Delta and the
-liblzma branch filters directly. The TAR target recomputes header checksums before
+readers, compressed tar, UDIF refusal). `filters` feeds BCJ2, ARM64, RISC-V, Delta and
+the liblzma branch filters directly. The TAR target recomputes header checksums before
 parsing. 7z, RAR and ISO open targets read a few member payloads, and the ZIP target
 also opens the same bytes as a pipe.
 
