@@ -9,7 +9,9 @@ from the 0.2.0 release) and into `main`. A fix ships as a new patch release of t
 | --- | --- |
 | Latest minor release (0.2.x) | Yes |
 | Older minor releases | No |
-| Pre-releases (`rc`, `a`, `b`) | Yes until the final release of that line is out, then no. Until 0.2.0 ships, fixes for 0.2.0rc1 go into `main` and the next pre-release or 0.2.0 |
+| Pre-releases (`rc`, `a`, `b`) | Yes until the final release of that line is out, then no |
+
+Until 0.2.0 ships, fixes for 0.2.0rc1 go into `main` and into the next pre-release or 0.2.0.
 
 We do not backport fixes to older 0.x lines: the fix for an older line is to update to
 the latest release. When 1.0 is out, this policy will be looked at again.
