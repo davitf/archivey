@@ -1853,9 +1853,10 @@ class ExtractionCoordinator:
                 # target. The target is now set, so this runs once.
                 return self._transform(original)
         # Portable-name policy on the FINAL name — after the user filter, so a filter rename
-        # is checked too, and TRUSTED keeps faithful bytes. Reserved names / ':' are
-        # rejected; a trailing dot/space (STRICT) or non-representable byte is rewritten to a
-        # portable spelling, recorded on the result so the rename is not silent.
+        # is checked too, and TRUSTED keeps faithful bytes. Reserved names, ':' and a segment
+        # of only dots/spaces are rejected; a trailing dot/space (STRICT) or
+        # non-representable byte is rewritten to a portable spelling, recorded on the
+        # result so the rename is not silent.
         if rerooted_from is not None and AbortOn.NAME_SANITIZED in self._abort_on:
             raise _AbortExtraction(
                 NameRewrittenError(

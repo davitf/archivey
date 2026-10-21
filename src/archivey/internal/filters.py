@@ -659,7 +659,8 @@ def apply_name_policy(member: ArchiveMember, policy: ExtractionPolicy) -> Archiv
     ``TRUSTED`` returns the member unchanged (faithful bytes, defer to the local OS).
     ``STRICT``/``STANDARD`` **reject** only the unsafe name shapes — Windows-reserved device
     names, ``:`` (NTFS alternate data stream), and bidi overrides, in the name and in a
-    symlink's target — and **rewrite** the merely-non-portable ones: ``STRICT`` strips
+    symlink's target, and a name segment of only dots and spaces, which Win32 would merge
+    into its parent — and **rewrite** the merely-non-portable ones: ``STRICT`` strips
     trailing dots/spaces (O3), and both levels write a ``\\`` as ``/`` (in a link target
     too) and escape bytes that are not UTF-8 and the characters Windows refuses,
     ``<>"|?*`` and 0x01-0x1F (O7). A lone surrogate outside U+DC80-U+DCFF is escaped too,

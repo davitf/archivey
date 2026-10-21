@@ -166,6 +166,8 @@ The rest depend on the policy:
   `"strict"` and `"standard"` refuse it. `"trusted"` writes it as is.
 - **`notes. `, with a trailing dot and space:** `"strict"` writes it as `notes`. `"standard"` and
   `"trusted"` write it as is.
+- **`a/.../b`, with a folder named only dots or spaces:** `"strict"` and `"standard"` refuse it,
+  because Windows would write it into `a`. `"trusted"` writes it as is.
 - **`caf\xe9.txt`, a name that isn't valid UTF-8:** `"strict"` and `"standard"` write it as
   `caf%E9.txt`. `"trusted"` writes it as is.
 - **`what?.txt`, with a character Windows doesn't allow:** `"strict"` and `"standard"` write it as
