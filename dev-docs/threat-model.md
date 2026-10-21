@@ -1190,7 +1190,9 @@ state) at different output offsets, the index is wrong, and the stream drops eve
 the index gave and every point a decode counted from one, forgets a size the index gave,
 and emits `SEEK_INDEX_DEGRADED` (scan `decode_check`, type `SeekIndexContradicted`).
 A decode that reaches the end with another total than the index gave is the same
-contradiction; it catches a lie in the last unit, which no index point follows. Later
+contradiction; it catches a lie in the last unit, which no index point follows. So is a
+decoder that resumed at an index point and fails there before any output: a table whose
+sizes add up but put a frame start inside a frame. Later
 seeks use only the points found by a decode from the start, and a size query decodes to
 the end. A decode in progress that began at an index point restarts from such a point,
 so the read, seek or size query that found the lie returns the right bytes and the right
@@ -1216,6 +1218,7 @@ attacker who controls the trailers can avoid it. Public:
 `tests/test_zstd_seekable.py::test_cold_seek_trusts_a_self_consistent_table`,
 `::test_a_forward_read_that_contradicts_the_table_drops_it`,
 `::test_a_seek_into_a_misplaced_frame_drops_the_table_when_the_decode_reaches_it`,
+`::test_a_point_where_the_decode_fails_drops_the_table`,
 `tests/test_bgzf_seek.py::test_bgzf_cold_seek_trusts_the_block_sizes`,
 `::test_a_forward_read_that_contradicts_the_walk_drops_it`.
 

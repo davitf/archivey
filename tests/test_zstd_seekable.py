@@ -338,3 +338,41 @@ def test_seek_table_over_the_cap_is_thinned_and_keeps_the_total(
 
 def test_a_file_too_short_for_a_table_has_none() -> None:
     assert read_seek_table(io.BytesIO(b"\x00" * 10), 10) == []
+
+
+def _mid_frame_point_file() -> bytes:
+    """Six frames whose table moves frame 2's start 10 bytes into frame 1.
+
+    The compressed sizes still add up to the frames' length, so the table is accepted,
+    and a seek into frame 2 resumes decoding at bytes that start no frame.
+    """
+    zstd = zstd_backend()
+    frames = [zstd.compress(p) for p in PARTS]
+    sizes = [(len(f), len(p)) for f, p in zip(frames, PARTS, strict=True)]
+    sizes[1] = (sizes[1][0] - 10, sizes[1][1])
+    sizes[2] = (sizes[2][0] + 10, sizes[2][1])
+    return b"".join(frames) + seekable_zstd_table(sizes)
+
+
+def test_a_point_where_the_decode_fails_drops_the_table() -> None:
+    """A decode that fails at a table point contradicts the table (ARC-315 rule).
+
+    The stream drops the table with ``SEEK_INDEX_DEGRADED``, decodes from the start,
+    and the seek gets the right bytes rather than a ``CorruptionError``.
+    """
+    collector, seen = _collector()
+    with _open(io.BytesIO(_mid_frame_point_file()), collector=collector) as stream:
+        assert stream.seek(STARTS[2] + 5) == STARTS[2] + 5
+        assert stream.read(10) == FULL[STARTS[2] + 5 : STARTS[2] + 15]
+        assert _degraded(seen)
+        assert stream.seek(STARTS[4] + 1) == STARTS[4] + 1
+        assert stream.read() == FULL[STARTS[4] + 1 :]
+        assert stream.seek(0, io.SEEK_END) == len(FULL)
+
+
+def test_a_point_where_the_decode_fails_reads_whole_after_the_drop() -> None:
+    collector, seen = _collector()
+    with _open(io.BytesIO(_mid_frame_point_file()), collector=collector) as stream:
+        stream.seek(STARTS[2])
+        assert stream.read() == FULL[STARTS[2] :]
+        assert _degraded(seen)

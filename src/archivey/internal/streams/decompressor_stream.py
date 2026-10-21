@@ -817,6 +817,12 @@ class DecompressorStream(ReadOnlyIOStream):
         # index's (see SeekPoint.from_index), and so is a size it reaches the end with.
         self._decode_from_index = False
         self._size_from_index = False
+        # The index point the decoder resumed at, while it has given no output from it:
+        # a decode that fails there contradicts the index (_index_point_failed).
+        self._fresh_index_point: SeekPoint | None = None
+        # Set by _index_point_failed for _read_decompressed_chunk, which then hands
+        # back nothing from the failed decoder (_failed_at_index_point).
+        self._index_point_dropped = False
         # The index was dropped while the decoder counted from it: the operation
         # restarts it from a decoded point before it returns (_restart_at_position).
         self._restart_pending = False
@@ -1187,6 +1193,7 @@ class DecompressorStream(ReadOnlyIOStream):
         old_decoder.close()
         self._decoder = old_decoder.recreate(point, self._inner)
         self._decode_from_index = point.from_index
+        self._fresh_index_point = point if point.from_index else None
         self._decoder_pos = point.decompressed_offset
         self._decoder.clear_pending_error()
         self._spent = None
@@ -1196,6 +1203,8 @@ class DecompressorStream(ReadOnlyIOStream):
         self._pos = point.decompressed_offset
 
     def _ingest_decode(self, out: DecodeOut) -> bytes:
+        if out.data:
+            self._fresh_index_point = None
         self._decoder_pos += len(out.data)
         if out.points:
             points = out.points
@@ -1247,6 +1256,8 @@ class DecompressorStream(ReadOnlyIOStream):
             drained = self._ingest_decode(
                 self._decoding(lambda: self._decoder.feed(b"", max_length))
             )
+            if self._failed_at_index_point():
+                return b""
             if self._ended():
                 return self._end_at_trailing_data(drained)
             if drained:
@@ -1258,6 +1269,8 @@ class DecompressorStream(ReadOnlyIOStream):
         self._compressed_read += len(chunk)
         if not chunk:
             leftover = self._ingest_decode(self._decoding(self._decoder.flush))
+            if self._failed_at_index_point():
+                return b""
             if self._ended():
                 return self._end_at_trailing_data(leftover)
             if leftover and self._decoder.drains_after_flush:
@@ -1278,6 +1291,8 @@ class DecompressorStream(ReadOnlyIOStream):
         data = self._ingest_decode(
             self._decoding(lambda: self._decoder.feed(chunk, max_length))
         )
+        if self._failed_at_index_point():
+            return b""
         if self._ended():
             return self._end_at_trailing_data(data)
         return data
@@ -1308,8 +1323,40 @@ class DecompressorStream(ReadOnlyIOStream):
         except ResumeReachedStreamEnd:
             raise
         except Exception as exc:
+            if self._index_point_failed(exc):
+                return DecodeOut(b"")
             self._spent = exc
             raise
+
+    def _failed_at_index_point(self) -> bool:
+        """Whether the decode call just made failed at an index point (and so gave no
+        output); clears the flag."""
+        failed = self._index_point_dropped
+        self._index_point_dropped = False
+        return failed
+
+    def _index_point_failed(self, exc: Exception) -> bool:
+        """Drop the index when the decoder fails at an index point before any output.
+
+        Bytes that start no unit at the offset the index gave contradict the index as
+        two disagreeing points do (a zstd seek table whose sizes add up but put a frame
+        start inside a frame). The index is only an accelerator: it is dropped with
+        ``SEEK_INDEX_DEGRADED`` and the operation restarts the decoder from a decoded
+        point (``_restart_pending``), which reaches the same place by decoding, or the
+        same error if the data is damaged there. Returns whether it did so; the caller
+        then hands back no output from this call.
+        """
+        point = self._fresh_index_point
+        if point is None or self._index_dropped:
+            return False
+        self._fresh_index_point = None
+        self._index_point_dropped = True
+        self._drop_index(
+            f"Decoding from the index's point at compressed offset "
+            f"{point.compressed_offset} (output offset {point.decompressed_offset}) "
+            f"failed: {exc}"
+        )
+        return True
 
     def _ended(self) -> bool:
         """Whether the decoder has been fed bytes past its end that end this stream.
@@ -1715,6 +1762,10 @@ class DecompressorStream(ReadOnlyIOStream):
             return self._pos
 
         while not self._eof:
+            if self._restart_pending:
+                # The index was dropped under this decode: go on from a decoded point.
+                self._restart_from_decoded_point()
+                continue
             decompressed = self._read_decompressed_chunk(_SEEK_OUTPUT_CHUNK)
             if self._pos + len(decompressed) >= new_pos:
                 self._buffer.extend(decompressed[new_pos - self._pos :])

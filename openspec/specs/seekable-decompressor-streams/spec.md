@@ -485,7 +485,9 @@ BGZF walk), and a point recorded by a decode that resumed at such a point, SHALL
 marked as the index's. When two points name the same compressed offset with the same
 resume state but different decompressed offsets, and either is the index's, the index
 is wrong; so is it when a decode reaches the end with another total than the index
-gave. Only points the seek table holds SHALL be compared, so the check costs no more
+gave, and when a decoder that resumed at an index point fails before giving any output
+there (a zstd seek table whose sizes add up but put a frame start inside a frame).
+Only points the seek table holds SHALL be compared, so the check costs no more
 memory than the table. The stream SHALL then drop every point that is the index's,
 forget a size the index gave (or a decode that resumed at an index point reached), and
 emit
@@ -515,6 +517,7 @@ decoded point is kept (an empty lzip member makes such a pair in an honest file)
 | XZ blocks after a resume point decode to a size other than the stream index declares | `CorruptionError` |
 | A forward read finds a frame or member start at another output offset than the zstd seek table or BGZF walk gave it | `SEEK_INDEX_DEGRADED` (scan `decode_check`, `SeekIndexContradicted`); index points and size dropped; later seeks and the size match a read from the start |
 | The same, found by a decode that resumed at an index point | That read, seek or size query restarts from a decoded point and returns the right bytes |
+| A decode that resumed at a zstd seek-table point fails there before any output (the point is inside a frame) | `SEEK_INDEX_DEGRADED` (`SeekIndexContradicted`); the read or seek restarts from a decoded point and returns the right bytes, no `CorruptionError` |
 | Lzip file with an empty member; size query before or after a forward read | Every read right; no collision error, no diagnostic |
 
 ### Requirement: Unix-compress uses CLEAR seek points
