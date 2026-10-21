@@ -12,6 +12,7 @@ nav:
   - Security: security.md
   - Errors and diagnostics: errors-and-diagnostics.md
   - Command line: cli.md
+  - Recipes: recipes.md
   - Formats and extras: formats.md
   - Migrating from other libraries: migrating.md
   - Philosophy: philosophy.md
