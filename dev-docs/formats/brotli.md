@@ -140,7 +140,12 @@ unless they are zeros. If not, the original error stands and is raised as
 
 The replay reads the source a second time, so it needs a seekable source. From a pipe the
 error is raised unchanged, and a Brotli stream with bytes after it is a `CorruptionError`
-there. A file with no bytes after it never replays. One with them pays one more decode up to
+there. A pipe is read as its bytes arrive, so the bytes after the end can come in a later
+feed than the end itself, after a call that finished the stream. `_bytes_after_end` then
+raises the error the combined call would have raised, so the outcome for a bare file does
+not depend on how its bytes arrive. In a compressed tar it does: the failed call's output
+is lost, and how much of the TAR that output held depends on where the feeds split. A file
+with no bytes after it never replays. One with them pays one more decode up to
 the failure, fed one byte at a time over at most one piece: measured on a 14 MB `.br`,
 0.29 s against 0.13 s for the clean file.
 

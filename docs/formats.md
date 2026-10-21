@@ -955,8 +955,9 @@ yielded.
   reads as unknown, and the read or seek that reaches the damage raises
   `CorruptionError`. Brotli has no end marker the library reports, so archivey finds the
   end by decoding the source again, which needs a seekable source: from a pipe, bytes
-  after a Brotli stream raise `CorruptionError`. The check applies to a bare compressed
-  file and to a compressed tar; inside a ZIP or 7z member such bytes raise
+  after a Brotli stream raise `CorruptionError`. In a compressed tar from a pipe, how
+  many members come before that error depends on how the bytes arrive. The check
+  applies to a bare compressed file and to a compressed tar; inside a ZIP or 7z member such bytes raise
   `CorruptionError` (see [ZIP](#zip)). `.Z` is not covered: it has no end marker, so
   appended bytes decode as more data.
 - `open_archive` decodes the first byte of a seekable source, so a file that is not
@@ -979,15 +980,14 @@ yielded.
         - A `.bz2` or `.xz` under 4 KiB, and a `.tar.bz2` or `.tar.xz` too. These are
           checked for a disk image, which needs the length of the file.
         - A file that decompresses to under 512 bytes, the size of a tar header.
-    - `open_archive` of a compressed tar under 64 KiB, and the first read of any other
-      compressed file under 64 KiB. The decoder reads the compressed data in 64 KiB
-      pieces, and it gets a piece only when the piece is full or the sender closes the
-      pipe.
-    - The read that reaches the end of the file, at any size, for the same reason.
+    - A read past the last byte of data, and the end of a compressed tar's listing.
+      Another stream or trailing bytes could still follow.
 
-  bzip2 decompresses nothing until a whole block has arrived (up to 900 KB of original
-  data). So a `.bz2` or `.tar.bz2` that fits in one block waits as if it were under
-  64 KiB. Close the sending side when the file is done.
+  Everything else is decompressed from what has arrived: a compressed tar opens and
+  yields its members, and a read returns the data whose compressed bytes have arrived.
+  bzip2 is the exception: it decompresses nothing until a whole block has arrived (up to
+  900 KB of original data), so its reads wait for the end of each block. Close the
+  sending side when the file is done.
 - The `[seekable]` accelerator's bzip2 decoder reads input that is not bzip2 as an empty
   stream. When it yields nothing, Archivey decodes the source again with the standard
   library, so a corrupt `.bz2` raises the same error whether or not

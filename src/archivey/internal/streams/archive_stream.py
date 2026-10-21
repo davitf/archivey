@@ -592,6 +592,40 @@ class ArchiveStream(ReadOnlyIOStream):
             self._raise_verdict()
         return data
 
+    def read_ahead(self, need: int, n: int, /) -> bytes:
+        """At least ``need`` bytes, or fewer only at the end, and at most ``n``.
+
+        For a reader's own buffer over a codec stream (the TAR walk on a source that
+        cannot seek): the inner's ``read_ahead`` gives what the feed that completes
+        ``need`` decoded, so the buffer does not wait for bytes nobody asked for yet.
+        Errors are those of ``read(need)``. A stream that checks its bytes (a fused
+        verifier), has a verdict to repeat, or whose inner has no ``read_ahead``
+        answers with ``read(n)``.
+        """
+        scope = self._diagnostics_scope
+        if scope is None:
+            return self._read_ahead(need, n)
+        stack = scope._collector.scope_stack()
+        stack.append(scope)
+        try:
+            return self._read_ahead(need, n)
+        finally:
+            leave_scope(stack, scope)
+
+    def _read_ahead(self, need: int, n: int) -> bytes:
+        inner = self._ensure_open()
+        read_ahead = getattr(inner, "read_ahead", None)
+        if (
+            read_ahead is None
+            or self._verifier is not None
+            or self._verdict is not None
+        ):
+            return self._read(n)
+        try:
+            return read_ahead(need, n)
+        except Exception as e:  # noqa: BLE001 - re-raised via the translator
+            self._fail_unless_closed(e)
+
     def readinto(self, b: WriteableBuffer, /) -> int:
         # Always route through read() so the one-read / stop-on-short policy above
         # (and fused verify) stay consistent — inner.readinto may be up-to-n.

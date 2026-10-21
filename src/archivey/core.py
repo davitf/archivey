@@ -21,7 +21,7 @@ import errno
 import os
 from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO, Literal, overload
+from typing import TYPE_CHECKING, BinaryIO, Literal, cast, overload
 
 from archivey.config import (
     DEFAULT_ARCHIVEY_CONFIG,
@@ -80,7 +80,7 @@ from archivey.internal.registry import (
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.codecs import codec_for_stream_format, open_codec_stream
-from archivey.internal.streams.streamtools import is_stream
+from archivey.internal.streams.streamtools import OneReadEachStream, is_stream
 from archivey.internal.volumes import (
     OpenSourceInput,
     ResolvedSource,
@@ -921,9 +921,15 @@ def _open_stream_from_source(
     )
     # A path goes to the codec as a path: it opens its own handles and can use
     # path-only accelerator features, and the source then never opens one.
-    codec_source: str | BinaryIO = (
-        str(codec_input.path) if codec_input.path is not None else codec_input
-    )
+    codec_source: str | BinaryIO
+    if codec_input.path is not None:
+        codec_source = str(codec_input.path)
+    elif source_is_seekable:
+        codec_source = codec_input
+    else:
+        # What has arrived, one read of the source per feed, as the readers feed a
+        # codec (``BaseArchiveReader._codec_input``).
+        codec_source = OneReadEachStream(cast("BinaryIO", codec_input.arrived_view()))
     return open_codec_stream(
         codec,
         codec_source,

@@ -1191,6 +1191,23 @@ class DecompressorStream(ReadOnlyIOStream):
             return b""
         if n is None or n < 0:
             return self.readall()
+        return self._read(n, n)
+
+    def read_ahead(self, need: int, n: int, /) -> bytes:
+        """At least ``need`` bytes, or fewer only at the end, and at most ``n``.
+
+        Like ``read(need)``, errors included, but the feed that completes ``need``
+        may give more, and up to ``n`` of it comes back too. No source read is made
+        for bytes past ``need``. A buffer in front of this stream fills from it and
+        does not wait for bytes nobody asked for yet: on a source that cannot seek,
+        each feed is what has arrived (``BaseArchiveReader._codec_input``).
+        """
+        if need <= 0 or n < need:
+            raise ValueError(f"read_ahead needs 0 < need <= n, got {need}, {n}")
+        return self._read(n, need)
+
+    def _read(self, n: int, need: int) -> bytes:
+        """Up to ``n`` bytes: at least ``need`` of them, or fewer only at the end."""
         if self._spent is not None and not self._buffer:
             self._raise_spent()
         with self._deferring_raises() as pending:
@@ -1203,8 +1220,8 @@ class DecompressorStream(ReadOnlyIOStream):
                 # block and drop the raise, so the chunk stays buffered, unconsumed,
                 # and the raise propagates below.
                 chunk = self._read_decompressed_chunk(n)
-                if len(chunk) == n and pending() is None:
-                    self._pos += n
+                if need <= len(chunk) <= n and pending() is None:
+                    self._pos += len(chunk)
                     return chunk
                 self._buffer.extend(chunk)
                 # ``_buffer`` holds it now. A raise below keeps this frame alive on
@@ -1212,9 +1229,10 @@ class DecompressorStream(ReadOnlyIOStream):
                 chunk = b""
             # A decoder that raised mid-read is not fed again (see _decoding): what it
             # produced before the error is handed back, and the read after that raises.
-            while len(self._buffer) < n and not self._eof and self._spent is None:
-                need = n - len(self._buffer)
-                self._buffer.extend(self._read_decompressed_chunk(need))
+            while len(self._buffer) < need and not self._eof and self._spent is None:
+                self._buffer.extend(
+                    self._read_decompressed_chunk(n - len(self._buffer))
+                )
             held = pending()
             if held is not None:
                 raise held

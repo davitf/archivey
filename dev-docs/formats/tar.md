@@ -145,8 +145,10 @@ short tar whose writer keeps the pipe open opens at once, and its members can be
 The listing still waits at its end: the trailing-data scan reads up to 1 MiB past the
 trailer, so it waits for more bytes or for the end of the source
 ([`docs/formats.md`](../../docs/formats.md#tar-and-compressed-tar)). A compressed tar
-from a pipe still waits at open for a full read-ahead or the end of the source
-([`detection.md`](../topics/detection.md) §5). The reader closes every stream it built.
+from a pipe fills the same buffer from what the codec has decoded of what has arrived
+(`fill_arrived`, through the codec stream's `read_ahead`), so it opens at once too
+([`detection.md`](../topics/detection.md) §5 lists the waits left). The reader closes
+every stream it built.
 
 **Every buffer over a codec stream reads it at most once per read.** It is a
 `ReadAheadStream`, not `io.BufferedReader`, which asks again after a short read. A

@@ -27,6 +27,7 @@ from typing import (
     NamedTuple,
     NoReturn,
     Self,
+    cast,
 )
 
 if TYPE_CHECKING:
@@ -123,6 +124,7 @@ from archivey.internal.streams.counting import (
     SeekCountingStream,
 )
 from archivey.internal.streams.streamtools import (
+    OneReadEachStream,
     ReadableStream,
     is_seekable,
     read_exact,
@@ -3000,6 +3002,29 @@ class BaseArchiveReader(ArchiveReader):
             self._compressed_input_counter = counter
             return counter
         return source
+
+    def _codec_input(
+        self, source: ArchiveSource, *, track_seeks: bool = False
+    ) -> BinaryIO:
+        """What a codec decodes from the stream ``source``: :meth:`_wrap_compressed_input`
+        of it, with the seek counter (:meth:`_track_source_seeks`) when ``track_seeks``.
+
+        On a source that cannot seek, the codec reads what has arrived
+        (:meth:`ArchiveSource.arrived_view`), and each of its reads makes one read of
+        the source (:class:`OneReadEachStream`). A codec asks for a 64 KiB feed, and a
+        full-count read of it would wait for a writer that keeps a pipe open. Every
+        decoder reads until ``b""``, so a feed split at any byte gives the same output
+        and the same verdict.
+        """
+        if source.seekable():
+            counted = self._wrap_compressed_input(source)
+            return self._track_source_seeks(counted) if track_seeks else counted
+        counted = self._wrap_compressed_input(cast("BinaryIO", source.arrived_view()))
+        if track_seeks:
+            counted = self._track_source_seeks(counted)
+        # Outermost, so the codec's buffering takes it as it is and puts no
+        # full-count BufferedReader in front of it (ensure_bufferedio).
+        return OneReadEachStream(counted)
 
     def __iter__(self) -> MemberPass[ArchiveMember]:
         return MemberPass(self._iter_pass())

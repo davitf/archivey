@@ -11,12 +11,18 @@ This buffer reads its inner at most once per caller ``read``, and asks for at le
 so the caller gets a short return too, and the error comes on the next call. When the
 one fill raises and bytes from an earlier fill are still held, those bytes go to the
 caller first and the error is raised on the next ``read``.
+
+With ``fill_arrived``, each fill is the inner's ``read_ahead`` instead, for a codec
+stream over a source that cannot seek. It asks for the bytes the caller still wants
+and takes what the decoder's last feed gave past them, up to ``buffer_size``. So it
+does not wait for bytes nobody asked for yet. Errors are as above.
 """
 
 from __future__ import annotations
 
 import io
-from typing import BinaryIO
+from collections.abc import Callable
+from typing import BinaryIO, Protocol, cast
 
 from archivey.internal.streams.streamtools.base import DelegatingStream
 from archivey.internal.streams.streamtools.binaryio import (
@@ -25,6 +31,10 @@ from archivey.internal.streams.streamtools.binaryio import (
     check_seek_args,
     read_blocking,
 )
+
+
+class _ReadsAhead(Protocol):
+    def read_ahead(self, need: int, n: int, /) -> bytes: ...
 
 
 def _seek_to(stream: BinaryIO, target: int) -> bool:
@@ -54,7 +64,12 @@ class ReadAheadStream(DelegatingStream):
     readinto_passthrough = False
 
     def __init__(
-        self, inner: BinaryIO, buffer_size: int, *, rewind_oversize: bool = False
+        self,
+        inner: BinaryIO,
+        buffer_size: int,
+        *,
+        rewind_oversize: bool = False,
+        fill_arrived: bool = False,
     ) -> None:
         # The buffered bytes are ``_buffer[_offset:]``: a read moves the offset and
         # copies only what it returns.
@@ -63,6 +78,10 @@ class ReadAheadStream(DelegatingStream):
         self._held: Exception | None = None
         self._buffer_size = buffer_size
         self._rewind_oversize = rewind_oversize
+        # The inner's ``read_ahead`` (an ArchiveStream's) when ``fill_arrived``.
+        self._read_ahead: Callable[[int, int], bytes] | None = (
+            cast("_ReadsAhead", inner).read_ahead if fill_arrived else None
+        )
         super().__init__(inner)
 
     def read(self, n: int | None = -1, /) -> bytes:
@@ -104,7 +123,10 @@ class ReadAheadStream(DelegatingStream):
                     raise
         want = -1 if n < 0 else max(n - buffered, self._buffer_size)
         try:
-            data = read_blocking(self._inner, want)
+            if self._read_ahead is not None and n > buffered:
+                data = self._read_ahead(n - buffered, want)
+            else:
+                data = read_blocking(self._inner, want)
         except Exception as err:
             if not held:
                 raise
