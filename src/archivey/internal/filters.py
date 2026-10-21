@@ -62,7 +62,7 @@ def _has_drive_letter(name: str) -> bool:
 
 def _is_absolute(name: str) -> bool:
     """Whether ``name`` is an absolute path: a POSIX root, a UNC share, or a drive letter."""
-    if name.startswith("/") or name.startswith("\\"):
+    if name.startswith(("/", "\\")):
         return True  # POSIX root or UNC / rooted-backslash
     return _has_drive_letter(name)
 

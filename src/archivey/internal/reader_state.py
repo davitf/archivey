@@ -586,16 +586,17 @@ class ReaderState:
         """
         with self._lock:
             self._require_lifecycle_open_locked("open()")
-            if not (self.concurrent or self._internal_opens_active_locked()):
-                if self._live_streams or self._reservations:
-                    site = self.open_site
-                    loc = site.location if site is not None else "<unknown>"
-                    raise _overlap_refused(
-                        "A member stream is already open on this reader. Close it "
-                        "before opening another, or reopen the archive with "
-                        "concurrent_operations=True "
-                        f"(this archive was opened without concurrent_operations at {loc})."
-                    )
+            if not (self.concurrent or self._internal_opens_active_locked()) and (
+                self._live_streams or self._reservations
+            ):
+                site = self.open_site
+                loc = site.location if site is not None else "<unknown>"
+                raise _overlap_refused(
+                    "A member stream is already open on this reader. Close it "
+                    "before opening another, or reopen the archive with "
+                    "concurrent_operations=True "
+                    f"(this archive was opened without concurrent_operations at {loc})."
+                )
             token = LiveStreamReservation()
             self._reservations.add(token)
             self._lease_count += 1
