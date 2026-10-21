@@ -114,8 +114,10 @@ def _7z_write(tmp_path: Path, archive_type: str, switches: list[str]) -> Path:
 def test_7z_written_archives_read_the_same_under_every_value(
     tmp_path: Path, archive_type: str, switches: list[str]
 ) -> None:
-    pytest.importorskip("inflate64") if "Deflate64" in str(switches) else None
-    pytest.importorskip("pyppmd") if "PPMd" in str(switches) else None
+    if "Deflate64" in str(switches):
+        importorskip("inflate64")
+    if "PPMd" in str(switches):
+        importorskip("pyppmd")
     _assert_same_under_every_value(_7z_write(tmp_path, archive_type, switches))
 
 
@@ -162,7 +164,7 @@ def test_a_ppmd_member_pyppmd_cannot_take_in_pieces_reads_under_every_value(
     """Fed to pyppmd in pieces, this valid member stops at a false end about 28 KiB
     short (pyppmd 1.3.1). Under the limit every setting hands it over whole, in the
     child or in this process, and it reads in full."""
-    pytest.importorskip("pyppmd")
+    importorskip("pyppmd")
     block = random.Random(8).randbytes(1 << 20)
     (tmp_path / "repeats.bin").write_bytes(block * 8)
     archive = tmp_path / "repeats.7z"
