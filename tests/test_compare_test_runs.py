@@ -1,9 +1,11 @@
 """`scripts/compare_test_runs.py`, the before/after check for pull requests that move tests.
 
-The reports here are written by hand in the shapes pytest and coverage.py write: JUnit XML
-with the xunit1 ``file`` attribute, and a coverage SQLite file with test contexts. The
-cases are the ones the script exists for: a file moved, a test that stops running
-anything while it still passes, and a test that starts skipping.
+The reports here are built in the shapes pytest and coverage.py write: JUnit XML with
+the xunit1 ``file`` attribute, and a coverage SQLite file with test contexts (its
+``line_bits`` rows through ``coverage.numbits``). The cases cover matching tests across
+moves and renames, outcome changes, refused inputs, and the coverage rules: a test that
+became a no-op, lines that moved between tests or vary between two before runs, and
+the loss thresholds.
 """
 
 from __future__ import annotations
@@ -206,7 +208,8 @@ def test_a_passing_test_that_runs_nothing_is_a_coverage_change(
     out = capsys.readouterr().out
     assert "missing from after" not in out
     assert (
-        "tests that lost over 10% of their lines/arcs: 1\n"
+        "tests that lost over 10% of their lines/arcs, or over 50% counting what moved "
+        "or varies: 1\n"
         "  tests/test_a.py::test_x: 2 (src/archivey/a.py 2) no longer run (100%), "
         "0 newly run\n"
     ) in out
@@ -235,19 +238,48 @@ def test_arcs_that_move_between_tests_are_not_a_change(
     before = _coverage(
         tmp_path / "b.coverage",
         {
-            "tests/test_a.py::test_x": [(1, 2), (9, 10)],
+            "tests/test_a.py::test_x": [(1, 2), (2, 3), (3, 4), (9, 10)],
             "tests/test_a.py::test_y": [(3, 4)],
         },
     )
     after = _coverage(
         tmp_path / "a.coverage",
         {
-            "tests/test_a.py::test_x": [(1, 2)],
+            "tests/test_a.py::test_x": [(1, 2), (2, 3), (3, 4)],
             "tests/test_a.py::test_y": [(3, 4), (9, 10)],
         },
     )
     assert _run("coverage", before, after) == 0
-    assert "lines/arcs that moved between tests: 1\n" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "lines/arcs that moved between tests: 1\n" in out
+    assert (
+        "  tests/test_a.py::test_x: 0 no longer run (0%), 0 newly run; lost 1 in all "
+        "(25%), of which 1 now run by tests/test_a.py::test_y\n"
+    ) in out
+
+
+@pytest.mark.parametrize("taker", ["a new test", "a matched test"])
+def test_a_no_op_whose_lines_another_test_took_up_still_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], taker: str
+) -> None:
+    ran = [(line, line + 1) for line in range(20)]
+    before = _coverage(
+        tmp_path / "b.coverage",
+        {"tests/test_a.py::test_x": ran, "tests/test_a.py::test_y": [(90, 91)]},
+    )
+    after_arcs = {"tests/test_a.py::test_x": [], "tests/test_a.py::test_y": [(90, 91)]}
+    took_up = (
+        "tests/test_new.py::test_big"
+        if taker == "a new test"
+        else "tests/test_a.py::test_y"
+    )
+    after_arcs[took_up] = [*after_arcs.get(took_up, []), *ran]
+    after = _coverage(tmp_path / "a.coverage", after_arcs)
+    assert _run("coverage", before, after, "--allow-new") == 1
+    assert (
+        "  tests/test_a.py::test_x: 0 no longer run (0%), 0 newly run; lost 20 in all "
+        f"(100%), of which 20 now run by {took_up}\n"
+    ) in capsys.readouterr().out
 
 
 def test_line_coverage_without_branches_is_compared(tmp_path: Path) -> None:
@@ -280,14 +312,28 @@ def test_numbits_decode_as_coverage_writes_them() -> None:
 def test_what_varies_between_two_before_runs_is_not_compared(tmp_path: Path) -> None:
     # (7, 8) is a finalizer: garbage collection ran it in test_x once, not the next time.
     before = _coverage(
-        tmp_path / "b.coverage", {"tests/test_a.py::test_x": [(1, 2), (7, 8)]}
+        tmp_path / "b.coverage",
+        {"tests/test_a.py::test_x": [(1, 2), (2, 3), (3, 4), (7, 8)]},
     )
-    again = _coverage(tmp_path / "b2.coverage", {"tests/test_a.py::test_x": [(1, 2)]})
-    after = _coverage(tmp_path / "a.coverage", {"tests/test_a.py::test_x": [(1, 2)]})
+    kept = [(1, 2), (2, 3), (3, 4)]
+    again = _coverage(tmp_path / "b2.coverage", {"tests/test_a.py::test_x": kept})
+    after = _coverage(tmp_path / "a.coverage", {"tests/test_a.py::test_x": kept})
     noop = _coverage(tmp_path / "n.coverage", {"tests/test_a.py::test_x": []})
     assert _run("coverage", before, after) == 1
     assert _run("coverage", before, after, "--baseline", again) == 0
     assert _run("coverage", before, noop, "--baseline", again) == 1
+
+
+def test_a_baseline_from_the_wrong_tree_cannot_hide_a_no_op(tmp_path: Path) -> None:
+    ran = [(line, line + 1) for line in range(20)]
+    before = _coverage(tmp_path / "b.coverage", {"tests/test_a.py::test_x": ran})
+    after = _coverage(tmp_path / "a.coverage", {"tests/test_a.py::test_x": []})
+    # The second run was recorded after checking out the change.
+    wrong = _coverage(tmp_path / "w.coverage", {"tests/test_a.py::test_x": []})
+    assert _run("coverage", before, after, "--baseline", wrong) == 1
+    for same in (before, after):
+        with pytest.raises(SystemExit, match="the same file"):
+            _run("coverage", before, after, "--baseline", same)
 
 
 def test_a_small_loss_is_listed_and_does_not_fail(

@@ -23,21 +23,24 @@ Neither check reads test code. A test that still makes the same library calls an
 lost an assertion, or asserts a weaker expected value, reports ``same`` on both, so a
 reviewer still reads every moved test.
 
-Per-test coverage is not exactly repeatable, and two things keep that out of the
-result. Code that runs once per worker (an import, a ``functools.cache`` body, a
-module-scoped fixture) is credited to whichever test reached that worker first, which
-changes from run to run under ``-n auto``: a line one test no longer runs and another
-test took up in the after run is counted as moved between tests, and does not fail the
-check. Code that garbage collection or thread timing runs (a finalizer that closes a
-stream) lands in a different test each time with nothing to pair it with: what differs
-per test between the before run and ``--baseline``, a second run of the same tree, is
-left out of the comparison. A test that became a no-op loses lines that other tests
-ran in both runs, which neither rule covers. What is left after both still varies a
-little, mostly in code a subprocess or a thread reaches. On seven test files run three
-times unchanged, the most any test lost was 4 of its arcs with ``--baseline`` and 65
-(2% of what it ran) without, while a test made to return at its first line lost 1,352.
-So the check fails on a test that lost more than ``--max-lost`` (a tenth) of what it
-ran, and lists smaller changes, largest first, for a person to read.
+Per-test coverage is not exactly repeatable, so the coverage check explains a loss
+before it counts it. Code that runs once per worker (an import, a ``functools.cache``
+body, a module-scoped fixture) is credited to whichever test reached that worker first,
+which changes from run to run under ``-n auto``: a line one test no longer runs and
+another test took up in the after run moved between tests. Code that garbage collection
+or thread timing runs (a finalizer that closes a stream) lands in a different test each
+time: what differs per test between the before run and ``--baseline``, a second run of
+the same tree, varies. On seven test files run three times unchanged, the most any test
+lost after both explanations was 4 of its arcs with ``--baseline`` and 65 (2% of what
+it ran) without; a test made to return at its first line lost 1,352.
+
+So a test fails the check when it lost more than ``--max-lost`` (a tenth) of what it ran
+after the explanations, or more than ``--max-hollow`` (a half) counting what moved or
+varies. The second rule is for a test that became a no-op while another test took up
+its lines, or with a baseline recorded from the wrong tree: no test in the unchanged
+runs lost more than 9% in all. Every other test whose coverage changed is listed with
+what it lost, where the lines went, and what varies, for a person to read; a ``same``
+says no test crossed either line, not that none changed.
 
 A test whose file moved is matched through ``--moved OLD=NEW`` (repeatable, paths as
 pytest prints them, e.g. ``tests/test_zip_pipe.py=tests/zip/test_zip_pipe.py``). A test
@@ -45,8 +48,8 @@ that is in the before run's ``OLD`` file and not the after run's is looked for i
 under the same name, so a fold that moves some tests of a file and leaves others works
 too. A test whose name or parameter id changed is matched through ``--renamed OLD=NEW``
 with whole node IDs. The exit status is 1 when any test is missing or new, when an
-outcome changed, or when a test lost more than ``--max-lost`` of its coverage, so a
-pull request can quote the clean output. New tests are listed rather than failed on
+outcome changed, or when a test crossed either coverage threshold, so a pull request
+can quote the clean output. New tests are listed rather than failed on
 with ``--allow-new``.
 
 Stdlib only: the coverage file is read as the SQLite database ``coverage.py`` writes.
@@ -283,6 +286,10 @@ def _describe(counts: Mapping[str, set[object]]) -> str:
     return f"{total} ({named}{more})" if total else "0"
 
 
+def _count(lines: Mapping[str, set[object]]) -> int:
+    return sum(len(items) for items in lines.values())
+
+
 def compare_coverage(
     before: Coverage,
     after: Coverage,
@@ -292,9 +299,10 @@ def compare_coverage(
     allow_new: bool,
     baseline: Coverage | None = None,
     max_lost: float = 0.1,
+    max_hollow: float = 0.5,
 ) -> bool:
     pairs, missing, new = _match(before, after, moves, renames)
-    # What a second run of the unchanged tree shows varying, per test, is not compared.
+    # What a second run of the unchanged tree shows varying, per test.
     unstable: dict[str, dict[str, set[object]]] = {}
     if baseline is not None:
         for test_id, files in before.items():
@@ -306,65 +314,103 @@ def compare_coverage(
     lost: dict[str, dict[str, set[object]]] = {}
     gained: dict[str, dict[str, set[object]]] = {}
     for old, new_id in pairs:
-        skip = unstable.get(old, {})
-        lost[old] = _minus(_minus(before[old], after[new_id]), skip)
-        gained[old] = _minus(_minus(after[new_id], before[old]), skip)
+        lost[old] = _minus(before[old], after[new_id])
+        gained[old] = _minus(after[new_id], before[old])
 
-    # What some matched test gave up and what some test took up. A line in both moved
-    # between tests: the once-per-worker code the module docstring describes.
-    def union(per_test: Iterable[Mapping[str, set[object]]]) -> dict[str, set[object]]:
-        merged: dict[str, set[object]] = collections.defaultdict(set)
-        for files in per_test:
-            for path, items in files.items():
-                merged[path] |= items
-        return merged
-
-    all_lost = union(lost.values())
-    all_gained = union([*gained.values(), *(after[test_id] for test_id in new)])
-
-    # (share of its lines a test lost, its report line), largest loss first.
-    changed: list[tuple[float, str]] = []
-    reattributed = 0
+    # Which after-tests took up each line: a matched test that newly runs it, or a new
+    # test. A line some matched test gave up and another took up moved between tests,
+    # the once-per-worker code the module docstring describes.
+    takers: dict[tuple[str, object], list[str]] = collections.defaultdict(list)
     for old, new_id in pairs:
-        real_lost = _minus(lost[old], all_gained)
-        real_gained = _minus(gained[old], all_lost)
-        lost_count = sum(len(items) for items in real_lost.values())
-        reattributed += sum(len(items) for items in lost[old].values()) - lost_count
-        if real_lost or real_gained:
-            ran = sum(len(items) for items in before[old].values())
-            share = lost_count / ran if ran else 0.0
-            changed.append(
-                (
-                    share,
-                    (
-                        f"{old}: {_describe(real_lost)} no longer run ({share:.0%}), "
-                        f"{_describe(real_gained)} newly run"
-                    ),
+        for path, items in gained[old].items():
+            for item in items:
+                takers[path, item].append(new_id)
+    for test_id in new:
+        for path, items in after[test_id].items():
+            for item in items:
+                takers[path, item].append(test_id)
+    gave_up: dict[str, set[object]] = collections.defaultdict(set)
+    for files in lost.values():
+        for path, items in files.items():
+            gave_up[path] |= items
+
+    # (share of its lines a test lost, whether that fails, its report line).
+    changed: list[tuple[float, bool, str]] = []
+    moved_total = 0
+    for old, new_id in pairs:
+        if not lost[old] and not gained[old]:
+            continue
+        skip = unstable.get(old, {})
+        varying = {
+            path: items & skip.get(path, set()) for path, items in lost[old].items()
+        }
+        moved = {
+            path: {item for item in items if (path, item) in takers}
+            for path, items in _minus(lost[old], skip).items()
+        }
+        real_lost = _minus(_minus(lost[old], skip), moved)
+        real_gained = _minus(
+            _minus(gained[old], skip),
+            gave_up,
+        )
+        moved_total += _count(moved)
+        ran = _count(before[old])
+        share = _count(real_lost) / ran if ran else 0.0
+        raw_share = _count(lost[old]) / ran if ran else 0.0
+        fails = share > max_lost or raw_share > max_hollow
+        line = (
+            f"{old}: {_describe(real_lost)} no longer run ({share:.0%}), "
+            f"{_describe(real_gained)} newly run"
+        )
+        if _count(moved) or _count(varying):
+            recipients = sorted(
+                {
+                    taker
+                    for path, items in moved.items()
+                    for item in items
+                    for taker in takers[path, item]
+                }
+            )
+            named = ", ".join(recipients[:2]) + (", ..." if len(recipients) > 2 else "")
+            line += (
+                f"; lost {_count(lost[old])} in all ({raw_share:.0%}), of which "
+                f"{_count(moved)} now run by {named or 'no test'}"
+                + (
+                    f" and {_count(varying)} vary between the before runs"
+                    if skip
+                    else ""
                 )
             )
-    changed.sort(key=lambda item: -item[0])
-    hollowed = [line for share, line in changed if share > max_lost]
-    small = [line for share, line in changed if share <= max_lost]
+        changed.append((share, fails, line))
+    changed.sort(key=lambda item: (not item[1], -item[0]))
+    failing = [line for _, fails, line in changed if fails]
+    listed = [line for _, fails, line in changed if not fails]
 
     def total(data: Coverage) -> int:
-        return sum(len(items) for items in union(data.values()).values())
+        merged: dict[str, set[object]] = collections.defaultdict(set)
+        for files in data.values():
+            for path, items in files.items():
+                merged[path] |= items
+        return _count(merged)
 
     print(f"before: {len(before)} tests with coverage, {total(before)} lines/arcs run")
     print(f"after: {len(after)} tests with coverage, {total(after)} lines/arcs run")
     print(f"matched: {len(pairs)}")
-    print(f"lines/arcs that moved between tests: {reattributed}")
+    print(f"lines/arcs that moved between tests: {moved_total}")
     if baseline is not None:
-        varying = sum(
-            len(items) for files in unstable.values() for items in files.values()
-        )
         print(
-            f"lines/arcs that vary between the two before runs, not compared: {varying}"
+            "lines/arcs that vary between the two before runs: "
+            f"{sum(_count(files) for files in unstable.values())}"
         )
     _print_list("missing from after", missing)
     _print_list("new in after", new)
-    _print_list(f"tests that lost over {max_lost:.0%} of their lines/arcs", hollowed)
-    _print_list("smaller changes, listed for a person to read", small)
-    return not missing and not hollowed and (allow_new or not new)
+    _print_list(
+        f"tests that lost over {max_lost:.0%} of their lines/arcs, or over "
+        f"{max_hollow:.0%} counting what moved or varies",
+        failing,
+    )
+    _print_list("smaller changes, listed for a person to read", listed)
+    return not missing and not failing and (allow_new or not new)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -398,8 +444,15 @@ def main(argv: list[str] | None = None) -> int:
         "--max-lost",
         type=float,
         default=0.1,
-        help="coverage: the share of its lines a test may lose without failing "
-        "(default: 0.1)",
+        help="coverage: the share of its lines a test may lose, after what moved to "
+        "other tests or varies between the before runs, without failing (default: 0.1)",
+    )
+    parser.add_argument(
+        "--max-hollow",
+        type=float,
+        default=0.5,
+        help="coverage: the share of its lines a test may lose in all, counting what "
+        "moved or varies, without failing (default: 0.5)",
     )
     parser.add_argument(
         "--root",
@@ -407,8 +460,16 @@ def main(argv: list[str] | None = None) -> int:
         help="coverage paths are shown from this part on (default: src/archivey/)",
     )
     args = parser.parse_args(argv)
-    if args.before.resolve() == args.after.resolve():
-        raise SystemExit(f"before and after are the same file: {args.before}")
+    inputs = {"before": args.before, "after": args.after, "--baseline": args.baseline}
+    seen: dict[Path, str] = {}
+    for label, path in inputs.items():
+        if path is None:
+            continue
+        if path.resolve() in seen:
+            raise SystemExit(
+                f"{seen[path.resolve()]} and {label} are the same file: {path}"
+            )
+        seen[path.resolve()] = label
     moves = _parse_pairs("--moved", args.moved)
     renames = _parse_pairs("--renamed", args.renamed)
     if args.kind == "outcomes":
@@ -432,6 +493,7 @@ def main(argv: list[str] | None = None) -> int:
                 load_coverage(args.baseline, args.root) if args.baseline else None
             ),
             max_lost=args.max_lost,
+            max_hollow=args.max_hollow,
         )
     print("same" if same else "DIFFERENT")
     return 0 if same else 1
