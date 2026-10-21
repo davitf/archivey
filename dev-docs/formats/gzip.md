@@ -301,21 +301,31 @@ which issues no read (`_settle_end`). `_GzipTruncationCheckStream` does the rest
    (found by the `gzip_accel` fuzz target, a third member cut after its 10-byte header).
    The trailer's length `n` says where the last member's output starts, `n` bytes before
    the end, so the output is read back from `rapidgzip` from there and its CRC-32 compared
-   with the trailer's. The trailer ends at the end of the non-zero data or up to 7 bytes
-   into the zeros after it, and each of those eight places is a candidate. Candidates are
-   tried shortest first, and the first match ends the search, so the read-back is the last
-   member's output and at most the shorter candidates before it. An empty last
+   with the trailer's. The trailer ends at the end of the non-zero data or up to 3 bytes
+   into the zeros after it: its last bytes are the high bytes of ISIZE, which is not zero
+   for a member this checks. Each of those four places is a candidate. Candidates are
+   tried shortest first, and the first match ends the search, so a valid file reads back
+   its last member's output and at most the shorter candidates before it. An empty last
    member, bgzip's end-of-file member, has eight zeros for a trailer, which any zeros would
    match, so it counts only when zlib decodes an empty member from a header in the 1 KiB
-   before the end of the non-zero data with only zeros after it. This needs no member
-   boundaries, which `rapidgzip` does not report (§7). It costs a second `rapidgzip` decode
-   of the last member, from the index point before its start: measured at about 0.1 s on a
-   50 MB last member with four cores, against 0.22 s for the whole read. A BGZF file pays
-   nothing, as its last member is empty. Not excluded: a crafted cut whose last eight bytes
-   are made the CRC-32 and length of the end of the output, which takes choosing four
-   bytes of the content. A last member of 4 GiB or more of output wraps its length, does
-   not match, and goes to the standard library engine, which reads it right at the cost of
-   a second decode.
+   before the end of the non-zero data with only zeros after it; one whose header starts
+   further back (a long `FNAME`) goes to the standard library engine, which reads it with
+   no error. This needs no member boundaries, which `rapidgzip` does not report (§7).
+
+   It costs a second `rapidgzip` decode of the last member, from the index point before
+   its start: measured at about 0.1 s on a 50 MB last member with four cores, against
+   0.22 s for the whole read. A BGZF file pays nothing, as its last member is empty. A
+   candidate's length comes from the file, so a file that fails the check has every
+   candidate read back, and a forged length could make that up to the whole output. The
+   read-back has a ceiling of 64 MiB in all (`_LAST_MEMBER_READ_BACK`): a candidate past
+   what is left of it hands the read to the standard library engine. So a file that fails
+   the check costs at most 64 MiB of read-back, then the standard library's decode
+   (measured: a forged length over a 50 MB output read back in 0.15 s, and the standard
+   library's decode took 0.15 s). A valid file whose last member has more than 64 MiB of
+   output goes to the standard library engine too, which reads it right at the cost of a
+   second decode of the whole file, as does a last member of 4 GiB or more, whose length
+   wraps. Not excluded: a crafted cut whose last eight bytes are made the CRC-32 and length
+   of the end of the output, which takes choosing four bytes of the content.
 3. A source shorter than 18 bytes that still yielded bytes is handed to the standard
    library engine as well, which raises the truncation. A source whose length cannot be
    read is never called truncated.
@@ -551,7 +561,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | `extra["gzip.original_filename"]` is mojibake for a non-ASCII name | **format** | RFC 1952 says Latin-1; GNU gzip writes the bytes it was given. `raw_name` has them |
 | A backward seek on a single-member `.gz` re-decodes from the start | **format** | No restart points (§1). Install `[seekable]` and pass `seekable_members=True`; under `AUTO`, only from 16 MiB |
 | The same truncated `.gz` raises `TruncatedError` on Linux and `CorruptionError` on Windows under `rapidgzip` | **library** | Windows loses the message detail (§2.3). Catch `ReadError` for both |
-| A multi-member `.gz` whose last member is large reads slower through `rapidgzip` than a one-member file | **archivey** | The backstop decodes the last member a second time to check its trailer (§2.3); `rapidgzip` ends a cut last member softly, so nothing cheaper shows it is whole. A BGZF file pays nothing |
+| A multi-member `.gz` whose last member is large reads slower through `rapidgzip` than a one-member file | **archivey** | The backstop decodes the last member a second time to check its trailer (§2.3); `rapidgzip` ends a cut last member softly, so nothing cheaper shows it is whole. A BGZF file pays nothing. A last member of more than 64 MiB is not read back: the standard library engine decodes the whole file a second time instead. A damaged file costs at most 64 MiB of read-back before the standard library's decode |
 | A member after the first with a header CRC that does not match, or with reserved `FLG` bits, raises the same error with `rapidgzip` as without it | **archivey** | Measured on rapidgzip 0.16.0 (2026-10-18). A later header CRC makes rapidgzip raise, and the read falls back to zlib (`CorruptionError`). A later reserved flag is accepted by rapidgzip, but the further-member scan skips that header, the single-member trailer check fails, and the read falls back to zlib (`UnsupportedFeatureError`). The pre-start probe still sees only the first member (§2.3) |
 | A wrong ISIZE on any member but the last reads clean under `rapidgzip` builds that do not compare the size; the standard library raises | **library** / **archivey** | Every member's CRC-32 is still checked, so the data is right; the spec accepts this difference (§2.3). `rapidgzip` 0.16.0 compares it only in its own chunk decoder, for a stream that lies wholly in one chunk; the inflate-wrapper decoder (ISA-L, in the Linux wheels) appends the footer without comparing. The last member's ISIZE is checked by the backstop, which finds the trailer by the CRC-32 of the output, or in a file of several members by the CRC-32 of the end of the output. After a seek that skipped output there is no CRC-32 and the file's last four bytes stand in for the ISIZE in a file of one member; in that case only, four bytes appended after a wrong ISIZE, equal to the length, pass for the trailer. In a file with a further member the last member's trailer is checked whatever the last four bytes say. Found by the `gzip_accel` fuzz target |
 | A truncated bare raw DEFLATE stream under `use_rapidgzip=ON` can end short with no error | **library** | No size or checksum to check it against (§2.3). `AUTO` never does this. A stream cut before its first byte of output raises, as with the accelerator off |
@@ -613,7 +623,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 
 | Claim | Pinned by |
 | --- | --- |
-| A cut or wrong-ISIZE last member of a concatenated gzip or BGZF file raises through `rapidgzip`, at every cut point; a valid one reads with no handover | `tests/test_rapidgzip_end_checks.py::test_a_cut_last_member_of_a_concatenated_gzip_raises`, `::test_every_cut_of_the_last_of_three_gzip_members_raises`, `::test_gzip_wrong_last_isize_in_a_concatenated_file_raises`, `::test_a_real_further_gzip_member_needs_no_stdlib_handover`, `::test_a_cut_last_member_with_isize_forged_to_the_length_raises_after_a_skip`, `::test_the_last_member_check_reads_back_little_more_than_the_last_member` |
+| A cut or wrong-ISIZE last member of a concatenated gzip or BGZF file raises through `rapidgzip`, at every cut point; a valid one reads with no handover | `tests/test_rapidgzip_end_checks.py::test_a_cut_last_member_of_a_concatenated_gzip_raises`, `::test_every_cut_of_the_last_of_three_gzip_members_raises`, `::test_gzip_wrong_last_isize_in_a_concatenated_file_raises`, `::test_a_real_further_gzip_member_needs_no_stdlib_handover`, `::test_a_cut_last_member_with_isize_forged_to_the_length_raises_after_a_skip`, `::test_the_last_member_check_reads_back_little_more_than_the_last_member`, `::test_a_forged_last_trailer_reads_back_no_more_than_the_ceiling`, `::test_a_last_member_past_the_read_back_ceiling_goes_to_the_stdlib`, `::test_an_empty_last_member_with_a_long_name_reads_as_with_the_accelerator_off` |
 | Multi-member, NUL padding, trailing junk after the payload | `tests/test_codecs.py::test_gzip_multi_member_and_padding_parity`, `::test_gzip_trailing_junk_delivers_member_then_reports`, `::test_gzip_multi_member_cross_feed_edges`, `tests/test_stream_trailing_data.py::test_rapidgzip_reads_to_the_end_and_reports` |
 | Member starts and BGZF blocks are seek points; the walk stops at a plain member; the BGZF sizes are trusted; a size query does not walk | `tests/test_bgzf_seek.py` |
 | A member after the first with a bad header CRC or a reserved flag raises the same error with `rapidgzip` as without it | `tests/test_audit2_tar_streams.py::test_gzip_accelerator_refuses_a_later_member_the_stdlib_refuses` |

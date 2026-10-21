@@ -641,7 +641,11 @@ of the last that-many bytes of the output, read back from the accelerator. A wro
 or a cut on the last member, after any number of members before it and whatever its size,
 then gives the standard library's error. An empty last member (bgzip's end-of-file member)
 counts when zlib decodes it from a header in the 1 KiB before the end of the non-zero
-data, with only zeros after it. Not excluded: a crafted cut whose last eight bytes are made
+data, with only zeros after it. The read-back SHALL be bounded: at most 64 MiB of output
+in all, tried shortest candidate first; a candidate past that hands the read to the
+standard-library decoder, so a valid last member of more than 64 MiB costs a second
+decode of the whole file, and a damaged file at most 64 MiB of read-back before that
+decoder's verdict. Not excluded: a crafted cut whose last eight bytes are made
 the CRC-32 and length of the end of the output, which takes choosing four bytes of the
 content. A last member of 4 GiB or more of output does not match, as its length is
 wrapped, and is read by the standard-library decoder, at the cost of a second decode. When

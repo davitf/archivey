@@ -352,21 +352,41 @@ def _require_the_accelerator_in_use() -> None:
 
 
 @requires("rapidgzip")
-@pytest.mark.parametrize("case", ["three-members", "large-last-member"])
-def test_gzip_wrong_last_isize_in_a_concatenated_file_raises(case: str) -> None:
+@pytest.mark.parametrize(
+    ("case", "flip"),
+    [
+        ("three-members", 1 << 24),
+        ("large-last-member", 1 << 24),
+        ("three-members", 1),
+        ("large-last-member", 1),
+    ],
+    ids=[
+        "three-members-high-byte",
+        "large-last-member-high-byte",
+        "three-members-low-byte",
+        "large-last-member-low-byte",
+    ],
+)
+def test_gzip_wrong_last_isize_in_a_concatenated_file_raises(
+    case: str, flip: int
+) -> None:
     """The further-member scan stands down at the first further member it confirms, and a
     candidate counts once zlib has decoded 64 KiB of its input, so with three or more
     members, or a large last one, it says nothing about the last member. Its trailer is
     checked against the end of the output instead, so a wrong ISIZE there raises as with
-    the accelerator off. This used to be a known limitation."""
+    the accelerator off. A flipped high byte makes the length larger than the output, so
+    no candidate is read back; a flipped low byte keeps a length inside the output, and
+    the CRC-32 of the output read back from there is what turns it down."""
     contents = [b"first member payload\n" * 5]
     if case == "three-members":
         contents += [b"middle member payload\n" * 7, b"last member payload\n" * 3]
     else:
         contents += [random.Random(1).randbytes(300_000)]
-    members = [gzip.compress(c, mtime=0) for c in contents]
-    members[-1] = members[-1][:-1] + bytes([members[-1][-1] ^ 0x01])
+    members = [bytearray(gzip.compress(c, mtime=0)) for c in contents]
+    isize = int.from_bytes(members[-1][-4:], "little") ^ flip
+    members[-1][-4:] = isize.to_bytes(4, "little")
     blob = b"".join(members)
+    assert (isize <= len(b"".join(contents))) == (flip == 1)
     off = _outcome(Codec.GZIP, blob, _OFF, _no_seek)
     assert off[1] is not None
     _assert_same(_outcome(Codec.GZIP, blob, _ON, _no_seek), off)
@@ -782,6 +802,32 @@ def test_the_last_member_check_reads_back_little_more_than_the_last_member(
         + gzip.compress(b"middle\n" * 9, mtime=0)
         + gzip.compress(last, mtime=0)
     )
+    read_back = _read_backs(monkeypatch)
+    got, error = _outcome(Codec.GZIP, blob, _ON, _no_seek)
+    assert error is None
+    assert got == gzip.decompress(blob)
+    assert read_back[-1] == last_size
+    assert all(size < last_size for size in read_back[:-1])
+
+
+def _handovers(monkeypatch: pytest.MonkeyPatch) -> list[object]:
+    """Record each switch to the standard library (``switch_to_stdlib``)."""
+    handovers: list[object] = []
+    takeover = codecs.stdlib_takeover._StdlibOnAcceleratorError
+    original = takeover.switch_to_stdlib
+
+    def spy(
+        self: codecs.stdlib_takeover._StdlibOnAcceleratorError, *args: object
+    ) -> None:
+        handovers.append(args)
+        original(self, *args)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(takeover, "switch_to_stdlib", spy)
+    return handovers
+
+
+def _read_backs(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Record the length of each read-back of the last-member check."""
     read_back: list[int] = []
     check = codecs.gzip_codec._GzipTruncationCheckStream
     original = check._output_crc_from
@@ -791,11 +837,68 @@ def test_the_last_member_check_reads_back_little_more_than_the_last_member(
         return original(self, start)  # type: ignore[arg-type]
 
     monkeypatch.setattr(check, "_output_crc_from", spy)
+    return read_back
+
+
+@requires("rapidgzip")
+def test_a_forged_last_trailer_reads_back_no_more_than_the_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A candidate's length comes from the file. A cut file whose last four bytes are
+    forged to a length just under the output's would have the whole output read back
+    before the standard library decodes it again; the ceiling stops the read-back first."""
+    _require_the_accelerator_in_use()
+    first = random.Random(8).randbytes(300_000)
+    blob = bytearray(
+        gzip.compress(first, mtime=0)
+        + gzip.compress(b"middle\n" * 9, mtime=0)
+        + gzip.compress(b"third", mtime=0)[:10]
+    )
+    blob[-4:] = (len(first) - 1000).to_bytes(4, "little")
+    monkeypatch.setattr(codecs.gzip_codec, "_LAST_MEMBER_READ_BACK", 100_000)
+    read_back = _read_backs(monkeypatch)
+    off = _outcome(Codec.GZIP, bytes(blob), _OFF, _no_seek)
+    assert off[1] is TruncatedError
+    _assert_same(_outcome(Codec.GZIP, bytes(blob), _ON, _no_seek), off)
+    assert sum(read_back) <= 100_000
+
+
+@requires("rapidgzip")
+def test_a_last_member_past_the_read_back_ceiling_goes_to_the_stdlib(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A valid file whose last member is longer than the ceiling is handed to the standard
+    library, which reads it whole with no error, without the read-back."""
+    _require_the_accelerator_in_use()
+    blob = _valid_concatenation("three-members")
+    last = len(b"last\n" * 3)
+    monkeypatch.setattr(codecs.gzip_codec, "_LAST_MEMBER_READ_BACK", last - 1)
+    handovers = _handovers(monkeypatch)
+    read_back = _read_backs(monkeypatch)
     got, error = _outcome(Codec.GZIP, blob, _ON, _no_seek)
-    assert error is None
-    assert got == gzip.decompress(blob)
-    assert read_back[-1] == last_size
-    assert all(size < last_size for size in read_back[:-1])
+    assert (got, error) == (gzip.decompress(blob), None)
+    assert handovers != []
+    assert last not in read_back
+
+
+@requires("rapidgzip")
+def test_an_empty_last_member_with_a_long_name_reads_as_with_the_accelerator_off() -> (
+    None
+):
+    """An empty last member whose header starts further back than the check looks for it
+    (``_EMPTY_MEMBER_REACH``: a long ``FNAME``) is not confirmed, so the read goes to the
+    standard library, which reads it whole: the same bytes, and no error."""
+    from archivey.internal.streams.codecs.gzip_codec import _EMPTY_MEMBER_REACH
+
+    name = b"n" * (_EMPTY_MEMBER_REACH + 100)
+    blob = (
+        _gzip_member(b"first member payload\n" * 4000)
+        + _gzip_member(b"middle member payload\n" * 7)
+        + _gzip_member(b"", name=name)
+    )
+    off = _outcome(Codec.GZIP, blob, _OFF, _no_seek)
+    assert off[1] is None
+    _assert_same(_outcome(Codec.GZIP, blob, _ON, _no_seek), off)
 
 
 # --- a seek that meets a data error is handed over -------------------------------------
