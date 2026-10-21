@@ -175,11 +175,16 @@ def test_close_while_stream_members_suspended_closes_reader(
 ) -> None:
     reader = open_archive(make_source(tmp_path), streaming=streaming)
     it = reader.stream_members()
-    # Stop at the first file, so a stream is open mid-pass.
-    stream = next(s for _m, s in it if s is not None)
+    # Stop at the first file with data and read one byte of it, so a stream is part-read
+    # mid-pass (a solid block or an unrar pipe in flight).
+    stream = next(s for m, s in it if s is not None and m.size)
+    assert len(stream.read(1)) == 1
     reader.close()
-    # The yielded stream went with the reader, and the reader takes no new calls.
+    # The yielded stream went with the reader, reads as any closed stream does, and the
+    # reader takes no new calls.
     assert stream.closed
+    with pytest.raises(ValueError, match="closed file"):
+        stream.read(1)
     with pytest.raises(ArchiveyUsageError, match="closed"):
         reader.stream_members()
     # Resuming the suspended pass reports the close instead of reading on.
