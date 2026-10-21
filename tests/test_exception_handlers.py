@@ -22,6 +22,7 @@ from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.reader_state import LifecycleState
 from archivey.internal.streams.verify import VerifyingStream
 from tests.conftest import requires
+import itertools
 
 
 def _zip_with_corrupt_deflate_body() -> bytes:
@@ -131,9 +132,7 @@ def _zip_with_bad_block_after_declared_size() -> tuple[bytes, int]:
     payload = bytes(range(256)) * (size // 256) + bytes(range(size % 256))
     step = size // blocks
     bounds = [i * step for i in range(blocks)] + [size]
-    raw = b"".join(
-        _stored_block(payload[a:b]) for a, b in zip(bounds, bounds[1:], strict=False)
-    )
+    raw = b"".join(_stored_block(payload[a:b]) for a, b in itertools.pairwise(bounds))
     assert len(raw) == compressed_len
     raw += b"\x07\x00\x00"
     crc = zlib.crc32(payload)

@@ -156,7 +156,7 @@ def test_selection_inside_the_prefix_still_raises(
     # Every selected member is listed before the damage; whether more would match
     # after it is unknown, so the call still reports the damage.
     contents, error_type, message = _listing(data)
-    first = sorted(prefix)[0]
+    first = min(prefix)
     dest = tmp_path / "out"
     with open_archive(io.BytesIO(data)) as reader:
         if listed_first:
@@ -237,7 +237,7 @@ def test_an_entry_unmatched_in_the_prefix_is_not_reported(
     raise_on = {DiagnosticCode.MEMBER_SELECTOR_UNMATCHED} if raise_unmatched else set()
     config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy(raise_on=raise_on))
     contents, error_type, message = _listing(data)
-    first = sorted(prefix)[0]
+    first = min(prefix)
     dest = tmp_path / "out"
     with open_archive(io.BytesIO(data), config=config) as reader:
         if listed_first:

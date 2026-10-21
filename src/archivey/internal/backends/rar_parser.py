@@ -70,6 +70,7 @@ from archivey.internal.timestamps import (
 from archivey.internal.trailing_scan import first_nonzero_offset
 from archivey.internal.windows_reparse import normalize_windows_link_target
 from archivey.terminal import quoted
+import itertools
 
 
 class _Readable(Protocol):
@@ -745,8 +746,7 @@ def parse_rar_volumes(
     if (
         len(volume_numbers) != len(volumes)
         or any(
-            later <= earlier
-            for earlier, later in zip(volume_numbers, volume_numbers[1:])
+            later <= earlier for earlier, later in itertools.pairwise(volume_numbers)
         )
         or volume_numbers[0] < 1
     ):
@@ -3872,8 +3872,10 @@ def _parse_rar5_file_block(
             (
                 RAR5_UNPLACED_BYTES,
                 None,
-                f"{unplaced_bytes} bytes between its fixed fields and its "
-                "declared extra area",
+                (
+                    f"{unplaced_bytes} bytes between its fixed fields and its "
+                    "declared extra area"
+                ),
             ),
         )
 

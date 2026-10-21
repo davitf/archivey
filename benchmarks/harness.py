@@ -1594,13 +1594,19 @@ def format_text_report(payload: dict[str, Any]) -> str:
                 "",
                 "## Corpus",
                 "",
-                f"- common members: {detail.get('common_members', '?')} × "
-                f"{_fmt_bytes(detail.get('common_member_size'))}",
+                (
+                    f"- common members: {detail.get('common_members', '?')} × "
+                    f"{_fmt_bytes(detail.get('common_member_size'))}"
+                ),
                 f"- gzip size: {_fmt_bytes(detail.get('gzip_size'))}",
-                f"- solid members: {detail.get('solid_members', '?')} × "
-                f"{_fmt_bytes(detail.get('solid_member_size'))}",
-                f"- 7z/RAR list members: {detail.get('list_members', '?')} solid "
-                f"tiny / {detail.get('nonsolid_list_members', '?')} nonsolid",
+                (
+                    f"- solid members: {detail.get('solid_members', '?')} × "
+                    f"{_fmt_bytes(detail.get('solid_member_size'))}"
+                ),
+                (
+                    f"- 7z/RAR list members: {detail.get('list_members', '?')} solid "
+                    f"tiny / {detail.get('nonsolid_list_members', '?')} nonsolid"
+                ),
             ]
         )
 
@@ -1673,16 +1679,22 @@ def format_text_report(payload: dict[str, Any]) -> str:
             "",
             "## Policy reminder",
             "",
-            f"- VISION target ≤{WALL_RATIO_VISION}× stdlib on common paths "
-            f"(~{WALL_RATIO_VISION_SAFETY}× safety band is informational on nightly).",
+            (
+                f"- VISION target ≤{WALL_RATIO_VISION}× stdlib on common paths "
+                f"(~{WALL_RATIO_VISION_SAFETY}× safety band is informational on nightly)."
+            ),
             f"- Sanity ceiling {WALL_RATIO_BUDGET:.0f}× fails the job.",
-            f"- Nightly also fails on wall-ratio *drift* vs the last measured run's "
-            f"JSON, pass or fail (>{WALL_RATIO_DRIFT_FACTOR:.2f}×, "
-            f"+{WALL_RATIO_DRIFT_MIN_ABS:.2f} abs and "
-            f"≥{WALL_RATIO_DRIFT_MIN_EXTRA_S * 1e3:.0f} ms extra wall time) — not on "
-            "absolute VISION bands.",
-            "- Quiet nights re-publish the previous artifact (preserving "
-            "`measured_at`); a full re-measure is forced at least every ~30 days.",
+            (
+                f"- Nightly also fails on wall-ratio *drift* vs the last measured run's "
+                f"JSON, pass or fail (>{WALL_RATIO_DRIFT_FACTOR:.2f}×, "
+                f"+{WALL_RATIO_DRIFT_MIN_ABS:.2f} abs and "
+                f"≥{WALL_RATIO_DRIFT_MIN_EXTRA_S * 1e3:.0f} ms extra wall time) — not on "
+                "absolute VISION bands."
+            ),
+            (
+                "- Quiet nights re-publish the previous artifact (preserving "
+                "`measured_at`); a full re-measure is forced at least every ~30 days."
+            ),
             "- Structural seek/bytes gates live on the PR path (`ci.yml`), not here.",
             "",
         ]

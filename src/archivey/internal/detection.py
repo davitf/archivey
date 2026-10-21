@@ -171,8 +171,10 @@ _INNER_TAR_MAX_PROBE_BYTES = 1 << 20
 _PROBE_STOPPING_SIGNATURES: tuple[tuple[bytes, str], ...] = (
     (
         bytes.fromhex("d0cf11e0a1b11ae1"),
-        "an OLE compound file signature (.doc, .xls, .ppt, .msi, Thumbs.db), "
-        "which is not an archive format",
+        (
+            "an OLE compound file signature (.doc, .xls, .ppt, .msi, Thumbs.db), "
+            "which is not an archive format"
+        ),
     ),
 )
 

@@ -612,8 +612,10 @@ def test_the_close_step_runs_as_written(
     removed = [line for line in calls.splitlines() if "--method DELETE" in line]
     if label:
         assert added == [
-            f"api --method POST repos/{REPO}/issues/7/labels "
-            f"-f labels[]={label} --silent"
+            (
+                f"api --method POST repos/{REPO}/issues/7/labels "
+                f"-f labels[]={label} --silent"
+            )
         ]
         deleted = sorted(line.split("/labels/")[1].split()[0] for line in removed)
         # A failed listing tries every other outcome label rather than none.

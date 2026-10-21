@@ -185,7 +185,7 @@ def _bin_version(name: str) -> str:
         stripped = "".join(ch for ch in ln.strip() if ch.isprintable())
         if not stripped:
             continue
-        if stripped.startswith("ERROR") or stripped.startswith("Command Line"):
+        if stripped.startswith(("ERROR", "Command Line")):
             continue
         if any(ch.isdigit() for ch in stripped):
             return f"{path} {stripped[:80]}"

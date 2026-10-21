@@ -722,8 +722,10 @@ def test_argv_refuses_an_empty_or_negative_selection(indexes: list[int]) -> None
         ),
         (
             # Homebrew's bottle (XADMaster 1.10.8) prints its build date.
-            "unar v1.10.7 (Oct 10 2023), a tool for extracting the contents of "
-            "archive files.",
+            (
+                "unar v1.10.7 (Oct 10 2023), a tool for extracting the contents of "
+                "archive files."
+            ),
             cli.Banner(identified=True, version=(1, 10, 7)),
         ),
         ("unar v1.10.1\n", cli.Banner(identified=False, version=None)),

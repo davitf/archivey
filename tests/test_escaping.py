@@ -64,7 +64,7 @@ def test_astral_code_points_render_as_a_readable_escape() -> None:
     body = out[1:-1]
     assert body.startswith("\\U")
     # Recoverable: the escape names the code point it replaced.
-    assert int(body[2:], 16) == 0x1D173
+    assert int(body, 0) == 0x1D173
 
 
 def test_literal_backslash_is_distinguishable_from_a_real_control_char() -> None:

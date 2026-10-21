@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import BinaryIO, Protocol
+from typing import BinaryIO, Protocol, Self
 
 from archivey.config import ProcessIsolation
 from archivey.detection_cost import (
@@ -467,7 +467,7 @@ class PrefixWorkspace:
                 self._owned_source.close()
                 self._owned_source = None
 
-    def __enter__(self) -> PrefixWorkspace:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *exc: object) -> None:

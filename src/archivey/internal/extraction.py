@@ -3593,8 +3593,10 @@ class ExtractionCoordinator:
         removed = [
             (
                 link,
-                f"{problems[link.path]}: a later member changed "
-                "a path it resolves through",
+                (
+                    f"{problems[link.path]}: a later member changed "
+                    "a path it resolves through"
+                ),
             )
             for link in outcome.escaped
         ] + [

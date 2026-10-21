@@ -568,8 +568,10 @@ class RapidgzipChildStream(ReadOnlyIOStream):
     def _abandon(self) -> None:
         self._death = (
             ArchiveyUsageError,
-            "the rapidgzip decoder process was interrupted in the middle of a "
-            "request, and this stream cannot continue",
+            (
+                "the rapidgzip decoder process was interrupted in the middle of a "
+                "request, and this stream cannot continue"
+            ),
         )
         self._stop(kill=True)
 
@@ -582,9 +584,11 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         """
         self._death = (
             ReadError,
-            f"this {self._label} stream cannot continue: a read from its source "
-            f"failed ({exception_detail(fault)}), and the rapidgzip decoder process "
-            "took that for the end of its input",
+            (
+                f"this {self._label} stream cannot continue: a read from its source "
+                f"failed ({exception_detail(fault)}), and the rapidgzip decoder process "
+                "took that for the end of its input"
+            ),
         )
         self._stop(kill=True)
 
@@ -793,9 +797,11 @@ class RapidgzipChildStream(ReadOnlyIOStream):
             if self._death is None:
                 self._death = (
                     ReadError,
-                    f"this {self._label} stream cannot continue: a read failed, "
-                    f"and moving back to where it started failed too "
-                    f"({exception_detail(exc)})",
+                    (
+                        f"this {self._label} stream cannot continue: a read failed, "
+                        f"and moving back to where it started failed too "
+                        f"({exception_detail(exc)})"
+                    ),
                 )
                 self._stop(kill=True)
             return

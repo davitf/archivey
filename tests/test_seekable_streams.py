@@ -50,6 +50,7 @@ from tests.streams_util import (
     make_unix_compress,
     xz_cli_available,
 )
+import itertools
 
 CONTENT = bytes(range(256)) * 200  # 51200 bytes, compressible but non-trivial
 
@@ -1121,7 +1122,7 @@ def test_spaced_collector_stays_within_the_cap_and_spreads_what_it_keeps(
     kept = collector.items
     assert kept[0] == 0  # the first item always survives
     assert collector.thinned
-    gaps = [b - a for a, b in zip(kept, kept[1:])]
+    gaps = [b - a for a, b in itertools.pairwise(kept)]
     # Greedy spacing: no kept gap is wider than the spacing plus one step.
     assert all(g <= collector.spacing + step for g in gaps), (gaps, collector.spacing)
     if step:

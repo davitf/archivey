@@ -14,7 +14,7 @@ from collections.abc import (
     Iterator,
     Mapping,
     Sequence,
-    Set,
+    Set as AbstractSet,
 )
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
@@ -2637,7 +2637,7 @@ class BaseArchiveReader(ArchiveReader):
         else:
             index[member.name] = [held, member]
 
-    def _unindex_members(self, name: str, gone: Set[int]) -> None:
+    def _unindex_members(self, name: str, gone: AbstractSet[int]) -> None:
         """Take the members whose ``id()`` is in ``gone`` out of ``name``'s entry.
 
         By identity: a duplicate can compare equal to the member being removed. ``gone``

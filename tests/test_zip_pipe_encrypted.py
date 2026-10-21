@@ -1273,8 +1273,10 @@ def test_a_link_whose_codec_is_refused_says_so_as_from_a_file(
         with pytest.raises(UnsupportedFeatureError) as opened:
             reader.open(reader.get("link"))
     assert from_file[2] == [
-        "The symlink target of 'link' could not be read: "
-        f"{raw_message_of(opened.value).rstrip('.')}. Leaving link_target unset."
+        (
+            "The symlink target of 'link' could not be read: "
+            f"{raw_message_of(opened.value).rstrip('.')}. Leaving link_target unset."
+        )
     ]
 
 

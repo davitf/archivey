@@ -212,6 +212,7 @@ from archivey.types import (
     MissingComponent,
     SpecialFileType,
 )
+import itertools
 
 
 def _single_disk_copy_note(program: str) -> str:
@@ -296,7 +297,7 @@ def _gapped_volume_numbers(paths: list[Path]) -> list[int] | None:
     if any(number is None for number in numbers):
         return None
     known = [number for number in numbers if number is not None]
-    if any(later <= earlier for earlier, later in zip(known, known[1:])):
+    if any(later <= earlier for earlier, later in itertools.pairwise(known)):
         return None
     if known == list(range(1, len(known) + 1)):
         return None
@@ -466,8 +467,10 @@ def _bounded_copy_notes(
         )
         return (_stream_copy_refused_note(program, reason),)
     return (
-        f"{note} An archive over SpoolLimits.max_bytes={limit} is refused instead "
-        f"of copied.",
+        (
+            f"{note} An archive over SpoolLimits.max_bytes={limit} is refused instead "
+            f"of copied."
+        ),
     )
 
 
