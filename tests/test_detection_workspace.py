@@ -24,6 +24,8 @@ import contextlib
 import gzip
 import io
 import os
+import random
+import tarfile
 import zipfile
 from collections.abc import Callable
 from dataclasses import replace
@@ -1108,3 +1110,84 @@ def test_bounded_reader_over_an_arrived_view_peeks_again_only_when_it_must() -> 
         assert raw.calls == 2
         assert seeking.read(10) == b"ef"
         assert seeking.read(10) == b""
+
+
+def _trickled_tar_bz2(step: int) -> tuple[bytes, list[bytes]]:
+    """A ``.tar.bz2`` whose first decoded byte needs about 100 KB of input, in ``step``-byte reads.
+
+    bzip2 emits nothing until a whole block is in, so the inner-TAR probe reads the
+    whole first block before it sees the TAR header. Random member data keeps the
+    block from shrinking.
+    """
+    tar = io.BytesIO()
+    with tarfile.open(fileobj=tar, mode="w", format=tarfile.USTAR_FORMAT) as tf:
+        data = random.Random(0).randbytes(120_000)
+        info = tarfile.TarInfo("member")
+        info.size = len(data)
+        tf.addfile(info, io.BytesIO(data))
+    payload = bz2.compress(tar.getvalue(), compresslevel=1)
+    return payload, [payload[i : i + step] for i in range(0, len(payload), step)]
+
+
+def test_inner_tar_probe_over_small_reads_passes_each_byte_through_the_view_once() -> (
+    None
+):
+    """The probe's view gives the reader only the new bytes, not the prefix again.
+
+    A view that returned the whole prefix on every read would pass about
+    ``reads × prefix / 2`` bytes here (over 15 MB), and the probe time would grow
+    with the square of the read count.
+    """
+    from archivey.internal.detection import _probe_inner_tar
+    from archivey.types import StreamFormat
+
+    payload, chunks = _trickled_tar_bz2(step=256)
+    with PrefixWorkspace(QueuedChunks(*chunks), BALANCED_BUDGET) as ws:
+        assert ws.forward_only
+        view = ws.candidate_view(0, arrived=True)
+        passed = 0
+
+        def counting_view(*args: int) -> bytes:
+            nonlocal passed
+            data = view(*args)
+            passed += len(data)
+            return data
+
+        assert _probe_inner_tar(
+            StreamFormat.BZIP2, counting_view, ws, view_arrived=True
+        )
+    assert 0 < passed <= len(payload)
+
+
+@pytest.mark.parametrize("kind", ["raw", "archive-source"])
+def test_inner_tar_probe_over_small_reads_takes_each_byte_from_the_source_once(
+    kind: str,
+) -> None:
+    """The workspace takes only the new bytes from the source on each read.
+
+    Through an ``ArchiveSource``, a peek that returned the whole replay prefix on
+    every read would hand over about ``reads × prefix / 2`` bytes here (over 20 MB).
+    The count is what the source's read and peek calls return.
+    """
+    from archivey.internal.detection import _probe_inner_tar
+    from archivey.types import StreamFormat
+
+    payload, chunks = _trickled_tar_bz2(step=256)
+    source = dict(_forward_sources(*chunks))[kind]()
+    taken = 0
+    names = ("peek", "peek_arrived") if kind == "archive-source" else ("read",)
+    for name in names:
+        method = getattr(source, name)
+
+        def counting(*args: Any, _method: Any = method, **kwargs: Any) -> Any:
+            nonlocal taken
+            data = _method(*args, **kwargs)
+            taken += len(data or b"")
+            return data
+
+        setattr(source, name, counting)
+    with PrefixWorkspace(source, BALANCED_BUDGET) as ws:
+        assert ws.forward_only
+        view = ws.candidate_view(0, arrived=True)
+        assert _probe_inner_tar(StreamFormat.BZIP2, view, ws, view_arrived=True)
+    assert 0 < taken <= len(payload)

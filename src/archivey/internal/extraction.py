@@ -807,6 +807,14 @@ class ExtractionCoordinator:
         if self._dry is not None:
             self._dry.rebase_os_error(exc)
 
+    def _rebase_resolved_os_error(self, exc: OSError) -> None:
+        """``_rebase_os_error`` for an error that names a path built from
+        ``dest_root``, the resolved dest: a real run names it so, and a dry run shows
+        it under the resolved dest too."""
+        _plain_os_error(exc)
+        if self._dry is not None:
+            self._dry.rebase_os_error(exc, resolved=True)
+
     def _run(self, reader: BaseArchiveReader, dest: Path) -> list[ExtractionResult]:
         tracker = BombTracker(
             self._limits.max_extracted_bytes,
@@ -1968,7 +1976,12 @@ class ExtractionCoordinator:
         if self._dry is not None:
             self._dry.bring_in(on_disk)
         try:
-            check_universal(on_disk, dest_root, link_target_on_disk=self._on_disk)
+            check_universal(
+                on_disk,
+                dest_root,
+                link_target_on_disk=self._on_disk,
+                show_os_error=self._rebase_resolved_os_error,
+            )
         except ExtractionError as exc:
             if on_disk is not member:
                 _report_stored_spelling(exc, on_disk, member)
@@ -3507,6 +3520,12 @@ class ExtractionCoordinator:
         problems: dict[Path, str] = {}
 
         def escapes(path: Path, target: str) -> bool:
+            if self._dry is not None:
+                # The link can now resolve through entries of dest that the scratch
+                # tree does not hold yet; a real run meets them in dest. A copy made
+                # here needs no new recheck of other links: each link copies in all
+                # it resolves through here, before its own check.
+                self._dry.bring_in_link(path, target)
             problem = _symlink_problem(path, target, dest_root)
             if problem is not None:
                 problems[path] = problem
