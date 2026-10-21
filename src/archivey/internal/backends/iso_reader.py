@@ -203,6 +203,11 @@ def _install_pycdlib_directory_cycle_guard() -> None:
     Identifier naming an ancestor's ICB loops it the same way, allocating as it goes
     (``test_pycdlib_udf_directory_cycle_does_not_hang``).
 
+    pycdlib 1.22 checks for these loops itself and refuses the image ("ISO Directory
+    Records form a loop", "UDF File Entries form a loop"), which archivey reports as
+    ``CorruptionError``. The check runs before the ``deque`` append, so the guard never
+    sees a repeat there; it stays for the older releases ``pyproject.toml`` allows.
+
     The guard is a ``deque`` subclass that tracks the extents scheduled on *that instance*
     and skips re-enqueueing one already seen — valid trees never revisit an extent, so this
     is transparent on well-formed images and no-ops entirely for deques that hold anything

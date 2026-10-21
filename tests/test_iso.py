@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import builtins
 import contextlib
+import importlib.metadata
 import io
 import os
 import struct
@@ -424,6 +425,21 @@ def test_a_cut_image_keeps_pycdlib_text_without_its_repr() -> None:
     assert f"{type(cause).__name__}(" not in message
 
 
+def _pycdlib_refuses_loops() -> bool:
+    """pycdlib refuses a directory tree that loops back on itself from 1.22, raising
+    "ISO Directory Records form a loop" or "UDF File Entries form a loop"; before, its
+    walk loops forever unless archivey's guard drops the repeated extent.
+
+    ``uv.lock`` pins an older pycdlib, so CI's CPython legs take the ``False`` branch,
+    where the guard is what these tests pin. The PyPy job installs the latest release.
+    """
+    version = importlib.metadata.version("pycdlib")
+    return tuple(int(part) for part in version.split(".")[:2]) >= (1, 22)
+
+
+_LOOP = r"form a loop"
+
+
 @pytest.mark.timeout(5)
 @pytest.mark.parametrize(
     (
@@ -459,6 +475,7 @@ def test_pycdlib_directory_cycle_does_not_hang(
     ancestor extent; pycdlib then loops forever. ``open_fp`` walks every present namespace,
     so a Joliet-only cycle still bites RR+Joliet images even when archivey reads Rock Ridge.
     Without archivey's extent cycle guard these cases hang until pytest-timeout kills them.
+    pycdlib 1.22 and later refuses the image itself (:func:`_pycdlib_refuses_loops`).
     """
     image = _pycdlib_directory_cycle_image(
         rock_ridge=rock_ridge,
@@ -467,6 +484,10 @@ def test_pycdlib_directory_cycle_does_not_hang(
         bitflip_offset=bitflip_offset,
         byte_before_flip=byte_before_flip,
     )
+    if _pycdlib_refuses_loops():
+        with pytest.raises(CorruptionError, match=_LOOP):
+            open_archive(io.BytesIO(image), format=ArchiveFormat.ISO)
+        return
     with open_archive(io.BytesIO(image), format=ArchiveFormat.ISO) as ar:
         assert ar.info.extra["iso.namespace"] == namespace
         names = {m.name for m in ar.members()}
@@ -536,9 +557,14 @@ def test_pycdlib_udf_directory_cycle_does_not_hang() -> None:
     ``PyCdlib._walk_udf_directories`` enqueues each directory's File Entry with no
     visit tracking, so this image made it parse the root's entries again and again,
     with memory growing about 65 MB a second, under default limits. The listing comes
-    from the ISO 9660 tree, as ``7z l`` lists the same image.
+    from the ISO 9660 tree, as ``7z l`` lists the same image. pycdlib 1.22 and later
+    refuses the image itself (:func:`_pycdlib_refuses_loops`).
     """
     image = _udf_directory_cycle_image()
+    if _pycdlib_refuses_loops():
+        with pytest.raises(CorruptionError, match=_LOOP):
+            open_archive(io.BytesIO(image), format=ArchiveFormat.ISO)
+        return
     with open_archive(io.BytesIO(image), format=ArchiveFormat.ISO) as ar:
         names = sorted(m.name for m in ar.members())
     assert names == ["D/", "D/F.TXT"]
