@@ -12,8 +12,9 @@ rarfile starts one ``unrar`` process per member) and libarchive-c needs the syst
 skipped.
 
 Each row times archivey and one peer on the same file, alternating the order, and
-reports the median of each side. Before timing, ``read_all`` checks that both sides
-return the same number of bytes, so a peer that silently reads less cannot look fast.
+reports the median of each side (``--rounds``, default 9 timed calls per side).
+Before timing, ``read_all`` checks that both sides return the same number of bytes,
+so a peer that silently reads less cannot look fast.
 """
 
 from __future__ import annotations
@@ -31,10 +32,13 @@ from pathlib import Path
 
 from archivey import ExtractionLimits, open_archive
 from benchmarks.fixtures import FixtureSet, materialize_fixtures
-from benchmarks.harness import _unrar_available
-
-Op = Callable[[Path], object]
-
+from benchmarks.harness import (
+    _py7zr_available,
+    _py7zr_open_list,
+    _rarfile_available,
+    _rarfile_open_list,
+    _unrar_available,
+)
 
 # --- archivey ---
 
@@ -55,19 +59,13 @@ def _ay_read_all(path: Path) -> int:
 
 def _ay_extract(path: Path, dest: Path) -> None:
     # The bench payloads repeat a 4 KiB block, so solid LZMA2 packs them past the
-    # default 1000:1 ratio guard. The peers have no such guard; turn it off here.
+    # default 1000:1 ratio guard. The peers have no such limits, so all three
+    # extraction limits are off here: ratio, total bytes and entry count.
     with open_archive(path) as reader:
         reader.extract_all(dest, limits=ExtractionLimits.UNLIMITED)
 
 
-# --- py7zr ---
-
-
-def _py7zr_list(path: Path) -> None:
-    import py7zr
-
-    with py7zr.SevenZipFile(path) as archive:
-        archive.list()
+# --- py7zr (listing op shared with the harness) ---
 
 
 def _py7zr_read_all(path: Path) -> int:
@@ -87,14 +85,8 @@ def _py7zr_extract(path: Path, dest: Path) -> None:
         archive.extractall(dest)
 
 
-# --- rarfile (member data through one ``unrar p`` process per member) ---
-
-
-def _rarfile_list(path: Path) -> None:
-    import rarfile
-
-    with rarfile.RarFile(path) as archive:
-        archive.infolist()
+# --- rarfile (listing op shared with the harness; member data goes through one
+# ``unrar p`` process per member) ---
 
 
 def _rarfile_read_all(path: Path) -> int:
@@ -140,14 +132,21 @@ def _libarchive_read_all(path: Path) -> int:
 def _libarchive_extract(path: Path, dest: Path) -> None:
     import libarchive
 
+    # extract_file writes into the working directory; resolve first so a relative
+    # archive path still names the same file after the chdir.
+    source = str(path.resolve())
     with contextlib.chdir(dest):
-        libarchive.extract_file(str(path))
+        libarchive.extract_file(source)
 
 
 def _peer_available(name: str) -> str | None:
     """None when ``name`` can run here, else the reason it cannot."""
+    if name == "py7zr":
+        return None if _py7zr_available() else "py7zr not importable"
+    if name == "rarfile":
+        return None if _rarfile_available() else "rarfile not importable"
     try:
-        importlib.import_module({"libarchive-c": "libarchive"}.get(name, name))
+        importlib.import_module("libarchive")
     # Without the system library, libarchive-c fails in ctypes: OSError when the
     # library will not load, AttributeError when a symbol is missing.
     except (ImportError, OSError, AttributeError) as exc:
@@ -157,12 +156,12 @@ def _peer_available(name: str) -> str | None:
 
 PEER_OPS: dict[str, dict[str, Callable[..., object]]] = {
     "py7zr": {
-        "list": _py7zr_list,
+        "list": _py7zr_open_list,
         "read_all": _py7zr_read_all,
         "extract": _py7zr_extract,
     },
     "rarfile": {
-        "list": _rarfile_list,
+        "list": _rarfile_open_list,
         "read_all": _rarfile_read_all,
         "extract": _rarfile_extract,
     },
@@ -207,28 +206,29 @@ def _median_pair(
 def _cases(fx: FixtureSet) -> list[tuple[str, Path | None, list[str], list[str]]]:
     """(label, path, operations, peers). A ``None`` path is reported as skipped."""
     full = ["list", "read_all", "extract"]
+    many = f"{fx.scale.list_members:,} members".replace(",", " ")
+    nonsolid = f"{fx.scale.nonsolid_list_members:,} non-solid".replace(",", " ")
+    seven, rar = ["py7zr", "libarchive-c"], ["rarfile", "libarchive-c"]
     return [
-        ("zip", fx.zip_path, full, ["libarchive-c"]),
-        ("tar", fx.tar_path, full, ["libarchive-c"]),
-        ("7z solid", fx.solid_7z, full, ["py7zr", "libarchive-c"]),
-        ("7z many (list)", fx.many_7z, ["list"], ["py7zr", "libarchive-c"]),
-        ("7z non-solid (list)", fx.nonsolid_7z, ["list"], ["py7zr", "libarchive-c"]),
-        ("rar solid", fx.solid_rar, full, ["rarfile", "libarchive-c"]),
-        ("rar many (list)", fx.many_rar, ["list"], ["rarfile", "libarchive-c"]),
-        (
-            "rar non-solid (list)",
-            fx.nonsolid_rar,
-            ["list"],
-            ["rarfile", "libarchive-c"],
-        ),
+        ("ZIP", fx.zip_path, full, ["libarchive-c"]),
+        ("TAR", fx.tar_path, full, ["libarchive-c"]),
+        ("7z solid", fx.solid_7z, full, seven),
+        (f"7z {many}", fx.many_7z, ["list"], seven),
+        (f"7z {nonsolid}", fx.nonsolid_7z, ["list"], seven),
+        ("RAR solid", fx.solid_rar, full, rar),
+        (f"RAR {many}", fx.many_rar, ["list"], rar),
+        (f"RAR {nonsolid}", fx.nonsolid_rar, ["list"], rar),
     ]
 
 
 def run(scale: str, rounds: int) -> None:
-    """Print one markdown table row per (archive, operation, peer) as it finishes."""
+    """Print one markdown table row per (archive, operation, peer) as it finishes.
+
+    Ratio is archivey / peer.
+    """
     fx = materialize_fixtures(scale=scale)
     work = Path(tempfile.mkdtemp(prefix="archivey-peers-"))
-    print("| Archive | Operation | Peer | archivey | peer | archivey / peer |")
+    print("| Archive | Operation | Peer | archivey | peer | ratio |")
     print("| --- | --- | --- | ---: | ---: | ---: |", flush=True)
     try:
         for label, path, ops, peers in _cases(fx):
@@ -237,7 +237,7 @@ def run(scale: str, rounds: int) -> None:
                     why = _peer_available(peer)
                     if path is None:
                         why = "fixture not built (writer missing)"
-                    elif label.startswith("rar") and op != "list":
+                    elif label.startswith("RAR") and op != "list":
                         # archivey (and rarfile) read RAR data through unrar.
                         if not _unrar_available():
                             why = why or "RARLAB unrar not on PATH"
@@ -275,7 +275,7 @@ def _row(label: str, path: Path, op: str, peer: str, rounds: int, work: Path) ->
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scale", choices=("ci", "realistic"), default="realistic")
-    parser.add_argument("--rounds", type=int, default=7, help="timed calls per side")
+    parser.add_argument("--rounds", type=int, default=9, help="timed calls per side")
     args = parser.parse_args(argv)
     # Diagnostic logs (ZIP name-encoding advisories) skew short samples; see harness.
     logging.disable(logging.CRITICAL)

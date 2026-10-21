@@ -230,9 +230,12 @@ it, and without `py7zr`, `rarfile` or RARLAB `unrar`, the rows print as skipped.
 
 **Host and versions:** 2026-10-21, `main` @ `8808382`, 4-core Intel Xeon @ 2.80 GHz
 (KVM), Linux x86_64, CPython 3.11.17. py7zr 1.1.4, rarfile 4.5 (with `unrar` 7.00),
-libarchive-c over libarchive 3.7.2. Three runs of 9 alternating timed calls per side;
-each cell is the median of the three per-run medians, and the last column is the
-range of the three ratios.
+libarchive-c over libarchive 3.7.2. Three runs of the command above (9 alternating
+timed calls per side, the default); each cell is the median of the three per-run
+medians. The script prints the first six columns; the `range` column (the lowest
+and highest of the three per-run ratios) was added by hand. Each row is an
+independent archivey/peer pair with its own archivey timing, so the archivey
+column differs a little between the rows of one archive and operation.
 
 **Read the method notes first:**
 
@@ -243,12 +246,13 @@ range of the three ratios.
 - `list` reads names and metadata only. `read_all` reads every member into memory,
   and checks first that both sides return the same number of bytes. `extract`
   writes to an empty directory. archivey extracts with its default checks (path and
-  link safety, atomic writes) and the ratio guard off: these payloads exceed the
-  default 1000:1, and the peers have no such guard.
+  link safety, atomic writes) and with all three extraction limits off (ratio,
+  total bytes, entry count): these payloads exceed the default 1000:1 ratio, and
+  the peers have no such limits. Only the ratio limit would have fired here.
 - 7z fixtures: py7zr writes the solid LZMA2 archive (64×256 KiB) and the
   10 000-member solid Copy archive; the 7-Zip CLI writes the 1 000-member non-solid
-  store archive (`-ms=off -mx=0`). RAR fixtures are RAR5, written by `rar` 7.00 (solid `-m3` 64×256 KiB;
-  10 000 and 1 000 tiny store members).
+  store archive (`-ms=off -mx=0`). RAR fixtures are RAR5, written by `rar` 7.00
+  (solid `-m3` 64×256 KiB; 10 000 and 1 000 tiny store members).
 - Which peer runs `unrar`: archivey and rarfile both send RAR member data through
   RARLAB `unrar`. archivey starts one process for the whole solid archive; rarfile
   starts `unrar p` once per member, and on a solid archive each process decodes
@@ -297,7 +301,7 @@ What the numbers show:
   `read_all` is 0.87× py7zr. Solid RAR is 20× faster than rarfile to read and
   10× faster to extract, because rarfile decodes a solid archive again for every
   member.
-- **libarchive is faster on nearly everything:** 4–10× on listing, 1.2–1.9× on
+- **libarchive is faster on nearly everything:** 3.6–10× on listing, 1.2–1.9× on
   `read_all`, 2–4× on `extract`. The exception is listing a solid RAR, where
   libarchive decodes the data to skip it (0.14×).
 - **Extraction pays a fixed cost per member** on top of reading: ZIP extract is
