@@ -20,21 +20,35 @@ import struct
 import time
 import zlib
 from pathlib import Path
+from typing import TypeVar
 
 import pytest
 
 from archivey import (
     ExtractionPolicy,
+    ExtractionResult,
     ExtractionStatus,
     OnError,
     OverwritePolicy,
     open_archive,
 )
-from archivey.cli.exit_codes import EXIT_OK
+from archivey.cli.exit_codes import EXIT_OK, EXIT_POLICY
 from archivey.cli.main import main
-from archivey.exceptions import ArchiveyError, CorruptionError, ResourceLimitError
+from archivey.exceptions import (
+    ArchiveyError,
+    CorruptionError,
+    FilterRejectionError,
+    ResourceLimitError,
+    TruncatedError,
+    UnsupportedFeatureError,
+)
 from tests.extract_util import open_and_extract
+from tests.memory_util import traced_peak
+
+# The hand-built archive writers come from the audit modules that already own them,
+# so a fix to a writer reaches every test that builds archives with it.
 from tests.test_audit_extraction_reaudit import _rar5_with
+from tests.test_audit_rar_iso_dir import _vint
 from tests.test_audit_sevenzip import (
     _COPY,
     _LZMA2,
@@ -55,6 +69,7 @@ _MODES = pytest.mark.parametrize("streaming", [False, True], ids=["random", "str
 _S_IFREG = 0o100644
 _S_IFLNK = 0o120777
 _UNIX_EXTENSION = 0x8000
+_K = TypeVar("_K")
 
 
 def _sevenzip(entries: list[tuple[str, int, bytes]]) -> bytes:
@@ -101,8 +116,13 @@ def _assert_no_link_leaves(dest: Path) -> None:
                 assert path.resolve().is_relative_to(root), path
 
 
-def _extract(data: bytes, dest: Path, policy: ExtractionPolicy, streaming: bool):
-    return open_and_extract(
+def _extract(
+    data: bytes, dest: Path, policy: ExtractionPolicy, streaming: bool
+) -> dict[str, ExtractionResult]:
+    """Extract ``data`` into ``dest`` and return the results by member name, after
+    checking that every result's paths are inside ``dest``. A path check catches an
+    escape that lands outside ``tmp_path``, such as at the filesystem root."""
+    report = open_and_extract(
         io.BytesIO(data),
         dest,
         streaming=streaming,
@@ -110,6 +130,18 @@ def _extract(data: bytes, dest: Path, policy: ExtractionPolicy, streaming: bool)
         on_error=OnError.CONTINUE,
         overwrite=OverwritePolicy.REPLACE,
     )
+    root = Path(os.path.abspath(dest))
+    for result in report:
+        for path in (result.path, result.requested_path):
+            if path is not None:
+                assert Path(os.path.abspath(path)).is_relative_to(root), result
+    return {result.member.name: result for result in report}
+
+
+def _assert_blocked(results: dict[str, ExtractionResult], names: list[str]) -> None:
+    for name in names:
+        assert results[name].status is ExtractionStatus.BLOCKED, results[name]
+        assert isinstance(results[name].error, FilterRejectionError), results[name]
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +160,20 @@ _ESCAPING_NAMES = [
     ".. /outside/victim",
     "a/... /.. ./outside/victim",
 ]
+# Refused under every policy. STRICT also refuses the other three; STANDARD and
+# TRUSTED re-root the absolute name, and keep the dot-and-space segments as literal
+# names, which is safe because they cannot climb (Windows CI runs this file too).
+_ALWAYS_BLOCKED = ["../outside/victim", "a/../../outside/victim", "C:../outside/victim"]
+
+
+def _assert_traversal_contained(
+    results: dict[str, ExtractionResult], policy: ExtractionPolicy
+) -> None:
+    assert sorted(results) == sorted(_ESCAPING_NAMES)
+    if policy is ExtractionPolicy.STRICT:
+        _assert_blocked(results, _ESCAPING_NAMES)
+    else:
+        _assert_blocked(results, _ALWAYS_BLOCKED)
 
 
 @_POLICIES
@@ -139,7 +185,7 @@ def test_py7zr_cve_2022_44900_traversal_names(
     # that the result stayed inside it.
     dest, outside = _outside_layout(tmp_path)
     data = _sevenzip([(name, _S_IFREG, b"overwritten") for name in _ESCAPING_NAMES])
-    _extract(data, dest, policy, streaming)
+    _assert_traversal_contained(_extract(data, dest, policy, streaming), policy)
     _assert_outside_untouched(tmp_path, outside)
 
 
@@ -152,13 +198,11 @@ def test_winrar_cve_2025_6218_and_cve_2018_20250_traversal_names(
     # on Windows must still not write through a segment the OS reads as ``..``.
     dest, outside = _outside_layout(tmp_path)
     data = _rar5_with([(name, "file", b"overwritten") for name in _ESCAPING_NAMES])
-    _extract(data, dest, policy, streaming)
+    _assert_traversal_contained(_extract(data, dest, policy, streaming), policy)
     _assert_outside_untouched(tmp_path, outside)
 
 
-def _link_chain(
-    kind_link: object, kind_file: object
-) -> list[tuple[str, object, str | bytes]]:
+def _link_chain(kind_link: _K, kind_file: _K) -> list[tuple[str, _K, str | bytes]]:
     """``l1 -> .``, then ``l2 -> l1/..``: lexically ``l2`` stays in the destination,
     but the kernel follows ``l1`` first and ``..`` then leaves it. A file written
     through ``l2`` lands in the destination's parent."""
@@ -168,6 +212,16 @@ def _link_chain(
         ("l2/outside/victim", kind_file, b"overwritten"),
         ("l2/outside/new", kind_file, b"new"),
     ]
+
+
+def _assert_chain_contained(results: dict[str, ExtractionResult], dest: Path) -> None:
+    """``l2`` is refused, so the files that would have gone through it are written
+    as ordinary files under ``dest/l2/``."""
+    assert results["l1"].status is ExtractionStatus.EXTRACTED
+    _assert_blocked(results, ["l2"])
+    for name in ("l2/outside/victim", "l2/outside/new"):
+        assert results[name].status is ExtractionStatus.EXTRACTED, results[name]
+    assert not (dest / "l2").is_symlink()
 
 
 @_POSIX_LINKS
@@ -184,7 +238,7 @@ def test_py7zr_cve_2026_23879_symlink_chain(
         (name, mode, value.encode() if isinstance(value, str) else value)
         for name, mode, value in _link_chain(_S_IFLNK, _S_IFREG)
     ]
-    _extract(_sevenzip(entries), dest, policy, streaming)  # type: ignore[arg-type]
+    _assert_chain_contained(_extract(_sevenzip(entries), dest, policy, streaming), dest)
     _assert_outside_untouched(tmp_path, outside)
     _assert_no_link_leaves(dest)
 
@@ -197,8 +251,8 @@ def test_rar5_symlink_chain_like_py7zr_cve_2026_23879(
 ) -> None:
     # The same chain as RAR5 redirect records, which unrar CVE-2022-48579 also used.
     dest, outside = _outside_layout(tmp_path)
-    entries = [(name, kind, value) for name, kind, value in _link_chain("sym", "file")]
-    _extract(_rar5_with(entries), dest, policy, streaming)
+    data = _rar5_with(_link_chain("sym", "file"))
+    _assert_chain_contained(_extract(data, dest, policy, streaming), dest)
     _assert_outside_untouched(tmp_path, outside)
     _assert_no_link_leaves(dest)
 
@@ -213,9 +267,10 @@ def test_py7zr_cve_2026_55195_decompression_bomb(
     tmp_path: Path, streaming: bool
 ) -> None:
     # py7zr before 1.1.3 tracked no total output size, so a small archive extracted to
-    # any size. 256 MiB of zeros packs to about 40 KiB of LZMA2; the default limits
-    # refuse it and write at most a few MiB of it.
-    size = 256 << 20
+    # any size. A 7z records every member's size, so archivey refuses this one from the
+    # recorded ratio (16 MiB from about 2.5 KiB, past max_ratio=1000) before it
+    # decodes a byte, and writes nothing.
+    size = 16 << 20
     packed = _lzma2(bytes(size), dict_size=1 << 20)
     header = _header(
         folders=[_folder([_coder(_LZMA2, props=b"\x10")])],
@@ -234,8 +289,8 @@ def test_py7zr_cve_2026_55195_decompression_bomb(
     (result,) = list(report)
     assert result.status is ExtractionStatus.FAILED
     assert isinstance(result.error, ResourceLimitError)
-    written = sum(p.stat().st_size for p in dest.rglob("*") if p.is_file())
-    assert written < 16 << 20
+    assert "from recorded sizes" in str(result.error)
+    assert list(dest.iterdir()) == []
 
 
 def _many_folders(count: int) -> bytes:
@@ -269,7 +324,7 @@ def test_py7zr_cve_2026_55206_pack_stream_count_is_linear() -> None:
 def test_7zip_cve_2024_11612_copy_coder_short_of_its_size() -> None:
     # 7-Zip 24.06 and 24.07 looped for ever in the COPY coder. Here a COPY folder
     # that says it unpacks to far more than its pack stream holds must end in a
-    # typed error, not a loop that waits for bytes that never come.
+    # truncation error, not a loop that waits for bytes that never come.
     header = _header(
         folders=[_folder([_coder(_COPY)])],
         coder_unpack_sizes=[[1 << 40]],
@@ -277,7 +332,7 @@ def test_7zip_cve_2024_11612_copy_coder_short_of_its_size() -> None:
         names=["short"],
     )
     data = _archive(b"abcd", header)
-    with pytest.raises(ArchiveyError):
+    with pytest.raises(TruncatedError, match="ended after 4 of"):
         with open_archive(io.BytesIO(data)) as reader:
             (member,) = reader.members()
             with reader.open(member) as stream:
@@ -305,39 +360,46 @@ def test_commons_compress_cve_2021_35515_coder_cycle_is_corruption() -> None:
             reader.members()
 
 
-def _huge_count_headers() -> list[tuple[str, bytes]]:
+def _huge_count_headers() -> list[tuple[str, bytes, type[ArchiveyError]]]:
     huge = 1 << 60
     files = b"\x05" + _num(huge) + b"\x00"
     pack = b"\x06" + _num(0) + _num(huge) + b"\x00"
     unpack = b"\x07\x0b" + _num(huge) + b"\x00"
     coders = b"\x07\x0b" + _num(1) + b"\x00" + _num(huge)
     return [
-        ("files", b"\x01" + files + b"\x00"),
-        ("pack_streams", b"\x01\x04" + pack + b"\x00\x00"),
-        ("folders", b"\x01\x04" + unpack + b"\x00\x00"),
-        ("coders", b"\x01\x04" + coders + b"\x00\x00"),
+        # A count of items that cannot fit in the header is corrupt; the coder count
+        # has a fixed limit (64, as in 7-Zip) and is checked against that instead.
+        ("files", b"\x01" + files + b"\x00", CorruptionError),
+        ("pack_streams", b"\x01\x04" + pack + b"\x00\x00", CorruptionError),
+        ("folders", b"\x01\x04" + unpack + b"\x00\x00", CorruptionError),
+        ("coders", b"\x01\x04" + coders + b"\x00\x00", UnsupportedFeatureError),
     ]
 
 
 @pytest.mark.parametrize(
-    "header",
-    [h for _, h in _huge_count_headers()],
-    ids=[name for name, _ in _huge_count_headers()],
+    ("header", "error"),
+    [pytest.param(h, e, id=name) for name, h, e in _huge_count_headers()],
 )
-def test_commons_compress_cve_2021_35516_huge_declared_counts(header: bytes) -> None:
+def test_commons_compress_cve_2021_35516_huge_declared_counts(
+    header: bytes, error: type[ArchiveyError]
+) -> None:
     # Commons Compress 1.6 to 1.20 allocated what a 7z header said it held, so a
-    # few bytes declaring 2^60 files, folders or streams ran it out of memory.
-    with pytest.raises(ArchiveyError):
-        with open_archive(io.BytesIO(_archive(b"", header))) as reader:
-            reader.members()
+    # few bytes declaring 2^60 files, folders or streams ran it out of memory. Here
+    # the count is refused before anything is sized from it.
+    def open_and_list() -> None:
+        with pytest.raises(error, match="exceeds"):
+            with open_archive(io.BytesIO(_archive(b"", header))) as reader:
+                reader.members()
+
+    open_and_list()  # imports and caches stay out of the measured peak
+    assert traced_peak(open_and_list) < 4 << 20
 
 
-def _rar5_short_header(size: int) -> bytes:
-    from tests.test_audit_rar_iso_dir import _vint
-
-    sized = _vint(size) + bytes(size)
+def _rar5_short_header(body: bytes) -> bytes:
+    """A RAR5 archive of one block whose header is ``body``, with a valid CRC."""
+    sized = _vint(len(body)) + body
     signature = _rar5_with([])[:8]
-    return signature + struct.pack("<I", zlib.crc32(sized)) + sized + bytes(16)
+    return signature + struct.pack("<I", zlib.crc32(sized)) + sized
 
 
 def _rar4_short_header(size: int) -> bytes:
@@ -347,17 +409,31 @@ def _rar4_short_header(size: int) -> bytes:
 
 
 @pytest.mark.parametrize(
-    "data",
+    ("data", "message"),
     [
-        *(pytest.param(_rar5_short_header(s), id=f"rar5-size{s}") for s in (0, 1, 2)),
-        *(pytest.param(_rar4_short_header(s), id=f"rar4-size{s}") for s in (0, 3, 6)),
+        # No type at all; a main header with no archive flags; a file header that
+        # ends after its type and flags.
+        *(
+            pytest.param(
+                _rar5_short_header(body), "variable-length integer", id=f"rar5-{i}"
+            )
+            for i, body in enumerate((b"", b"\x01\x00", b"\x02\x00"))
+        ),
+        *(
+            pytest.param(
+                _rar4_short_header(s), "Invalid RAR3 header size", id=f"rar4-{s}"
+            )
+            for s in (0, 3, 6)
+        ),
     ],
 )
-def test_rar_header_too_small_to_advance_is_an_error(data: bytes) -> None:
+def test_rar_header_too_small_to_advance_is_an_error(data: bytes, message: str) -> None:
     # A block whose header size does not cover its own fields is the shape behind
     # header-walk loops in several readers (rarfile fixed one in a RAR3 subblock).
-    # The CRC is valid, so the size itself must end the walk with a typed error.
-    with pytest.raises(ArchiveyError):
+    # The CRC is valid, so the size itself must end the walk: RAR5 fields are read
+    # only from inside the declared header, and RAR4 checks the size against the
+    # seven bytes every block needs.
+    with pytest.raises(CorruptionError, match=message):
         with open_archive(io.BytesIO(data)) as reader:
             reader.members()
 
@@ -374,17 +450,29 @@ def test_unrar_cve_2024_33899_escape_sequences_in_names(
     # escape sequences in a name could rewrite the screen. archivey's CLI escapes
     # them in every listing and report; it also runs unrar with -inul, so unrar
     # itself prints nothing to the terminal.
-    names = ["\x1b[2J\x1b[Hclean.txt", "ok\x1b]0;title\x07.txt", "../\x1b[1Aup.txt"]
+    names = [
+        "\x1b[2J\x1b[Hclean.txt",
+        "ok\x1b]0;title\x07.txt",
+        "cr\rover.txt",
+        "../\x1b[1Aup.txt",
+    ]
     archive = tmp_path / "hostile.rar"
     archive.write_bytes(_rar5_with([(n, "file", b"x") for n in names]))
     dest = tmp_path / "dest"
-    for argv in (
-        ["list", str(archive)],
-        ["test", str(archive)],
-        ["extract", str(archive), "-d", str(dest)],
+    # ``extract`` exits with EXIT_POLICY because it blocks the ``../`` member, and
+    # rewrites the other names for the disk, so its report shows a ``%1B`` spelling.
+    for argv, code, shown in (
+        (["list", str(archive)], EXIT_OK, ["\\x1b[2J", "\\x07", "\\r", "\\x1b[1A"]),
+        (["test", str(archive)], EXIT_OK, []),
+        (
+            ["extract", str(archive), "-d", str(dest)],
+            EXIT_POLICY,
+            ["%1B[2J", "\\x1b[1A"],
+        ),
     ):
-        main(argv)
-        captured = capsys.readouterr()
-        assert "\x1b" not in captured.out + captured.err, argv
-        assert "\x07" not in captured.out + captured.err, argv
-    assert main(["list", str(archive)]) == EXIT_OK
+        assert main(argv) == code, argv
+        output = "".join(capsys.readouterr())
+        for raw in ("\x1b", "\x07", "\r"):
+            assert raw not in output, (argv, raw)
+        for spelling in shown:
+            assert spelling in output, (argv, spelling)
