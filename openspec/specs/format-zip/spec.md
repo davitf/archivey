@@ -1036,7 +1036,7 @@ SHALL ignore `encoding=`. A comment is not a name, so decoding it SHALL NOT emit
 `MEMBER_NAME_ENCODING_INFERRED`.
 
 An Info-ZIP Unicode Comment extra field (`0x6375`) in the central directory SHALL be read
-for a member comment that decodes as unflagged, by the Unicode Path field's rules: when
+for a member comment whose bit 11 is clear, by the Unicode Path field's rules: when
 the field is version 1, its CRC-32 equals the CRC-32 of the stored comment bytes, and its
 text is non-empty valid UTF-8, the comment SHALL be that text, ahead of the sniff and of
 `encoding=`, as 7-Zip reads it. A field whose CRC does not match or whose version is not

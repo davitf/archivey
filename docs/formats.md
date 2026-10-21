@@ -301,7 +301,7 @@ yielded.
   field (too short, or matching with an empty, cut-short or non-UTF-8 name) is dropped with a
   `member_header_record_skipped` diagnostic. The archive opens on every Python version. `zipfile` on
   its own refuses a too-short field or a non-UTF-8 name from Python 3.12. The Info-ZIP Unicode
-  Comment field (`0x6375`) does the same for a member comment that decodes as unflagged, as 7-Zip
+  Comment field (`0x6375`) does the same for a member comment whose bit 11 is clear, as 7-Zip
   reads it.
 - **A wrongly-set UTF-8 flag is ignored.** When general-purpose bit 11 claims UTF-8
   but the stored bytes are not valid UTF-8, the flag cannot be right, so the name
