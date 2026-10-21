@@ -336,8 +336,10 @@ def compare_coverage(
             changed.append(
                 (
                     share,
-                    f"{old}: {_describe(real_lost)} no longer run ({share:.0%}), "
-                    f"{_describe(real_gained)} newly run",
+                    (
+                        f"{old}: {_describe(real_lost)} no longer run ({share:.0%}), "
+                        f"{_describe(real_gained)} newly run"
+                    ),
                 )
             )
     changed.sort(key=lambda item: -item[0])
