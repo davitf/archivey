@@ -545,6 +545,7 @@ def _run_ppmd_child(script: str, *, timeout: float = 60.0) -> None:
         timeout=timeout,
         env=env,
         cwd=str(_REPO_ROOT),
+        check=False,
     )
     stdout = proc.stdout or ""
     body_ok = any(line.strip() == "ok" for line in stdout.splitlines())
