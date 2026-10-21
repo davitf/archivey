@@ -225,7 +225,19 @@ def _extract_and_check(
     assert _snapshot(outside) == before
     if os.name != "nt":
         _assert_no_link_leaves(dest)
+    _assert_not_disclosed(dest)
     return report
+
+
+def _assert_not_disclosed(dest: Path) -> None:
+    """No regular file under ``dest`` holds the victim's bytes, so nothing outside
+    was copied or linked in."""
+    for parent, _, filenames in os.walk(dest):
+        for name in filenames:
+            path = os.path.join(parent, name)
+            if not os.path.islink(path):
+                with open(path, "rb") as f:
+                    assert f.read() != b"original", path
 
 
 # Name-only escapes: every OS, every policy.
@@ -294,6 +306,24 @@ _LINK_CASES = {
         ("sym", "victim", "../outside/victim"),
         ("file", "victim", b"new"),
     ],
+    # tarfile CVE-2026-7774: symlinks whose names look like directories.
+    "symlink-named-like-a-directory": [
+        ("sym", "a/", "../outside"),
+        ("file", "a/victim", b"overwritten"),
+    ],
+    "symlink-named-dot": [
+        ("dir", "a", ""),
+        ("sym", "a/.", "../../outside"),
+        ("file", "a/victim", b"overwritten"),
+    ],
+    # tarfile CVE-2026-19672: a name whose ``..`` goes up through a link. Taken
+    # lexically it stays inside; the kernel goes up from the link's target.
+    "dotdot-after-a-link": [
+        ("dir", "x/y", ""),
+        ("sym", "x/y/l", "../.."),
+        ("dir", "x/y/l/../newdir", ""),
+        ("file", "x/y/l/../newfile", b"new"),
+    ],
     # libarchive CVE-2021-31566: a directory whose mode is applied at the end, after
     # a later member made its name a link out.
     "deferred-mode-through-link": [
@@ -315,6 +345,13 @@ _TAR_ONLY_CASES = {
         ("sym", "s", "../outside"),
         ("hard", "h", "s/victim"),
         ("file", "h", b"overwritten"),
+    ],
+    # tarfile CVE-2026-82049 / CVE-2026-11940: a hardlink to a symlink to a file
+    # outside, which copies or links that file in (its contents disclosed) and
+    # takes the member's mode and times onto it.
+    "hardlink-to-symlink-to-file": [
+        ("sym", "s", "../outside/victim"),
+        ("hard", "h", "s"),
     ],
     # libarchive CVE-2016-5418: a hardlink to an absolute path with data, which
     # overwrites what it links to.
