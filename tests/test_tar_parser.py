@@ -46,6 +46,7 @@ from archivey.internal.backends.tar_parser import (
 from tests.tar_build import END as _END
 from tests.tar_build import block as _block
 from tests.tar_build import data as _data
+from tests.tar_build import field as _field
 from tests.tar_build import octal as _octal
 from tests.tar_build import pax as _pax
 from tests.tar_build import pax_record as _rec
@@ -130,13 +131,6 @@ def test_parse_number(field: bytes, expected: int) -> None:
 def test_parse_number_refuses_what_is_not_octal(field: bytes) -> None:
     with pytest.raises(ValueError):
         parse_number(field)
-
-
-def _field(start: int, end: int, value: bytes) -> Callable[[bytearray], None]:
-    def patch(h: bytearray) -> None:
-        h[start:end] = value.ljust(end - start, b"\x00")
-
-    return patch
 
 
 @pytest.mark.parametrize(

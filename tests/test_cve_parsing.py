@@ -23,7 +23,7 @@ from archivey.exceptions import (
 from archivey.internal.backends.tar_parser import BLOCKSIZE
 from tests.memory_util import traced_peak
 from tests.streams_util import NonSeekableBytesIO
-from tests.tar_build import END, block, data, pax, pax_record
+from tests.tar_build import END, block, data, field, pax, pax_body, pax_record
 
 # ``pipe`` reads a stream that cannot seek, so a ZIP is read by its local headers.
 _MODES = pytest.mark.parametrize("mode", ["random", "stream", "pipe"])
@@ -48,18 +48,6 @@ def _read_everything(
 # --- TAR -------------------------------------------------------------------------
 
 
-def _field(start: int, end: int, raw: bytes):
-    def patch(h: bytearray) -> None:
-        h[start:end] = raw
-
-    return patch
-
-
-def _pax_body(body: bytes) -> bytes:
-    """A PAX header block holding ``body`` as is, framed or not."""
-    return block(b"PaxHeader", size=len(body), typeflag=b"x") + data(body)
-
-
 def _file(name: bytes, payload: bytes) -> bytes:
     return block(name, size=len(payload)) + data(payload)
 
@@ -68,7 +56,7 @@ def _file(name: bytes, payload: bytes) -> bytes:
 def test_cve_2025_8194_negative_tar_size(mode: str) -> None:
     # tarfile read a base-256 size field as a negative number and moved its offset
     # back to a header it had read, looping forever. A negative size is damage here.
-    minus_one = _field(124, 136, b"\xff" * 12)
+    minus_one = field(124, 136, b"\xff" * 12)
     archive = block(b"loop", patch=minus_one) + _file(b"after", b"x") + END
     with pytest.raises(CorruptionError, match="negative size"):
         _read_everything(archive, mode=mode)
@@ -91,7 +79,7 @@ def test_cve_2024_6232_pax_header_of_many_records_is_linear(mode: str) -> None:
     # (and one record padded by a megabyte of spaces) is read in one linear pass.
     many = pax_record(b"comment", b"x") * 100_000
     padded = pax_record(b"comment", b" " * 1_000_000)
-    archive = _pax_body(many) + _pax_body(padded) + _file(b"f", b"data") + END
+    archive = pax_body(many) + pax_body(padded) + _file(b"f", b"data") + END
     assert _read_everything(archive, mode=mode) == {"f": b"data"}
 
 
@@ -100,7 +88,7 @@ def test_cve_2024_6232_malformed_pax_length_is_damage(mode: str) -> None:
     # The same report's other input shape: a length prefix of many digits. The
     # record does not parse, so the header is refused at its first record.
     body = b"0" * 100_000 + b"1 comment=x\n"
-    archive = _pax_body(body) + _file(b"f", b"data") + END
+    archive = pax_body(body) + _file(b"f", b"data") + END
     with pytest.raises(CorruptionError, match="malformed record"):
         _read_everything(archive, mode=mode)
 
@@ -121,7 +109,7 @@ def test_cve_2025_25724_out_of_range_mtime(mode: str, mtime: bytes) -> None:
     # lists the member with no time instead of failing the listing, in every mode
     # (``test_audit_cross_format`` checks the random-access listing). Minus one is a
     # time (1969).
-    archive = block(b"f", size=4, patch=_field(136, 148, mtime)) + data(b"data") + END
+    archive = block(b"f", size=4, patch=field(136, 148, mtime)) + data(b"data") + END
     with _open(archive, mode) as reader:
         seen = [(m, s.read() if s else None) for m, s in reader.stream_members()]
         ((member, content),) = seen

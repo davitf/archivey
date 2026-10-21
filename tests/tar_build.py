@@ -37,10 +37,21 @@ def block(
     h[345 : 345 + len(prefix)] = prefix
     if patch is not None:
         patch(h)
+        assert len(h) == BLOCKSIZE, "a patch must keep the block's length"
     if checksum:
         h[148:156] = b" " * 8
         h[148:156] = f"{sum(h):06o}".encode() + b"\x00 "
     return bytes(h)
+
+
+def field(start: int, end: int, value: bytes) -> Callable[[bytearray], None]:
+    """A ``block`` patch writing ``value``, NUL-padded, over bytes ``start:end``."""
+    assert len(value) <= end - start, (start, end, value)
+
+    def patch(h: bytearray) -> None:
+        h[start:end] = value.ljust(end - start, b"\x00")
+
+    return patch
 
 
 def data(payload: bytes) -> bytes:
@@ -62,6 +73,11 @@ def pax(
     """A PAX header block and its records."""
     items = records.items() if isinstance(records, dict) else records
     body = b"".join(pax_record(key.encode(), value.encode()) for key, value in items)
+    return pax_body(body, typeflag=typeflag)
+
+
+def pax_body(body: bytes, *, typeflag: bytes = b"x") -> bytes:
+    """A PAX header block whose data is ``body``, written as given."""
     return block(b"PaxHeader", size=len(body), typeflag=typeflag) + data(body)
 
 
