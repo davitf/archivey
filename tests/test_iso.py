@@ -457,9 +457,9 @@ def test_pycdlib_directory_cycle_does_not_hang(
     """Regression: corrupt ``/subdir`` must not hang pycdlib during ``open_fp``.
 
     ``pycdlib._walk_directories`` (used for the PVD / Rock Ridge tree *and* each
-    supplementary namespace such as Joliet) enqueues child directory extents with no visit
-    tracking. One flipped bit in a directory record can add a child that points back at an
-    ancestor extent; pycdlib then loops forever. ``open_fp`` walks every present namespace,
+    supplementary namespace such as Joliet) enqueued child directory extents with no visit
+    tracking before 1.22. One flipped bit in a directory record can add a child that points back at an
+    ancestor extent; such a pycdlib then looped forever. ``open_fp`` walks every present namespace,
     so a Joliet-only cycle still bites RR+Joliet images even when archivey reads Rock Ridge.
     pycdlib before 1.22 hung here until pytest-timeout killed the test. From 1.22 it
     detects the loop and raises "ISO Directory Records form a loop", so the image is

@@ -799,8 +799,8 @@ _install_pycdlib_udf_counter()
 # rather than leaking as raw exceptions. The cost of so broad a set: this backend also reads
 # pycdlib internals itself (`_nm_name`, `_rr_entry_groups`, `_times`, `_px`,
 # `_check_path_table`), inside the same window, so a bug in that code (an attribute pycdlib
-# no longer sets, say) is reported as a corrupt image rather than crashing. That is how an
-# unguarded `ce_entries is None` on pycdlib 1.20 showed up. We keep the broad set because
+# no longer sets, or an unallocated `ce_entries`, say) is reported as a corrupt image
+# rather than crashing. We keep the broad set because
 # telling a pycdlib frame from ours would need traceback inspection on every error; the
 # guard is to run the ISO suites against newer pycdlib releases (`uv run --with pycdlib==X`).
 # A genuine OSError from the underlying handle (file not found, permission, media error) is
