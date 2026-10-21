@@ -23,11 +23,11 @@ from archivey.internal.streams.codecs.base import (
     StreamCodec,
 )
 from archivey.internal.streams.codecs.rapidgzip_select import (
-    _RAPIDGZIP_REQUIREMENT,
     _bound_rapidgzip_source,
     _deflate_family_uses_accelerator,
     _open_rapidgzip,
     _rapidgzip_enabled,
+    _rapidgzip_requirement,
     _rapidgzip_rewind_warning,
     _refuse_forward_only_accelerator,
     _StdlibSeekContract,
@@ -85,7 +85,7 @@ class _DeflateFamilyCodec(StreamCodec):
             return False
         if not deps.rapidgzip.available():
             raise PackageNotInstalledError(
-                _RAPIDGZIP_REQUIREMENT.message(f"{label} random access")
+                _rapidgzip_requirement().message(f"{label} random access")
             )
         _refuse_forward_only_accelerator(source, "use_rapidgzip", label)
         return True

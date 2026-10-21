@@ -3,12 +3,15 @@ the digest-verification stage."""
 
 from __future__ import annotations
 
+import bz2
 import dataclasses
 import gzip
 import hashlib
 import importlib
+import importlib.machinery
 import importlib.util
 import io
+import logging
 import lzma
 import random
 import re
@@ -2893,16 +2896,50 @@ def deps_built_under_pypy(
         importlib.reload(deps)
 
 
+def _pretend_installed(monkeypatch: pytest.MonkeyPatch, *packages: str) -> None:
+    """Make the package lookup find ``packages``, which the test environment may lack."""
+    find_spec = importlib.util.find_spec
+
+    def found(
+        name: str, package: str | None = None
+    ) -> importlib.machinery.ModuleSpec | None:
+        if name in packages:
+            return importlib.machinery.ModuleSpec(name, None)
+        return find_spec(name, package)
+
+    monkeypatch.setattr(importlib.util, "find_spec", found)
+
+
+def _hooks_read_as_absent(deps: types.ModuleType, package: str) -> bool:
+    """Whether ``deps`` has a hook for ``package`` and every hook reads as absent: a
+    ``LazyOptional`` named ``package`` that is not available, or a module global named
+    ``package`` or ``package_*`` (an eager import such as ``lz4_frame``) that is None."""
+    hooks = [
+        value
+        for name, value in vars(deps).items()
+        if (isinstance(value, deps.LazyOptional) and value.name == package)
+        or name == package
+        or name.startswith(f"{package}_")
+    ]
+    return bool(hooks) and all(
+        value.available() is False
+        if isinstance(value, deps.LazyOptional)
+        else value is None
+        for value in hooks
+    )
+
+
 def test_packages_unused_under_pypy_count_as_absent(
-    deps_built_under_pypy: types.ModuleType,
+    deps_built_under_pypy: types.ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Under PyPy archivey treats lz4, pyppmd and rapidgzip as absent even when they are
     installed, and has a reason for each."""
     deps = deps_built_under_pypy
-    assert deps.lz4_frame is None
-    assert deps.lz4_block is None
-    assert deps.pyppmd.available() is False
-    for package in ("lz4", "pyppmd", "rapidgzip"):
+    unused = set(deps._UNUSED_UNDER_PYPY)
+    assert unused >= {"lz4", "pyppmd", "rapidgzip"}
+    _pretend_installed(monkeypatch, *unused)
+    for package in unused:
+        assert _hooks_read_as_absent(deps, package), package
         assert f"archivey does not use {package} under PyPy" in deps.unused_reason(
             package
         )
@@ -2910,6 +2947,49 @@ def test_packages_unused_under_pypy_count_as_absent(
         deps.unused_reason("rapidgzip")
     )
     assert deps.unused_reason("brotli") == ""
+
+
+@pytest.mark.parametrize(
+    ("codec", "data", "setting"),
+    [
+        (Codec.GZIP, gzip.compress(b"x" * 1000), "use_rapidgzip"),
+        (Codec.BZIP2, bz2.compress(b"x" * 1000), "use_indexed_bzip2"),
+    ],
+    ids=["gzip", "bzip2"],
+)
+def test_installed_rapidgzip_under_pypy_reads_as_absent(
+    deps_built_under_pypy: types.ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    codec: Codec,
+    data: bytes,
+    setting: str,
+) -> None:
+    """Under PyPy an installed rapidgzip changes nothing: ON raises the same
+    PackageNotInstalledError as when it is absent, not ResourceLimitError, and AUTO
+    reads with the standard library without a warning."""
+    _pretend_installed(monkeypatch, "rapidgzip")
+    monkeypatch.setattr(codecs_module.rapidgzip_select, "_child_fallback_warned", set())
+    caplog.set_level(logging.WARNING, logger="archivey.streams")
+
+    on = StreamConfig(seekable=True, **{setting: AcceleratorMode.ON})
+    with pytest.raises(PackageNotInstalledError) as ei:
+        open_codec_stream(codec, io.BytesIO(data), config=on)
+    label = "bzip2" if codec is Codec.BZIP2 else "gzip"
+    reason = deps_built_under_pypy.unused_reason("rapidgzip")
+    assert str(ei.value) == (
+        f"The 'rapidgzip' package is required for {label} random access, but {reason}."
+    )
+    assert "pip install" not in str(ei.value)
+
+    auto = StreamConfig(
+        seekable=True,
+        compressed_input_size=1 << 40,
+        expected_decompressed_size=1000,
+    )
+    with open_codec_stream(codec, io.BytesIO(data), config=auto) as stream:
+        assert stream.read() == b"x" * 1000
+    assert [r.getMessage() for r in caplog.records] == []
 
 
 def test_an_unused_package_reports_its_reason_on_every_channel(
