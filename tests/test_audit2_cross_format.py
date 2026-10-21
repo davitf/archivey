@@ -48,6 +48,7 @@ from archivey.internal.backends.rar_parser import (
     parse_rar_archive,
     parse_rar_volumes,
 )
+from archivey.internal.password import is_wrong_password
 from archivey.reader import ForwardArchiveReader
 from archivey.types import ArchiveMember, MemberType
 from tests.conftest import requires, requires_binary
@@ -349,16 +350,66 @@ def test_rar4_header_encrypted_cut_after_a_proven_key_is_truncated(
 
 @requires("cryptography")
 @pytest.mark.parametrize("length", [44, 60, 91])
-def test_rar4_header_encrypted_cut_inside_the_first_encrypted_header_is_a_wrong_password(
+def test_rar4_header_encrypted_cut_inside_the_first_encrypted_header_names_both_causes(
     length: int,
 ) -> None:
     """Inside the first encrypted header (bytes 44-91 of the fixture) no header has
     decrypted yet, so nothing proves the key, and a garbage header size from a wrong
-    key also runs to the end of the file. That stays a wrong-password error."""
+    key also runs to the end of the file. It stays a wrong-password error, so a
+    password list moves on, but the message also names the cut: with the right
+    password, the cut is the true cause. A wrong password on a small, whole
+    archive gets the same message, so the cut is the second reading."""
     data = _hp_fixture("encrypted_header__rar4.rar")
-    with pytest.raises(EncryptionError, match="wrong password"):
+    with pytest.raises(EncryptionError) as caught:
         with open_archive(io.BytesIO(data[:length]), password=_HP_PASSWORD) as reader:
             reader.members()
+    message = str(caught.value)
+    assert "wrong password?" in message, message
+    assert (
+        "if the password is right, the file ends inside the encrypted header "
+        "that starts at byte 20" in message
+    ), message
+
+
+@requires("cryptography")
+def test_rar4_header_encrypted_crc_mismatch_in_the_first_header_names_no_cut() -> None:
+    """A first header that the file holds whole and that fails its CRC16 is a
+    wrong password or damage, never a cut, so the message does not suggest one."""
+    with pytest.raises(EncryptionError) as caught:
+        parse_rar_archive(
+            io.BytesIO(_rar4_hp_first_header_garbage_name_size()),
+            password=_HP_PASSWORD,
+        )
+    assert "ends inside" not in str(caught.value)
+
+
+def _rar4_hp_first_header_garbage_name_size() -> bytes:
+    """The first encrypted header (``file1.txt``) re-encrypted with ``name_size``
+    (plaintext offset 26) set to 0xFFFF and its CRC16 left as it was."""
+
+    def garbage_name_size(plain: bytearray) -> None:
+        struct.pack_into("<H", plain, 26, 0xFFFF)
+
+    return _rar3_reencrypt_header(
+        _hp_fixture("encrypted_header__rar4.rar"), 20, 64, garbage_name_size
+    )
+
+
+@requires("cryptography")
+@pytest.mark.parametrize("password", [_HP_PASSWORD, "nope"])
+def test_rar4_header_encrypted_garbage_name_size_before_proof_is_a_wrong_password(
+    password: str,
+) -> None:
+    """A wrong key can decrypt the first header into a FILE header whose
+    ``name_size`` runs past the header. Before any CRC16 has proven the key, that
+    must be the wrong-password error, so a password list goes on to the next
+    candidate. The field parse fails before the CRC16 can be checked, so the walk
+    checks the CRC16 over the whole header and judges by that."""
+    with pytest.raises(EncryptionError, match=r"wrong password\?") as caught:
+        parse_rar_archive(
+            io.BytesIO(_rar4_hp_first_header_garbage_name_size()), password=password
+        )
+    assert is_wrong_password(caught.value)
 
 
 def _rar3_reencrypt_header(

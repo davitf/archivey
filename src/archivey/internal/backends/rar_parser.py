@@ -1422,7 +1422,9 @@ def _header_failure(
     :class:`EncryptionError` and password candidates keep iterating. Once the key is
     proven (a matching CRC16 in RAR3, a check value in RAR5), a failure there is
     damage, and one that ran out of ciphertext is a cut. Unproven, a garbage size
-    reads to the end of the file as well, so that stays a wrong password. A plain
+    reads to the end of the file as well, so that stays a wrong password; when the
+    read did run out, the message names the cut too, because with the right
+    password the cut is the cause and nothing here can tell the two apart. A plain
     header the file holds only part of is a cut: unrar lists the members before it
     and reports an unexpected end of archive.
 
@@ -1431,9 +1433,15 @@ def _header_failure(
     """
     if isinstance(header_fd, _HeaderDecryptStream):
         if not proven:
-            raise wrong_password_error(
-                f"Failed to decrypt {version} headers (wrong password?)"
-            ) from exc
+            message = f"Failed to decrypt {version} headers (wrong password?)"
+            if header_fd.hit_eof:
+                # A wrong key's garbage size runs to the end of a small archive as
+                # well, so the cut is the second reading, not the first.
+                message += (
+                    "; if the password is right, the file ends inside the "
+                    f"encrypted header that starts at byte {start}"
+                )
+            raise wrong_password_error(message) from exc
         if header_fd.hit_eof:
             return _encrypted_header_cut(start)
     elif isinstance(exc, _RarHeaderCutError):
