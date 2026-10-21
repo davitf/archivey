@@ -320,7 +320,18 @@ class ForwardArchiveReader(ABC):
         another thread, on every format, so the answer does not depend on the
         format. They share the pass's walk of the archive's headers, and a call that
         needs members the pass has not reached yet reads ahead for it.
-        :meth:`extract_all` works beside a pass too."""
+        :meth:`extract_all` works beside a pass too.
+
+        Raises:
+            ArchiveyUsageError: The reader is closed; it is a streaming reader whose one
+                pass has already started; or, without ``concurrent_operations=True``,
+                another pass or a random-access call is running.
+            ResourceLimitError: The listing exceeds ``ListingLimits``.
+            CorruptionError: Damage to the archive's structure stops the pass from
+                finding the next member. Damage inside a member raises from that
+                member's stream instead, as do ``EncryptionError``,
+                ``UnsupportedFeatureError`` and ``PackageNotInstalledError`` for data
+                archivey cannot decode."""
         ...
 
     @abstractmethod
@@ -361,6 +372,27 @@ class ForwardArchiveReader(ABC):
         refused, skipped, replaced or renamed around in the same way. The report reads
         as the report of a real extraction into the same ``dest`` would, with paths
         under ``dest``.
+
+        A member refused by a safety check is skipped and reported as ``BLOCKED``; it
+        raises only when ``abort_on`` names it.
+
+        Raises:
+            ExtractionError: Under ``on_error="stop"`` (the default), a member could not
+                be written, such as a file already at its destination under
+                ``overwrite="error"``. Its subclasses ``FilterRejectionError``,
+                ``NameCollisionError`` and ``NameRewrittenError`` are raised for the
+                events ``abort_on`` names, whatever ``on_error`` says.
+            ReadError: Under ``on_error="stop"``, a member's data could not be read: a
+                ``CorruptionError`` for damage, an ``EncryptionError`` for a missing or
+                wrong password, a ``LinkTargetNotFoundError``.
+            ResourceLimitError: The extraction exceeds ``ExtractionLimits``. A total
+                stops the extraction whatever ``on_error`` says; a single member over
+                ``max_ratio`` fails on its own, under ``on_error``.
+            DiagnosticRaisedError: A diagnostic escalated by the reader's
+                ``DiagnosticPolicy``, whatever ``on_error`` says.
+            ArchiveyUsageError: An argument has a type or value the call cannot use (also
+                a ``TypeError`` or ``ValueError``), or the reader is closed.
+            OSError: ``dest`` cannot be created or written to.
         """
         ...
 
@@ -407,7 +439,14 @@ class ArchiveReader(ForwardArchiveReader):
         which uses up the pass, or iterate :meth:`~ForwardArchiveReader.stream_members`
         and ignore the streams; both apply :class:`~archivey.config.ListingLimits`).
         Raises terminal archive-level listing errors instead of returning an
-        incomplete list."""
+        incomplete list.
+
+        Raises:
+            CorruptionError: The archive is damaged partway through its member list
+                (:meth:`~ForwardArchiveReader.members_report` returns the members found
+                before the damage instead).
+            ResourceLimitError: The listing exceeds ``ListingLimits``.
+            ArchiveyUsageError: The reader is closed or streaming."""
         ...
 
     @abstractmethod
@@ -419,7 +458,14 @@ class ArchiveReader(ForwardArchiveReader):
         name directly. May trigger a scan; on a streaming reader raises
         ``ArchiveyUsageError``, as does a ``name`` that is not a ``str`` (a ``bytes``
         name or an ``ArchiveMember``). With duplicate member names, returns the last
-        (the one a sequential extraction would leave on disk)."""
+        (the one a sequential extraction would leave on disk).
+
+        Raises:
+            ArchiveyUsageError: The reader is closed or streaming, or ``name`` is not a
+                ``str``.
+            CorruptionError: The scan finds the member list damaged, as
+                :meth:`members` raises it.
+            ResourceLimitError: The listing exceeds ``ListingLimits``."""
         ...
 
     @abstractmethod
@@ -434,7 +480,24 @@ class ArchiveReader(ForwardArchiveReader):
         compressed tar): members share one compression run, so opening one decodes
         every member before it. Doing that for each member in turn is quadratic in the
         archive size. Nothing warns about it — prefer
-        :meth:`~ForwardArchiveReader.stream_members`, which decodes the run once."""
+        :meth:`~ForwardArchiveReader.stream_members`, which decodes the run once.
+
+        Raises:
+            KeyError: No member has that name.
+            ArchiveyUsageError: The member is a directory or another entry with no
+                data; the member object came from another reader; another member stream
+                is open and the reader was opened without
+                ``concurrent_operations=True``; or the reader is closed or streaming.
+            LinkTargetNotFoundError: The member is a link whose target is not a member
+                of the archive.
+            EncryptionError: The member is encrypted and no password given decrypts it.
+            CorruptionError: The member's data is damaged, raised by ``open()`` or by
+                the read of the returned stream that finds the damage
+                (``TruncatedError`` when it seems to end early).
+            UnsupportedFeatureError: The member uses a compression method or feature
+                archivey cannot decode.
+            PackageNotInstalledError: Decoding the member needs an optional package that
+                is not installed."""
         ...
 
     @abstractmethod
@@ -444,5 +507,12 @@ class ArchiveReader(ForwardArchiveReader):
 
         Carries :meth:`open`'s solid-archive cost: on a ``SOLID`` archive this decodes
         every member preceding the requested one, so a loop over all members is
-        quadratic. Use :meth:`~ForwardArchiveReader.stream_members` for that."""
+        quadratic. Use :meth:`~ForwardArchiveReader.stream_members` for that.
+
+        Raises:
+            KeyError: No member has that name.
+            ArchiveyUsageError: As :meth:`open` raises it.
+            ArchiveyError: As :meth:`open` and reading its stream raise it:
+                ``LinkTargetNotFoundError``, ``EncryptionError``, ``CorruptionError``,
+                ``UnsupportedFeatureError`` or ``PackageNotInstalledError``."""
         ...
