@@ -351,34 +351,14 @@ def _require_the_accelerator_in_use() -> None:
         pytest.skip(reason)
 
 
-def _assert_error_or_the_known_clean_read(blob: bytes, content: bytes) -> None:
-    """The standard library raises. The accelerator either raises too, or reads exactly
-    ``content`` clean: the data is right, and only the verdict on a wrong length differs.
-
-    Whether it raises depends on the rapidgzip build, not on archivey. rapidgzip 0.16.0
-    has two chunk decoders: the inflate-wrapper one (ISA-L, in the Linux wheels) appends a
-    member's footer without comparing its size, and its own decoder raises "Mismatching
-    size" for a stream that lies wholly inside one chunk. CI saw the accelerator raise on
-    the macOS wheels and on a Python 3.15 build, and read clean on the Linux wheels.
-    """
-    _require_the_accelerator_in_use()
-    off = _outcome(Codec.GZIP, blob, _OFF, _no_seek)
-    assert off[1] is not None
-    on = _outcome(Codec.GZIP, blob, _ON, _no_seek)
-    assert on == off or on == (content, None)
-
-
 @requires("rapidgzip")
 @pytest.mark.parametrize("case", ["three-members", "large-last-member"])
-def test_gzip_wrong_last_isize_in_a_concatenated_file_is_a_known_limitation(
-    case: str,
-) -> None:
-    """Known limitation (``compressed-streams``): the further-member scan stands down at
-    the first further member it confirms, and a candidate counts once zlib has decoded
-    64 KiB of its input, so the last member's wrong ISIZE can be missed with three or
-    more members, or when the last one is large. Where the rapidgzip build does not
-    compare the size itself, the accelerator reads clean; the data is right, as every
-    member's CRC-32 is checked. Not worth finding the last member's start for."""
+def test_gzip_wrong_last_isize_in_a_concatenated_file_raises(case: str) -> None:
+    """The further-member scan stands down at the first further member it confirms, and a
+    candidate counts once zlib has decoded 64 KiB of its input, so with three or more
+    members, or a large last one, it says nothing about the last member. Its trailer is
+    checked against the end of the output instead, so a wrong ISIZE there raises as with
+    the accelerator off. This used to be a known limitation."""
     contents = [b"first member payload\n" * 5]
     if case == "three-members":
         contents += [b"middle member payload\n" * 7, b"last member payload\n" * 3]
@@ -386,7 +366,10 @@ def test_gzip_wrong_last_isize_in_a_concatenated_file_is_a_known_limitation(
         contents += [random.Random(1).randbytes(300_000)]
     members = [gzip.compress(c, mtime=0) for c in contents]
     members[-1] = members[-1][:-1] + bytes([members[-1][-1] ^ 0x01])
-    _assert_error_or_the_known_clean_read(b"".join(members), b"".join(contents))
+    blob = b"".join(members)
+    off = _outcome(Codec.GZIP, blob, _OFF, _no_seek)
+    assert off[1] is not None
+    _assert_same(_outcome(Codec.GZIP, blob, _ON, _no_seek), off)
 
 
 def _with_crc(prefix: bytes, target: int, suffix: bytes = b"") -> bytes:
@@ -495,11 +478,9 @@ def test_the_gzip_accel_oracle_excuses_a_wrong_isize_only_where_the_spec_accepts
 ):
     """The ``gzip_accel`` fuzz target excuses a clean accelerated read of a file the
     standard library rejects for its length only as far as the spec accepts it: a member
-    another member follows; the last member when the further-member scan can stand down
-    early (three or more members, or a last member longer than its probe); never a
-    single member, padded or not; and not the small last member of two, which the
-    backstop catches and the target should notice if it stopped."""
-    from archivey.internal.streams.codecs.gzip_codec import _MEMBER_PROBE_INPUT
+    another member follows. Never the last member, which the backstop checks against the
+    end of the output however many members come before it and however large it is, and
+    never a single member, padded or not."""
     from tests.atheris_fuzz.targets import _gzip_ignoring_lengths
 
     def member(content: bytes, *, wrong_isize: bool = False) -> bytes:
@@ -509,32 +490,19 @@ def test_the_gzip_accel_oracle_excuses_a_wrong_isize_only_where_the_spec_accepts
         return bytes(blob)
 
     a, b, c = b"a" * 50, b"b" * 70, b"c" * 30
-    large = random.Random(3).randbytes(_MEMBER_PROBE_INPUT + 1000)
+    large = random.Random(3).randbytes(70_000)
     one = member(a, wrong_isize=True)
     assert _gzip_ignoring_lengths(one) is None
     assert _gzip_ignoring_lengths(one + bytes(4)) is None
     assert _gzip_ignoring_lengths(one + len(a).to_bytes(4, "little")) is None
     assert _gzip_ignoring_lengths(member(a, wrong_isize=True) + member(b)) == a + b
+    middle_wrong = member(a) + member(b, wrong_isize=True) + member(c)
+    assert _gzip_ignoring_lengths(middle_wrong) == a + b + c
+    assert _gzip_ignoring_lengths(middle_wrong + bytes(7)) == a + b + c
     assert _gzip_ignoring_lengths(member(a) + member(b, wrong_isize=True)) is None
     three_wrong_last = member(a) + member(b) + member(c, wrong_isize=True)
-    assert _gzip_ignoring_lengths(three_wrong_last) == a + b + c
-    assert _gzip_ignoring_lengths(three_wrong_last + bytes(7)) == a + b + c
-    large_last = member(a) + member(large, wrong_isize=True)
-    assert _gzip_ignoring_lengths(large_last) == a + large
-
-    # At the probe's edge the oracle follows the scan: a last member whose span is the
-    # probe has its trailer fed, so the scan does not stand down and nothing is excused.
-    for span in (_MEMBER_PROBE_INPUT - 1, _MEMBER_PROBE_INPUT, _MEMBER_PROBE_INPUT + 1):
-        content = random.Random(span).randbytes(span - 28)
-        compressor = zlib.compressobj(0, zlib.DEFLATED, 31)
-        last = bytearray(compressor.compress(content) + compressor.flush())
-        assert len(last) == span
-        last[-1] ^= 0x01
-        blob = member(a) + bytes(last)
-        scan_stands_down = gzip_has_additional_member(io.BytesIO(blob))
-        assert scan_stands_down == (span > _MEMBER_PROBE_INPUT)
-        excused = _gzip_ignoring_lengths(blob)
-        assert excused == (a + content if scan_stands_down else None)
+    assert _gzip_ignoring_lengths(three_wrong_last) is None
+    assert _gzip_ignoring_lengths(member(a) + member(large, wrong_isize=True)) is None
 
 
 @requires("rapidgzip")
@@ -553,12 +521,33 @@ def test_gzip_wrong_isize_after_a_seek_that_skipped_output_is_still_caught() -> 
     _assert_same(_outcome(Codec.GZIP, bytes(blob), _ON, skip), off)
 
 
+def _valid_concatenation(kind: str) -> bytes:
+    """A whole file of several gzip members, whose last trailer the backstop checks
+    against the end of the output (``_last_member_ends_the_file``)."""
+    from tests.streams_util import make_bgzf
+
+    first = gzip.compress(b"first member payload\n" * 4000, mtime=0)
+    middle = gzip.compress(b"middle member payload\n" * 7, mtime=0)
+    if kind == "three-members":
+        return first + middle + gzip.compress(b"last\n" * 3, mtime=0)
+    if kind == "large-last":
+        return first + gzip.compress(random.Random(4).randbytes(300_000), mtime=0)
+    if kind == "empty-last":
+        return first + middle + gzip.compress(b"", mtime=0)
+    assert kind == "bgzf", kind
+    return make_bgzf([bytes([i]) * 70_000 for i in range(1, 4)])
+
+
 @requires("rapidgzip")
 @pytest.mark.parametrize(
     "blob",
     [
         pytest.param(_magic_case("second-member"), id="second-member"),
         pytest.param(gzip.compress(bytes(range(256)) * 800, mtime=0), id="one-member"),
+        pytest.param(_valid_concatenation("three-members"), id="three-members"),
+        pytest.param(_valid_concatenation("large-last"), id="large-last-member"),
+        pytest.param(_valid_concatenation("empty-last"), id="empty-last-member"),
+        pytest.param(_valid_concatenation("bgzf"), id="bgzf"),
     ],
 )
 def test_a_real_further_gzip_member_needs_no_second_decode(
@@ -667,6 +656,84 @@ def test_gzip_member_probe_output_stays_within_its_bound(monkeypatch) -> None:
     monkeypatch.setattr(codecs.gzip_codec.zlib, "decompressobj", _Counting)
     assert codecs.gzip_codec._gzip_member_at(io.BytesIO(member), 0, 1 << 20)[0] is True
     assert produced == codecs.gzip_codec._MEMBER_PROBE_OUTPUT
+
+
+# --- the last member of a concatenated gzip is checked ---------------------------------
+
+# The shape the gzip_accel fuzz target found, minimized: two whole members of b"a", then
+# a third member cut right after its 10-byte header. rapidgzip reads the header, meets
+# the end of the file, and ends with no error, at the end of the source. The further-member
+# scan confirmed the second member, so the cut third one read clean.
+_FUZZ_CUT_AFTER_A_HEADER = base64.b64decode(
+    "H4sIAAAAAAACA0sEAEO+t+gBAAAAH4sIAAAAAAACA0sEAEO+t+gBAAAAH4sIAAAAAAACAw=="
+)
+
+
+def _gzip_member(content: bytes, *, name: bytes | None = None) -> bytes:
+    out = io.BytesIO()
+    filename = name.decode("latin-1") if name is not None else ""
+    with gzip.GzipFile(fileobj=out, mode="wb", filename=filename, mtime=0) as gz:
+        gz.write(content)
+    return out.getvalue()
+
+
+@functools.cache
+def _cut_last_members() -> dict[str, bytes]:
+    from tests.streams_util import BGZF_EOF, make_bgzf, make_bgzf_block
+
+    first = _gzip_member(b"first member payload\n" * 4000)
+    middle = _gzip_member(b"middle member payload\n" * 7)
+    last = _gzip_member(b"last member payload\n" * 3, name=b"last.txt")
+    large = _gzip_member(random.Random(2).randbytes(300_000))
+    parts = [bytes([i]) * 70_000 for i in range(1, 4)]
+    return {
+        "fuzz-input": _FUZZ_CUT_AFTER_A_HEADER,
+        "three-cut-after-the-header": first + middle + last[:10],
+        "three-cut-after-the-name": first + middle + last[: 10 + len(b"last.txt\0")],
+        "three-cut-in-the-data": first + middle + last[:-12],
+        "three-cut-in-the-trailer": first + middle + last[:-3],
+        "large-last-cut": first + large[:200_000],
+        "bgzf-cut-after-a-block-header": make_bgzf(parts, eof=False)
+        + make_bgzf_block(b"tail" * 100)[:18],
+        "bgzf-eof-block-cut": make_bgzf(parts)[: -28 + 18],
+        "bgzf-eof-block-cut-in-the-trailer": make_bgzf(parts, eof=False)
+        + BGZF_EOF[:-4],
+        "bgzf-cut-block-then-the-eof-block": make_bgzf(parts, eof=False)
+        + make_bgzf_block(b"tail" * 100)[:18]
+        + BGZF_EOF,
+        "three-cut-after-the-header-then-zeros": first + middle + last[:10] + bytes(20),
+    }
+
+
+@requires("rapidgzip")
+@pytest.mark.parametrize("case", sorted(_cut_last_members()))
+@pytest.mark.parametrize("chunk", [-1, 1 << 16])
+def test_a_cut_last_member_of_a_concatenated_gzip_raises(case: str, chunk: int) -> None:
+    """A concatenated file's trailer is its last member's, which the CRC-32 of the whole
+    output does not find; a further member used to stand the check down, so a last member
+    cut where rapidgzip ends with no error (right after its header) read clean. The
+    last member's trailer is now checked against the end of the output."""
+    blob = _cut_last_members()[case]
+    off = _outcome(Codec.GZIP, blob, _OFF, _no_seek, chunk)
+    assert off[1] is not None
+    _assert_same(_outcome(Codec.GZIP, blob, _ON, _no_seek, chunk), off)
+
+
+@requires("rapidgzip")
+def test_every_cut_of_the_last_of_three_gzip_members_raises() -> None:
+    """Every cut point of the last member, from its first byte to its last, gives the
+    standard library's verdict with the accelerator on."""
+    _require_the_accelerator_in_use()
+    head = _gzip_member(b"first\n" * 50) + _gzip_member(b"middle\n" * 7)
+    last = _gzip_member(b"last member payload\n" * 3, name=b"n")
+    differ = []
+    for cut in range(1, len(last)):
+        blob = head + last[:cut]
+        off = _outcome(Codec.GZIP, blob, _OFF, _no_seek)
+        on = _outcome(Codec.GZIP, blob, _ON, _no_seek)
+        if (len(on[0]), on[1]) != (len(off[0]), off[1]) or on[0] != off[0]:
+            differ.append((cut, on[1], off[1]))
+    assert differ == []
 
 
 # --- a seek that meets a data error is handed over -------------------------------------
