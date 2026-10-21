@@ -128,7 +128,8 @@ class CodecParams:
       reads on into a further stream, the read hands over to the standard library
       where one starts (``bzip2_codec._Bzip2Layout``). A Zstd ZIP member and a 7z
       Zstd or LZ4 coder do not set it: there concatenated frames count together
-      against the declared size, as RFC 8878 defines Zstd data as one or more frames.
+      against the declared size, as RFC 8878 defines Zstd data as one or more frames
+      and the LZ4 frame format lets frames be appended.
       Raw LZMA1/LZMA2 needs no flag: it is container-only and always ends at its first
       end marker, refusing any input after it.
     - ``input_runs_on`` — the source does not end where the coder's data does: a ZIP

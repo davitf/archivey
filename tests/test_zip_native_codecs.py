@@ -161,10 +161,14 @@ def test_zip_zstd_member_seeks_by_its_seek_table() -> None:
             engine = stream
             while not isinstance(engine, DecompressorStream):
                 engine = engine._inner
-            assert [p.compressed_offset for p in engine._seek_points] == [
-                0,
-                len(frames[0]),
+            # ``from_index`` tells a point the table gave from one the seek's forward
+            # decode recorded at the frame boundary: without the table the offsets
+            # are the same.
+            points = [
+                (p.decompressed_offset, p.compressed_offset, p.from_index)
+                for p in engine._seek_points
             ]
+            assert points == [(0, 0, False), (half, len(frames[0]), True)]
 
 
 @requires_binary("7z")
