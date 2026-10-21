@@ -26,6 +26,7 @@ Measurements: ``dev-docs/investigations/alternative-rar-decompressors.md`` and
 from __future__ import annotations
 
 from archivey.internal.backends.rar_parser import RarArchive, RarMemberInfo
+from archivey.terminal import quoted
 
 # Compression versions below 2.0 are decoded by a separate RAR 1.5 algorithm, which
 # only matters when the data is compressed.
@@ -223,6 +224,51 @@ def _rar4_solid_after_encrypted(archive: RarArchive) -> set[int]:
     return refused
 
 
+def solid_after_unknown_compression(archive: RarArchive) -> dict[int, RarMemberInfo]:
+    """``id``s of the payload members after the first unknown-version member of a
+    solid archive, each mapped to that member.
+
+    No decoder archivey runs decodes that member
+    (:meth:`RarMemberInfo.unknown_compression_version`), and ``unrar`` 7.00 stops
+    there: it reports "Unknown method", and ``unrar p`` writes nothing for any later
+    member. A read addressed with an include mask (``-n``, as archivey addresses a
+    member) decodes a solid archive from its start, so it fails even for a member in
+    a later solid group (``rar -s<N>``). Measured with a ``-s2`` archive; only a file
+    name given as an argument skips to the group. A member a program does not decode
+    (stored and read by archivey itself) is not affected, so callers check this only
+    on the way to a program.
+    """
+    if not archive.is_solid:
+        return {}
+    blocked: dict[int, RarMemberInfo] = {}
+    blocker: RarMemberInfo | None = None
+    for info in archive.members:
+        if not info.is_payload_file():
+            continue
+        if blocker is not None:
+            blocked[id(info)] = blocker
+        elif info.unknown_compression_version() is not None:
+            blocker = info
+    return blocked
+
+
+def solid_after_unknown_compression_reason(blocker: RarMemberInfo) -> str:
+    """Why a member after ``blocker`` in its solid stream cannot be decoded.
+
+    Worded like :data:`REFUSE_UNKNOWN_COMPRESSION`, for the same reason: the bound
+    is the decoder's, not one program's. The reader's refusal uses it too.
+    """
+    version = blocker.unknown_compression_version()
+    assert version is not None
+    return (
+        f"it comes after {quoted(blocker.filename)} in this solid archive, and "
+        f"decoding it means decoding that member first. That member is compressed "
+        f"with {version}, which neither RAR decompressor archivey runs is known to "
+        'decode (unrar 7.00 reports "Unknown method" and stops there), so switching '
+        "decompressors does not help; it may need a newer version of RAR."
+    )
+
+
 def _needs_password(archive: RarArchive, info: RarMemberInfo) -> bool:
     return archive.has_header_encryption or info.is_encrypted or info.encryption_unknown
 
@@ -253,6 +299,7 @@ class UnarRarPolicy:
         self._index = unar_entry_index(archive)
         self._solid_after_empty = _rar5_solid_after_empty(archive)
         self._solid_after_encrypted = _rar4_solid_after_encrypted(archive)
+        self._solid_after_unknown = solid_after_unknown_compression(archive)
         self._archive_refusal = _archive_refusal(archive)
         self._pass_refusals: dict[int, str] = {}
         self._pass_indexes: list[int] | None = None
@@ -299,6 +346,9 @@ class UnarRarPolicy:
         version = info.unknown_compression_version()
         if version is not None:
             return REFUSE_UNKNOWN_COMPRESSION.format(version=version)
+        blocker = self._solid_after_unknown.get(id(info))
+        if blocker is not None:
+            return solid_after_unknown_compression_reason(blocker)
         if _rar4_encrypted(self._archive, info):
             return REFUSE_RAR4_ENCRYPTED
         if id(info) in self._solid_after_encrypted:

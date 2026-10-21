@@ -660,7 +660,9 @@ SHALL raise `UnsupportedFeatureError` when its data is read, before any decompre
 runs, with either decompressor and in a solid pass. The versions it decodes are RAR5
 compression-info versions 0 and 1 and RAR 1.5-4 `UNP_VER` 13 to 29; outside them
 `unrar` reports "Unknown method" and writes nothing, which is not a truncation. A stored
-member reads whatever version it declares, as in `unrar`.
+member reads whatever version it declares, as in `unrar`. In a solid archive, every later
+member that a program would decode SHALL raise `UnsupportedFeatureError` naming the
+unknown member, in the same way, since `unrar` stops there.
 
 #### Scenario: unsupported variant matrix
 
@@ -673,6 +675,7 @@ member reads whatever version it declares, as in `unrar`.
 | Compressed RAR5 member with compression-info version 2 or more | Listing succeeds; read raises `UnsupportedFeatureError` |
 | Compressed RAR 1.5-4 member with `UNP_VER` below 13 or above 29 | Listing succeeds; read raises `UnsupportedFeatureError` |
 | Stored member declaring an unknown version | Reads normally |
+| Solid archive, compressed member after one with an unknown version (a later solid group included) | Read raises `UnsupportedFeatureError` naming that member |
 
 ### Requirement: Support multi-volume RAR sets
 
