@@ -68,6 +68,7 @@ from __future__ import annotations
 import io
 import os
 import stat
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Protocol, cast
@@ -192,21 +193,38 @@ class _GatheringReader:
         return data + read_exact(self._inner, n - got)
 
 
+# See _readinto_or_stall: PyPy's BufferedRandom.readinto over-reports at the end. The
+# flag covers every stream, not a type: ``tempfile.NamedTemporaryFile`` and a spilled
+# ``SpooledTemporaryFile`` wrap the broken file without being ``io.BufferedRandom``.
+_UNDER_PYPY = sys.implementation.name == "pypy"
+
+
 def _readinto_or_stall(reader: object, view: memoryview) -> int | None:
-    """:func:`try_readinto`, with a 0 into a non-empty buffer confirmed by ``read``.
+    """On CPython, :func:`try_readinto` with a 0 into a non-empty buffer confirmed by
+    ``read``; under PyPy, ``read`` alone.
 
     A non-blocking stream with nothing ready answers ``readinto`` with ``None``, which
-    raises. PyPy's buffered reader answers 0 instead, the same as at the end, so a 0
-    is asked again with ``read``: ``b""`` is the end, ``None`` a stall (which raises),
-    and bytes that arrived in between are copied in. That is one more ``read`` each
-    time the inner answers 0 into a non-empty buffer, on every interpreter: two at the
-    end of a stream of unknown length, none on the fact-length path, whose clamp
-    answers the end without I/O.
+    raises. A caller's own object can answer 0 instead, the same as at the end (PyPy's
+    buffered reader does, but under PyPy this path is not taken), so a 0 is asked again
+    with ``read``: ``b""`` is the end, ``None`` a stall (which raises), and bytes that
+    arrived in between are copied in. On CPython that is one more ``read`` each time
+    the inner answers 0 into a non-empty buffer: two at the end of a stream of unknown
+    length, none on the fact-length path, whose clamp answers the end without I/O.
 
     The check sits at this boundary because :class:`ArchiveSource` is the only wrapper
     placed directly over a caller's stream; every other ``try_readinto`` caller reads
     a stream that has already come through here, where a 0 is already the end.
+
+    Under PyPy the caller's ``readinto`` is not called for a non-empty buffer. PyPy
+    3.11's ``io.BufferedRandom.readinto`` (a ``w+b`` or ``r+b`` file, also under
+    ``tempfile.NamedTemporaryFile`` and a spilled ``SpooledTemporaryFile``) returns
+    more than it filled on the last partial fill: 16 for the 8 bytes left. ``read`` is
+    right. Each call then costs a ``bytes`` and a copy, and a stall still raises, since
+    ``read`` answers it with ``None``. A caller whose ``read`` returns more than it was
+    asked for is refused with ``ValueError`` there, even when its ``readinto`` is right.
     """
+    if _UNDER_PYPY and len(view):
+        return readinto_via_read(cast(BinaryIO, reader), view)
     got = try_readinto(reader, view)
     if got != 0 or not len(view):
         return got
