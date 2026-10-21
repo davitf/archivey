@@ -47,22 +47,25 @@ files. Without it, the first file that's already there stops the extraction. Wit
 stops the extraction with an exception. Without it, that member is skipped and the report lists it
 as `ExtractionStatus.BLOCKED`. [Extracting](extracting.md#options) explains both options.
 
-By default an extraction stops after 2 GiB of output or 262,144 entries, and an archive with more
-than 262,144 members raises `ResourceLimitError`. A larger dataset from a source you trust needs
-higher limits:
+By default, an extraction raises `ResourceLimitError` once it has written 2 GiB or 262,144 entries,
+or when data expands more than 1000 times. A sparse TAR member, such as a disk image, can expand
+that much on its own. Listing an archive also raises `ResourceLimitError` past 262,144 members, or
+past 64 MiB of text kept for names, comments and link targets. A larger dataset from a source you
+trust needs higher limits:
 
 ```python
 import archivey
 
-config = archivey.ArchiveyConfig(
-    listing_limits=archivey.ListingLimits(max_members=5_000_000),
-)
+config = archivey.ArchiveyConfig(listing_limits=archivey.ListingLimits.UNLIMITED)
 
 with archivey.open_archive("dataset.tar.gz", config=config) as archive:
     archive.extract_all("data/", limits=archivey.ExtractionLimits.UNLIMITED)
 ```
 
-`ListingLimits.UNLIMITED` turns the listing limits off.
+`ExtractionLimits.UNLIMITED` turns off all three extraction limits, the expansion check included,
+and `ListingLimits.UNLIMITED` turns off both listing limits. Listing still costs about 1.5 KiB of
+memory per member. To keep some protection, raise single fields instead, such as
+`ListingLimits(max_members=5_000_000, max_metadata_bytes=2**30)`.
 [Hardening](security.md#hardening) lists each limit with its default and what it costs.
 
 ### Extract while downloading
@@ -240,17 +243,27 @@ apply to a read, and [Hardening](security.md#hardening) lists every limit.
 ### Refuse an upload with a reason
 
 Every problem with the archive raises a subclass of `ArchiveyError`. A server can turn each one into
-a reason for the user:
+a reason for the user. `CONFIG` is the one from the previous recipe:
 
 ```python
 import zipfile
 
 import archivey
 
+CONFIG = archivey.ArchiveyConfig(
+    listing_limits=archivey.ListingLimits(
+        max_members=10_000,
+        max_metadata_bytes=4 * 2**20,
+    ),
+    decoder_limits=archivey.DecoderLimits(max_decoder_memory=256 * 2**20),
+    process_isolation=archivey.ProcessIsolation.NATIVE_DECODERS,
+    diagnostic_policy=archivey.DiagnosticPolicy.STRICT,
+)
+
 
 def check_upload(path):
     try:
-        with archivey.open_archive(path, streaming=True) as archive:
+        with archivey.open_archive(path, streaming=True, config=CONFIG) as archive:
             for member, stream in archive.stream_members():
                 if stream is not None:
                     while stream.read(2**20):
@@ -337,6 +350,10 @@ decoder. An `ArchiveyError` raised in the worker reaches the caller with its det
 archivey's exceptions can be pickled. The worker can be any function, such as `scan_upload` from
 the first recipe in this group, as long as it's defined at the top level of a module.
 
+If you only need to know whether the archive passed, and not data from it, the command line in a
+subprocess with a timeout is simpler. [Where the guarantees stop](security.md#where-the-guarantees-stop)
+shows it.
+
 ### Extract an upload
 
 ```python
@@ -344,7 +361,17 @@ import tempfile
 
 import archivey
 
-with archivey.open_archive("upload.zip") as archive:
+CONFIG = archivey.ArchiveyConfig(
+    listing_limits=archivey.ListingLimits(
+        max_members=10_000,
+        max_metadata_bytes=4 * 2**20,
+    ),
+    decoder_limits=archivey.DecoderLimits(max_decoder_memory=256 * 2**20),
+    process_isolation=archivey.ProcessIsolation.NATIVE_DECODERS,
+    diagnostic_policy=archivey.DiagnosticPolicy.STRICT,
+)
+
+with archivey.open_archive("upload.zip", config=CONFIG) as archive:
     dest = tempfile.mkdtemp(prefix="upload-")
     report = archive.extract_all(
         dest,
@@ -358,7 +385,8 @@ with archivey.open_archive("upload.zip") as archive:
 print(dest, len(report))
 ```
 
-A new, empty folder for each upload means nothing else can be in the way, and you can check what
+`CONFIG` is the one from [List, hash and test an upload](#list-hash-and-test-an-upload). A new,
+empty folder for each upload means nothing else can be in the way, and you can check what
 came out before moving it anywhere else. The default `policy="strict"` refuses or rewrites every
 kind of unsafe member archivey knows of, and `abort_on` turns a refused member, or two members that
 would be written to the same path, into an exception that ends the extraction. Files written before
@@ -369,26 +397,45 @@ members](extracting.md#what-each-policy-does-with-unusual-members) lists the cas
 
 The limits apply to each archive separately. A small upload can hold archives that each expand up
 to the limit, and those can hold more. The simplest choice is to refuse an upload that contains an
-archive. `detect_format` tells from a member's first bytes whether it's one:
+archive. `detect_format` tells whether a member is one, when it's given the whole member:
 
 ```python
 import io
+import tempfile
 import zipfile
 
 import archivey
 
+CONFIG = archivey.ArchiveyConfig(
+    listing_limits=archivey.ListingLimits(
+        max_members=10_000,
+        max_metadata_bytes=4 * 2**20,
+    ),
+    decoder_limits=archivey.DecoderLimits(max_decoder_memory=256 * 2**20),
+    process_isolation=archivey.ProcessIsolation.NATIVE_DECODERS,
+    diagnostic_policy=archivey.DiagnosticPolicy.STRICT,
+)
+MAX_TOTAL_BYTES = 1 * 2**30
+
 
 def contains_archive(path):
-    with archivey.open_archive(path, streaming=True) as archive:
+    total = 0
+    with archivey.open_archive(path, streaming=True, config=CONFIG) as archive:
         for member, stream in archive.stream_members():
             if not member.is_file or stream is None:
                 continue
-            head = stream.read(4096)
-            try:
-                archivey.detect_format(io.BytesIO(head))
-            except archivey.FormatDetectionError:
-                continue
-            return True
+            with tempfile.TemporaryFile() as copy:
+                while chunk := stream.read(2**20):
+                    total += len(chunk)
+                    if total > MAX_TOTAL_BYTES:
+                        raise RuntimeError("the upload expands too much")
+                    copy.write(chunk)
+                copy.seek(0)
+                try:
+                    archivey.detect_format(copy)
+                except archivey.FormatDetectionError:
+                    continue
+                return True
     return False
 
 
@@ -402,11 +449,18 @@ with zipfile.ZipFile("upload.zip", "w") as zf:
 print(contains_archive("upload.zip"))
 ```
 
-A compressed file such as `notes.txt.gz` counts as an archive here, since it can expand as much as
-one.
+The member is copied to a temporary file because its first bytes aren't always enough. An ISO keeps
+its signature 32 KiB into the file, and a self-extracting archive starts with a program, so the
+archive may start far into the member. `detect_format` on the whole copy finds every archive that
+`open_archive` would open from it. Other tools can find more: `unzip` and 7-Zip also find a ZIP
+behind arbitrary leading bytes, which archivey doesn't recognize. A check of the first few KiB
+alone is only a fast first filter. A member it lets through still needs the full check.
 
-If you need to look inside, keep one budget for the bytes read at every level and stop at a fixed
-depth:
+A compressed file such as `notes.txt.gz` counts as an archive here, since it can expand as much as
+one. So do Office documents, JAR files and wheels, which are ZIP archives.
+
+If you need to look inside, keep one budget for the bytes read at every level, and refuse the
+upload when archives are nested more deeply than you allow:
 
 ```python
 import io
@@ -415,6 +469,16 @@ import zipfile
 
 import archivey
 
+CONFIG = archivey.ArchiveyConfig(
+    listing_limits=archivey.ListingLimits(
+        max_members=10_000,
+        max_metadata_bytes=4 * 2**20,
+    ),
+    decoder_limits=archivey.DecoderLimits(max_decoder_memory=256 * 2**20),
+    process_isolation=archivey.ProcessIsolation.NATIVE_DECODERS,
+    diagnostic_policy=archivey.DiagnosticPolicy.STRICT,
+)
+# Archives up to 2 levels inside the upload are scanned. A third level is refused.
 MAX_DEPTH = 2
 
 
@@ -430,7 +494,7 @@ class Budget:
 
 def scan(source, budget, depth=0):
     names = []
-    with archivey.open_archive(source, streaming=True) as archive:
+    with archivey.open_archive(source, streaming=True, config=CONFIG) as archive:
         for member, stream in archive.stream_members():
             names.append("  " * depth + member.name)
             if not member.is_file or stream is None:

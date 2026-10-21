@@ -55,7 +55,9 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   the callback only runs between chunks of written data, so a decompressor that's slow to produce
   the next chunk can't be interrupted. If you need a hard time limit, run archivey in a process you
   can stop. Archivey's exceptions can be pickled, so an error raised in that process comes back
-  with its details. The simplest way is the command line in a subprocess with a timeout:
+  with its details. The simplest way is the command line in a subprocess with a timeout. For a scan
+  that has to return data, such as member names or hashes, [Stop a scan that takes too
+  long](recipes.md#stop-a-scan-that-takes-too-long) runs it in a worker process instead:
 
     ```python
     import subprocess
