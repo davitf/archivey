@@ -14,11 +14,18 @@ import io
 import os
 import stat
 import tarfile
+import zipfile
 from pathlib import Path
 
 import pytest
 
-from archivey import ExtractionPolicy, ExtractionStatus, OnError, OverwritePolicy
+from archivey import (
+    ExtractionPolicy,
+    ExtractionReport,
+    ExtractionStatus,
+    OnError,
+    OverwritePolicy,
+)
 from archivey.exceptions import FilterRejectionError
 from tests.extract_util import open_and_extract
 
@@ -161,3 +168,203 @@ def test_cve_2025_4517_link_chain_past_path_max(
     assert escape.status is ExtractionStatus.BLOCKED
     assert isinstance(escape.error, FilterRejectionError)
     assert not os.path.lexists(dest / "escape") or not os.path.islink(dest / "escape")
+
+
+def _zip(entries: list[tuple[str, str, str | bytes]]) -> bytes:
+    """A ZIP of ``(kind, name, value)`` entries as :func:`_tar` takes them; ``sym``
+    stores a Unix symlink, and ``hard`` is not a ZIP type."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for kind, name, value in entries:
+            info = zipfile.ZipInfo(name)
+            info.create_system = 3
+            if kind == "file":
+                info.external_attr = 0o100644 << 16
+            elif kind == "dir":
+                info.external_attr = (0o040755 << 16) | 0x10
+            elif kind == "sym":
+                info.external_attr = 0o120777 << 16
+            else:
+                raise ValueError(kind)
+            zf.writestr(info, value if isinstance(value, bytes) else value.encode())
+    return buf.getvalue()
+
+
+def _snapshot(outside: Path) -> tuple[int, int, int, int]:
+    """The modes and times of ``outside`` and its ``victim``: a link that leads out
+    must not reach them by a ``chmod`` or ``utime`` either."""
+    d, v = outside.stat(), (outside / "victim").stat()
+    return d.st_mode, d.st_mtime_ns, v.st_mode, v.st_mtime_ns
+
+
+def _extract_and_check(
+    tmp_path: Path,
+    archive: bytes,
+    *,
+    policy: ExtractionPolicy,
+    streaming: bool,
+) -> ExtractionReport:
+    """Extract ``archive`` into ``tmp_path/dest`` past ``tmp_path/outside`` and check
+    that nothing outside changed, its metadata included, and no link leads out."""
+    dest, outside = _outside_layout(tmp_path)
+    # Modes and times no member carries, so a chmod or utime through a link shows.
+    os.chmod(outside, 0o751)
+    os.chmod(outside / "victim", 0o640)
+    for path in (outside / "victim", outside):
+        os.utime(path, ns=(1_000_000_000, 1_000_000_000))
+    before = _snapshot(outside)
+    report = open_and_extract(
+        io.BytesIO(archive),
+        dest,
+        streaming=streaming,
+        policy=policy,
+        on_error=OnError.CONTINUE,
+        overwrite=OverwritePolicy.REPLACE,
+    )
+    _assert_outside_untouched(tmp_path, outside)
+    assert _snapshot(outside) == before
+    if os.name != "nt":
+        _assert_no_link_leaves(dest)
+    return report
+
+
+# Name-only escapes: every OS, every policy.
+_NAME_CASES = {
+    # CVE-2007-4559 (tarfile), the original traversal.
+    "dotdot": [("file", "../outside/victim", b"overwritten")],
+    "dotdot-inside": [("file", "a/../../outside/victim", b"overwritten")],
+    # GNU tar CVE-2016-6321: a ``..`` after a prefix the reader strips.
+    "dot-then-dotdot": [("file", "./../outside/victim", b"overwritten")],
+    # Absolute names (bsdtar CVE-2015-2304, tarfile).
+    "absolute": [("file", "{outside}/victim", b"overwritten")],
+    # unrar CVE-2022-30333, WinRAR CVE-2025-6218: backslash separators.
+    "backslash": [("file", "..\\outside\\victim", b"overwritten")],
+    "backslash-inside": [("file", "a\\..\\..\\outside\\victim", b"overwritten")],
+    # Drive letters and UNC roots, which Windows takes as absolute.
+    "drive": [("file", "C:..\\outside\\victim", b"overwritten")],
+    "drive-root": [("file", "C:\\outside\\victim", b"overwritten")],
+    "unc": [("file", "\\\\server\\share\\victim", b"overwritten")],
+    # WinRAR CVE-2025-8088: a name that is an alternate data stream on NTFS, its
+    # stream name carrying a traversal.
+    "ads": [("file", "f.txt:..\\..\\outside\\victim", b"overwritten")],
+}
+
+# Link escapes: a link that leads out, then a write through it.
+_LINK_CASES = {
+    # GNU tar CVE-2025-45582, 7-Zip CVE-2025-55188: a symlink out, then a member
+    # under it.
+    "symlink-out": [
+        ("sym", "dir", "../outside"),
+        ("file", "dir/victim", b"overwritten"),
+    ],
+    # unrar CVE-2022-48579: an absolute symlink target.
+    "symlink-absolute": [
+        ("sym", "dir", "{outside}"),
+        ("file", "dir/victim", b"overwritten"),
+    ],
+    # unrar CVE-2022-30333, 7-Zip CVE-2025-11001/11002: a target with backslashes,
+    # which Windows readers convert and others keep.
+    "symlink-backslash": [
+        ("sym", "dir", "..\\outside"),
+        ("file", "dir/victim", b"overwritten"),
+    ],
+    # unrar CVE-2017-12938, 7-Zip CVE-2025-55188: a chain of links each inside on
+    # its own, which together lead out.
+    "symlink-chain": [
+        ("sym", "a", "."),
+        ("sym", "b", "a/.."),
+        ("file", "b/outside/victim", b"overwritten"),
+    ],
+    "symlink-chain-nested": [
+        ("dir", "x", ""),
+        ("sym", "x/up", ".."),
+        ("sym", "x/up2", "up/.."),
+        ("file", "x/up2/outside/victim", b"overwritten"),
+    ],
+    # tarfile CVE-2025-4138 / CVE-2025-4330: a link inside a directory whose target
+    # was checked against the wrong directory.
+    "symlink-in-subdir": [
+        ("dir", "a/b", ""),
+        ("sym", "a/b/l", "../../../outside"),
+        ("file", "a/b/l/victim", b"overwritten"),
+    ],
+    # CVE-2024-12718 (tarfile): a member written over a link out has its mode and
+    # times set through the link.
+    "metadata-through-link": [
+        ("sym", "victim", "../outside/victim"),
+        ("file", "victim", b"new"),
+    ],
+    # libarchive CVE-2021-31566: a directory whose mode is applied at the end, after
+    # a later member made its name a link out.
+    "deferred-mode-through-link": [
+        ("dir", "d", ""),
+        ("sym", "d", "../outside"),
+    ],
+}
+
+_TAR_ONLY_CASES = {
+    # tarfile CVE-2025-4330 / CVE-2025-4517 family: a hardlink to a symlink that
+    # leads out, then a write through the hardlink.
+    "hardlink-to-symlink": [
+        ("sym", "s", "../outside"),
+        ("hard", "h", "s"),
+        ("file", "h/victim", b"overwritten"),
+    ],
+    # tarfile CVE-2025-4138: a hardlink to a file outside, through a symlink.
+    "hardlink-through-symlink": [
+        ("sym", "s", "../outside"),
+        ("hard", "h", "s/victim"),
+        ("file", "h", b"overwritten"),
+    ],
+    # libarchive CVE-2016-5418: a hardlink to an absolute path with data, which
+    # overwrites what it links to.
+    "hardlink-absolute-with-data": [("hard", "h", "{outside}/victim")],
+}
+
+
+def _fill(
+    entries: list[tuple[str, str, str | bytes]], outside: Path
+) -> list[tuple[str, str, str | bytes]]:
+    """``entries`` with ``{outside}`` in names and targets filled in."""
+    return [
+        (kind, name.format(outside=outside), value.format(outside=outside))
+        if isinstance(value, str)
+        else (kind, name.format(outside=outside), value)
+        for kind, name, value in entries
+    ]
+
+
+@_POLICIES
+@_MODES
+@pytest.mark.parametrize("fmt", ["tar", "zip"])
+@pytest.mark.parametrize("case", sorted(_NAME_CASES))
+def test_name_that_leads_out(
+    tmp_path: Path, policy: ExtractionPolicy, streaming: bool, fmt: str, case: str
+) -> None:
+    entries = _fill(_NAME_CASES[case], tmp_path / "outside")
+    archive = (_tar if fmt == "tar" else _zip)(entries)
+    _extract_and_check(tmp_path, archive, policy=policy, streaming=streaming)
+
+
+@_POSIX_LINKS
+@_POLICIES
+@_MODES
+@pytest.mark.parametrize("fmt", ["tar", "zip"])
+@pytest.mark.parametrize("case", sorted(_LINK_CASES))
+def test_link_that_leads_out(
+    tmp_path: Path, policy: ExtractionPolicy, streaming: bool, fmt: str, case: str
+) -> None:
+    entries = _fill(_LINK_CASES[case], tmp_path / "outside")
+    archive = (_tar if fmt == "tar" else _zip)(entries)
+    _extract_and_check(tmp_path, archive, policy=policy, streaming=streaming)
+
+
+@_POSIX_LINKS
+@_POLICIES
+@_MODES
+@pytest.mark.parametrize("case", sorted(_TAR_ONLY_CASES))
+def test_hardlink_that_leads_out(
+    tmp_path: Path, policy: ExtractionPolicy, streaming: bool, case: str
+) -> None:
+    entries = _fill(_TAR_ONLY_CASES[case], tmp_path / "outside")
+    _extract_and_check(tmp_path, _tar(entries), policy=policy, streaming=streaming)
