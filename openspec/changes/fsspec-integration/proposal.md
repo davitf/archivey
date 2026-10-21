@@ -44,8 +44,9 @@ for every format archivey reads.
   for TAR header hops. The hints are internal. Local files ignore them.
 - **`ArchiveyFileSystem`**, registered with fsspec as the `archivey` protocol through a
   package entry point, so `archivey://data/train.csv::s3://bucket/set.7z` works in
-  `fsspec.open`, `pandas.read_csv` and `dask`. It is read-only. Its tree is the tree
-  `extract_all()` would write under the configured policy.
+  `fsspec.open`, `pandas.read_csv` and `dask`. It is read-only, owns its reader and
+  closes it, and its tree holds the names `extract_all()` would write under a policy the
+  caller names (`STRICT` by default).
 - **Sibling volumes over fsspec.** A multi-volume set opened by URL finds its other
   parts with one listing of the parent directory, by the same naming rules as local
   discovery.
