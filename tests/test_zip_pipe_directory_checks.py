@@ -87,18 +87,21 @@ def test_an_encryption_flag_only_the_directory_sets_fails_the_member() -> None:
 
 
 @requires("inflate64")
-def test_a_method_the_two_headers_disagree_on_fails_the_member_its_crc_checks() -> None:
-    """The data matched the CRC and size the directory gives, but the two headers name
-    different codecs, so tools that trust each read the bytes differently: the member
-    fails at the end of the pass, as a file read refuses it when it opens."""
+def test_a_method_the_two_headers_disagree_on_does_not_fail_a_member_its_crc_checks() -> (
+    None
+):
+    """The data matched the CRC and size the directory gives. A file read decodes by
+    the local method too, and both report ``MEMBER_LOCAL_METHOD_DIFFERS``."""
     raw = _zip(b"hello world" * 20, zipfile.ZIP_DEFLATED)
     struct.pack_into("<H", raw, 8, 9)  # Deflate64 decodes this Deflate stream too
-    message = "compression method 9 against 8"
-    with pytest.raises(CorruptionError, match=message):
-        _drain(bytes(raw))
+    code = archivey.DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS
+    with archivey.open_archive(NonSeekableBytesIO(bytes(raw)), streaming=True) as pipe:
+        read = [stream.read() for _, stream in pipe.stream_members() if stream]
+        assert read == [b"hello world" * 20]
+        assert pipe.diagnostics.counts[code] == 1
     with archivey.open_archive(io.BytesIO(bytes(raw))) as archive:
-        with pytest.raises(CorruptionError, match="compression method 9"):
-            archive.read("a.txt")
+        assert archive.read("a.txt") == b"hello world" * 20
+        assert archive.diagnostics.counts[code] == 1
 
 
 @requires("cryptography")

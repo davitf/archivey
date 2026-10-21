@@ -33,7 +33,7 @@ from archivey import (
     MemberType,
 )
 from archivey.diagnostics import LocalHeaderContext, raw_name_to_base64
-from archivey.exceptions import CorruptionError, DiagnosticRaisedError
+from archivey.exceptions import CorruptionError, DiagnosticRaisedError, EncryptionError
 from archivey.internal import detection
 from archivey.internal.hashing import crc32_digest
 from archivey.internal.streams import codecs as codecs_module
@@ -301,6 +301,7 @@ def _local_header_reports(blob: bytes, *, pipe: bool) -> list[LocalHeaderContext
         if diagnostic.code
         in (
             DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS,
+            DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS,
             DiagnosticCode.MEMBER_LOCAL_CRC_USED,
         )
         and isinstance(diagnostic.context, LocalHeaderContext)
@@ -375,43 +376,81 @@ def test_zero_central_crc_over_directory_data_reads_alike(pipe: bool) -> None:
     assert codes == ["digest_unverifiable", "member_directory_data_ignored"]
 
 
+# The local header and the directory name different compression methods (davi's
+# 2026-10-21 ruling): the member decodes by the local method, which sits next to the
+# data and is the one a pipe has, so a file and a pipe read the same bytes. It reports
+# ``MEMBER_LOCAL_METHOD_DIFFERS``, which STRICT refuses. The CRC-32 still checks the
+# bytes. unzip, 7-Zip and stdlib ``zipfile`` differ on this shape.
+
 _METHOD_TEXT = b"hello world " * 450
 
 
 @pytest.mark.parametrize(
-    ("deflate", "local_method"),
-    [(True, 0), (False, 8), (True, 12)],
-    ids=["stored-local", "deflate-local", "bzip2-local"],
+    ("deflate", "local_method", "central_method"),
+    [(False, None, 8), (True, None, 0), (True, None, 12)],
+    ids=[
+        "stored-local-deflate-central",
+        "deflate-local-stored-central",
+        "bzip2-central",
+    ],
 )
 @pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
-def test_local_method_that_differs_is_corruption(
-    pipe: bool, deflate: bool, local_method: int
+def test_local_method_that_differs_decodes_by_the_local_header(
+    pipe: bool, deflate: bool, local_method: int | None, central_method: int
 ) -> None:
-    # The two headers name different codecs, so the bytes mean different things to
-    # tools that trust each header. unzip takes the local method and fails (exit 2),
-    # and 7-Zip reports a headers error. A file read refuses the member on the
-    # headers, before it decodes. The pass decodes by the local header and fails
-    # there, with the codec's error: a stored local header whose sizes differ ends
-    # its data early, which the pass reports as a cut.
-    blob = _one_member_zip(_METHOD_TEXT, deflate=deflate, local_method=local_method)
-    with pytest.raises(CorruptionError, match=None if pipe else "method") as caught:
-        _read_only_member(blob, pipe=pipe)
-    if not pipe:
-        assert not isinstance(caught.value, archivey.TruncatedError)
+    blob = _one_member_zip(
+        _METHOD_TEXT,
+        deflate=deflate,
+        local_method=local_method,
+        central_method=central_method,
+    )
+    assert _read_only_member(blob, pipe=pipe) == _METHOD_TEXT
+    (context,) = _local_header_reports(blob, pipe=pipe)
+    assert (context.field, context.local_method, context.central_method) == (
+        "method",
+        8 if deflate else 0,
+        central_method,
+    )
+    assert (context.local_raw_name_base64, context.local_crc32) == (None, None)
+    with pytest.raises(DiagnosticRaisedError):
+        _read_only_member(blob, pipe=pipe, strict=True)
 
 
 @pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
-def test_a_method_the_local_header_alone_decodes_is_still_corruption(
-    pipe: bool,
-) -> None:
-    # Stored by the local header, deflated by the directory, with sizes and CRC-32
-    # that fit the stored bytes: a pipe's pass, which decodes by the local header,
-    # gets data that matches every check. The directory still contradicts it, so the
-    # pass fails the member at the end, as a file read does.
-    blob = _one_member_zip(_METHOD_TEXT, central_method=8)
-    with pytest.raises(CorruptionError, match="method") as caught:
+def test_a_local_method_that_does_not_fit_the_data_is_corruption(pipe: bool) -> None:
+    # The local header says stored over a deflated body, as in the shape unzip fails
+    # with exit 2: decoding by the local method gives bytes the CRC-32 refuses, or
+    # fewer than the declared size, from a file and a pipe alike.
+    blob = _one_member_zip(_METHOD_TEXT, deflate=True, local_method=0)
+    with pytest.raises(CorruptionError):
         _read_only_member(blob, pipe=pipe)
-    assert not isinstance(caught.value, archivey.TruncatedError)
+
+
+@requires("cryptography")
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_winzip_aes_in_one_header_only_is_corruption(pipe: bool) -> None:
+    """Method 99 in the directory and 8 in the local header: the AES record is the
+    directory's, so the headers disagree on the encryption and a file read refuses the
+    member. A pipe has the local header alone, which says ZipCrypto (bit 0, method 8),
+    so the AES data fails its check byte there: refused too, as a wrong password."""
+    blob = bytearray(build_aes_zip([(b"a.txt", b"h" * 22)], password=b"pw"))
+    struct.pack_into("<H", blob, 8, 8)  # the local header's method
+    expected = (
+        pytest.raises(EncryptionError)
+        if pipe
+        else pytest.raises(CorruptionError, match="disagree on its encryption")
+    )
+    with expected:
+        if pipe:
+            with archivey.open_archive(
+                NonSeekableBytesIO(bytes(blob)), streaming=True, password=b"pw"
+            ) as ar:
+                for _, stream in ar.stream_members():
+                    if stream is not None:
+                        stream.read()
+        else:
+            with archivey.open_archive(io.BytesIO(bytes(blob)), password=b"pw") as ar:
+                ar.read("a.txt")
 
 
 @pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])

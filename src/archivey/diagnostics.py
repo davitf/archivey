@@ -150,6 +150,10 @@ class DiagnosticCode(StrEnum):
     """A ZIP member's local header stores another name than its central directory
     entry. The member keeps the central directory's name, as unzip and 7-Zip read it;
     a tool that trusts the local header shows the other one."""
+    MEMBER_LOCAL_METHOD_DIFFERS = "member_local_method_differs"
+    """A ZIP member's local header names another compression method than its central
+    directory entry. The member is decoded by the local header's method, the one a
+    read from a pipe uses, and the data is still checked against its CRC-32."""
     MEMBER_LOCAL_CRC_USED = "member_local_crc_used"
     """A ZIP member's central directory entry stores CRC-32 0 and its local header
     another value, which the data is checked against. Adobe AIR writes such files."""
@@ -226,6 +230,8 @@ DiagnosticCodeStr = Literal[
     "member-special-file-has-data",
     "member_local_name_differs",
     "member-local-name-differs",
+    "member_local_method_differs",
+    "member-local-method-differs",
     "member_local_crc_used",
     "member-local-crc-used",
     "member_directory_data_ignored",
@@ -708,6 +714,12 @@ class LocalHeaderContext(_JsonSafeContext):
     (``local_raw_name_base64``), such as another code page or ``\\`` for ``/``. The
     member keeps the central directory's name, as unzip and 7-Zip read it; a tool that
     trusts the local header shows another name, so ``STRICT`` refuses the member.
+    ``"method"`` (``MEMBER_LOCAL_METHOD_DIFFERS``): the local header names another
+    compression method (``local_method``) than the directory (``central_method``). The
+    member is decoded by the local method, which sits next to the data and is the one
+    a read from a pipe uses, so a file and a pipe read the same bytes; the CRC-32 still
+    checks them. A tool that trusts the directory decodes other bytes or fails, so
+    ``STRICT`` refuses the member.
     ``"crc32"`` (``MEMBER_LOCAL_CRC_USED``): the central directory stores CRC-32 0 and
     the local header a non-zero value (``local_crc32``). The data is checked against
     the local value, as unzip checks it, and ``hashes`` holds it. Every Adobe AIR
@@ -718,9 +730,11 @@ class LocalHeaderContext(_JsonSafeContext):
     archive_name: str | None = None
     member_name: str = ""
     member_id: int | None = None
-    field: Literal["name", "crc32"] = "name"
+    field: Literal["name", "method", "crc32"] = "name"
     local_raw_name_base64: str | None = None
     local_crc32: int | None = None
+    local_method: int | None = None
+    central_method: int | None = None
 
 
 @dataclass(frozen=True)
@@ -872,6 +886,7 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.MEMBER_SELECTOR_UNMATCHED: "selector_unmatched",
         DiagnosticCode.MEMBER_SPECIAL_FILE_HAS_DATA: "special_file_data",
         DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS: "local_header",
+        DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS: "local_header",
         DiagnosticCode.MEMBER_LOCAL_CRC_USED: "local_header",
         DiagnosticCode.ARCHIVE_OFFSET_WRAPPED: "offset_wrap",
         DiagnosticCode.MEMBER_SIZE_WRAPPED: "size_wrap",
@@ -900,6 +915,7 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
         DiagnosticCode.MEMBER_LINK_DATA_IGNORED,
         DiagnosticCode.SEEK_INDEX_DEGRADED,
         DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS,
+        DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS,
     }
 )
 """Codes reporting the archive's own bytes or metadata as anomalous.
@@ -944,8 +960,9 @@ and the reasons are part of the contract rather than an oversight:
   and ``STRICT`` would refuse a well-formed archive over it. The code is still recorded.
 - ``MEMBER_LOCAL_CRC_USED`` — a common packager (Adobe AIR) writes the shape, and the
   data is still checked, against the local header's CRC-32, so nothing is left
-  unverified. Its sibling ``MEMBER_LOCAL_NAME_DIFFERS`` is **in** the set: there a tool
-  that trusts the local header shows the member under another name.
+  unverified. Its siblings ``MEMBER_LOCAL_NAME_DIFFERS`` and
+  ``MEMBER_LOCAL_METHOD_DIFFERS`` are **in** the set: there a tool that trusts the
+  other header shows the member under another name, or decodes other bytes.
 - ``ARCHIVE_OFFSET_WRAPPED`` — macOS Archive Utility (Finder's Compress) writes a ZIP
   past 4 GiB this way by default and reads it back, and a correction is kept only when
   a local header with the member's name is there, with the CRC-32 still checked.
@@ -1025,6 +1042,10 @@ _SHARED_KIND_DISCRIMINATORS: Mapping[DiagnosticCode, tuple[str, frozenset[str]]]
                 frozenset({"zeros_to_eof", "end_of_stream"}),
             ),
             DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS: ("field", frozenset({"name"})),
+            DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS: (
+                "field",
+                frozenset({"method"}),
+            ),
             DiagnosticCode.MEMBER_LOCAL_CRC_USED: ("field", frozenset({"crc32"})),
         }
     )
