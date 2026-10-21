@@ -6,8 +6,13 @@ their Python equivalent, an untyped exception from a malformed field, is the fuz
 job. The tests here cover the ones whose cause is logic and could be repeated in any
 language: where extraction writes, which link it follows, which permissions it keeps,
 and whether hostile structure ends in a typed error rather than a hang. Each test
-names the CVE it replays. The full classification of libarchive's advisories is in the
-CVE report, not here.
+names the CVE it replays.
+
+Left out, besides the memory-safety bugs: CVEs in formats archivey does not read
+(mtree, LHA, CAB, ar, cpio, xar, WARC), in libarchive's writers, in the bsdtar,
+bsdcpio and bsdunzip command lines, and in RAR decompression, which archivey hands
+to unrar or unar. Path traversal by absolute or ``..`` names is covered by the
+extraction tests, not repeated here.
 """
 
 from __future__ import annotations
@@ -26,10 +31,18 @@ from pathlib import Path
 
 import pytest
 
-from archivey import ArchiveFormat, ExtractionPolicy, open_archive
+from archivey import (
+    ArchiveFormat,
+    ExtractionPolicy,
+    ExtractionReport,
+    ExtractionStatus,
+    open_archive,
+)
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
+    FilterRejectionError,
+    LinkTargetNotFoundError,
     TruncatedError,
     UnsupportedFeatureError,
 )
@@ -209,6 +222,10 @@ def _hard_link_with_data(target: str) -> bytes:
     )
 
 
+def _statuses(report: ExtractionReport) -> list[tuple[str, ExtractionStatus]]:
+    return [(result.member.name, result.status) for result in report.results]
+
+
 @_POSIX
 @_POLICIES
 @_MODES
@@ -217,39 +234,112 @@ def test_cve_2016_5418_hard_link_with_data_outside(
     tmp_path: Path, policy: ExtractionPolicy, streaming: bool, absolute: bool
 ) -> None:
     """libarchive 3.2.0 and earlier wrote a hard link entry's data through the link,
-    so a link to a file outside the destination overwrote it."""
+    so a link to a file outside the destination overwrote it. Here a hard link
+    resolves only to an earlier member, so one naming a path outside is refused
+    before any data question comes up. The data half is the next test."""
     dest, outside = _layout(tmp_path)
     target = str(outside / "victim") if absolute else "../outside/victim"
-    _extract_ignoring_errors(
-        _hard_link_with_data(target),
+    with pytest.raises(LinkTargetNotFoundError):
+        open_and_extract(
+            io.BytesIO(_hard_link_with_data(target)),
+            dest,
+            policy=policy,
+            streaming=streaming,
+            overwrite="replace",
+        )
+    _assert_outside_untouched(tmp_path, outside)
+    assert list(dest.iterdir()) == []
+
+
+@_POLICIES
+@_MODES
+def test_cve_2016_5418_hard_link_data_is_not_written_through_the_link(
+    tmp_path: Path, policy: ExtractionPolicy, streaming: bool
+) -> None:
+    """The reachable form of CVE-2016-5418: a hard link to an earlier member that
+    declares data of its own. The link is made and the declared bytes are not
+    written, so the earlier member keeps its contents."""
+    archive = (
+        _tar_header(b"inside.txt", size=8)
+        + _data_blocks(b"original")
+        + _tar_header(b"h", size=6, typeflag=b"1", linkname=b"inside.txt")
+        + _data_blocks(b"pwned!")
+        + _END
+    )
+    dest = tmp_path / "dest"
+    report = open_and_extract(
+        io.BytesIO(archive), dest, policy=policy, streaming=streaming
+    )
+    assert _statuses(report) == [
+        ("inside.txt", ExtractionStatus.EXTRACTED),
+        ("h", ExtractionStatus.EXTRACTED),
+    ]
+    assert (dest / "inside.txt").read_bytes() == b"original"
+    assert (dest / "h").read_bytes() == b"original"
+
+
+@_POSIX
+@_MODES
+@pytest.mark.parametrize(
+    "policy",
+    [ExtractionPolicy.STANDARD, ExtractionPolicy.TRUSTED],
+    ids=lambda p: p.name,
+)
+def test_cve_2021_23177_late_fixup_does_not_follow_a_link(
+    tmp_path: Path, policy: ExtractionPolicy, streaming: bool
+) -> None:
+    """CVE-2021-23177 and CVE-2021-31566: libarchive set a directory's mode, ACLs
+    and flags after extraction, through a path a later entry had replaced with a
+    symlink, and so changed whatever the link pointed at. Here directory ``d``
+    (0o777) is replaced by a symlink to the directory ``sub`` (0o700); the deferred
+    mode of ``d`` must not reach ``sub``. The link stays inside, so it is made and
+    the fixup meets it. STRICT is left out: it gives every directory 0o755."""
+    archive = _tar([("dir", "sub", 0o700), ("dir", "d", 0o777), ("sym", "d", "sub")])
+    dest = tmp_path / "dest"
+    report = open_and_extract(
+        io.BytesIO(archive),
         dest,
         policy=policy,
         streaming=streaming,
         overwrite="replace",
     )
-    _assert_outside_untouched(tmp_path, outside)
+    assert _statuses(report) == [
+        ("sub/", ExtractionStatus.EXTRACTED),
+        ("d/", ExtractionStatus.OVERWRITTEN),
+        ("d", ExtractionStatus.EXTRACTED),
+    ]
+    assert os.readlink(dest / "d") == "sub"
+    assert stat.S_IMODE((dest / "sub").stat().st_mode) == 0o700
 
 
 @_POSIX
 @_POLICIES
 @_MODES
 @pytest.mark.parametrize("order", ["dir-then-link", "link-then-dir"])
-def test_cve_2021_23177_late_fixup_does_not_follow_a_link(
+def test_cve_2021_23177_escaping_link_over_a_directory(
     tmp_path: Path, policy: ExtractionPolicy, streaming: bool, order: str
 ) -> None:
-    """CVE-2021-23177 and CVE-2021-31566: libarchive set a directory's mode, ACLs
-    and flags after extraction, through a path a later entry had replaced with a
-    symlink, and so changed whatever the link pointed at."""
+    """The same pair with the link pointing outside: the link is refused, so only
+    the directory is left, and nothing outside changes mode."""
     dest, outside = _layout(tmp_path)
     directory = ("dir", "d", 0o777)
     link = ("sym", "d", "../outside")
     entries: list[tuple[str, str, object]] = (
         [directory, link] if order == "dir-then-link" else [link, directory]
     )
-    _extract_ignoring_errors(
-        _tar(entries), dest, policy=policy, streaming=streaming, overwrite="replace"
+    report = open_and_extract(
+        io.BytesIO(_tar(entries)),
+        dest,
+        policy=policy,
+        streaming=streaming,
+        overwrite="replace",
     )
+    results = {r.member.name: r for r in report.results}
+    assert results["d/"].status is ExtractionStatus.EXTRACTED
+    assert results["d"].status is ExtractionStatus.BLOCKED
+    assert isinstance(results["d"].error, FilterRejectionError)
     _assert_outside_untouched(tmp_path, outside)
+    assert (dest / "d").is_dir() and not (dest / "d").is_symlink()
 
 
 @_POSIX
@@ -259,13 +349,25 @@ def test_cve_2020_11736_file_under_a_link_to_outside(
     tmp_path: Path, policy: ExtractionPolicy, streaming: bool
 ) -> None:
     """CVE-2020-11736 and CVE-2020-36314 (file-roller on libarchive): a file whose
-    parent is a symlink to a directory outside is written there."""
+    parent is a symlink to a directory outside is written there. Here the link is
+    refused, and the file lands under a real directory ``a`` inside."""
     dest, outside = _layout(tmp_path)
     archive = _tar([("sym", "a", "../outside"), ("file", "a/victim", b"pwned")])
-    _extract_ignoring_errors(
-        archive, dest, policy=policy, streaming=streaming, overwrite="replace"
+    report = open_and_extract(
+        io.BytesIO(archive),
+        dest,
+        policy=policy,
+        streaming=streaming,
+        overwrite="replace",
     )
+    assert _statuses(report) == [
+        ("a", ExtractionStatus.BLOCKED),
+        ("a/victim", ExtractionStatus.EXTRACTED),
+    ]
+    assert isinstance(report.results[0].error, FilterRejectionError)
     _assert_outside_untouched(tmp_path, outside)
+    assert not (dest / "a").is_symlink()
+    assert (dest / "a" / "victim").read_bytes() == b"pwned"
 
 
 # --- Permissions -----------------------------------------------------------------------
@@ -285,7 +387,7 @@ def test_cve_2023_30571_default_policy_leaves_nothing_world_writable(
         [("dir", "open", 0o777), ("file", "open/f", b"x"), ("dir", "sticky", 0o1777)]
     )
     open_and_extract(io.BytesIO(archive), dest, streaming=streaming)
-    for path in [dest, *dest.rglob("*")]:
+    for path in dest.rglob("*"):
         assert stat.S_IMODE(path.lstat().st_mode) & 0o7022 == 0, path
 
 
@@ -296,19 +398,33 @@ _NEGATIVE_BASE256 = bytes([0xFF, 0x80]) + bytes(10)
 
 
 @pytest.mark.parametrize(
-    "mtime_field",
-    [b"77777777777\0", _HUGE_BASE256, _NEGATIVE_BASE256],
-    ids=["octal-max", "base256-huge", "base256-negative"],
+    ("mtime_field", "column"),
+    [
+        # The largest octal field, 2**33 - 1 s: year 2242, in range everywhere. The
+        # control, so the column is seen to hold a date when it can.
+        (b"77777777777\0", "2242-03-"),
+        (_HUGE_BASE256, None),
+        (_NEGATIVE_BASE256, None),
+    ],
+    ids=["octal-max-in-range", "base256-huge", "base256-negative"],
 )
-def test_cve_2025_25724_out_of_range_mtime(tmp_path: Path, mtime_field: bytes) -> None:
+def test_cve_2025_25724_out_of_range_mtime(
+    tmp_path: Path, mtime_field: bytes, column: str | None
+) -> None:
     """CVE-2025-25724 (an unchecked ``strftime`` in bsdtar's verbose listing) and
     CVE-2015-8931 (overflow in its time limits): a timestamp outside what the
-    platform can show. Listing, the CLI's listing and extraction all finish."""
+    platform can show. The member lists with no date and a warning, the CLI's date
+    column shows ``-``, and extraction finishes."""
     archive = (
         _tar_header(b"f", size=1, mtime_field=mtime_field) + _data_blocks(b"x") + _END
     )
     with open_archive(io.BytesIO(archive)) as reader:
-        assert [m.name for m in reader.members()] == ["f"]
+        (member,) = reader.members()
+        assert member.name == "f"
+        if column is None:
+            assert member.modified is None
+        else:
+            assert member.modified is not None and member.modified.year == 2242
     path = tmp_path / "a.tar"
     path.write_bytes(archive)
     listing = subprocess.run(
@@ -318,7 +434,13 @@ def test_cve_2025_25724_out_of_range_mtime(tmp_path: Path, mtime_field: bytes) -
         timeout=120,
     )
     assert listing.returncode == 0, listing.stderr
-    assert listing.stdout.rstrip().endswith(" f")
+    (line,) = listing.stdout.splitlines()
+    if column is None:
+        assert line.endswith("  -  f")
+        assert "Invalid TAR mtime for 'f'" in listing.stderr
+    else:
+        assert f"  {column}" in line and line.endswith("  f")
+        assert listing.stderr == ""
     dest = tmp_path / "dest"
     open_and_extract(path, dest)
     assert (dest / "f").read_bytes() == b"x"

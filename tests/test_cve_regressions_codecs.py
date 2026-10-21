@@ -17,16 +17,15 @@ import io
 import lzma
 import struct
 import time
-import tracemalloc
 import zlib
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any
 
 import pytest
 
 from archivey import ArchiveFormat, open_archive
 from archivey.config import ArchiveyConfig, ProcessIsolation
-from archivey.internal.config import StreamConfig
+from archivey.internal.config import DEFAULT_STREAM_CONFIG
 from archivey.internal.hashing import crc32_combine
 from archivey.internal.streams.codecs import (
     Codec,
@@ -36,6 +35,7 @@ from archivey.internal.streams.codecs import (
 )
 from archivey.internal.streams.codecs.isolated import Natives
 from tests.conftest import requires, requires_zstd, zstd_backend
+from tests.memory_util import traced_peak
 
 # --- Decompression bombs: one small read stays small ----------------------------------
 #
@@ -135,8 +135,8 @@ def test_cve_2025_6176_one_byte_of_a_bomb_stays_small(
     build: Callable[[], bytes], format: ArchiveFormat | None, streaming: bool
 ) -> None:
     data = build()
-    tracemalloc.start()
-    try:
+
+    def read_one_byte() -> None:
         with open_archive(io.BytesIO(data), format=format, streaming=streaming) as r:
             if streaming:
                 members = r.stream_members()
@@ -145,9 +145,8 @@ def test_cve_2025_6176_one_byte_of_a_bomb_stays_small(
             else:
                 with r.open(r.members()[0]) as stream:
                     assert stream.read(1) == b"\0"
-        peak = tracemalloc.get_traced_memory()[1]
-    finally:
-        tracemalloc.stop()
+
+    peak = traced_peak(read_one_byte)
     assert peak < _BOMB_PEAK_LIMIT, f"{peak / 2**20:.1f} MiB held for one byte"
 
 
@@ -187,6 +186,16 @@ class _FailsOnce:
 _PAYLOAD = bytes(range(256)) * 4000
 
 
+@pytest.fixture
+def disarm_after() -> Iterator[None]:
+    """Put ``_FailsOnce.armed`` back, so a test that stops before its armed call
+    does not plant a ``MemoryError`` in the next one."""
+    try:
+        yield
+    finally:
+        _FailsOnce.armed = False
+
+
 @pytest.mark.parametrize(
     ("factory", "data", "format"),
     [
@@ -204,6 +213,7 @@ _PAYLOAD = bytes(range(256)) * 4000
 @pytest.mark.parametrize("streaming", [False, True], ids=["random", "stream"])
 def test_cve_2026_6100_no_decoder_reuse_after_memory_error(
     monkeypatch: pytest.MonkeyPatch,
+    disarm_after: None,
     factory: str,
     data: bytes,
     format: ArchiveFormat | None,
@@ -248,7 +258,9 @@ def test_cve_2026_6100_no_decoder_reuse_after_memory_error(
 # before that fix, and pyppmd also crashes on some corrupt input (see
 # test_ppmd_crash_isolation.py). archivey's answer is ProcessIsolation.KNOWN_CRASHES,
 # the default, which decodes every PPMd member in a child process: a crash or a wild
-# read there costs that member, not the caller. This test keeps that the default.
+# read there costs that member, not the caller. This test decodes under the stream
+# configuration built from the default ArchiveyConfig, so it fails if either the
+# default or the step that carries it to the codecs changes.
 
 
 @requires("pyppmd")
@@ -274,7 +286,7 @@ def test_cve_2023_31102_ppmd_decodes_in_a_child_by_default(
         pack_size=len(packed),
     )
     with open_codec_stream(
-        Codec.PPMD, io.BytesIO(packed), params=params, config=StreamConfig()
+        Codec.PPMD, io.BytesIO(packed), params=params, config=DEFAULT_STREAM_CONFIG
     ) as stream:
         assert stream.read() == plain
     assert started, "the default configuration decoded PPMd in this process"
