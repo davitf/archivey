@@ -16,6 +16,7 @@ from archivey import open_archive
 from archivey.exceptions import (
     CorruptionError,
     EncryptionError,
+    ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
 )
@@ -737,6 +738,20 @@ def _vint(value: int, width: int = 0) -> bytes:
     return bytes(out)
 
 
+def _rar5_stored(block_type: int, name: bytes, data_size: int) -> bytes:
+    """A plain RAR5 FILE (2) or SERVICE (3) header for stored data of ``data_size``."""
+    body = (
+        _vint(0)  # file flags
+        + _vint(data_size)  # unpacked size
+        + _vint(0)  # attributes
+        + _vint(0)  # compression info: stored
+        + _vint(1)  # host OS: Unix
+        + _vint(len(name))
+        + name
+    )
+    return _rar5_block(block_type, body, data_size=data_size)
+
+
 def test_repeated_rar5_main_headers_read_the_quick_open_payload_once() -> None:
     """A second MAIN header must not buy another read of the quick-open payload.
 
@@ -756,20 +771,11 @@ def test_repeated_rar5_main_headers_read_the_quick_open_payload_once() -> None:
         return _rar5_block(1, _vint(0), extra=_vint(len(locator)) + locator)
 
     main_size = len(main(0))
-    qo_body = (
-        _vint(0)  # file flags
-        + _vint(qo_size)  # unpacked size
-        + _vint(0)  # attributes
-        + _vint(0)  # compression info: stored
-        + _vint(1)  # host OS
-        + _vint(2)
-        + b"QO"
-    )
     data = bytearray(b"Rar!\x1a\x07\x01\x00")
     qo_at = len(data) + count * main_size
     for _ in range(count):
         data += main(qo_at - len(data))
-    data += _rar5_block(3, qo_body, data_size=qo_size) + bytes(qo_size)
+    data += _rar5_stored(3, b"QO", qo_size) + bytes(qo_size)
     data += _rar5_block(5, _vint(0))
 
     source = _CountingReader(bytes(data))
@@ -779,15 +785,16 @@ def test_repeated_rar5_main_headers_read_the_quick_open_payload_once() -> None:
     assert source.bytes_read < len(data) + qo_size // 2
 
 
-def _rar3_cmt(pack_size: int, *, flags: int = 0) -> bytes:
-    """A RAR 2.9-4 stored ``CMT`` SUB header, CRC16 correct, LONG_BLOCK clear by default.
+def _rar3_cmt(pack_size: int, *, flags: int = 0, method: int = 0x30) -> bytes:
+    """A RAR 2.9-4 ``CMT`` SUB header, stored by default, CRC16 correct, LONG_BLOCK
+    clear by default.
 
     Local because ``test_rar_reader._rar3_file_block`` always sets LONG_BLOCK, the one
     flag these tests need clear.
     """
     name = b"CMT"
     fixed = struct.pack(
-        "<LLBLLBBHL", pack_size, pack_size, 3, 0, 0, 29, 0x30, len(name), 0
+        "<LLBLLBBHL", pack_size, pack_size, 3, 0, 0, 29, method, len(name), 0
     )
     body = struct.pack("<BHH", 0x7A, flags, 7 + len(fixed) + len(name)) + fixed + name
     return struct.pack("<H", zlib.crc32(body) & 0xFFFF) + body
@@ -870,24 +877,22 @@ def test_unrar_lists_the_member_before_a_rar3_comment_cut(tmp_path: Path) -> Non
     assert "Unexpected end of archive" in result.stdout + result.stderr
 
 
-def _rar5_stored(block_type: int, name: bytes, data_size: int) -> bytes:
-    """A plain RAR5 FILE (2) or SERVICE (3) header for stored data of ``data_size``."""
-    body = (
-        _vint(0)  # file flags
-        + _vint(data_size)  # unpacked size
-        + _vint(0)  # attributes
-        + _vint(0)  # compression info: stored
-        + _vint(1)  # host OS: Unix
-        + _vint(len(name))
-        + name
-    )
-    return _rar5_block(block_type, body, data_size=data_size)
+def test_a_rar3_compressed_comment_past_the_end_of_the_file_is_a_cut() -> None:
+    """The rule does not depend on the method: a compressed (``-m3``) ``CMT``
+    whose PACK_SIZE runs past the end of the file is a cut too."""
+    start, end = _rar3_main_and_end()
+    member = _rar3_stored_file(b"a.txt", b"hello", flags=0x8000) + b"hello"
+    data = start + member + _rar3_cmt(4096, flags=0x8000, method=0x33) + b"short" + end
+    archive = parse_rar_archive(io.BytesIO(data))
+    assert [m.filename for m in archive.members] == ["a.txt"]
+    assert archive.comment is None
+    assert archive.truncated is not None
 
 
-def test_a_rar5_comment_past_the_end_of_the_file_keeps_the_members_before_it() -> None:
-    """The RAR5 ``CMT`` read had the same flaw: a stored comment whose data runs past
-    the end of the file raised out of the walk and discarded ``a.txt``."""
-    data = (
+def _rar5_member_then_cut_comment() -> bytes:
+    """MAIN, a stored ``a.txt``, then a stored ``CMT`` whose data (1 MiB) runs past
+    the end of the file: only 5 data bytes and the end block follow it."""
+    return (
         b"Rar!\x1a\x07\x01\x00"
         + _rar5_block(1, _vint(0))
         + _rar5_stored(2, b"a.txt", 5)
@@ -896,6 +901,12 @@ def test_a_rar5_comment_past_the_end_of_the_file_keeps_the_members_before_it() -
         + b"short"
         + _rar5_block(5, _vint(0))
     )
+
+
+def test_a_rar5_comment_past_the_end_of_the_file_keeps_the_members_before_it() -> None:
+    """The RAR5 ``CMT`` read had the same flaw: a stored comment whose data runs past
+    the end of the file raised out of the walk and discarded ``a.txt``."""
+    data = _rar5_member_then_cut_comment()
     archive = parse_rar_archive(io.BytesIO(data))
     assert [m.filename for m in archive.members] == ["a.txt"]
     assert archive.comment is None
@@ -904,6 +915,43 @@ def test_a_rar5_comment_past_the_end_of_the_file_keeps_the_members_before_it() -
         report = reader.members_report()
         assert [m.name for m in report.members] == ["a.txt"]
         assert isinstance(report.error, TruncatedError)
+
+
+@requires_binary("unrar")
+def test_unrar_lists_the_member_before_a_rar5_comment_cut(tmp_path: Path) -> None:
+    """The oracle for the RAR5 test above."""
+    path = tmp_path / "cut_comment5.rar"
+    path.write_bytes(_rar5_member_then_cut_comment())
+    result = subprocess.run(
+        ["unrar", "l", str(path)], capture_output=True, text=True, check=False
+    )
+    assert result.returncode != 0
+    assert "a.txt" in result.stdout
+    assert "Unexpected end of archive" in result.stdout + result.stderr
+
+
+_BIG_COMMENT = 2**20
+
+
+@pytest.mark.parametrize("version", ["rar3", "rar5"])
+def test_a_comment_over_the_metadata_budget_is_refused_before_it_is_read(
+    version: str,
+) -> None:
+    """A stored comment has no size cap of its own, so its bytes, all present, used
+    to be read whole and only then weighed: a 1 KiB budget held the whole comment
+    before refusing. Its packed size is now checked against ``max_metadata_bytes``
+    before the read."""
+    if version == "rar3":
+        start, end = _rar3_main_and_end()
+        cmt = _rar3_cmt(_BIG_COMMENT, flags=0x8000)
+    else:
+        start = b"Rar!\x1a\x07\x01\x00" + _rar5_block(1, _vint(0))
+        end = _rar5_block(5, _vint(0))
+        cmt = _rar5_stored(3, b"CMT", _BIG_COMMENT)
+    source = _CountingReader(start + cmt + b"x" * _BIG_COMMENT + end)
+    with pytest.raises(ResourceLimitError, match="max_metadata_bytes=1024"):
+        parse_rar_archive(source, max_metadata_bytes=1024)
+    assert source.bytes_read < _BIG_COMMENT
 
 
 def test_a_rar3_comment_is_read_only_from_the_bytes_the_walk_skips() -> None:
