@@ -137,12 +137,12 @@ Keep that when you add a step.
 > change what the gates report.
 
 A pull request that changes only documentation does not start `ci.yml` (none of its
-jobs: lint, test legs, unar and free-threaded legs, benchmark gate), `atheris-fuzz.yml`
-or `ppmd-native-stress.yml`. The docs build and the OpenSpec checks live in
-`docs-checks.yml`, which always runs. The list of documentation paths is the
-`pull_request: paths:` filter in those three workflows; if a test starts reading a doc
-file, re-include that file there, as `docs/api.md` is, or a change to it will skip the
-test that reads it. `tests/test_ci_doc_paths.py` checks that the three lists match and
+jobs: lint, test legs, unar and free-threaded legs, benchmark gate) or `atheris-fuzz.yml`.
+The docs build and the OpenSpec checks live in `docs-checks.yml`, which always runs. The
+list of documentation paths is the `pull_request: paths:` filter in those two workflows;
+if a test starts reading a doc file, re-include that file there, as `docs/api.md` is, or
+a change to it will skip the test that reads it. `tests/test_ci_doc_paths.py` checks that
+the two lists match and
 that the re-includes come after every `!` entry. Branch protection on `main` requires no
 status checks today. If one is added, it must come from a workflow that runs on every
 pull request, because a filtered workflow reports no check at all and the PR would wait
