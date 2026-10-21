@@ -99,6 +99,3 @@ data, `EncryptionError` for a missing or wrong password, `PackageNotInstalledErr
 format needs the extra. Archivey raises these the same way for every format, including where
 the underlying library would stop quietly and hand back short data.
 [Errors](errors-and-diagnostics.md) has the full list.
-
-If archivey reads, lists or extracts an archive wrongly, please
-[open a bug report](https://github.com/davitf/archivey/issues/new/choose).

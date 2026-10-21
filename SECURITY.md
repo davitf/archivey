@@ -9,11 +9,10 @@ from the 0.2.0 release) and into `main`. A fix ships as a new patch release of t
 | --- | --- |
 | Latest minor release (0.2.x) | Yes |
 | Older minor releases | No |
-| Pre-releases (`rc`, `a`, `b`) | Yes until the final release of that line is out, then no. Until 0.2.0 ships, fixes for 0.2.0rc1 go into `main` and the next pre-release or 0.2.0 |
+| Pre-releases (`rc`, `a`, `b`) | No, after the final release is out |
 
-We do not backport fixes to older 0.x lines. Before 1.0, a minor release can change the
-API, so the fix for an older line is to update to the latest release. When 1.0 is out,
-this policy will be looked at again.
+We do not backport fixes to older 0.x lines: the fix for an older line is to update to
+the latest release. When 1.0 is out, this policy will be looked at again.
 
 If you are on an older release, please try to reproduce against the latest
 before reporting. Older-version reports are still useful for impact assessment;
@@ -104,17 +103,15 @@ maintainer can see. The report then goes through these steps:
    versions with you. The draft advisory records them.
 3. If the problem is a vulnerability, the maintainer requests a CVE ID from the
    draft advisory. GitHub is a CVE Numbering Authority and assigns the ID.
-4. The fix is prepared in the advisory's temporary private fork of the repository, so it
-   stays hidden until release. Collaborators on the advisory can open that fork. A
-   report filed through GitHub makes you one, so you can review the fix there.
+4. The fix is prepared in a private fork of the advisory, so it stays hidden until
+   release. You can review it there.
 5. The fix ships as a new patch release on PyPI.
 6. The maintainer publishes the advisory, with the CVE ID and the fixed version. It
    then appears in the GitHub Advisory Database, and Dependabot tells users of
    affected versions. Reporters who agree to it get credit in the advisory.
 
 A report by email goes through the same steps. The maintainer opens the draft advisory
-for it. If you have a GitHub account and want to review the fix, say so, and the
-maintainer adds you to the advisory as a collaborator.
+for it.
 
 archivey has one maintainer, who works on it in their free time. These times are aims,
 not guarantees:
