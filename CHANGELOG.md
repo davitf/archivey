@@ -90,8 +90,8 @@ and each change will be listed here. No major changes are expected.
   everything in it), and `numbered_name()`, the `name (N)` spelling that
   `OverwritePolicy.RENAME` writes.
 - Tested on Python 3.11 to 3.14 on Linux, macOS and Windows, plus free-threaded 3.13t on
-  Linux. PyPy 3.11 also runs the test suite but isn't supported yet; the install page
-  says what works there.
+  Linux. PyPy isn't supported yet, but every change has to pass the full test suite on
+  PyPy 3.11; the install page says what works there.
 
 ### Removed
 
