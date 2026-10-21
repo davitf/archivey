@@ -159,6 +159,7 @@ def test_type_checker_refuses_random_access_on_a_streaming_reader(
         text=True,
         cwd=tmp_path,
         env=env,
+        check=False,
     )
     refused_line = _OPEN_ARCHIVE_TYPING_SAMPLE.splitlines().index(
         "        forward.members()"
