@@ -213,3 +213,102 @@ def test_changelog_without_a_comment_or_links_appends_them() -> None:
         f"[Unreleased]: {URL}/compare/v0.2.1...HEAD\n"
         f"[0.2.1]: {URL}/compare/v0.2.0...v0.2.1\n"
     )
+
+
+def _real_changelog_with_entry(with_comment: bool) -> tuple[str, str]:
+    text = release.CHANGELOG.read_text(encoding="utf-8")
+    if not with_comment:
+        start, end = text.rindex("<!--"), text.rindex("-->") + 3
+        text = text[:start] + text[end:].lstrip("\n")
+    head, rest = text.split("## [Unreleased]\n", 1)
+    body = "### Fixed\n\n- Fixed 2 bugs in TAR reading.\n"
+    return head + "## [Unreleased]\n\n" + body + "\n" + rest.lstrip("\n"), body
+
+
+@pytest.mark.parametrize("with_comment", [True, False])
+def test_real_changelog_shape_survives_any_release(with_comment: bool) -> None:
+    """Holds for every future release, unlike the 0.2.0 test above."""
+    text, body = _real_changelog_with_entry(with_comment)
+    out = release.changelog_for_release(text, "9.9.9", "v9.9.8", "2030-01-01")
+    head = text.split("## [Unreleased]", 1)[0]
+    assert out.startswith(head)
+    assert out.splitlines()[0] == "# Changelog"
+    assert out.count("## [Unreleased]") == 1
+    assert "\n\n\n" not in out
+    assert release.changelog_section(out, "9.9.9") == body
+    links = (
+        f"[Unreleased]: {URL}/compare/v9.9.9...HEAD\n"
+        f"[9.9.9]: {URL}/compare/v9.9.8...v9.9.9\n"
+    )
+    assert links in out
+    if with_comment:
+        assert out.index(links) > out.rindex("-->")
+
+
+def test_finish_refuses_a_release_version(capsys: pytest.CaptureFixture[str]) -> None:
+    assert release.main(["--dry-run", "finish", "0.3.0"]) == 1
+    captured = capsys.readouterr()
+    assert "not '0.3.0'" in captured.err
+    assert "+ " not in captured.out
+
+
+@pytest.fixture
+def fake_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A copy of the three files the script edits, outside git, so dry runs can succeed."""
+    for name in ("pyproject.toml", "packages/archivey-cli/pyproject.toml"):
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text((ROOT / name).read_text(encoding="utf-8"))
+    (tmp_path / "CHANGELOG.md").write_text(CHANGELOG)
+    monkeypatch.setattr(release, "ROOT", tmp_path)
+    monkeypatch.setattr(release, "ROOT_PYPROJECT", tmp_path / "pyproject.toml")
+    monkeypatch.setattr(
+        release, "CLI_PYPROJECT", tmp_path / "packages/archivey-cli/pyproject.toml"
+    )
+    monkeypatch.setattr(release, "CHANGELOG", tmp_path / "CHANGELOG.md")
+    return tmp_path
+
+
+def _snapshot(root: Path) -> dict[Path, bytes]:
+    return {p: p.read_bytes() for p in root.rglob("*") if p.is_file()}
+
+
+def test_dry_run_start_prints_the_steps_in_order(
+    fake_root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    before = _snapshot(fake_root)
+    assert release.main(["--dry-run", "start", "0.2.1"]) == 0
+    assert _snapshot(fake_root) == before
+    steps = [
+        line.split()[1:3] for line in capsys.readouterr().out.splitlines()
+        if line.startswith("+ ")
+    ]  # fmt: skip
+    assert steps == [
+        ["git", "switch"],
+        ["write", "pyproject.toml"],
+        ["write", "packages/archivey-cli/pyproject.toml"],
+        ["uv", "lock"],
+        ["write", "CHANGELOG.md"],
+        ["git", "add"],
+        ["git", "add"],
+        ["git", "commit"],
+        ["git", "push"],
+        ["gh", "pr"],
+        ["gh", "workflow"],
+    ]
+
+
+def test_dry_run_tag_checks_both_packages(
+    fake_root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    for path in (release.ROOT_PYPROJECT, release.CLI_PYPROJECT):
+        path.write_text(release.set_project_version(path.read_text(), "0.2.1"))
+    release.CHANGELOG.write_text(
+        release.changelog_for_release(CHANGELOG, "0.2.1", "v0.2.0", "2026-11-20")
+    )
+    assert release.main(["--dry-run", "tag", "0.2.1"]) == 0
+    assert "+ gh release create v0.2.1 --target main" in capsys.readouterr().out
+
+    cli = release.CLI_PYPROJECT
+    cli.write_text(release.set_project_version(cli.read_text(), "0.2.0"))
+    assert release.main(["--dry-run", "tag", "0.2.1"]) == 1
+    assert "archivey-cli/pyproject.toml is at version 0.2.0" in capsys.readouterr().err

@@ -67,6 +67,10 @@ Goal: a short, honest table (or bullet list) of peer wall ratios **for this
 release**, plus a note vs the **previous release** when one exists. Absolute
 VISION bands stay informational; do not claim CI hard-fails on ≤1.3×.
 
+A patch release (bug fixes only) can skip this section unless one of its fixes touches
+performance. §3 is never skipped: a bug-fix release is when `dev-docs/known-issues.md`
+entries go stale and a security fix needs its public line.
+
 - [ ] On a quiet machine (or after pulling the latest successful
       `benchmark-wall-realistic` artifact), measure current `main`:
 
@@ -194,10 +198,8 @@ Also:
 
 `scripts/release.py` does the mechanical steps. Run each command from a clean,
 up-to-date `main`, with your own `gh` login; `--dry-run` before a command prints what it
-would do. A patch release (bug fixes only) can skip §2 and §3 unless its fixes touch
-performance or documented behaviour. A release that carries a security fix never skips
-§3: its `docs/security.md` and threat-model checks are the point. Otherwise a patch
-release is these four commands plus the CHANGELOG text.
+would do. With §2 skipped where it allows, a patch release is §1, §3 to §5 and these
+four commands.
 
 1. `uv run python scripts/release.py notes` lists the merged pull requests since the last
    tag. Write the entry under `## [Unreleased]` from it (§1). This can be its own small
@@ -211,8 +213,10 @@ release is these four commands plus the CHANGELOG text.
    `uv run python scripts/release.py tag X.Y.Z` creates the GitHub Release `vX.Y.Z` on
    `main`, with the CHANGELOG section as its body (marked as a pre-release for
    `a`/`b`/`rc` versions). The tag starts `publish.yml`, which publishes to PyPI after the
-   `pypi` environment approval. A tag pushed from an agent session is refused, so this
-   step is yours.
+   `pypi` environment approval. Agent sessions cannot do this step (their GitHub access
+   refuses tag pushes and has no tool that creates a release), so it is yours. The tag
+   `gh release create` makes is lightweight; `publish.yml` and `git describe --tags`
+   need only the ref, so an annotated tag is not required.
 4. Confirm both `archivey` and `archivey-cli` are on PyPI at `X.Y.Z`.
 
 ---

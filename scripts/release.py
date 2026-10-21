@@ -13,8 +13,8 @@ else is here. A release is four commands, run from a clean, up-to-date ``main``:
    opens the release pull request and starts the TestPyPI dry run on that branch.
 3. After the release pull request merges: ``tag X.Y.Z`` creates the GitHub release
    ``vX.Y.Z`` on ``main`` with the CHANGELOG section as its body. The tag starts
-   ``publish.yml``, which uploads to PyPI. Run it with your own ``gh`` login: a tag
-   pushed from an agent session is refused.
+   ``publish.yml``, which uploads to PyPI. Run it with your own ``gh`` login: agent
+   sessions cannot push tags or create releases.
 4. ``finish`` sets ``main`` to the next ``.dev0`` version in a small pull request, so
    installs from ``main`` stay distinguishable from the release.
 
@@ -311,11 +311,13 @@ def cmd_tag(args: argparse.Namespace) -> None:
     runner = Runner(args.dry_run)
     if not args.dry_run:
         _require_clean_main()
-    current = project_version(ROOT_PYPROJECT.read_text(encoding="utf-8"))
-    if current != version:
-        raise ReleaseError(
-            f"main is at version {current}, not {version}; merge the release PR"
-        )
+    for path in (ROOT_PYPROJECT, CLI_PYPROJECT):
+        current = project_version(path.read_text(encoding="utf-8"))
+        if current != version:
+            raise ReleaseError(
+                f"{path.relative_to(ROOT)} is at version {current}, not {version};"
+                " merge the release PR"
+            )
     notes = changelog_section(CHANGELOG.read_text(encoding="utf-8"), version)
     pre = re.search(r"(a|b|rc)\d+$", version) is not None
     cmd = ["gh", "release", "create", f"v{version}", "--target", "main"]
@@ -336,6 +338,8 @@ def cmd_finish(args: argparse.Namespace) -> None:
     current = project_version(ROOT_PYPROJECT.read_text(encoding="utf-8"))
     dev = args.version or next_dev_version(current)
     check_version(dev)
+    if ".dev" not in dev:
+        raise ReleaseError(f"finish sets a .dev version, not {dev!r}")
     pyprojects = _versioned_pyprojects(dev)
     branch = f"release/v{dev}"
     runner.run("git", "switch", "-c", branch)
