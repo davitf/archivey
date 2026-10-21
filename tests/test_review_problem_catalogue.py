@@ -112,6 +112,7 @@ def test_neutral_catalogue_is_derivable_and_current() -> None:
         capture_output=True,
         text=True,
         cwd=ROOT,
+        check=False,
     )
     assert result.returncode == 0, result.stderr or result.stdout
 

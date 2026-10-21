@@ -196,7 +196,7 @@ def test_the_stored_scan_ignores_a_descriptor_signature_inside_the_data() -> Non
             member.write(payload)
         with zf.open("y", "w") as member:
             member.write(b"after")
-    read, _walk_, end = _walk(out.getvalue())
+    read, _walk_, _end = _walk(out.getvalue())
     assert [r.data for r in read] == [payload, b"after"]
 
 
@@ -248,7 +248,7 @@ def test_rejected_stub_candidates_are_not_capped() -> None:
     # Detection and the seekable read cap no ZIP decoys; neither does the walk.
     raw = _write(pipe=False)
     stub = b"MZ" + (b"PK\x03\x04" + b"\x00" * 26) * 300
-    read, walk, end = _walk(stub + raw)
+    read, walk, _end = _walk(stub + raw)
     assert walk.first_offset == len(stub)
     assert len(read) == len(_DATA)
 
@@ -276,7 +276,7 @@ def test_a_long_header_across_the_scan_window_end_is_found(before_limit: int) ->
     with zipfile.ZipFile(out, "w") as zf:
         zf.writestr("n" * 0xFFFF, b"data")
     stub = b"\x00" * (SFX_MAX - before_limit)
-    read, walk, end = _walk(stub + out.getvalue())
+    read, walk, _end = _walk(stub + out.getvalue())
     assert walk.first_offset == len(stub)
     assert [r.data for r in read] == [b"data"]
 
@@ -355,7 +355,7 @@ def test_bytes_before_the_directory_are_kept_with_it() -> None:
     end record's directory offset counts it."""
     raw = bytearray(_write(pipe=False))
     eocd = raw.rindex(b"PK\x05\x06")
-    cd_size, cd_offset = struct.unpack_from("<LL", raw, eocd + 12)
+    _cd_size, cd_offset = struct.unpack_from("<LL", raw, eocd + 12)
     block = b"APK Sig Block 42 " * 10
     raw[cd_offset:cd_offset] = block
     struct.pack_into("<L", raw, eocd + len(block) + 16, cd_offset + len(block))
@@ -439,7 +439,7 @@ def test_descriptors_without_their_signature_are_found_by_what_follows() -> None
     piped = _write(pipe=True)
     raw = without_descriptor_signatures(piped)
     assert DATA_DESCRIPTOR_SIGNATURE not in raw
-    read, _walk_, end = _walk(raw)
+    read, _walk_, _end = _walk(raw)
     with zipfile.ZipFile(io.BytesIO(piped)) as zf:
         assert [r.data for r in read] == [zf.read(i) for i in zf.infolist()]
     stored = next(r for r in read if r.name == b"big-stored.bin")

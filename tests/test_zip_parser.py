@@ -532,7 +532,7 @@ def _with_central_extra(data: bytes, index: int, extra: bytes, **fields: int) ->
         "header_offset": (42, "<L"),
     }
     eocd = data.rindex(b"PK\x05\x06")
-    cd_size, cd_offset = struct.unpack_from("<LL", data, eocd + 12)
+    _cd_size, cd_offset = struct.unpack_from("<LL", data, eocd + 12)
     out = bytearray()
     pos = cd_offset
     for i in range(struct.unpack_from("<H", data, eocd + 10)[0]):

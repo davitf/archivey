@@ -658,17 +658,14 @@ def _resolve_single_file_or_tar(
     if (
         fmt.container == ContainerFormat.RAW_STREAM
         and fmt.stream != StreamFormat.UNCOMPRESSED
-    ):
-        if _probe_inner_tar(
-            fmt.stream, peek_more, workspace, view_arrived=view_arrived
-        ):
-            tar_fmt = ArchiveFormat(ContainerFormat.TAR, fmt.stream)
-            return FormatInfo(
-                tar_fmt,
-                DetectionConfidence.PROBABLE,
-                "content_probe",
-                corroborated=True,
-            )
+    ) and _probe_inner_tar(fmt.stream, peek_more, workspace, view_arrived=view_arrived):
+        tar_fmt = ArchiveFormat(ContainerFormat.TAR, fmt.stream)
+        return FormatInfo(
+            tar_fmt,
+            DetectionConfidence.PROBABLE,
+            "content_probe",
+            corroborated=True,
+        )
     corroborated = base_detected_by == "content_probe" and _extension_corroborates(
         ext_match, fmt
     )

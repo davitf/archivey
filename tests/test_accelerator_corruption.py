@@ -384,6 +384,7 @@ def forged_cut_gzip(tmp_path_factory: pytest.TempPathFactory) -> bytes:
         capture_output=True,
         text=True,
         timeout=120,
+        check=False,
     )
     if proc.returncode != 0 or proc.stdout.strip() == "RAISED":
         # Some builds raise or abort on the cut instead of ending softly (macOS raises;

@@ -116,6 +116,7 @@ def _run(script: str, *args: str) -> subprocess.CompletedProcess[str]:
         text=True,
         timeout=120,
         env={**os.environ, "PYTHONFAULTHANDLER": "1"},
+        check=False,
     )
 
 

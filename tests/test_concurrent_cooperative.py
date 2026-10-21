@@ -48,7 +48,7 @@ def test_open_during_stream_members_raises(tmp_path: Path) -> None:
     root = _dir_with_files(tmp_path)
     with open_archive(root) as reader:
         it = reader.stream_members()
-        member, stream = next(it)
+        _member, stream = next(it)
         assert stream is not None
         with pytest.raises(ArchiveyUsageError, match="already active"):
             reader.open("b.txt")

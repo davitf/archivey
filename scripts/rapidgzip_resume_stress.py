@@ -300,7 +300,12 @@ def _capture_one(pid: int, out: list[str], *, python_dump: Path | None) -> None:
             continue
         try:
             done = subprocess.run(
-                argv, capture_output=True, text=True, errors="replace", timeout=120
+                argv,
+                capture_output=True,
+                text=True,
+                errors="replace",
+                timeout=120,
+                check=False,
             )
             out.append(f"--- {tool} (rc={done.returncode})")
             out.append(done.stdout.strip())

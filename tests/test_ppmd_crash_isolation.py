@@ -456,7 +456,11 @@ def test_the_child_writes_no_core_dump() -> None:
         """
     )
     proc = subprocess.run(
-        [sys.executable, "-c", probe], capture_output=True, text=True, timeout=60
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
     )
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "0"

@@ -4522,7 +4522,9 @@ def test_uncaught_exception_traceback_reaches_stderr_inert() -> None:
         "from archivey.exceptions import ExtractionError\n"
         "raise ExtractionError('Destination exists: /out/ev\\x1b[2Kil\\rSPOOF.txt')\n"
     )
-    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    proc = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=False
+    )
     assert proc.returncode != 0
     assert "\x1b" not in proc.stderr  # no raw escape sequence reached the terminal
     assert "\\x1b[2K" in proc.stderr  # …shown losslessly on the traceback's last line
@@ -4622,6 +4624,7 @@ def test_dunder_main_is_importable_without_running_the_cli() -> None:
         [sys.executable, "-c", "import archivey.__main__; print('imported')"],
         capture_output=True,
         text=True,
+        check=False,
     )
     assert proc.returncode == 0, proc.stderr
     assert "imported" in proc.stdout

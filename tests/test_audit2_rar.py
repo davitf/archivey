@@ -331,7 +331,7 @@ def test_member_unrar_cannot_address_is_refused_not_reported_corrupt(
     ``CorruptionError``. Both tell the caller the archive is damaged, and ``unar``
     (which addresses entries by index) reads the member fine.
     """
-    path, payloads = _dot_named_archive(tmp_path)
+    path, _payloads = _dot_named_archive(tmp_path)
     with open_archive(path, config=_UNRAR_ONLY) as archive:
         member = archive.members()[1]
         with pytest.raises(UnsupportedFeatureError):

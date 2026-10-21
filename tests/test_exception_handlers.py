@@ -265,7 +265,11 @@ def test_bzip2_accelerator_traps_a_failing_caller_source() -> None:
         """
     )
     proc = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=120
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
     )
     assert proc.returncode == 0, proc.stderr
     assert "raised disk gone" in proc.stdout

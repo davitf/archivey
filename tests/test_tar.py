@@ -1487,7 +1487,7 @@ def test_a_cut_plain_tar_member_raises_on_read_without_a_listing(
 ) -> None:
     # The lookup stops at the first match, so the walk never reaches the cut: the
     # member read itself has to find it, whether or not the source size is known.
-    cut, payload = _cut_plain_tar()
+    cut, _payload = _cut_plain_tar()
     with open_archive(_CUT_SOURCES[source](cut), format=ArchiveFormat.TAR) as ar:
         with (
             ar.open("a") as stream,

@@ -308,7 +308,11 @@ def test_7zip_picks_arm64_for_an_aarch64_executable(
         capture_output=True,
     )
     listing = subprocess.run(
-        ["7z", "l", "-slt", "a.7z"], cwd=tmp_path, capture_output=True, text=True
+        ["7z", "l", "-slt", "a.7z"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
     ).stdout
     if "ARM64" not in listing:
         pytest.skip("this 7z did not write the ARM64 filter")

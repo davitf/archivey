@@ -255,7 +255,7 @@ def _spawn(name: str, module: str, trace: bool) -> tuple[int, str]:
     cmd = [sys.executable, __file__, "--run", name, "--module", module]
     if trace:
         cmd.append("--trace")
-    proc = subprocess.run(cmd, capture_output=True, timeout=120)
+    proc = subprocess.run(cmd, capture_output=True, timeout=120, check=False)
     stderr = proc.stderr.decode("utf-8", "replace").strip()
     # Keep only the interesting tail (the abort banner), not the whole traceback.
     tail = " | ".join(line for line in stderr.splitlines() if line.strip())[-300:]

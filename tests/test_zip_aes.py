@@ -186,6 +186,7 @@ def test_handbuilt_ae1_is_accepted_by_7z(tmp_path: Path) -> None:
             ["7z", "t", f"-p{_PASSWORD.decode()}", str(archive)],
             capture_output=True,
             text=True,
+            check=False,
         ).returncode
 
     ae1 = _build_aes_zip(
