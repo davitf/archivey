@@ -457,8 +457,7 @@ PyPy flag over a double that over-reports the same way. The `spooled_tempfile` a
 `named_tempfile` cases of `test_readinto_yields_content` in `tests/test_stream_inputs.py`
 call the file's own `readinto`, so they skip under PyPy.
 
-**What remains.** The PyPy CI job is allowed to fail, so only the CPython pin above
-gates the fix.
+**What remains.** Nothing beyond the pins above; the PyPy CI job runs both of them.
 
 **Upstream.** Not filed with PyPy.
 
@@ -483,12 +482,12 @@ with `None`, which raises the same way, so no 0 arrives to be asked again. The z
 `tests/test_archive_source.py` pin the 0-confirm on CPython only; under PyPy they reach
 `read` directly.
 
-**What remains.** Nothing gates either rule on PyPy: the PyPy CI job is allowed to fail.
-A new `readinto` that keeps a view passes every other check.
+**What remains.** A new `readinto` that keeps a view fails CI only if a test resizes its
+buffer under PyPy, and the 0-confirm is still exercised on CPython only.
 
 **Upstream.** Not filed; both are documented PyPy behaviour rather than bugs.
 
-**Evidence.** The PyPy trial job in `.github/workflows/ci.yml`; the tests named above.
+**Evidence.** The PyPy job in `.github/workflows/ci.yml`; the tests named above.
 
 ## PyPy: native decoder memory (open, by design upstream)
 
@@ -518,7 +517,9 @@ Pinned by `tests/test_decoder_memory_pressure.py`.
 `max_decoder_memory`) and nothing frees it before a collection, nor a brotli window over
 4 MiB: neither library can free its state early under PyPy, and reporting the cap would
 force a major collection per decoder. A caller who drops streams unclosed relies on the
-estimates alone. The PyPy CI job is allowed to fail, so nothing gates any of this.
+estimates alone. The PyPy CI job runs the pins above, including the dropped-xz growth
+measured through `/proc`; nothing measures the zstd or brotli windows, or what a caller who
+leaves streams unclosed really uses.
 
 **Upstream.** Not filed; PyPy documents that native memory needs
 `add_memory_pressure` from whoever allocates it.
