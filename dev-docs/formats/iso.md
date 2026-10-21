@@ -425,8 +425,9 @@ ISO-specific only. General extraction and name hazards are §2.4.
   also enters each extent once. Importing the ISO backend (which `import archivey` does
   eagerly, to register it) replaces `pycdlib.rockridge.RockRidge.parse` with the System
   Use filter (§2.2), but that wrapper acts only inside `IsoReader`'s own `open_fp` call,
-  where a `ContextVar` is set, so other callers are untouched (`test_pycdlib_used_directly_is_not_filtered`). The
-  `ListingLimits` hooks on `pycdlib.dr.DirectoryRecord.parse`,
+  where a `ContextVar` is set, so other callers are untouched
+  (`test_pycdlib_used_directly_is_not_filtered`). The `ListingLimits` hooks on
+  `pycdlib.dr.DirectoryRecord.parse`,
   `pycdlib.pycdlib.PyCdlib._parse_path_table`,
   `pycdlib.path_table_record.PathTableRecord.parse`, `pycdlib.udf.parse_file_ident` and
   `pycdlib.udf.parse_file_entry` (§2.2) are gated the same way

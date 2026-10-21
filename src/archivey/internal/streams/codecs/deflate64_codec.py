@@ -28,7 +28,10 @@ from archivey.types import MissingComponent
 class Deflate64Codec(StreamCodec):
     codec = Codec.DEFLATE64
     requirement = MissingComponent(
-        "inflate64", "pip install archivey[recommended]", ("deflate64",)
+        "inflate64",
+        "pip install archivey[recommended]",
+        ("deflate64",),
+        reason=deps.unused_reason("inflate64"),
     )
 
     def _backend_present(self) -> bool:

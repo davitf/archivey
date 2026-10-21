@@ -112,21 +112,23 @@ are tested on Linux only.
 ## PyPy
 
 PyPy isn't supported yet. Every change also runs the test suite on PyPy 3.11, but that run is a
-trial: it is allowed to fail, and some tests still fail there, among them reads of some Deflate64
-data in ZIP files. Most of the suite passes.
+trial: it is allowed to fail, and some tests still fail there. Most of the suite passes.
 
-Under PyPy, archivey doesn't use rapidgzip, lz4 or pyppmd, even when they are installed, because
-there they misread data or crash the interpreter. It reads as if they weren't installed:
+Under PyPy, archivey doesn't use rapidgzip, lz4, pyppmd or inflate64, even when they are
+installed, because there they misread data or crash the interpreter. It reads as if they weren't
+installed:
 
 - LZ4 files, including `.tar.lz4`, and LZ4 members of 7z archives can't be read.
 - PPMd members of ZIP and 7z archives can't be read.
+- Deflate64 members of ZIP and 7z archives can't be read.
 - The accelerator behind `[seekable]` is off, so seeking backwards in gzip, zlib or bzip2 data, or
   in a DEFLATE member of a ZIP or 7z archive, decompresses more of it again.
 
-If you read data that needs lz4 or pyppmd, the error says why archivey doesn't use the package, in
-place of an install hint, and so do `format_availability()` and `archivey --version -v`. rapidgzip
-only speeds up seeking, so neither lists it, and you see its reason only if you ask for it outright
-by setting `use_rapidgzip` or `use_indexed_bzip2` to `AcceleratorMode.ON`.
+If you read data that needs lz4, pyppmd or inflate64, the error says why archivey doesn't use the
+package, in place of an install hint, and so do `format_availability()` and
+`archivey --version -v`. rapidgzip only speeds up seeking, so neither lists it, and you see its
+reason only if you ask for it outright by setting `use_rapidgzip` or `use_indexed_bzip2` to
+`AcceleratorMode.ON`.
 
 If you use PyPy, close member streams and passes yourself, with a `with` block or `close()`. On
 CPython, one that nothing refers to any more is closed at once. PyPy closes it only at a later

@@ -389,6 +389,42 @@ def test_orphan_links_folded_onto_each_other_match(
         assert dry == real, policy
 
 
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+@pytest.mark.parametrize("overwrite", list(OverwritePolicy))
+@pytest.mark.parametrize(
+    "held",
+    [
+        pytest.param({"h1": b"mine"}, id="file"),
+        pytest.param({"h1/keep": b"mine"}, id="full-dir"),
+    ],
+)
+def test_orphan_first_link_destination_taken_matches(
+    held: dict[str, object],
+    overwrite: OverwritePolicy,
+    streaming: bool,
+    tmp_path: Path,
+) -> None:
+    # The source excluded and its first link's destination held by the caller: the
+    # policy decides that link alone, and the content goes to the next link.
+    blob = _tar(
+        [("src", "file", b"data"), ("h1", "hard", "src"), ("h2", "hard", "src")]
+    )
+    for policy in _POLICIES:
+        work = tmp_path / policy.value
+        (work / "tmp").mkdir(parents=True)
+        tempfile.tempdir = str(work / "tmp")
+        real, dry = _both(
+            lambda: io.BytesIO(blob),
+            work,
+            populate=lambda dest: _put(dest, held),
+            members=["h1", "h2"],
+            policy=policy,
+            overwrite=overwrite,
+            open_kwargs={"streaming": streaming},
+        )
+        assert dry == real, policy
+
+
 def _dest_named_links(dest: Path) -> list[tuple[str, str, object]]:
     """Links whose targets name ``dest`` itself, so each run needs its own archive."""
     return [

@@ -338,26 +338,35 @@ check a newer run before assuming a later release still fails.
 - pyppmd runs its cffi build, which ends a valid PPMd member early: the decoder relies on
   how the C extension reports the end of data (`ppmd_decoder.py`), and the cffi build
   reports it sooner, so the read returns data cut short.
-- inflate64: a Deflate64 member of a bit-3 ZIP read from a stream that cannot seek raises
-  `CorruptionError: Error reading deflate64 stream … error code is -3` in
-  `tests/test_zip_walk_codec_end.py::test_a_codec_member_ends_where_its_codec_ends[signed-deflate64]`
-  and `[unsigned-deflate64]` (run 39477059217). Whether the decoder or the test's own
-  Deflate64 compression is at fault is not established. archivey still uses inflate64
-  under PyPy.
+- inflate64 is wrong in both directions once a call handles more than about 32 KiB. With
+  PyPy 3.11.17 and inflate64 1.0.4, measured on 300,000 random bytes:
+  - `Inflater.inflate` of a valid stream fed in pieces of 40,000 bytes or more returns
+    wrong bytes from offset 128, with no error. Pieces of 32,769 bytes or fewer decode
+    correctly.
+  - An input of 32 KiB that expands to about 64 KiB segfaults the interpreter.
+  - `Deflater` output differs from CPython's from byte 129, and CPython's `Inflater`
+    refuses it with error -3. That is the `CorruptionError … error code is -3` in
+    `tests/test_zip_walk_codec_end.py::test_a_codec_member_ends_where_its_codec_ends[signed-deflate64]`
+    and `[unsigned-deflate64]`, whose fixtures the test compresses with `Deflater`.
+  - 1,000,000 bytes of one 44-byte line repeated, passed to one `Deflater.deflate`
+    call, segfault the interpreter; 900,000 bytes do not. 1,000,000 zero bytes or
+    random bytes do not either.
 
-**What archivey does.** It treats rapidgzip, python-lz4 and pyppmd as absent under PyPy,
-whether installed or not (`deps.unused_reason` in `internal/streams/codecs/deps.py`;
+  A decoder child runs the same interpreter, so process isolation does not help.
+
+**What archivey does.** It treats rapidgzip, python-lz4, pyppmd and inflate64 as absent under
+PyPy, whether installed or not (`deps.unused_reason` in `internal/streams/codecs/deps.py`;
 `rapidgzip_child` refuses to start the child). `MissingComponent.reason` carries why, and
 every report of a missing package (the `PackageNotInstalledError` of a read,
 `format_availability()`, the registry's refusal and `archivey --version -v`) shows it in
-place of the install advice. LZ4 and PPMd data cannot be read there; `AUTO` decodes gzip,
-zlib, deflate and bzip2 with the standard library, and `ON` raises. The tests treat the
-three as not installed under PyPy (`UNUSED_UNDER_PYPY` in `tests/conftest.py`).
+place of the install advice. LZ4, PPMd and Deflate64 data cannot be read there; `AUTO`
+decodes gzip, zlib, deflate and bzip2 with the standard library, and `ON` raises. The tests
+treat the four as not installed under PyPy (`UNUSED_UNDER_PYPY` in `tests/conftest.py`).
 
 **What remains.** PPMd reads under PyPy need either a pure-Python PPMd decoder or a
 workaround for how pyppmd's cffi build reports the end. LZ4 needs a python-lz4 that runs
-under PyPy. rapidgzip needs upstream support for PyPy. The inflate64 failure needs
-diagnosing first.
+under PyPy. rapidgzip needs upstream support for PyPy. Deflate64 needs an inflate64 that
+handles large buffers under PyPy (its cpyext build), or a pure-Python Deflate64 decoder.
 
 **Upstream.** Not filed with rapidgzip, python-lz4, pyppmd or inflate64.
 

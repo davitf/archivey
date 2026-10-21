@@ -37,7 +37,7 @@ def _raw_deflate() -> tuple[bytes, CodecParams]:
 
 
 def _deflate64() -> tuple[bytes, CodecParams]:
-    inflate64 = pytest.importorskip("inflate64")
+    inflate64 = importorskip("inflate64")
     deflater = inflate64.Deflater()
     return deflater.deflate(_CONTENT) + deflater.flush(), CodecParams()
 
