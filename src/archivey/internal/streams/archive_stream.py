@@ -203,6 +203,10 @@ class ArchiveStream(ReadOnlyIOStream):
         # stream of no member.
         self._member_name = member_name
         self._open_fn: Callable[[], BinaryIO] | None = open_fn
+        # The error a failed lazy open raised, and its traceback: a retry raises it
+        # again instead of calling ``open_fn`` a second time.
+        self._open_error: Exception | None = None
+        self._open_error_tb: TracebackType | None = None
         self._translate = translate
         self._stamp = stamp if stamp is not None else _noop_stamp
         self._inner: BinaryIO | None = None
@@ -359,13 +363,18 @@ class ArchiveStream(ReadOnlyIOStream):
             if self._inner is not None:
                 return self._inner
             if self._open_fn is None:
-                # Another caller claimed open and failed, or close raced us.
                 if self.closed:
                     raise ValueError("I/O operation on closed file.")
+                failed = self._open_error
+                if failed is not None:
+                    # The open already failed: this is the same open, so it fails
+                    # the same way, as a member's content verdict does (``_fail``).
+                    raise failed.with_traceback(self._open_error_tb)
+                # Another caller claimed the open and has not finished it.
                 raise ArchiveyUsageError(
-                    "Cannot open this member stream: it is already being opened by "
-                    "another caller, or a previous open attempt failed. Concurrent "
-                    "operations on a single stream object require caller synchronization."
+                    "Cannot open this member stream: another caller is opening it. "
+                    "Concurrent operations on a single stream object require caller "
+                    "synchronization."
                 )
             open_fn = self._open_fn
             self._open_fn = None  # claim: only one caller proceeds to open_fn
@@ -379,8 +388,8 @@ class ArchiveStream(ReadOnlyIOStream):
                 opened = self._collapse_nested(opened)
         except Exception as e:  # noqa: BLE001 - re-raised via the translator
             # _open_fn stays None (claimed above) so a retry raises rather than
-            # re-entering a half-open backend.
-            self._fail(e)
+            # re-entering a half-open backend. It raises what this open raised.
+            self._fail_open(e)
         with self._open_lock:
             if self.closed:
                 try:
@@ -390,6 +399,16 @@ class ArchiveStream(ReadOnlyIOStream):
                 raise ValueError("I/O operation on closed file.")
             self._inner = opened
             return self._inner
+
+    def _fail_open(self, e: Exception) -> NoReturn:
+        """``_fail`` for a lazy open, remembering the error for a retry to raise."""
+        try:
+            self._fail(e)
+        except Exception as raised:
+            with self._open_lock:
+                self._open_error = raised
+                self._open_error_tb = raised.__traceback__
+            raise
 
     def _collapse_nested(self, nested: ArchiveStream) -> BinaryIO:
         """Reduce a nested ``ArchiveStream`` to a bytes stream for this handle.
