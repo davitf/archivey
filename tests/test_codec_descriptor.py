@@ -10,7 +10,7 @@ from __future__ import annotations
 import enum
 import io
 import os
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 
 import pytest
@@ -53,7 +53,7 @@ def _install_synthetic(
     *,
     requirement: MissingComponent | None,
     available: bool = True,
-) -> Iterator[ArchiveFormat]:
+) -> Generator[ArchiveFormat, None, None]:
     """Register one synthetic StreamCodec subclass, then restore on exit."""
 
     class SyntheticCodec(codecs.StreamCodec):
