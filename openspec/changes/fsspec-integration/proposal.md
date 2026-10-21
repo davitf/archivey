@@ -29,9 +29,11 @@ for every format archivey reads.
 
 ## What Changes
 
-- **`open_archive()` accepts an `fsspec.core.OpenFile`**, the object `fsspec.open(url,
-  **options)` returns. archivey opens it itself, with fsspec's cache off, plans its own
-  fetches (below), and closes it. A plain string passed to `open_archive()` stays a local
+- **`open_archive()`, `open_stream()` and `detect_format()` accept an
+  `fsspec.core.OpenFile`**, the object `fsspec.open(url, **options)` returns. archivey
+  reads it by range through the `OpenFile`'s file system, with no fsspec file cache in
+  between, and plans its own fetches (below). It refuses an `OpenFile` whose mode or
+  compression it cannot honour. A plain string passed to `open_archive()` stays a local
   path: archivey still never turns a string into a network request.
 - **New module `archivey.fsspec`**, importable only when fsspec is installed. `import
   archivey` never imports fsspec. There is no new extra: a caller who reads from S3 or
@@ -61,8 +63,8 @@ for every format archivey reads.
 
 ### Modified Capabilities
 
-- `archive-reading`: `open_archive()`'s `source` accepts an `fsspec.core.OpenFile`, alone
-  or in a volume sequence.
+- `archive-reading`: the three entry points accept an `fsspec.core.OpenFile` (and
+  `open_archive()` a sequence of them), with its source facts and refused fields.
 - `testing-contract`: a remote-source axis (requests and bytes fetched) is added to the
   benchmark harness and gated as a structural invariant.
 - `packaging-and-extras`: the base package declares the `fsspec.specs` entry point, and
@@ -70,13 +72,14 @@ for every format archivey reads.
 
 ## Impact
 
-- **Public surface:** one more accepted `source` type for `open_archive()`, and one new
+- **Public surface:** one more accepted `source` type for `open_archive()`, `open_stream()`
+  and `detect_format()`, and one new
   public module (`archivey.fsspec`) holding `ArchiveyFileSystem`. No new function and no
   new keyword.
 - **Internal:** a fetch-planning layer in `ArchiveSource` for remote sources, and a
   small hint call that the ZIP, 7z, ISO and TAR backends make before they read.
 - **Benchmarks:** a new structural baseline file for the remote axis.
-- **Docs:** a "Remote archives and fsspec" page in `new_docs/`, and the cache advice for
+- **Docs:** a "Remote archives and fsspec" page in `docs/`, and the cache advice for
   callers who keep passing their own fsspec file.
 - **Not in scope:** an async API (ADR 0005 stands; fsspec runs its own event loop), writing
   through the file system, and caching decompressed member data.

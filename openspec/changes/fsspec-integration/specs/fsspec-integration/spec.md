@@ -16,26 +16,56 @@ start and length itself:
 | Jump | A backward seek, or a longer forward one, starts a new run at the minimum fetch size |
 | Backend range hint | A span the backend declares it will read next is fetched in one request, up to the maximum fetch size, then continued as a run |
 
-The buffered bytes per source SHALL be bounded by a fixed constant that does not depend on
-the archive. Hints SHALL change only how bytes are fetched, never which bytes a read
-returns, and SHALL do nothing on a local source. The size SHALL be learned once, at open.
-`ArchiveSource.seek_is_expensive` SHALL be `True` for such a source.
+The fetched bytes one reader holds SHALL be bounded by a fixed constant that depends
+neither on the archive nor on the number of volumes or open member streams: every source
+the reader opens SHALL share one pool, and when more sequential runs are active than the
+pool holds at the maximum fetch, the maximum fetch SHALL shrink so the pool bound holds.
+Hints SHALL change only how bytes are fetched, never which bytes a read returns, and SHALL
+do nothing on a local source. The source facts are those of `archive-reading` §"The source
+facts of an OpenFile".
 
 The ZIP, 7z and ISO backends SHALL hint the index they read at open and each member's
 stored span before reading it. The RAR backend SHALL hint each header position during
 its listing walk.
 
-#### Scenario: request ceilings on the remote benchmark corpus
+#### Scenario: ceilings that follow from the format
 
-Range requests, excluding the one size request. The remote benchmark axis
-(`testing-contract`) checks these.
+Range requests exclude the size request. `F` is the maximum fetch in effect for the run.
+The remote benchmark axis (`testing-contract`) checks these on every case; counts not
+listed are held by its baseline.
 
 | Archive | List | List and read one member |
 | --- | --- | --- |
-| ZIP, central directory within the last 64 KiB | ≤ 2 | ≤ 3 |
-| 7z, non-solid | ≤ 2 | ≤ 3 |
-| RAR5, non-solid or solid | ≤ 3 | not bounded: `unrar` reads a spooled copy |
-| TAR, compressed TAR | ≤ ⌈archive size / maximum fetch⌉ + jumps over members larger than the read-through distance | the same |
+| ZIP, central directory within the last 64 KiB and the member within `F` | ≤ 2 requests | ≤ 3 requests |
+| 7z, non-solid, header and member each within `F` | ≤ 2 requests | ≤ 3 requests |
+| 7z, solid | ≤ 2 requests | bytes fetched ≤ (member end − folder start) + `F` |
+| ISO, member within `F` | baseline | list + 1 request |
+| RAR5, TAR, compressed TAR | bytes fetched ≤ archive size + `F` | the same; a compressed RAR member also spools the archive |
+
+#### Scenario: concurrent streams share the pool
+
+| Case | Expected |
+| --- | --- |
+| Eight threads read eight members of one remote ZIP | Each read returns its member's bytes; the pool bound holds; each fetch is at most pool / 8 |
+| A remote 7z in 50 volumes read end to end | The pool bound holds for the reader, not per volume |
+
+### Requirement: A changed remote object is caught or reported
+
+When the source's file system can pin a version of the object, the planner SHALL pin the
+version seen at open. When it forwards request headers and the object has an `ETag`, the
+planner SHALL send `If-Match` with it on every fetch. When neither is possible, the reader
+SHALL record a diagnostic at open saying that a replacement of the same length cannot be
+detected, and the planner SHALL compare the total size on each fetch whose response
+reports it. A change that is detected SHALL raise; it MUST NOT return bytes of the new
+object as bytes of the archive.
+
+#### Scenario: changed object
+
+| Case | Expected |
+| --- | --- |
+| Versioned store, object replaced mid-read | Reads continue from the pinned version |
+| HTTP with `ETag`, object replaced mid-read | The next fetch raises |
+| No version, no `ETag` | Diagnostic at open; a length change raises on the next fetch |
 
 ### Requirement: Multi-volume discovery over fsspec
 
@@ -68,6 +98,7 @@ ArchiveyFileSystem(
     password: PasswordInput = None,
     encoding: str | None = None,
     config: ArchiveyConfig | None = None,
+    policy: ExtractionPolicy | ExtractionPolicyStr = ExtractionPolicy.STRICT,
     **kwargs,
 )
 ```
@@ -75,14 +106,19 @@ ArchiveyFileSystem(
 A `str` `fo` SHALL be opened with `fsspec.open(fo, protocol=target_protocol,
 **(target_options or {}))`, so chained URLs (`archivey://m::s3://b/a.7z`) work. The
 archive SHALL be opened once per instance, with `seekable_members=True` and
-`concurrent_operations=True`, and SHALL stay open until the instance is closed or
-collected. The reader SHALL be available as `fs.reader`.
+`concurrent_operations=True`. The reader SHALL be available as `fs.reader`. Unlike a
+`str` passed to `open_archive()`, a `str` `fo` reaches whatever protocol it names.
 
-The tree SHALL be the extraction view: each path SHALL be the relative path
-`extract_all()` would write for that member under `config`'s extraction policy, a
-duplicate name SHALL show its current entry, and directories implied by member paths
-SHALL exist. A member that extraction would refuse SHALL be absent, with the refusal
-recorded on `fs.reader.diagnostics`.
+The class SHALL set `cachable = False`, and the instance SHALL own its reader: `close()`,
+and leaving `with ArchiveyFileSystem(...)`, SHALL close it, and collecting an instance
+with no open member streams SHALL close it too.
+
+The tree SHALL be the name view of `extract_all(dest, policy=policy)`: each path SHALL be
+the relative path that policy's name transform gives the member, a duplicate name SHALL
+show its current entry (`ArchiveMember.is_current`), and directories implied by member
+paths SHALL exist. A member the policy refuses SHALL be absent, with the refusal recorded
+on `fs.reader.diagnostics`. Behaviour that depends on a destination (`overwrite=`, existing
+files, case-insensitive collisions) and `filter=` are outside the tree.
 
 | Operation | Behaviour |
 | --- | --- |
@@ -106,6 +142,8 @@ pickle. A file-object `fo` SHALL raise `TypeError` on pickling, naming the reaso
 | --- | --- |
 | `pandas.read_csv("archivey://d/t.csv::memory://a.7z")` | Same frame as from the extracted file |
 | `pyarrow.parquet.read_table` on a member through the file system | Same table as from the extracted file |
-| A ZIP with members `a/../../x` and `a/b` twice | Tree holds `a/b` (current entry); `x` absent with a diagnostic, under the default policy |
+| A ZIP with members `a/../../x`, `/etc/y` and `a/b` twice, default `policy` (`STRICT`) | Tree holds `a/b` (current entry); `a/../../x` and `/etc/y` absent, each with a diagnostic |
+| The same ZIP, `policy="standard"` | Tree also holds `etc/y` |
+| 10 000 distinct `archivey://m::memory://a{n}.zip` URLs opened and every reference dropped | No reader stays open |
 | `pickle.loads(pickle.dumps(fs))` with a URL `fo` | A working file system over the same archive |
 | Two threads read two members at once | Both read their members' bytes |

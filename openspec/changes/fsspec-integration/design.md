@@ -91,10 +91,37 @@ What the table says:
 
 ### D1. How a caller hands archivey a remote archive
 
-**Decision: `open_archive()` accepts an `fsspec.core.OpenFile`**, the object
-`fsspec.open(url, **storage_options)` returns before it is entered. archivey opens it
-itself, with fsspec's cache off, reads it through its own fetch planner (D2), and closes
-what it opened. `source` sequences accept `OpenFile` items for an explicit volume list.
+**Decision: `open_archive()`, `open_stream()` and `detect_format()` accept an
+`fsspec.core.OpenFile`**, the object `fsspec.open(url, **storage_options)` returns before
+it is entered. archivey never enters it and never opens a file object from it. It reads
+the bytes through its own fetch planner (D2), which calls `fs.cat_file(path, start, end)`
+on the `OpenFile`'s file system and path, so fsspec's file caches are never involved.
+`source` sequences accept `OpenFile` items for an explicit volume list. All three entry
+points take the same source types, so `open_archive(of).format_info == detect_format(of)`
+keeps holding (`archive-reading` §Archive metadata access, DR-5).
+
+**What archivey takes from the `OpenFile`, and what it refuses.** An `OpenFile` also
+carries `mode`, `compression`, `encoding`, `errors` and `newline`, and two of them change
+the bytes it would deliver. A raw range read ignores them, so archivey refuses the ones
+it cannot honour rather than drop them in silence (DR-1, DR-15):
+
+| Field | Handling |
+| --- | --- |
+| `fs`, `path` | Used: every range read and the size come from them |
+| `mode` other than `"rb"` | `ArchiveyUsageError` (a `ValueError`) naming the mode |
+| `compression` not `None` after fsspec resolves it (`"infer"` on `x.zip.gz` is `"gzip"`) | `ArchiveyUsageError` naming the compression and the fix: open without it, and archivey reads the compressed stream itself |
+| `encoding`, `errors`, `newline` | Meaningless in binary mode; ignored, as fsspec ignores them for `"rb"` |
+
+**The boundary row for an `OpenFile` source** (`access-mode-and-cost` §boundary table):
+
+| Fact | Value |
+| --- | --- |
+| `size` | `fs.size(path)`, read once at open, as a **fact**: it clamps reads, the way `stat` does for a path. The archive is the object as it was at open; a later change is D7's to catch, not the clamp's |
+| `size_hint` | The same value |
+| `path`, `volume_paths` | `None`: there is no local file. A backend that needs a path (RAR's `unrar`) spools, under `SpoolLimits`, as it does for any stream |
+| `name` | `of.path`. Detection's name checks and volume discovery (D4) read it |
+| `seek_is_expensive` | `True` |
+| Ownership | Nothing to close: the planner holds `(fs, path, size)` and its fetched windows, and `close()` drops the windows. The caller's file system object is never closed |
 
 ```python
 import fsspec, archivey
@@ -109,8 +136,7 @@ Why this shape:
   never turns a string into a network request. A server that passes user-supplied file
   names to `open_archive()` cannot be made to fetch a URL.
 - **DR-14: extend an existing option before adding a new one.** `source` already takes
-  paths, streams and sequences. An `OpenFile` is one more kind of source, and the reader
-  owns it the way it owns a path's handle.
+  paths, streams and sequences. An `OpenFile` is one more kind of source.
 - **It gives archivey what it needs and a file object does not:** the file system and
   the path. With those, archivey fetches ranges directly (`fs.cat_file(path, start,
   end)`), learns the size once (`fs.size(path)`), and lists the parent directory to find
@@ -168,32 +194,52 @@ fetch's start and length:
    | RAR, listing | The next header's position as each block is parsed (it lets the planner tell a header hop from a jump) |
    | TAR | None; rule 2 covers it |
 
-4. **Bounded memory.** The planner keeps at most `_MAX_WINDOWS` (4) fetched windows,
-   least recently used first out, so the read-ahead memory per source is at most
-   32 MiB whatever the archive. Four windows let up to four concurrent member streams
-   (`concurrent_operations=True`) read without evicting each other. A hinted span longer
-   than `_MAX_FETCH` is fetched in `_MAX_FETCH` steps as it is read, not at once.
+4. **Bounded memory, per reader.** One reader has one window pool, shared by every
+   `RangeSource` it opens, so every volume of a multi-volume set draws on the same pool.
+   The pool holds at most `_POOL_BYTES` (32 MiB) of fetched data, least recently used
+   first out, whatever the archive and however many volumes or streams it has. A volume's
+   windows leave the pool by the same rule once nothing reads them. A hinted span longer
+   than one fetch is fetched in steps as it is read, not at once.
 
-The constants are internal. They are fixed bounds that do not grow with input, so
-DR-9 does not ask for a new public limit. If the benchmark or a user shows that a
-caller needs to change them, that is a new public field then, not now.
+   Each sequential run (one member stream, or the listing walk) owns at most one window.
+   When more runs are active than `_POOL_BYTES / _MAX_FETCH` (4), the planner lowers the
+   maximum fetch to `_POOL_BYTES / runs`, down to the 64 KiB minimum. Past 512 concurrent
+   runs every fetch is the minimum, and the pool stays at 32 MiB. So eight threads reading
+   eight members of one remote ZIP get 4 MiB fetches each, not evictions on every read. A
+   remote benchmark case with more streams than windows pins this (`tasks.md` 1.3).
 
-What the planner should reach on the measured corpus (these become the benchmark
-baselines, then the spec's ceilings):
+The constants are internal. They are fixed bounds per reader that do not grow with
+input, so DR-9 does not ask for a new public limit. If the benchmark or a user shows that
+a caller needs to change them, that is a new public field then, not now. The benchmark
+sets them through a private seam to small values (64 KiB maximum fetch, 16 KiB
+read-through), so that its PR-gated cases exercise every planner rule on the small
+fixtures the structural gate already uses (§Benchmark).
 
-| Archive | List | List and read one member |
-| --- | --- | --- |
-| ZIP, directory within the last 64 KiB | 2 GETs (head for detection, tail) | 3 |
-| 7z, non-solid | 2 | 3 |
-| 7z, solid | 2 | 2 + about log2(prefix / 64 KiB) |
-| RAR5 | at most 3 for the header walk | unchanged until D6 |
-| TAR | about archive size / 8 MiB, plus the jumps over members larger than 1 MiB | the same |
-| tar.gz, tar.xz | about archive size / 8 MiB | the same |
+What the planner should reach. The ceilings that follow from an index are in the spec;
+the rest are what the benchmark baseline records. `F` is the maximum fetch and `G` the
+read-through distance.
+
+| Archive | List | List and read one member | Where it comes from |
+| --- | --- | --- | --- |
+| ZIP, directory within the last 64 KiB | 2 (head for detection, tail) | 3 | Spec ceiling |
+| 7z, non-solid | 2 (head, next header) | 3 | Spec ceiling |
+| 7z, solid | 2 | bytes fetched ≤ folder start to member end + F | Spec ceiling on bytes; the request count is the doubling ramp over that span |
+| ISO | baseline only (directory records are scattered) | list + 1 | Spec ceiling on the member read |
+| RAR5 | baseline only. The header walk reaches the last header near the end, so it fetches most of the archive's byte range in steps; on the measured corpus doubling took 7 requests | unchanged until D6 | Spec ceiling: bytes fetched ≤ archive size + F |
+| TAR | baseline only; about size / F requests plus one per member larger than G | the same | Spec ceiling: bytes fetched ≤ archive size + F |
+| tar.gz, tar.xz | about size / F | the same | Spec ceiling: bytes fetched ≤ archive size + F |
+
+The "≤ archive size + F" ceiling is the one that matters for these formats: it is the
+fsspec default cache's failure (68 MB fetched to list a 43 MB TAR) stated as a bound.
+RAR5's quick-open record could bring its listing to a few requests; whether to read it
+is an open question on the RAR handbook page and not part of this change.
 
 Rejected:
 
 - **Pick an fsspec cache per format.** The table shows every cache is wrong somewhere,
   and none of them can take a hint. The planner is about 200 lines and owns the policy.
+- **A per-source memory bound.** Volumes and streams would multiply it, and the count
+  of both comes from the archive.
 - **A public `advise()` on archivey streams.** Callers never need to say this; backends
   do.
 
@@ -210,6 +256,7 @@ ArchiveyFileSystem(
     target_protocol=None,        # fsspec's chained-URL arguments, as zip:// takes them
     target_options=None,
     format=None, password=None, encoding=None, config=None,
+    policy=ExtractionPolicy.STRICT,  # the name transform the tree uses; extract_all's default
     **kwargs,                    # passed to AbstractFileSystem
 )
 ```
@@ -219,13 +266,32 @@ ArchiveyFileSystem(
   footers first) and open several files at once (dask). A string `fo` goes through
   `fsspec.open(fo, protocol=target_protocol, **target_options)` and then D1, so a chained
   URL gets the fetch planner.
-- **The tree is the extraction view.** A path in the file system is the path
-  `extract_all()` would write under the configured `ExtractionPolicy`: names normalized
-  by `archivey.paths`, absolute names re-rooted, the current entry of a duplicate name,
-  directories implied by member paths. A member that extraction refuses is not in the
-  tree, and the refusal is a diagnostic on the reader, readable as `fs.reader.diagnostics`.
-  The reason is DR-5: the same archive gives one result. A pandas user must not see a
-  file that `archivey extract` would not write, or the other way round.
+- **A string `fo` reaches the network, unlike `open_archive(str)`.** This is what an
+  fsspec protocol is for, and it is the first archivey API where a string can open a
+  connection: `ArchiveyFileSystem(fo="https://…")` and every `archivey://…::…` URL reach
+  whatever protocol the chain names. fsspec splits a chain on `::`, so a service that
+  builds `archivey://{member}::{trusted_url}` from a caller's member name lets that name
+  add a protocol of its own. The docs page and the threat model say so, and say that a
+  member name from a caller is passed as the path argument of `fs.open()` on an
+  `ArchiveyFileSystem` built from a trusted `fo`, never formatted into a URL.
+- **The tree is the extraction view, for one named policy.** A path in the file system
+  is the relative path `extract_all(dest, policy=policy)` would give that member: the
+  policy's name transform (normalization, refusals, and re-rooting of absolute names
+  under `STANDARD` and `TRUSTED`; refusal under the default `STRICT`) and directories
+  implied by member paths. `policy` is a constructor argument because it is an
+  `extract_all()` argument, not an `ArchiveyConfig` field. `STRICT` rewrites or refuses
+  a name the same way on every OS, so dask workers on mixed platforms see one tree. A
+  duplicate name shows its current entry (the reader's own last-entry-wins rule,
+  `ArchiveMember.is_current`). A member the policy refuses is not in the tree, and the
+  refusal is a diagnostic on the reader, readable as `fs.reader.diagnostics`.
+
+  What the tree does not model: anything that depends on a destination directory
+  (`overwrite=`, an existing file, a name collision on a case-insensitive disk) and the
+  `filter=` callback. A caller who wants a filtered view filters the paths it reads.
+
+  The reason for the extraction view is DR-5: the same archive gives one result. A pandas
+  user must not see a file that `archivey extract` would not write, or the other way
+  round.
 - **Links.** A link whose target resolves to a member appears as that member's type,
   with `"islink": True` and `"destination"` in its info, and opens the target (archivey's
   transparent link following). A link that resolves to nothing is listed with type
@@ -242,11 +308,18 @@ ArchiveyFileSystem(
   as its constructor arguments and opens the archive again on the other side. It
   pickles when `fo` is a URL or an `OpenFile` and the archivey arguments pickle; a file
   object `fo` raises `TypeError` naming the reason.
-- **Instance caching.** fsspec reuses a file system built with the same arguments.
-  `cachable` stays `True`, so dask tasks that open the same URL share one listing,
-  and the reader is safe for that because it is opened with `concurrent_operations=True`.
-  `ZipFileSystem` sets `cachable = False` because `zipfile` is not thread-safe; that
-  reason does not apply here.
+- **Lifetime: the file system owns its reader, and `cachable = False`.** fsspec's
+  instance cache keeps a strong reference to every cached instance until
+  `clear_instance_cache()`, so a cachable file system that holds an open reader would
+  never be collected: every distinct archive opened through an `archivey://` URL would
+  keep its listing, its source and any RAR spool (up to `SpoolLimits.max_bytes`) for the
+  life of the process. That fails DR-9a. The cache would not even give sharing between
+  dask threads, because fsspec puts the thread id in the cache key for a synchronous
+  file system. So `cachable = False`, as `ZipFileSystem` has. The instance owns the
+  reader: `fs.close()` (and leaving `with ArchiveyFileSystem(...) as fs:`) closes it, and
+  a `weakref.finalize` closes it when the instance is collected, so a caller who drops
+  every reference does not leak it. Member streams opened from the file system keep the
+  instance alive until they close.
 
 Nested archives need nothing extra: `archivey://a.csv::archivey://inner.zip::s3://b/outer.tar`
 chains two file systems, and the inner one reads a seekable member stream of the outer.
@@ -298,10 +371,21 @@ lands, the cost note stays as it is.
 
 An object can be replaced between two range requests (an S3 overwrite during a long
 read). A ranged read then returns bytes of a different archive, and the CRC catches it
-only for data that has a checksum. When the file system can pin a version (s3fs with
-`version_aware=True`, gcsfs generations), `RangeSource` pins the version it saw at open.
-Otherwise it compares the total size on each fetch whose response carries it, and stops
-on a change. Which error that raises is open question 2.
+only for data that has a checksum. In order of strength:
+
+1. **Pin a version** when the file system offers one: s3fs with `version_aware=True`,
+   gcsfs generations. Every fetch then reads the object as it was at open.
+2. **Make the server refuse a changed object** when the file system passes request
+   headers through (`HTTPFileSystem` forwards `headers=` to each request): send
+   `If-Match` with the `ETag` seen at open, so a replaced object answers 412 instead of
+   other bytes.
+3. **Otherwise nothing can see a same-length replacement.** Comparing the total size on
+   each fetch catches a replacement of a different length only. This is an accepted
+   non-guarantee, recorded in the threat model beside the others, and the reader says so
+   at open with a diagnostic of the `DIGEST_UNVERIFIABLE` kind (name and severity are
+   open question 2), so that silence never reads as "checked".
+
+A change that is caught raises; which error is also open question 2.
 
 ## Benchmark: requests and bytes fetched
 
@@ -321,9 +405,16 @@ The structural gate counts seeks today. This change adds a remote axis.
 - **Gate:** `range_requests` exact and `bytes_fetched` at most the baseline, in
   `benchmarks/baselines/remote.json`, updated with `--update-baselines` like
   `structural.json`. Both are structural invariants, so they block a PR.
-- **Fixtures** must be larger than the planner's windows, or every case is one request.
-  The generator in `benchmarks/fixtures.py` gains a "remote" scale: about 300 members and
-  20 to 40 MB per archive, built at run time, never committed.
+- **Fixtures and scale.** The PR-gated cases run on the `ci` scale the structural gate
+  already builds (`benchmarks/fixtures.py`), with the planner's constants set small
+  through its private seam (64 KiB maximum fetch, 16 KiB read-through, 256 KiB pool), so
+  each case still crosses windows, gaps and runs and no large archive is built on a PR.
+  The generator stays seeded, so member spans and the exact counts are the same on every
+  host. The production constants run on the `realistic` scale in the change-guarded
+  nightly that already runs the wall job; those numbers are reported, not gated.
+- **More streams than windows.** One case reads eight members of one ZIP from eight
+  threads under `concurrent_operations=True`, so the shrinking-fetch rule of D2 is
+  pinned.
 - **Informational:** a modelled time, `range_requests x 30 ms + bytes_fetched / 50 MB/s`,
   printed beside each case so that a change that trades requests for bytes can be judged.
   Not gated.
@@ -340,9 +431,11 @@ The structural gate counts seeks today. This change adds a remote axis.
    knows, and that is not an existing local path, is opened as `fsspec.open(arg)`.
    The CLI is a user tool, so the server-side concern of D1 does not apply, but this is a
    public behaviour and goes to the maintainer.
-2. **D7's fallback.** When no version can be pinned, should a size change between
-   fetches raise, and with which error? `OpenError` fits a change seen at open,
-   `CorruptionError` one seen later. Settled at implementation against DR-1.
+2. **D7's errors and diagnostic.** A detected change: `OpenError` fits a change seen at
+   open, `CorruptionError` one seen later. The "changes cannot be detected" diagnostic:
+   its name, and whether `STRICT` refuses on it (the `DIGEST_UNVERIFIABLE` precedent says
+   advisory). Settled at implementation against DR-1, or with the maintainer if no rule
+   settles it.
 3. **Download as a cost.** Bytes fetched cost money on metered egress. `CostReceipt`
    describes access cost in kinds, not bytes. A "this operation downloads about N bytes"
    figure would need the planner to predict, which it can for ZIP and 7z and not for
