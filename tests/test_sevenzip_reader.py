@@ -47,7 +47,7 @@ from archivey.internal.backends.sevenzip_reader import (
 from archivey.internal.config import DEFAULT_STREAM_CONFIG
 from archivey.internal.password_confirm import PASSWORD_CONFIRM_CHUNK_BYTES
 from archivey.internal.streams import codecs, crypto
-from archivey.types import CompressionAlgorithm, HashAlgorithm, MemberType
+from archivey.types import CompressionAlgorithm, CreateSystem, HashAlgorithm, MemberType
 from tests.conftest import (
     ReadSizeSpy,
     requires,
@@ -2879,39 +2879,54 @@ def test_unix_special_file_is_other(attributes: int, expected: MemberType) -> No
     assert member.type is expected
 
 
+_UNIX = CreateSystem.UNIX
+_NTFS = CreateSystem.WINDOWS_NTFS
+
+
 @pytest.mark.parametrize(
-    ("attributes", "mode", "expected"),
+    ("attributes", "mode", "expected", "create_system", "special"),
     [
-        (0x8000 | 0x20 | (0o100644 << 16), 0o644, MemberType.FILE),  # 7-Zip on Linux
-        (0x8000 | 0x20 | (0o120777 << 16), 0o777, MemberType.SYMLINK),
-        (0x8000 | (0o040755 << 16), 0o755, MemberType.DIRECTORY),
+        # 7-Zip on Linux
+        (0x8000 | 0x20 | (0o100644 << 16), 0o644, MemberType.FILE, _UNIX, None),
+        (0x8000 | 0x20 | (0o120777 << 16), 0o777, MemberType.SYMLINK, _UNIX, None),
+        (0x8000 | (0o040755 << 16), 0o755, MemberType.DIRECTORY, _UNIX, None),
+        (0x8000 | (0o010644 << 16), 0o644, MemberType.OTHER, _UNIX, "fifo"),
         # Windows words whose high half is not a Unix mode: no mode, and no type from it.
-        (0x80020, None, MemberType.FILE),  # ARCHIVE | PINNED (OneDrive)
-        (0x20000020, None, MemberType.FILE),  # ARCHIVE | STRICTLY_SEQUENTIAL
-        (0x8000 | 0x80020, None, MemberType.FILE),  # with INTEGRITY_STREAM (ReFS)
+        (0x80020, None, MemberType.FILE, _NTFS, None),  # ARCHIVE | PINNED (OneDrive)
+        (0x20000020, None, MemberType.FILE, _NTFS, None),  # | STRICTLY_SEQUENTIAL
+        (0x8000 | 0x80020, None, MemberType.FILE, _NTFS, None),  # | INTEGRITY_STREAM
         # A Unix file type without the bit is a mode, as 7-Zip 23.01 lists it, except a
         # special type, which STRICTLY_SEQUENTIAL fakes.
-        (0o120777 << 16, 0o777, MemberType.SYMLINK),
-        (0o040755 << 16, 0o755, MemberType.DIRECTORY),
-        (0o010644 << 16, None, MemberType.FILE),
+        (0o120777 << 16, 0o777, MemberType.SYMLINK, _UNIX, None),
+        (0o040755 << 16, 0o755, MemberType.DIRECTORY, _UNIX, None),
+        (0o010644 << 16, None, MemberType.FILE, _NTFS, None),
         # The bit with permission bits only: no file type, so no mode (7-Zip agrees).
-        (0x8000 | (0o644 << 16), None, MemberType.FILE),
+        (0x8000 | (0o644 << 16), None, MemberType.FILE, _NTFS, None),
+        # Known limit: INTEGRITY_STREAM | STRICTLY_SEQUENTIAL | ARCHIVE (ReFS) is a
+        # bit-set Unix char device with no permission bits, and 7-Zip reads it so too.
+        (0x20008020, 0, MemberType.OTHER, _UNIX, "char_device"),
     ],
 )
 def test_one_unix_mode_test_decides_mode_and_type(
-    attributes: int, mode: int | None, expected: MemberType
+    attributes: int,
+    mode: int | None,
+    expected: MemberType,
+    create_system: CreateSystem,
+    special: str | None,
 ) -> None:
-    """``mode`` and the type read the attribute word's high half by one test.
+    """Every field read from the attribute word's high half reads it by one test.
 
-    Before, ``mode`` took any non-zero high word (ARCHIVE | PINNED gave ``0o10``)
-    while the special-file test needed the ``0x8000`` bit, so one record could have a
-    Unix mode for one field and none for another.
+    Before, ``mode`` took any non-zero high word (ARCHIVE | PINNED gave ``0o10`` and
+    ``create_system`` UNIX) while the special-file test needed the ``0x8000`` bit, so
+    one record could have a Unix mode for one field and none for another.
     """
     with open_archive(io.BytesIO(_EMPTY_7Z)) as reader:
         assert isinstance(reader, SevenZipReader)
         member = reader._to_member(_created_slot_record(attributes), 0)
     assert member.mode == mode
     assert member.type is expected
+    assert member.create_system is create_system
+    assert member.extra.get("special_file_type") == special
 
 
 def _special_file_with_data_record(attributes: int) -> SevenZipFileRecord:
