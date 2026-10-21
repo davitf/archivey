@@ -1428,3 +1428,16 @@ def test_peek_arrived_refuses_a_seekable_source_and_a_negative_size() -> None:
     source = ArchiveSource.for_stream(QueuedChunks(b"abc"))  # type: ignore[arg-type]  # test double
     with pytest.raises(ValueError, match="non-negative"):
         source.peek_arrived(-1)
+
+
+def test_peek_with_a_start_returns_only_the_later_bytes_and_keeps_the_prefix() -> None:
+    source = ArchiveSource.for_stream(QueuedChunks(b"abc", b"defg"))  # type: ignore[arg-type]  # test double
+    assert source.peek_arrived(10, 1) == b"bc"
+    assert source.peek_arrived(10, 3) == b"defg"
+    assert source.peek(10, 5) == b"fg"
+    assert source.peek(4, 6) == b""  # a start past the end of the range
+    with pytest.raises(ValueError, match="start must be non-negative"):
+        source.peek(4, -1)
+    with pytest.raises(ValueError, match="start must be non-negative"):
+        source.peek_arrived(4, -1)
+    assert source.read() == b"abcdefg"  # every peeked byte is still replayed
