@@ -148,9 +148,11 @@ def test_inferred_bidi_control_name_warns_once(
     # (U+202E); this test covers inferred-name presentation warnings, not the
     # accelerator, so pin the stdlib gzip path.
     config = ArchiveyConfig(use_rapidgzip=AcceleratorMode.OFF)
-    with caplog.at_level(logging.WARNING, logger="archivey.normalization"):
-        with open_archive(path, config=config) as archive:
-            assert archive.members()[0].name == name
+    with (
+        caplog.at_level(logging.WARNING, logger="archivey.normalization"),
+        open_archive(path, config=config) as archive,
+    ):
+        assert archive.members()[0].name == name
     warnings = [
         record for record in caplog.records if "bidirectional control" in record.message
     ]
@@ -555,9 +557,11 @@ def test_lzip_version_0_is_unsupported_at_open(tmp_path: Path) -> None:
     member[4] = 0
     path = tmp_path / "old.lz"
     path.write_bytes(bytes(member))
-    with pytest.raises(UnsupportedFeatureError, match="lzip version 0 "):
-        with open_archive(path) as ar:
-            ar.read(ar.members()[0])
+    with (
+        pytest.raises(UnsupportedFeatureError, match="lzip version 0 "),
+        open_archive(path) as ar,
+    ):
+        ar.read(ar.members()[0])
 
 
 def test_multi_member_lzip_exposes_combined_crc32(tmp_path: Path) -> None:
@@ -571,17 +575,19 @@ def test_multi_member_lzip_exposes_combined_crc32(tmp_path: Path) -> None:
     path.write_bytes(make_multi_member_lzip(parts))
     full = b"".join(parts)
 
-    with patch.object(
-        lzip_mod, "_iter_trailers_backwards", wraps=lzip_mod._iter_trailers_backwards
-    ) as scanned:
-        with open_archive(path, seekable_members=True) as ar:
-            member = ar.members()[0]
-            assert scanned.call_count == 1, (
-                "size + CRC must share one backward index scan"
-            )
-            assert member.size == len(full)
-            assert member.hashes[HashAlgorithm.CRC32] == crc32_digest(zlib.crc32(full))
-            assert ar.read(member) == full
+    with (
+        patch.object(
+            lzip_mod,
+            "_iter_trailers_backwards",
+            wraps=lzip_mod._iter_trailers_backwards,
+        ) as scanned,
+        open_archive(path, seekable_members=True) as ar,
+    ):
+        member = ar.members()[0]
+        assert scanned.call_count == 1, "size + CRC must share one backward index scan"
+        assert member.size == len(full)
+        assert member.hashes[HashAlgorithm.CRC32] == crc32_digest(zlib.crc32(full))
+        assert ar.read(member) == full
 
 
 def test_other_single_file_codecs_omit_stored_digests(tmp_path: Path) -> None:
@@ -762,7 +768,7 @@ def test_non_seekable_gzip_streams_fine() -> None:
         # Read while the generator is live: exhaustion closes the current stream.
         pairs = list(ar.stream_members())
         assert len(pairs) == 1
-        member, stream = pairs[0]
+        _member, stream = pairs[0]
         assert stream is not None
         # Re-open via random open is unavailable in streaming mode; drain via a fresh
         # streaming pass that reads before the generator finishes.
@@ -893,9 +899,11 @@ def _read_single_streamed_member(ar) -> bytes:
 def test_truncated_gzip_raises_truncated() -> None:
     full = gzip.compress(b"streamed payload" * 1000)
     truncated = full[: len(full) // 2]  # gzip magic intact -> detection picks GZ
-    with open_archive(NonSeekableBytesIO(truncated), streaming=True) as ar:
-        with pytest.raises(TruncatedError):
-            _read_single_streamed_member(ar)
+    with (
+        open_archive(NonSeekableBytesIO(truncated), streaming=True) as ar,
+        pytest.raises(TruncatedError),
+    ):
+        _read_single_streamed_member(ar)
 
 
 def test_truncation_is_caught_as_corruption() -> None:
@@ -903,18 +911,22 @@ def test_truncation_is_caught_as_corruption() -> None:
     # ``except CorruptionError`` catches it.
     assert issubclass(TruncatedError, CorruptionError)
     full = gzip.compress(b"streamed payload" * 1000)
-    with open_archive(NonSeekableBytesIO(full[: len(full) // 2]), streaming=True) as ar:
-        with pytest.raises(CorruptionError) as caught:
-            _read_single_streamed_member(ar)
+    with (
+        open_archive(NonSeekableBytesIO(full[: len(full) // 2]), streaming=True) as ar,
+        pytest.raises(CorruptionError) as caught,
+    ):
+        _read_single_streamed_member(ar)
     assert isinstance(caught.value, TruncatedError)
 
 
 def test_corrupt_gzip_raises_corruption() -> None:
     data = bytearray(gzip.compress(b"streamed payload" * 100))
     data[15:35] = b"\x00" * 20  # clobber the deflate body (past the 10-byte header)
-    with open_archive(NonSeekableBytesIO(bytes(data)), streaming=True) as ar:
-        with raises_corruption_not_truncation():
-            _read_single_streamed_member(ar)
+    with (
+        open_archive(NonSeekableBytesIO(bytes(data)), streaming=True) as ar,
+        raises_corruption_not_truncation(),
+    ):
+        _read_single_streamed_member(ar)
 
 
 def test_open_from_mid_positioned_stream() -> None:
@@ -1145,11 +1157,15 @@ def test_open_time_failure_names_no_member(tmp_path: Path) -> None:
 def test_non_seekable_source_still_defers_validation_to_the_read() -> None:
     # A probe read would consume a byte the one-shot member stream needs, so a
     # non-seekable source keeps failing on the read, as documented.
-    with open_archive(
-        NonSeekableBytesIO(b"\x00" * 40_000), format=ArchiveFormat.GZ, streaming=True
-    ) as ar:
-        with raises_corruption_not_truncation():
-            _read_single_streamed_member(ar)
+    with (
+        open_archive(
+            NonSeekableBytesIO(b"\x00" * 40_000),
+            format=ArchiveFormat.GZ,
+            streaming=True,
+        ) as ar,
+        raises_corruption_not_truncation(),
+    ):
+        _read_single_streamed_member(ar)
 
 
 @pytest.mark.parametrize(
@@ -1167,6 +1183,8 @@ def test_corrupt_bz2_raises_whatever_the_accelerator_mode(
     path = tmp_path / "garbage.bz2"
     path.write_bytes(_NOT_A_STREAM[contents])
     config = ArchiveyConfig(use_indexed_bzip2=mode)
-    with pytest.raises(CorruptionError):
-        with open_archive(path, seekable_members=True, config=config) as ar:
-            ar.read(ar.members()[0])
+    with (
+        pytest.raises(CorruptionError),
+        open_archive(path, seekable_members=True, config=config) as ar,
+    ):
+        ar.read(ar.members()[0])

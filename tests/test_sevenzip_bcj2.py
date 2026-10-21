@@ -677,8 +677,12 @@ def test_encoded_header_stays_linear_only() -> None:
 
 def _bare_bcj2_archive(payload: bytes) -> bytes:
     """A BCJ2 folder whose four branches are raw pack streams: no coder but BCJ2."""
-    from tests.test_sevenzip_parser_hardening import _archive, _folder, _header
-    from tests.test_sevenzip_parser_hardening import _coder as _raw_coder
+    from tests.test_sevenzip_parser_hardening import (
+        _archive,
+        _coder as _raw_coder,
+        _folder,
+        _header,
+    )
 
     assert not any(b in payload for b in (0xE8, 0xE9, 0x0F))
     rc = b"\x00" * 5
@@ -718,8 +722,12 @@ def test_bare_bcj2_member_seeks_with_seekable_members() -> None:
 
 def test_encrypted_folder_with_a_cycle_is_corruption_not_a_password_error() -> None:
     """Planning runs before the password check's error mapping (D1)."""
-    from tests.test_sevenzip_parser_hardening import _archive, _folder, _header
-    from tests.test_sevenzip_parser_hardening import _coder as _raw_coder
+    from tests.test_sevenzip_parser_hardening import (
+        _archive,
+        _coder as _raw_coder,
+        _folder,
+        _header,
+    )
 
     aes = b"\x06\xf1\x07\x01"
     props = bytes([0x13, 0x00])  # NumCyclesPower 19, no salt, no IV

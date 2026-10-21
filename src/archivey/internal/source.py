@@ -594,7 +594,8 @@ class ArchiveSource(ReadOnlyIOStream):
         if self._is_directory:
             raise io.UnsupportedOperation(f"{self._path} is a directory, not a stream")
         assert self._open_path is not None
-        handle = open(self._open_path, "rb")
+        # The handle outlives this statement; its owner closes it.
+        handle = open(self._open_path, "rb")  # noqa: SIM115
         self._owned = handle
         self._reader = handle
         # A size that ``stat`` could not answer at construction (the file appeared since,

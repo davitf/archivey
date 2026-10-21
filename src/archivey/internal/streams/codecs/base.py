@@ -574,9 +574,9 @@ class StreamCodec:
                 return out_len > 0
             return True
         except TruncatedError:
-            if fully_visible:
-                return False  # whole file in hand; stream did not terminate
-            return True  # decoded fine, just ran out of the bounded prefix
+            # With the whole file in hand, the stream did not terminate; otherwise it
+            # decoded fine and just ran out of the bounded prefix.
+            return not fully_visible
         except ArchiveyError:
             return False
         except MemoryError:

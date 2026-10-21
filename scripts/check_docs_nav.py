@@ -100,7 +100,7 @@ def anchors_of(path: Path) -> set[str]:
     # object's full path, because mkdocs.yml sets `show_root_heading: true`; without
     # that option the site serves no such id. Only the block's own object is added,
     # not the ids mkdocstrings also emits for its members.
-    found.update(re.findall(r"^::: (\S+)", text, re.M))
+    found.update(re.findall(r"^::: (\S+)", text, re.MULTILINE))
     return found
 
 
@@ -117,7 +117,7 @@ def load_nav_files() -> list[str]:
     NavLoader.add_multi_constructor("", lambda loader, suffix, node: None)
 
     with MKDOCS_YML.open(encoding="utf-8") as fh:
-        config = yaml.load(fh, Loader=NavLoader)  # noqa: S506 — tags neutralised above
+        config = yaml.load(fh, Loader=NavLoader)  # tags neutralised above
 
     found: list[str] = []
 
