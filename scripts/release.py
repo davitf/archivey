@@ -47,6 +47,7 @@ _PIN_RE = re.compile(r'("archivey\[recommended\]==)([^"]+)(")')
 _UNRELEASED_RE = re.compile(r"^## \[Unreleased\][^\n]*\n", re.MULTILINE)
 _HEADING_RE = re.compile(r"^## \[", re.MULTILINE)
 _TRAILER_RE = re.compile(r"^(<!--|\[[^\]]+\]: )", re.MULTILINE)
+_LINK_RE = re.compile(r"^\[[^\]]+\]: ", re.MULTILINE)
 
 
 class ReleaseError(Exception):
@@ -95,9 +96,19 @@ def next_dev_version(version: str) -> str:
 
 
 def _link_section_start(text: str) -> int:
-    """Where the trailing link definitions start, after any HTML comment."""
+    """Where the trailing link definitions start.
+
+    That is just after the last HTML comment, or with no comment the first link
+    definition after the last ``## [`` heading, or the end of the file.
+    """
     end = text.rfind("-->")
-    return 0 if end < 0 else end + 3
+    if end >= 0:
+        return end + 3
+    last_heading = None
+    for last_heading in _HEADING_RE.finditer(text):
+        pass
+    link = _LINK_RE.search(text, last_heading.end() if last_heading else 0)
+    return link.start() if link else len(text)
 
 
 def _section_end(text: str, start: int) -> int:
@@ -223,11 +234,17 @@ def _require_clean_main() -> None:
         raise ReleaseError("main is not at origin/main; run `git pull --ff-only` first")
 
 
-def _set_versions(runner: Runner, version: str) -> None:
-    for path in (ROOT_PYPROJECT, CLI_PYPROJECT):
-        runner.write(
-            path, set_project_version(path.read_text(encoding="utf-8"), version)
-        )
+def _versioned_pyprojects(version: str) -> dict[Path, str]:
+    """Both pyproject.toml files with ``version`` set, computed before anything is written."""
+    return {
+        path: set_project_version(path.read_text(encoding="utf-8"), version)
+        for path in (ROOT_PYPROJECT, CLI_PYPROJECT)
+    }
+
+
+def _write_versions(runner: Runner, pyprojects: dict[Path, str]) -> None:
+    for path, text in pyprojects.items():
+        runner.write(path, text)
     runner.run("uv", "lock")
 
 
@@ -245,15 +262,18 @@ def cmd_start(args: argparse.Namespace) -> None:
     runner = Runner(args.dry_run)
     if not args.dry_run:
         _require_clean_main()
-    branch = f"release/v{version}"
-    runner.run("git", "switch", "-c", branch)
-    _set_versions(runner, version)
+    # Everything that can refuse runs before the first change, so a refusal leaves
+    # main as it was.
+    pyprojects = _versioned_pyprojects(version)
     changelog = changelog_for_release(
         CHANGELOG.read_text(encoding="utf-8"),
         version,
         _previous_tag(),
         str(dt.date.today()),
     )
+    branch = f"release/v{version}"
+    runner.run("git", "switch", "-c", branch)
+    _write_versions(runner, pyprojects)
     runner.write(CHANGELOG, changelog)
     runner.run("git", "add", "pyproject.toml", "packages/archivey-cli/pyproject.toml")
     runner.run("git", "add", "uv.lock", "CHANGELOG.md")
@@ -316,9 +336,10 @@ def cmd_finish(args: argparse.Namespace) -> None:
     current = project_version(ROOT_PYPROJECT.read_text(encoding="utf-8"))
     dev = args.version or next_dev_version(current)
     check_version(dev)
+    pyprojects = _versioned_pyprojects(dev)
     branch = f"release/v{dev}"
     runner.run("git", "switch", "-c", branch)
-    _set_versions(runner, dev)
+    _write_versions(runner, pyprojects)
     runner.run(
         "git",
         "add",

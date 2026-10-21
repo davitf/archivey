@@ -176,3 +176,40 @@ def test_dry_run_changes_nothing(capsys: pytest.CaptureFixture[str]) -> None:
     out = capsys.readouterr().out
     assert "+ git switch -c release/v0.9.9.dev0" in out
     assert "+ gh pr create" in out
+
+
+def test_start_refuses_before_changing_anything(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An empty [Unreleased] is refused before the branch or any file is touched."""
+    text = release.CHANGELOG.read_text(encoding="utf-8")
+    body = text.split("## [Unreleased]", 1)[1].split("\n## [", 1)[0]
+    if body.strip():
+        pytest.skip("[Unreleased] has text")
+    assert release.main(["--dry-run", "start", "0.9.9"]) == 1
+    captured = capsys.readouterr()
+    assert "nothing under" in captured.err
+    assert "+ " not in captured.out
+
+
+def test_changelog_without_a_comment_keeps_the_top_of_the_file() -> None:
+    text = CHANGELOG.split("<!--", 1)[0] + f"[0.2.0]: {URL}/releases/tag/v0.2.0\n"
+    out = release.changelog_for_release(text, "0.2.1", "v0.2.0", "2026-11-20")
+    assert out.startswith(text.split("## [Unreleased]", 1)[0])
+    assert out.endswith(
+        f"[Unreleased]: {URL}/compare/v0.2.1...HEAD\n"
+        f"[0.2.1]: {URL}/compare/v0.2.0...v0.2.1\n"
+        f"[0.2.0]: {URL}/releases/tag/v0.2.0\n"
+    )
+    assert "\n\n\n" not in out
+
+
+def test_changelog_without_a_comment_or_links_appends_them() -> None:
+    text = CHANGELOG.split("<!--", 1)[0].rstrip("\n") + "\n"
+    out = release.changelog_for_release(text, "0.2.1", "v0.2.0", "2026-11-20")
+    assert out.startswith(text.split("## [Unreleased]", 1)[0])
+    assert out.endswith(
+        "First release.\n\n"
+        f"[Unreleased]: {URL}/compare/v0.2.1...HEAD\n"
+        f"[0.2.1]: {URL}/compare/v0.2.0...v0.2.1\n"
+    )
