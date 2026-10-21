@@ -38,7 +38,7 @@ from archivey.internal.streams.codecs.stdlib_takeover import (
     _SourceViews,
     _StdlibOnAcceleratorError,
 )
-from archivey.internal.streams.decompressor_stream import gzip_error
+from archivey.internal.streams.decompressor_stream import gzip_error, release_decoder
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import DelegatingStream
 from archivey.internal.timestamps import unix32_to_datetime
@@ -87,13 +87,16 @@ def _gzip_header_refused(source: CodecSource, natives: Natives = IN_PROCESS) -> 
 
     def refused(view: BinaryIO) -> bool:
         decoder = natives.zlib_decompressobj(GZIP_WBITS)
-        while chunk := view.read(1 << 16):
-            try:
-                if decoder.decompress(chunk, 1) or decoder.eof:
-                    return False
-            except zlib.error:
-                return True
-        return False
+        try:
+            while chunk := view.read(1 << 16):
+                try:
+                    if decoder.decompress(chunk, 1) or decoder.eof:
+                        return False
+                except zlib.error:
+                    return True
+            return False
+        finally:
+            release_decoder(decoder)
 
     with _peeking(source) as f:
         f.seek(0)
@@ -576,6 +579,8 @@ def _gzip_member_at(
                 pending = decoder.unconsumed_tail
     except zlib.error:
         return None, fed
+    finally:
+        release_decoder(decoder)
     return True, fed
 
 
@@ -615,8 +620,10 @@ class GzipCodec(_DeflateFamilyCodec):
     def _open_stdlib(self, source: CodecSource, config: StreamConfig) -> BinaryIO:
         # Stdlib path: gzip-window DecompressorStream (not gzip.GzipFile). CRC/ISIZE
         # outcomes come from zlib's gzip window; members with nothing between them
-        # chain, and NULs end the data as in GNU gzip (GzipDecoder). O(n) rewind with
-        # a warning.
+        # chain, and NULs end the data as in GNU gzip (GzipDecoder). With declared seek
+        # demand, a backward seek resumes at the nearest member or BGZF block start.
+        # Otherwise it decodes again from the start, and warns once the discarded
+        # progress reaches REWIND_REDECODE_WARN_BYTES.
         return _stdlib_gzip(source, config)
 
     def _open_accelerated(
