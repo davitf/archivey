@@ -130,11 +130,11 @@ class ReadOnlyIOStream(io.RawIOBase, BinaryIO):
         surface.
 
         ``Never`` is the honest return type: this returns nothing, ever. It is also
-        why subclasses that *do* have a path (:class:`DelegatingStream` here, and
-        ``ArchiveSource`` outside this package) need ``# pyrefly: ignore[bad-override]`` and
-        ``# ty: ignore[invalid-property-type-override]``
-        — widening ``Never`` to ``str`` is a deliberate LSP exception, not an
-        oversight.
+        why the subclasses that *do* have a path (:class:`DelegatingStream` here, and
+        ``ArchiveSource`` and ``ArchiveStream`` outside this package) need
+        ``# pyrefly: ignore[bad-override]`` and
+        ``# ty: ignore[invalid-property-type-override]``: widening ``Never`` to
+        ``str`` is a deliberate LSP exception, not an oversight.
 
         Do not "fix" this by returning a string or ``None``. See :meth:`mode`, which
         overrides the same ``typing.IO`` stub for the same reason.

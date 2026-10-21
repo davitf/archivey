@@ -718,7 +718,7 @@ class MemberExtra(dict[str, object]):
     # ``extra_items=`` and then treats the TypedDict as having no keys, so every
     # read and write in a user's file errors. A ``total=False`` TypedDict also
     # makes every subscript read an error under pyright. This shape was measured
-    # clean on pyright 1.1.414, mypy 1.19.1, pyrefly 1.1.1 and ty 0.0.60 with no
+    # clean on pyright 1.1.414, mypy 1.19.1, pyrefly 1.4.0 and ty 0.0.90 with no
     # suppressions. Writes are not overloaded: the ``str → object`` fallback
     # unknown keys need also accepts a wrong-type write to a known key.
     # ``.get()`` stays ``object`` because the four checkers disagree on
