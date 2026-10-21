@@ -672,9 +672,10 @@ def source_byte_size(source: object) -> int | None:
        by archivey's own wrappers (``ArchiveStream``, ``SlicingStream``) when they
        know their length;
     3. a ``try_get_size()`` method (archivey's decompressor streams) is called — it
-       answers from an index/trailer scan or returns ``None``, and its presence marks
-       the stream as one whose ``SEEK_END`` may decompress, so its answer is final
-       (no fall-through to the probe);
+       answers from a size it already knows or from a scan that reads only the
+       index/trailer, or returns ``None`` (a BGZF stream before a seek or a read finds
+       its size). Its presence marks the stream as one whose ``SEEK_END`` may
+       decompress, so its answer is final (no fall-through to the probe);
     4. a metadata end-size that does not move the handle (``fstat`` on a regular
        file, ``len(mmap)``, ``BytesIO.getbuffer().nbytes``), falling back to a
        ``SEEK_END``/restore round trip only for types whose end-seek is provably

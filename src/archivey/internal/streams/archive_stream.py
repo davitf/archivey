@@ -322,7 +322,12 @@ class ArchiveStream(ReadOnlyIOStream):
         The fsspec-style ``size`` convention (see ``source_byte_size``): the creator may
         supply it up front (a member stream knows ``member.size`` from the archive
         metadata), else an opened inner decompressor with a cheap ``try_get_size()``
-        (index/trailer scan, no decompression) is consulted. Lets a nested
+        (a size it already knows, or a scan that reads only the index/trailer) is
+        consulted. A BGZF stream reports ``None`` until a seek or a read finds its size:
+        its index scan reads the whole file. That scan reads payload, so the
+        ``safe-extraction`` rule for a static ratio denominator requires ``None`` here;
+        the live compressed-byte counter (``compressed_bytes_consumed``) or
+        ``max_extracted_bytes`` then guards extraction instead. Lets a nested
         ``open_archive(reader.open("inner.zip"))`` learn its source size — e.g. for the
         extraction bomb tracker — without an expensive end-seek. A lazy, still-unopened
         stream reports ``None`` rather than opening itself just to answer.

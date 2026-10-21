@@ -351,3 +351,53 @@ def test_a_real_bgzip_file_seeks_by_its_blocks(tmp_path: Any) -> None:
             pos = rng.randrange(len(payload))
             stream.seek(pos)
             assert stream.read(100) == payload[pos : pos + 100]
+
+
+# Enough data that a walk of the whole file reads far more than one read buffer.
+_BIG_PARTS = PARTS * 8
+
+
+def test_a_size_query_on_a_fresh_bgzf_stream_walks_nothing() -> None:
+    """A size query starts unknown, as for plain gzip: the walk reads the whole file."""
+    data = make_bgzf(_BIG_PARTS)
+    source = CountingBytesIO(data)
+    with _open(source) as stream:
+        assert _engine(stream).try_get_size() is None
+        assert stream.size is None
+        assert source.bytes_read <= io.DEFAULT_BUFFER_SIZE
+        assert _points(stream) == [0]
+
+
+@pytest.mark.parametrize("fill", ["seek_end", "read_all", "seek_forward"])
+def test_bgzf_size_is_known_after_a_walk_or_a_full_read(fill: str) -> None:
+    full = b"".join(_BIG_PARTS)
+    with _open(io.BytesIO(make_bgzf(_BIG_PARTS))) as stream:
+        # A size query before the fill must not stop a later seek from walking.
+        assert _engine(stream).try_get_size() is None
+        if fill == "seek_end":
+            stream.seek(0, io.SEEK_END)
+        elif fill == "read_all":
+            assert stream.read() == full
+        else:
+            stream.seek(len(full) // 2)
+        assert _engine(stream).try_get_size() == len(full)
+        assert stream.size == len(full)
+
+
+def test_a_bgzf_member_size_is_cheap_on_an_archive_stream() -> None:
+    from archivey import AcceleratorMode as PublicMode
+    from archivey import ArchiveyConfig, open_archive
+
+    data = make_bgzf(_BIG_PARTS)
+    source = CountingBytesIO(data)
+    config = ArchiveyConfig(use_rapidgzip=PublicMode.OFF)
+    with open_archive(
+        io.BufferedReader(source), config=config, seekable_members=True
+    ) as reader:
+        (member,) = reader.members()
+        with reader.open(member) as stream:
+            before = source.bytes_read
+            assert stream.size is None
+            assert source.bytes_read - before <= io.DEFAULT_BUFFER_SIZE
+            assert stream.read() == b"".join(_BIG_PARTS)
+            assert stream.size == len(b"".join(_BIG_PARTS))
