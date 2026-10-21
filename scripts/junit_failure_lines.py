@@ -1,6 +1,6 @@
 """Print one line per failed or errored test from a pytest JUnit XML report.
 
-The PyPy trial job in ci.yml uses this. pytest's own ``-r`` summary prints the whole
+The PyPy job in ci.yml uses this. pytest's own ``-r`` summary prints the whole
 assertion message, which can run to dozens of lines per failure, and the GitHub API
 returns only the last few thousand lines of a job log. One line per failure keeps the
 complete list readable from there. A count per message comes last.
