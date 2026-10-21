@@ -402,7 +402,7 @@ class _Closable(Protocol):
 
 
 @contextlib.contextmanager
-def _closing_pass(passing: _Closable) -> Iterator[None]:
+def _closing_pass(passing: _Closable) -> Generator[None, None, None]:
     """Close ``passing`` on the way out, without letting a failed close hide an error.
 
     Closing the pass closes its open member stream, which can raise (an ``unrar``
@@ -2421,7 +2421,7 @@ class ExtractionCoordinator:
         kind: str,
         record: Callable[[ArchiveyError | OSError, ExtractionResult], bool],
         cleanup: Callable[[], None] | None = None,
-    ) -> Iterator[None]:
+    ) -> Generator[None, None, None]:
         """Run the work on ``member`` in either pass, and deal with its failure.
 
         A per-member failure (``ArchiveyError`` or ``OSError``) is named as listed,
@@ -3467,7 +3467,9 @@ class ExtractionCoordinator:
             self._revise_result(orphan.result_index, result)
 
     @contextlib.contextmanager
-    def _readonly_cleared(self, path: Path, *, ours: bool = False) -> Iterator[None]:
+    def _readonly_cleared(
+        self, path: Path, *, ours: bool = False
+    ) -> Generator[None, None, None]:
         """Let the block replace or remove ``path`` on Windows when this run wrote it
         read-only. ``ours`` says the caller knows this run wrote it (a parked copy
         already taken out of ``parked``).

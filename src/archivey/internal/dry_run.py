@@ -20,7 +20,7 @@ import shutil
 import stat
 import tempfile
 import unicodedata
-from collections.abc import Iterable, Iterator
+from collections.abc import Generator, Iterable
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePath
 from typing import BinaryIO, NamedTuple
@@ -786,7 +786,7 @@ class DryRun:
 
 
 @contextlib.contextmanager
-def scratch_for(dest: Path) -> Iterator[DryRun]:
+def scratch_for(dest: Path) -> Generator[DryRun, None, None]:
     """A ``DryRun`` for ``dest``, its scratch copy created, and removed with everything
     under it when the block ends.
 

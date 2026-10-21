@@ -294,7 +294,7 @@ class ArchiveStream(ReadOnlyIOStream):
             self._ensure_open()
 
     @property
-    def name(self) -> str:  # pyrefly: ignore[bad-override]  # base is Never; a member stream has a name
+    def name(self) -> str:  # pyrefly: ignore[bad-override]  # ty: ignore[invalid-property-type-override]  # base is Never; a member stream has a name
         """The member's name inside its archive, or raise ``AttributeError``.
 
         A member stream carries the name its archive gives it, as ``zipfile``'s

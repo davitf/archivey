@@ -131,7 +131,8 @@ class ReadOnlyIOStream(io.RawIOBase, BinaryIO):
 
         ``Never`` is the honest return type: this returns nothing, ever. It is also
         why subclasses that *do* have a path (:class:`DelegatingStream` here, and
-        ``ArchiveSource`` outside this package) need ``# pyrefly: ignore[bad-override]``
+        ``ArchiveSource`` outside this package) need ``# pyrefly: ignore[bad-override]`` and
+        ``# ty: ignore[invalid-property-type-override]``
         — widening ``Never`` to ``str`` is a deliberate LSP exception, not an
         oversight.
 
@@ -297,7 +298,7 @@ class DelegatingStream(ReadOnlyIOStream):
             super().close()
 
     @property
-    def name(self) -> str:  # pyrefly: ignore[bad-override]  # base is Never; this returns a path when the inner has one
+    def name(self) -> str:  # pyrefly: ignore[bad-override]  # ty: ignore[invalid-property-type-override]  # base is Never; this returns a path when the inner has one
         """Path of the inner stream, or raise :exc:`AttributeError` if it has none.
 
         Raising keeps ``hasattr(..., "name")`` false when the inner is nameless
