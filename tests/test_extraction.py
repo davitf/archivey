@@ -264,7 +264,24 @@ def test_check_universal_names_a_loop_in_the_destination(
     with pytest.raises(ExtractionError) as info:
         check_universal(member, dest)
     assert type(info.value) is ExtractionError
-    assert "A path in the destination does not resolve" in str(info.value)
+    assert "A path in the destination does not resolve (a symlink loop)" in str(
+        info.value
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+def test_check_universal_names_a_path_past_path_max_in_the_destination(
+    tmp_path: Path,
+) -> None:
+    # Not a loop: the destination's link chain is longer than PATH_MAX when expanded.
+    _link_chain_past_path_max(tmp_path)
+    with pytest.raises(ExtractionError) as info:
+        check_universal(_member("up/f"), tmp_path)
+    assert type(info.value) is ExtractionError
+    assert (
+        "A path in the destination does not resolve (a path that cannot be looked up)"
+        in str(info.value)
+    )
 
 
 def test_check_universal_enforced_under_trusted(tmp_path: Path) -> None:
@@ -2106,23 +2123,29 @@ def test_resolve_or_raise_on_loop_keeps_a_missing_component(tmp_path: Path) -> N
     assert resolve_or_raise_on_loop(path) == tmp_path.resolve() / "d" / "missing" / "f"
 
 
-@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
-def test_resolve_or_raise_on_loop_raises_when_a_component_cannot_be_looked_up(
-    tmp_path: Path,
-) -> None:
-    # Links whose expansion is longer than PATH_MAX: os.path.realpath keeps the long
-    # name and drops it again at the "..", so it gives a path inside tmp_path, while
-    # the kernel follows `up` one link at a time to tmp_path's parent.
+def _link_chain_past_path_max(root: Path) -> None:
+    """``root/up``: links whose expansion is longer than PATH_MAX, leading to
+    ``root``'s parent."""
     component = "d" * 200
-    path_max = os.pathconf(tmp_path, "PC_PATH_MAX")
+    path_max = os.pathconf(root, "PC_PATH_MAX")
     depth = path_max // len(component) + 1
-    here = tmp_path
+    here = root
     for _ in range(depth):
         (here / component).mkdir()
         os.symlink(component, here / "s")
         here = here / "s"  # The short spelling, which stays under PATH_MAX.
     os.symlink(os.path.join(*[".."] * (depth + 1)), here / "x")
-    os.symlink(os.path.join(*["s"] * depth, "x", ".."), tmp_path / "up")
+    os.symlink(os.path.join(*["s"] * depth, "x", ".."), root / "up")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+def test_resolve_or_raise_on_loop_raises_when_a_component_cannot_be_looked_up(
+    tmp_path: Path,
+) -> None:
+    # os.path.realpath keeps the long name and drops it again at the "..", so it
+    # gives a path inside tmp_path, while the kernel follows `up` one link at a time
+    # to tmp_path's parent.
+    _link_chain_past_path_max(tmp_path)
     assert os.path.realpath(tmp_path / "up").startswith(str(tmp_path.resolve()))
     with pytest.raises(OSError) as info:
         resolve_or_raise_on_loop(tmp_path / "up")
