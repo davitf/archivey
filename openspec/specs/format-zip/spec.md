@@ -255,7 +255,7 @@ reparse buffer stays a file. The cost receipt SHALL be `REQUIRES_SCANNING`, `DIR
 
 Four things SHALL fail the member they name once the directory has been read: a size
 or CRC from a data descriptor that differs from the central entry; a local header whose
-CRC, sizes or encryption flag the central entry contradicts (a central CRC-32 of 0 over
+compression method, CRC, sizes or encryption flag the central entry contradicts (a central CRC-32 of 0 over
 data against a non-zero local one is none: a file or link takes the local value, and a
 directory keeps no digest, as from a file); two same-name members whose directory
 order reverses their file order; and a directory entry with no local entry.
@@ -570,7 +570,10 @@ both) and SHALL report a code with `LocalHeaderContext`:
   nothing more.
 
 Both headers understating the size, with a CRC-32 over the longer output, SHALL stay
-refused: the declared size is the bound that stops decoding (DR-9a). A read from a pipe
+refused: the declared size is the bound that stops decoding (DR-9a). A local header
+that names another compression method than the directory SHALL refuse the member with
+`CorruptionError` when it opens, under every policy: the two headers describe different
+data, and `unzip` and 7-Zip, which take the local method, fail it. A read from a pipe
 SHALL behave as a file read: the same members, data, reports and files on disk.
 
 #### Scenario: headers that disagree
@@ -584,6 +587,7 @@ SHALL behave as a file read: the same members, data, reports and files on disk.
 | Central CRC-32 0, local CRC-32 wrong, or 0 in both | `CorruptionError` when read |
 | The first under `DiagnosticPolicy.STRICT`, or the fourth under `DiagnosticPolicy.PEDANTIC` | `DiagnosticRaisedError` |
 | Both headers declare 3.5% less than the data decodes to | `CorruptionError` ("exceeds its declared size") |
+| Local method stored, directory method deflate (or any two methods that differ) | `CorruptionError` naming both methods when read from a file; `CorruptionError` from a pipe, from the codec or at the end of the pass |
 
 ### Requirement: Report bytes after the end of a ZIP archive
 

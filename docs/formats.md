@@ -187,7 +187,9 @@ yielded.
   `MEMBER_LOCAL_NAME_DIFFERS`, which `DiagnosticPolicy.STRICT` refuses. The data is
   checked against the local CRC-32, reported as `MEMBER_LOCAL_CRC_USED`, which `STRICT`
   reads: Adobe AIR packages store `META-INF/AIR/hash` this way. A member whose two
-  headers both declare less than its data decodes to is refused with `CorruptionError`.
+  headers both declare less than its data decodes to is refused with `CorruptionError`,
+  and so is one whose two headers name different compression methods, which `unzip`
+  and 7-Zip fail too.
 - **A damaged central directory lists the members before the damage**, and the members
   the local headers hold after it (without the mode, host or comment only the directory
   has), then raises `CorruptionError`; `members_report()` gives you both. An archive

@@ -87,14 +87,18 @@ def test_an_encryption_flag_only_the_directory_sets_fails_the_member() -> None:
 
 
 @requires("inflate64")
-def test_a_method_the_two_headers_disagree_on_does_not_fail_a_member_its_crc_checks() -> (
-    None
-):
-    """The data matched the CRC and size the directory gives, so it is the data the
-    directory describes, whichever codec decoded it."""
+def test_a_method_the_two_headers_disagree_on_fails_the_member_its_crc_checks() -> None:
+    """The data matched the CRC and size the directory gives, but the two headers name
+    different codecs, so tools that trust each read the bytes differently: the member
+    fails at the end of the pass, as a file read refuses it when it opens."""
     raw = _zip(b"hello world" * 20, zipfile.ZIP_DEFLATED)
     struct.pack_into("<H", raw, 8, 9)  # Deflate64 decodes this Deflate stream too
-    assert _drain(bytes(raw)) == [b"hello world" * 20]
+    message = "compression method 9 against 8"
+    with pytest.raises(CorruptionError, match=message):
+        _drain(bytes(raw))
+    with archivey.open_archive(io.BytesIO(bytes(raw))) as archive:
+        with pytest.raises(CorruptionError, match="compression method 9"):
+            archive.read("a.txt")
 
 
 @requires("cryptography")

@@ -2948,7 +2948,8 @@ class ZipReader(BaseArchiveReader):
         next local header or the directory: the overlap guard. Then, on a payload
         the guard lets through, a local name whose bytes differ from the central
         directory's is reported (``_report_local_name``), and the member reads by
-        the directory's name.
+        the directory's name. A local compression method that differs from the
+        directory's is refused.
         """
         if loc.header_offset >= self._end.cd_start:
             # Every local header comes before the directory, as ``_holds_local_header``
@@ -2973,6 +2974,14 @@ class ZipReader(BaseArchiveReader):
             raise CorruptionError(
                 f"Overlapped entries: {quoted(_stored_text(loc.name))} "
                 "(possible zip bomb)"
+            )
+        if header.method != loc.method:
+            # Each header names another codec, so a tool that trusts the local one
+            # (unzip, 7-Zip) reads other data or fails: refused, as they refuse it.
+            raise CorruptionError(
+                f"ZIP member {quoted(_stored_text(loc.name))}: its local header names "
+                f"compression method {header.method} and its central directory entry "
+                f"method {loc.method}, so the two headers describe different data"
             )
         if header.name != loc.name:
             self._report_local_name(loc, member, header.name)

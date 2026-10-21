@@ -535,15 +535,16 @@ seekable extraction end up the same on disk (the 2026-10-02 ruling):
 
 Five things are known only once the directory has been read: a size or CRC from a data
 descriptor that differs from the central entry, a local header the central entry
-contradicts in its CRC, sizes or encryption flag, two same-name members whose directory
+contradicts in its compression method, CRC, sizes or encryption flag, two same-name members whose directory
 order reverses their file order, a directory entry with no local entry, and a member
 whose directory entry and local header store different names (question A, case 3: the
 seekable read refuses it when it reads the local header, and a forward pass has both
 names only now). The pass reads and checks a member's data as its local header describes
 it, and the file read as the directory does, so where the two headers differ the file
-read reads other data or fails the member. The method does not count, nor the CRC of a
-WinZip AE-2 member, which no read checks: data that matched the CRC and size the
-directory gives is the data it describes, whichever codec decoded it. A local name that
+read reads other data or fails the member. The method counts even when the data matched
+the CRC and size the directory gives, since a file read refuses a member whose two
+headers name different codecs (2026-10-21, pending davi's ruling). The CRC of a WinZip
+AE-2 member does not count: no read checks it. A local name that
 is not UTF-8 under the UTF-8 flag is read as unflagged for the pass, and the name check
 fails the member, as the file read fails it. Each is a member-scoped failure of the
 member it names, handled as `safe-extraction` handles any other (the `OnError`

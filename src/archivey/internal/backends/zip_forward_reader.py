@@ -220,13 +220,15 @@ def _header_disagreements(
     The pass reads a member's data as its local header describes it; a file read reads
     it as the directory does. The CRC and sizes count only when the local header holds
     them (no bit 3): a data descriptor's are checked by :func:`_contradicts`. The CRC
-    counts only when a read checks it (``crc_used``: not WinZip AE-2). The method does
-    not count: the data the pass decoded matched the CRC and size the directory gives,
-    so it is the data the directory describes, whichever codec produced it.
+    counts only when a read checks it (``crc_used``: not WinZip AE-2). The method
+    counts too: a file read refuses a member whose two headers name different codecs,
+    even when the data the pass decoded by the local one matched the CRC and size.
     """
     flags, crc = local.flags, local.crc
     compressed_size, file_size = local.compressed_size, local.file_size
     differ = []
+    if local.method != central.method:
+        differ.append(f"compression method {local.method} against {central.method}")
     encrypted = _is_encrypted_entry(flags, local.method)
     if encrypted != _is_encrypted_entry(central.flags, central.method):
         differ.append(
