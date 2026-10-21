@@ -152,9 +152,9 @@ def test_f1_convert_hash_to_mac_crc_and_blake2sp_roundtrip() -> None:
 
     # VerifyingStream with transforms accepts good data and rejects a wrong MAC.
     transforms = {
-        HashAlgorithm.CRC32: lambda d, hk=hash_key: convert_crc_to_mac(
-            int.from_bytes(d, "big"), hk
-        ).to_bytes(4, "big"),
+        HashAlgorithm.CRC32: lambda d, hk=hash_key: crc32_digest(
+            convert_crc_to_mac(int.from_bytes(d, "big"), hk)
+        ),
         HashAlgorithm.BLAKE2SP: lambda d, hk=hash_key: convert_blake2sp_to_mac(d, hk),
     }
     expected = {

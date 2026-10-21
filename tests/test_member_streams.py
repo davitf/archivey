@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import gc
 import io
-import sys
 import weakref
 from pathlib import Path
 
@@ -15,6 +14,7 @@ from archivey import (
     ArchiveyUsageError,
     open_archive,
 )
+from tests.conftest import CPYTHON
 from tests.extract_util import open_and_extract
 
 pytestmark = pytest.mark.concurrent_reader
@@ -259,7 +259,7 @@ def test_dropped_stream_is_collected_without_reader_close(tmp_path: Path) -> Non
             False,
             id="refcount",
             marks=pytest.mark.skipif(
-                sys.implementation.name == "pypy",
+                not CPYTHON,
                 reason="PyPy frees an unreferenced object only at its next collection",
             ),
         ),
