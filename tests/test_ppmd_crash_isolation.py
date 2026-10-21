@@ -746,7 +746,7 @@ def test_an_interrupted_reply_leaves_the_decoder_unusable(
         with pytest.raises(KeyboardInterrupt):
             child.decode(packed, len(data))
         monkeypatch.setattr(decoder_child, "read_exact_or_none", real_read_exact)
-        with pytest.raises(ArchiveyUsageError, match="not running"):
+        with pytest.raises(ArchiveyUsageError, match="interrupted in the middle of a"):
             child.decode(packed, len(data))
     finally:
         child.close()

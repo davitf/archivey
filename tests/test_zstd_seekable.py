@@ -111,7 +111,9 @@ def test_a_seek_into_a_misplaced_frame_raises_when_the_decode_reaches_it() -> No
     """The table puts frame 3 where frame 2 starts; decoding into it notices."""
     data = _lying_table_file()
     with _open(io.BytesIO(data)) as stream:
-        with pytest.raises(CorruptionError, match="seek-point collision"):
+        with pytest.raises(
+            CorruptionError, match="zstd seek table and the data do not agree"
+        ):
             stream.seek(STARTS[1] + 5)
             stream.read()
 

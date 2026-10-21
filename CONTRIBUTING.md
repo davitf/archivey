@@ -251,6 +251,9 @@ maintainer.
   (`with memoryview(b) as view:`), test doubles included. The caller may resize the
   buffer next, and PyPy frees a dropped view only at a collection; the full contract is
   in `try_readinto`'s docstring.
+- **Read a flag from a C extension by its truth, not its type.** PyPy can read a C `bool`
+  member as the int 1 (dev-docs/known-issues.md, "PyPy: a C `bool` member reads as an
+  int"), so `isinstance(value, bool)` drops it.
 - **Match the surrounding code.** Naming, structure, and idiom should read like the file
   you're editing.
 - **Type-checker suppressions must be justified, and are a last resort.** A bare
