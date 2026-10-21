@@ -167,8 +167,26 @@ _SUSPENDED_SOURCES = [
     pytest.param(_sevenzip_fixture, True, id="7z-solid-streaming"),
 ]
 
+# Reading a member of the RAR fixture runs RARLAB unrar, which a core-only install
+# may lack. Listing it does not, so only the tests that read are gated, keyed on the
+# fixture function rather than the row id. Not requires_binary("unrar"): that checks
+# only shutil.which, and binary_refusal also applies archivey's RARLAB policy.
+_UNRAR_REFUSAL = binary_refusal("unrar")
+_READ_SOURCES = [
+    pytest.param(
+        *p.values,
+        id=p.id,
+        marks=pytest.mark.skipif(
+            _UNRAR_REFUSAL is not None, reason=f"needs unrar: {_UNRAR_REFUSAL}"
+        ),
+    )
+    if p.values[0] is _rar_fixture
+    else p
+    for p in _SUSPENDED_SOURCES
+]
 
-@pytest.mark.parametrize(("make_source", "streaming"), _SUSPENDED_SOURCES)
+
+@pytest.mark.parametrize(("make_source", "streaming"), _READ_SOURCES)
 def test_close_while_stream_members_suspended_closes_reader(
     tmp_path: Path, make_source, streaming: bool
 ) -> None:
@@ -239,25 +257,6 @@ def test_close_while_streaming_iteration_suspended_closes_reader(
     reader.close()
     with pytest.raises(ArchiveyUsageError, match="closed"):
         next(it)
-
-
-# Reading a member of the RAR fixture runs RARLAB unrar, which a core-only install
-# may lack. Listing it does not, so only the tests that read are gated, keyed on the
-# fixture function rather than the row id. Not requires_binary("unrar"): that checks
-# only shutil.which, and binary_refusal also applies archivey's RARLAB policy.
-_UNRAR_REFUSAL = binary_refusal("unrar")
-_READ_SOURCES = [
-    pytest.param(
-        *p.values,
-        id=p.id,
-        marks=pytest.mark.skipif(
-            _UNRAR_REFUSAL is not None, reason=f"needs unrar: {_UNRAR_REFUSAL}"
-        ),
-    )
-    if p.values[0] is _rar_fixture
-    else p
-    for p in _SUSPENDED_SOURCES
-]
 
 
 @dataclass
