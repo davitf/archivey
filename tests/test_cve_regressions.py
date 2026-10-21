@@ -25,6 +25,7 @@ from archivey import (
     ExtractionPolicy,
     ExtractionReport,
     ExtractionStatus,
+    MemberType,
     OnError,
     OverwritePolicy,
 )
@@ -212,15 +213,17 @@ def _zip(entries: list[tuple[str, str, str | bytes]]) -> bytes:
         # A case may repeat a name on purpose.
         warnings.filterwarnings("ignore", "Duplicate name", UserWarning)
         for kind, name, value in entries:
-            info = zipfile.ZipInfo(name)
+            if kind == "dir" and not name.endswith("/"):
+                # archivey, like zipfile, takes a directory from the name's slash.
+                name += "/"
+            info = zipfile.ZipInfo()
+            # Set after construction: ZipInfo(name) turns backslashes into slashes
+            # on Windows, which would drop what the backslash cases replay.
+            info.filename = name
             info.create_system = 3
             if kind == "file":
                 info.external_attr = 0o100644 << 16
             elif kind == "dir":
-                # archivey, like zipfile, takes a directory from the name's slash.
-                name = name if name.endswith("/") else name + "/"
-                info = zipfile.ZipInfo(name)
-                info.create_system = 3
                 info.external_attr = (0o040755 << 16) | 0x10
             elif kind == "sym":
                 info.external_attr = 0o120777 << 16
@@ -284,30 +287,46 @@ def _assert_not_disclosed(dest: Path) -> None:
                     assert f.read() != b"original", path
 
 
+_Key = str | tuple[str, MemberType]
+"""A member as reported (trailing slash dropped), with its type where two members
+of a case share a name."""
+
+# The error each expected status must carry: a filter's refusal, or a hardlink whose
+# target is not an earlier member.
+_ERRORS = {
+    ExtractionStatus.BLOCKED: FilterRejectionError,
+    ExtractionStatus.FAILED: LinkTargetNotFoundError,
+}
+
+
 def _assert_outcomes(
-    report: ExtractionReport, expected: Mapping[str, ExtractionStatus]
+    report: ExtractionReport, expected: Mapping[_Key, ExtractionStatus]
 ) -> None:
-    """Each member named in ``expected`` ended with that status, and the members a
-    filter refused are exactly the ``BLOCKED`` ones there: a case whose hostile
-    member is missing, or fails for another reason, does not pass."""
-    outcomes = [(r.member.name.rstrip("/"), r.status, r.error) for r in report]
-    for name, status in expected.items():
-        assert any(n == name and s is status for n, s, _ in outcomes), (
-            name,
-            status,
-            outcomes,
-        )
-    blocked = {n for n, s, _ in outcomes if s is ExtractionStatus.BLOCKED}
-    assert blocked == {
-        n for n, s in expected.items() if s is ExtractionStatus.BLOCKED
-    }, outcomes
-    for _, s, error in outcomes:
-        if s is ExtractionStatus.BLOCKED:
+    """Each member in ``expected`` ended with that status (and its ``_ERRORS``
+    error), and the members a filter refused are exactly the ``BLOCKED`` ones there:
+    a case whose hostile member is missing, or fails for another reason, does not
+    pass."""
+    outcomes = [
+        (r.member.name.rstrip("/"), r.member.type, r.status, r.error) for r in report
+    ]
+
+    def matches(key: _Key, name: str, type_: MemberType) -> bool:
+        return key == name if isinstance(key, str) else key == (name, type_)
+
+    for key, status in expected.items():
+        hits = [o for o in outcomes if matches(key, o[0], o[1]) and o[2] is status]
+        assert hits, (key, status, outcomes)
+        if status in _ERRORS:
+            assert all(isinstance(o[3], _ERRORS[status]) for o in hits), outcomes
+    refused = [k for k, s in expected.items() if s is ExtractionStatus.BLOCKED]
+    for name, type_, status, error in outcomes:
+        if status is ExtractionStatus.BLOCKED:
+            assert any(matches(k, name, type_) for k in refused), outcomes
             assert isinstance(error, FilterRejectionError), outcomes
 
 
-_Case = tuple[list[tuple[str, str, str | bytes]], tuple[str, ...]]
-"""A case's entries, and the names of the members a filter must refuse."""
+_Case = tuple[list[tuple[str, str, str | bytes]], tuple[_Key, ...]]
+"""A case's entries, and the members a filter must refuse."""
 
 # Name-only escapes: every OS, every policy.
 _NAME_CASES: dict[str, _Case] = {
@@ -416,17 +435,17 @@ _LINK_CASES: dict[str, _Case] = {
     # times set through the link.
     "metadata-through-link": (
         [("sym", "victim", "../outside/victim"), ("file", "victim", b"new")],
-        ("victim",),
+        (("victim", MemberType.SYMLINK),),
     ),
-    # tarfile CVE-2026-7774: a symlink whose name looks like a directory. The ZIP
-    # spelling cannot be a link: its trailing slash makes it a directory.
+    # tarfile CVE-2026-7774: a symlink whose name looks like a directory. Name
+    # normalization drops the ``.``, so the link lands on the directory's name.
     "symlink-named-dot": (
         [
             ("dir", "a", ""),
             ("sym", "a/.", "../../outside"),
             ("file", "a/victim", b"overwritten"),
         ],
-        ("a",),
+        (("a", MemberType.SYMLINK),),
     ),
     # tarfile CVE-2026-19672 goes up through a link with a ``..`` in a member name.
     # archivey refuses any name with a ``..`` before it resolves anything, so the
@@ -443,7 +462,8 @@ _LINK_CASES: dict[str, _Case] = {
 }
 
 _TAR_ONLY_CASES: dict[str, _Case] = {
-    # tarfile CVE-2026-7774: the TAR spelling of a directory-like symlink name.
+    # tarfile CVE-2026-7774: the TAR spelling of a directory-like symlink name. The
+    # ZIP spelling cannot be a link: its trailing slash makes it a directory.
     "symlink-named-like-a-directory": (
         [("sym", "a/", "../outside"), ("file", "a/victim", b"overwritten")],
         ("a",),
@@ -460,13 +480,10 @@ _TAR_ONLY_CASES: dict[str, _Case] = {
         ],
         ("s", "h"),
     ),
-    # tarfile CVE-2025-4138: a hardlink to a file outside, through a symlink.
+    # tarfile CVE-2025-4138: a hardlink to a file outside, through a symlink. Its
+    # target is no earlier member, so it fails as not found.
     "hardlink-through-symlink": (
-        [
-            ("sym", "s", "../outside"),
-            ("hard", "h", "s/victim"),
-            ("file", "h", b"overwritten"),
-        ],
+        [("sym", "s", "../outside"), ("hard", "h", "s/victim")],
         ("s",),
     ),
     # tarfile CVE-2026-82049 / CVE-2026-11940: a hardlink to a symlink to a file
@@ -504,6 +521,17 @@ _PLANTED_CASES: dict[str, tuple[dict[str, str], _Case]] = {
 }
 
 
+# What the members a filter does not refuse must end with, by case.
+_OTHER_OUTCOMES: dict[str, dict[_Key, ExtractionStatus]] = {
+    "hardlink-through-symlink": {"h": ExtractionStatus.FAILED},
+    "hardlink-absolute-with-data": {"h": ExtractionStatus.FAILED},
+    "deferred-mode-through-link": {"d": ExtractionStatus.EXTRACTED},
+    "file-over-link": {"s": ExtractionStatus.EXTRACTED},
+    "hardlink-to-link": {"h": ExtractionStatus.FAILED},
+    "hardlink-through-link": {"h": ExtractionStatus.FAILED},
+}
+
+
 def _fill(
     entries: list[tuple[str, str, str | bytes]], outside: Path
 ) -> list[tuple[str, str, str | bytes]]:
@@ -516,11 +544,17 @@ def _fill(
     ]
 
 
-def _expected(case: _Case, outside: Path) -> dict[str, ExtractionStatus]:
-    """The members ``case`` says a filter must refuse, all ``BLOCKED``."""
-    return dict.fromkeys(
-        (name.format(outside=outside) for name in case[1]), ExtractionStatus.BLOCKED
+def _expected(name: str, case: _Case, outside: Path) -> dict[_Key, ExtractionStatus]:
+    """What case ``name`` expects: its refused members ``BLOCKED``, and the rest
+    from ``_OTHER_OUTCOMES``."""
+    refused = dict.fromkeys(
+        (key.format(outside=outside) if isinstance(key, str) else key)
+        for key in case[1]
     )
+    return {
+        **dict.fromkeys(refused, ExtractionStatus.BLOCKED),
+        **_OTHER_OUTCOMES.get(name, {}),
+    }
 
 
 @_POLICIES
@@ -537,7 +571,7 @@ def test_name_that_leads_out(
     if case in _REROOTED and policy is not ExtractionPolicy.STRICT:
         expected = {entries[0][1]: ExtractionStatus.EXTRACTED}
     else:
-        expected = _expected(_NAME_CASES[case], outside)
+        expected = _expected(case, _NAME_CASES[case], outside)
     _assert_outcomes(report, expected)
 
 
@@ -556,7 +590,7 @@ def test_link_that_leads_out(
     if case == "symlink-backslash" and policy is ExtractionPolicy.TRUSTED:
         expected = {"dir": ExtractionStatus.EXTRACTED}
     else:
-        expected = _expected(_LINK_CASES[case], outside)
+        expected = _expected(case, _LINK_CASES[case], outside)
     _assert_outcomes(report, expected)
 
 
@@ -572,11 +606,7 @@ def test_tar_link_that_leads_out(
     report = _extract_and_check(
         tmp_path, _tar(entries), policy=policy, streaming=streaming
     )
-    _assert_outcomes(report, _expected(_TAR_ONLY_CASES[case], outside))
-    if case == "hardlink-absolute-with-data":
-        (outcome,) = report
-        assert outcome.status is ExtractionStatus.FAILED
-        assert isinstance(outcome.error, LinkTargetNotFoundError)
+    _assert_outcomes(report, _expected(case, _TAR_ONLY_CASES[case], outside))
 
 
 @_POSIX_LINKS
@@ -586,21 +616,13 @@ def test_tar_link_that_leads_out(
 def test_link_planted_in_the_destination(
     tmp_path: Path, policy: ExtractionPolicy, streaming: bool, case: str
 ) -> None:
-    planted, expected = _PLANTED_CASES[case]
+    planted, (entries, refused) = _PLANTED_CASES[case]
     report = _extract_and_check(
-        tmp_path,
-        _tar(expected[0]),
-        policy=policy,
-        streaming=streaming,
-        planted=planted,
+        tmp_path, _tar(entries), policy=policy, streaming=streaming, planted=planted
     )
-    _assert_outcomes(report, _expected(expected, tmp_path / "outside"))
-    dest = tmp_path / "dest"
-    if case.startswith("hardlink"):
-        (outcome,) = report
-        assert outcome.status is ExtractionStatus.FAILED
-        assert isinstance(outcome.error, LinkTargetNotFoundError)
-    elif not expected[1]:
-        # The member replaced the planted link.
-        (name,) = planted
-        assert not (dest / name).is_symlink()
+    expected = _expected(case, (entries, refused), tmp_path / "outside")
+    _assert_outcomes(report, expected)
+    for name in planted:
+        if expected.get(name) is ExtractionStatus.EXTRACTED:
+            # The member replaced the planted link.
+            assert not (tmp_path / "dest" / name).is_symlink()
