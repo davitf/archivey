@@ -73,6 +73,9 @@ binds.
   falls back on environment trouble; an explicit request fails loudly.
 - [DR-12](#dr-12-before-the-first-release-remove-rather-than-keep). **Before the first
   release, remove rather than keep.** Until 0.2.0 ships, a breaking cleanup goes in now.
+- [DR-12a](#dr-12a-after-the-first-release-deprecate-before-removing). **After the first
+  release, deprecate before removing.** A removal or rename warns for one minor release;
+  a break that can't be phased in is listed under Breaking changes.
 - [DR-13](#dr-13-a-public-name-earns-its-place). **A public name earns its place.** A
   public name or exception type exists only if a caller would use it differently.
 - [DR-14](#dr-14-one-obvious-way-and-one-mechanism-per-job). **One obvious way, and one
@@ -739,6 +742,29 @@ In several of these the maintainer went further than the recommendation, toward
 removal.
 
 **Reopen if** a removed name is needed by a real caller; add it back then.
+
+### DR-12a. After the first release, deprecate before removing
+
+**Rule.** Once 0.2.0 ships and until 1.0:
+- A patch release changes no public name or signature.
+- A minor release may remove or rename a public name, but the old spelling keeps working
+  for one minor release first and raises a `DeprecationWarning` naming the replacement.
+  The release after that removes it.
+- A break that can't be phased in that way (the same call gives a different result, an
+  exception changes type) goes in a minor release and is listed under **Breaking
+  changes** in the changelog and the release notes.
+- `archivey.internal` is not public and changes freely.
+
+Public docs: `docs/how-it-is-built.md` §Versioning and stability.
+
+**Why.** 1.0 waits until early users have run archivey for a while (maintainer,
+2026-10-21), so those users are who the 0.x line serves. A warning release keeps their
+code running while they update, and a shim costs a few lines that the next minor release
+deletes. Chosen over breaking in any minor with only a changelog note, and over freezing
+the API until 1.0 (2026-10-21).
+
+**Reopen if** keeping a shim would mean keeping wrong behaviour (DR-1 wins), or when 1.0
+ships and the rule becomes semver's major-version rule.
 
 ### DR-13. A public name earns its place
 

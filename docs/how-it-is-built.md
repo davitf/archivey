@@ -112,6 +112,26 @@ AI lets the maintainer build a better library, faster. It changes what is practi
 - **Measurement over memory.** Claims about speed, memory use and seeks are measured, and the
   benchmarks above catch a change that makes them worse.
 
+## Versioning and stability
+
+Archivey follows [semantic versioning](https://semver.org/). Before 1.0, this is what each kind
+of release may change:
+
+- **A patch release (0.2.1)** fixes bugs. It doesn't change the public API.
+- **A minor release (0.3.0)** may change it. A removed or renamed name keeps working for one more
+  minor release first and raises a `DeprecationWarning` that names its replacement. A change that
+  can't be phased in that way, such as a different result for the same call, is listed under
+  "Breaking changes" at the top of that release's entry in the
+  [changelog](https://github.com/davitf/archivey/blob/main/CHANGELOG.md).
+
+The public API is what `archivey` and its public submodules export, as listed on the
+[API page](api.md). Anything under `archivey.internal` can change in any release.
+
+1.0 comes once early users have run archivey for a while and the API has held up. After that,
+breaking changes wait for 2.0. The larger open questions, such as a plugin interface for new
+formats, writing archives and an async API, would each add to the API rather than change the
+reading API that exists today.
+
 ## What this does not promise
 
 - The maintainer doesn't read every line. Agents do the line-by-line reading, and the maintainer

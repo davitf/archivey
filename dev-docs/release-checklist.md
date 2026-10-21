@@ -36,6 +36,11 @@ goes in it:
 
 - one line per new feature and per public API change (**Added** / **Changed** /
   **Deprecated** / **Removed**);
+- a **Breaking changes** list at the top of the entry for every change that breaks a
+  caller without a deprecation release first (a behaviour change that can't be shimmed),
+  and in the release notes;
+- a name deprecated in the previous minor release is removed now, with a **Removed**
+  line;
 - one line per security fix (**Security**);
 - one line summarizing all other bug fixes (**Fixed**), unless a fix changes behavior
   users rely on, which then gets its own line.
