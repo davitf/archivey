@@ -1297,7 +1297,9 @@ SHALL open and list the members whose headers precede that header. The cut SHALL
 reported as `TruncatedError`: as `members_report().error`, and raised by `members()` and
 `stream_members()` after the listed members. This SHALL hold for RAR 1.5-4 and RAR5, in
 both access modes, and for a RAR5 header cut inside its CRC or its size field. It is the
-same rule as a walk whose skip over packed data lands past the end of the file. In a
+same rule as a walk whose skip over packed data lands past the end of the file, and a
+stored `CMT` comment whose data runs past the end is such packed data: the comment SHALL
+be `None` and the members before it SHALL still list. In a
 multi-volume set the message SHALL name the volume, because its byte offset is within
 that volume.
 

@@ -1170,11 +1170,13 @@ def _require_exact(stream: BinaryIO, n: int, what: str) -> bytes:
 def _read_stored_comment(stream: BinaryIO, n: int, what: str) -> bytes:
     """A stored comment's ``n`` packed bytes, read in pieces.
 
-    A declared size past the end of the file raises ``CorruptionError`` there,
-    having held no more than the file, where one read of ``n`` would first ask for
-    all of it. What the comment then weighs is judged against ``max_metadata_bytes``
-    with its member's names (:func:`_append_member`), or, for the archive comment,
-    by ``RarReader._check_header_metadata_budget``.
+    The walks call it only for a span inside the file (:func:`_span_in_file`), so a
+    cut comment is reported as a cut. The chunked read is the second guard: a size
+    past the end would raise ``CorruptionError`` having held no more than the file,
+    where one read of ``n`` would first ask for all of it. What the comment then
+    weighs is judged against ``max_metadata_bytes`` with its member's names
+    (:func:`_append_member`), or, for the archive comment, by
+    ``RarReader._check_header_metadata_budget``.
     """
     parts: list[bytes] = []
     left = n
@@ -1299,6 +1301,20 @@ def _data_past_end(source: BinaryIO) -> str | None:
         f"RAR archive is truncated: the last block's packed data ends at byte {pos}, "
         f"past the end of the file ({end} bytes)"
     )
+
+
+def _span_in_file(source: BinaryIO, data_offset: int, size: int) -> bool:
+    """Whether the ``size`` bytes at ``data_offset`` all lie inside the file.
+
+    The read position is kept. A comment whose data runs past the end is not read:
+    the walk skips its span as it skips any packed data, and the next header read
+    finds the cut (:func:`_data_past_end`), so the members before it still list.
+    """
+    end = _packed_span_end(data_offset, size)
+    here = source.tell()
+    file_end = source.seek(0, io.SEEK_END)
+    source.seek(here)
+    return end <= file_end
 
 
 def _encrypted_header_cut(start: int) -> str:
@@ -2560,6 +2576,7 @@ def _parse_rar3(
                         and packed_size <= RAR3_MAX_COMMENT_SIZE
                     )
                 )
+                and _span_in_file(source, data_offset, packed_size)
             ):
                 # The span the walk skips below, so no byte is read both as
                 # comment data and as a later header, which let a stack of small
@@ -3491,7 +3508,9 @@ def _parse_rar5(
                         damaged_service_headers, member
                     ):
                         damaged_service_headers_omitted += 1
-                if _is_stored_rar5_cmt(member):
+                if _is_stored_rar5_cmt(member) and _span_in_file(
+                    source, data_offset, member.compress_size
+                ):
                     source.seek(data_offset)
                     # The packed size, as for any stored payload: the unpacked one
                     # is only a claim, and bytes past the packed span belong to the

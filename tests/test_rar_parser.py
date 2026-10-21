@@ -822,16 +822,88 @@ def test_a_rar3_stored_comment_is_read_whether_or_not_long_block_is_set(
 @pytest.mark.parametrize(
     "long_block", [True, False], ids=["long_block", "no_long_block"]
 )
-def test_a_rar3_stored_comment_past_the_end_of_the_file_is_corruption(
+def test_a_rar3_stored_comment_past_the_end_of_the_file_is_a_cut(
     long_block: bool,
 ) -> None:
-    """A PACK_SIZE that runs past the end of the file fails the comment read, and the
+    """A PACK_SIZE that runs past the end of the file is a cut, as a member's data
+    running past it is: no comment, and ``truncated`` says where the data ends. The
     LONG_BLOCK flag does not change that."""
     start, end = _rar3_main_and_end()
     flags = 0x8000 if long_block else 0
     data = start + _rar3_cmt(2**20, flags=flags) + b"short" + end
-    with pytest.raises(CorruptionError, match="RAR3 comment"):
-        parse_rar_archive(io.BytesIO(data))
+    archive = parse_rar_archive(io.BytesIO(data))
+    assert archive.comment is None
+    assert archive.truncated is not None
+    assert "past the end of the file" in archive.truncated
+
+
+def _rar3_member_then_cut_comment() -> bytes:
+    """MAIN, a stored ``a.txt``, then a stored ``CMT`` whose PACK_SIZE (1 MiB) runs
+    past the end of the file: only 5 data bytes and the end block follow it."""
+    start, end = _rar3_main_and_end()
+    member = _rar3_stored_file(b"a.txt", b"hello", flags=0x8000) + b"hello"
+    return start + member + _rar3_cmt(2**20, flags=0x8000) + b"short" + end
+
+
+def test_a_rar3_comment_past_the_end_of_the_file_keeps_the_members_before_it() -> None:
+    """The comment read used to raise out of the walk, which discarded ``a.txt``.
+    unrar 7.00 lists ``a.txt``, then reports "Unexpected end of archive"."""
+    with open_archive(io.BytesIO(_rar3_member_then_cut_comment())) as archive:
+        report = archive.members_report()
+        assert [m.name for m in report.members] == ["a.txt"]
+        assert isinstance(report.error, TruncatedError)
+        assert archive.info.comment is None
+        with archive.open(report.members[0]) as stream:
+            assert stream.read() == b"hello"
+
+
+@requires_binary("unrar")
+def test_unrar_lists_the_member_before_a_rar3_comment_cut(tmp_path: Path) -> None:
+    """The oracle for the test above."""
+    path = tmp_path / "cut_comment.rar"
+    path.write_bytes(_rar3_member_then_cut_comment())
+    result = subprocess.run(
+        ["unrar", "l", str(path)], capture_output=True, text=True, check=False
+    )
+    assert result.returncode != 0
+    assert "a.txt" in result.stdout
+    assert "Unexpected end of archive" in result.stdout + result.stderr
+
+
+def _rar5_stored(block_type: int, name: bytes, data_size: int) -> bytes:
+    """A plain RAR5 FILE (2) or SERVICE (3) header for stored data of ``data_size``."""
+    body = (
+        _vint(0)  # file flags
+        + _vint(data_size)  # unpacked size
+        + _vint(0)  # attributes
+        + _vint(0)  # compression info: stored
+        + _vint(1)  # host OS: Unix
+        + _vint(len(name))
+        + name
+    )
+    return _rar5_block(block_type, body, data_size=data_size)
+
+
+def test_a_rar5_comment_past_the_end_of_the_file_keeps_the_members_before_it() -> None:
+    """The RAR5 ``CMT`` read had the same flaw: a stored comment whose data runs past
+    the end of the file raised out of the walk and discarded ``a.txt``."""
+    data = (
+        b"Rar!\x1a\x07\x01\x00"
+        + _rar5_block(1, _vint(0))
+        + _rar5_stored(2, b"a.txt", 5)
+        + b"hello"
+        + _rar5_stored(3, b"CMT", 2**20)
+        + b"short"
+        + _rar5_block(5, _vint(0))
+    )
+    archive = parse_rar_archive(io.BytesIO(data))
+    assert [m.filename for m in archive.members] == ["a.txt"]
+    assert archive.comment is None
+    assert archive.truncated is not None
+    with open_archive(io.BytesIO(data)) as reader:
+        report = reader.members_report()
+        assert [m.name for m in report.members] == ["a.txt"]
+        assert isinstance(report.error, TruncatedError)
 
 
 def test_a_rar3_comment_is_read_only_from_the_bytes_the_walk_skips() -> None:
