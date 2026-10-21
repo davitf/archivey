@@ -511,15 +511,19 @@ in-process reports its likely size with `__pypy__.add_memory_pressure`, as PyPy'
 
 A decoder's `close` also ends its liblzma decoders with `ffi.release` and cancels their
 pressure, because only the stream declares the real dictionary (up to 4 GiB uncapped).
-Pinned by `tests/test_decoder_memory_pressure.py`.
+Pinned by `tests/test_decoder_memory_pressure.py`: each estimate exactly, and 800 dropped
+xz decoders in a fresh interpreter under 2 GiB through `/proc`. The drops run in a child
+process because in an xdist worker they once grew 3,725 MiB (PR #901, docs-only, passed on
+a re-run); the likely reason, inferred and not reproduced, is that PyPy's collection
+threshold scales with the heap the last collection left.
 
 **What remains.** A zstd frame can reserve up to `window_log_max` (2 GiB under the default
 `max_decoder_memory`) and nothing frees it before a collection, nor a brotli window over
 4 MiB: neither library can free its state early under PyPy, and reporting the cap would
 force a major collection per decoder. A caller who drops streams unclosed relies on the
-estimates alone. The PyPy CI job runs the pins above, including the dropped-xz growth
-measured through `/proc`; nothing measures the zstd or brotli windows, or what a caller who
-leaves streams unclosed really uses.
+estimates alone. The PyPy CI job runs the pins above; nothing measures the zstd or brotli
+windows, what a caller who leaves streams unclosed really uses, or what the same drops
+cost in a long-lived process with a large heap, the shape the ENOMEM failures had.
 
 **Upstream.** Not filed; PyPy documents that native memory needs
 `add_memory_pressure` from whoever allocates it.
