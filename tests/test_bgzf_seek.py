@@ -251,6 +251,8 @@ def test_a_size_query_on_a_fresh_bgzf_stream_walks_nothing() -> None:
 def test_bgzf_size_is_known_after_a_walk_or_a_full_read(fill: str) -> None:
     full = b"".join(_BIG_PARTS)
     with _open(io.BytesIO(make_bgzf(_BIG_PARTS))) as stream:
+        # A size query before the fill must not stop a later seek from walking.
+        assert _engine(stream).try_get_size() is None
         if fill == "seek_end":
             stream.seek(0, io.SEEK_END)
         elif fill == "read_all":

@@ -329,11 +329,14 @@ class Decoder(Protocol):
 
     @property
     def index_reads_whole_source(self) -> bool:
-        """True when :meth:`build_index` reads the whole compressed source.
+        """True when :meth:`build_index` reads the payload front to back.
 
+        False when the scan reads only index/trailer structures, as the xz, lzip and
+        zstd scans do, even when a file of many small streams makes those structures
+        large. True for the BGZF walk, which reads every byte of the compressed source.
         A size query (:meth:`DecompressorStream.try_get_size`) must be cheap, so it does
-        not build such an index: the size stays unknown until a seek builds the index
-        or a read reaches the end. A seek still builds it.
+        not build an index that reads the payload: the size stays unknown until a seek
+        builds the index or a read reaches the end. A seek still builds it.
         """
         ...
 
@@ -352,7 +355,7 @@ class BaseDecoder:
     _trailing_bytes: int | None = None
     _input_after_end = False
     # See Decoder.index_reads_whole_source. The xz, lzip and zstd scans read only
-    # index structures.
+    # index/trailer structures, not the payload.
     index_reads_whole_source = False
 
     @property
@@ -1356,7 +1359,7 @@ class DecompressorStream(ReadOnlyIOStream):
 
         Cheap means no data is decoded: the size is known already (a read reached the
         end, or an index scan gave it), or the decoder's index scan gives it. A scan
-        that reads the whole source (a BGZF walk,
+        that reads the payload (the BGZF walk,
         :attr:`Decoder.index_reads_whole_source`) is not cheap, so it is not run here;
         the size is then ``None`` until a seek or a read finds it.
         """

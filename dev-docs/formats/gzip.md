@@ -154,7 +154,7 @@ end. A `.gzi` index is a separate file, which a stream cannot find, so it is not
 | --- | --- |
 | `OFF` | The standard library engine, always |
 | `ON` | `rapidgzip`, whatever the size; `PackageNotInstalledError` without it, `ResourceLimitError` if no child process can start, `StreamNotSeekableError` on a source that cannot seek (a pipe, or a member stream of an outer archive opened without `seekable_members`) |
-| `AUTO` | `rapidgzip` only when all hold: seeking was declared (`seekable_members=True`, `open_stream(seekable=True)`); the source is seekable; `rapidgzip` is installed; the compressed input is known to be at least 16 MiB (`RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE`); and the decoded length can be checked, either because the container declared it or because a gzip trailer is readable. Otherwise the standard library engine, silently |
+| `AUTO` | `rapidgzip` only when all hold: seeking was declared (`seekable_members=True`, `open_stream(seekable=True)`); the source is seekable; `rapidgzip` is installed; the compressed input is not known to be smaller than 16 MiB (`RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE`; an unknown size counts as large enough, as `AcceleratorMode.AUTO` records); and the decoded length can be checked, either because the container declared it or because a gzip trailer is readable. Otherwise the standard library engine, silently |
 
 The 16 MiB gate is the break-even of the child process: it costs about 45 ms to start and
 open (about 25 ms of it starting the child), plus about 70 µs per round trip, which the
