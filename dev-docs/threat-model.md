@@ -259,9 +259,10 @@ bytes. The outcome is the same on every platform. ADR
   not checked on the path actually written.
 - `collision_key` casefolds, NFC-normalizes and trims a trailing dot or space from each
   segment. The coordinator (`_register_collision_key`, `_resolve_collision`,
-  `_derive_free_name`) treats a collision as an event: `OverwritePolicy` applies, `RENAME` writes `photo (1).jpg`, and
-  a `REPLACE` revises the clobbered member's result to `OVERWRITTEN` (`_mark_overwritten`)
-  so the merge is visible. `ExtractionReport.results` is the only record.
+  `_derive_free_name`) treats a collision as an event: `OverwritePolicy` applies,
+  `RENAME` writes `photo (1).jpg`, and a `REPLACE` revises the clobbered member's
+  result to `OVERWRITTEN` (`_mark_overwritten`) so the merge is visible.
+  `ExtractionReport.results` is the only record.
   `abort_on={AbortOn.NAME_COLLISION}` makes any collision fatal;
   `abort_on={AbortOn.NAME_SANITIZED}` refuses any rewritten name.
 - A name the filter accepted but the filesystem refuses at write (`EILSEQ` on APFS,
