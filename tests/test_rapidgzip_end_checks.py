@@ -320,9 +320,9 @@ def test_gzip_concatenated_members_are_judged_as_with_the_accelerator_off(
     case: str,
 ) -> None:
     """The output's CRC-32 is not the last member's, so it never finds a trailer in a
-    concatenated file; the further-member scan decides, as before. With two small members,
-    a wrong ISIZE on the last one raises, as the scan does not confirm a member whose own
-    ISIZE is wrong (see the limitation test below for when it does)."""
+    concatenated file; the further-member scan and the last member's trailer decide. A
+    wrong ISIZE or a cut on the last member raises as with the accelerator off (see
+    ``test_gzip_wrong_last_isize_in_a_concatenated_file_raises`` for more members)."""
     first, second = b"first member payload\n" * 5, b"second member payload\n" * 7
     member1 = gzip.compress(first, mtime=0)
     member2 = bytearray(gzip.compress(second, mtime=0))
@@ -550,12 +550,15 @@ def _valid_concatenation(kind: str) -> bytes:
         pytest.param(_valid_concatenation("bgzf"), id="bgzf"),
     ],
 )
-def test_a_real_further_gzip_member_needs_no_second_decode(
+def test_a_real_further_gzip_member_needs_no_stdlib_handover(
     monkeypatch: pytest.MonkeyPatch, blob: bytes
 ) -> None:
-    """A multi-member file's trailer is only its last member's size: the mismatch is
-    expected, and the confirmed member keeps the standard library out of it. A healthy
-    one-member file matches its trailer, and its decode reaches the end of the source."""
+    """A multi-member file's trailer is only its last member's: the mismatch with the
+    whole output is expected, and a confirmed further member with a last member's
+    trailer that matches keeps the standard library out of it. A healthy one-member file
+    matches its trailer, and its decode reaches the end of the source. The last-member
+    check still reads the last member back from rapidgzip; this pins only that the
+    standard library does not take over."""
     handovers: list[object] = []
     original = codecs.stdlib_takeover._StdlibOnAcceleratorError.switch_to_stdlib
 
@@ -734,6 +737,65 @@ def test_every_cut_of_the_last_of_three_gzip_members_raises() -> None:
         if (len(on[0]), on[1]) != (len(off[0]), off[1]) or on[0] != off[0]:
             differ.append((cut, on[1], off[1]))
     assert differ == []
+
+
+@requires("rapidgzip")
+def test_a_cut_last_member_with_isize_forged_to_the_length_raises_after_a_skip() -> (
+    None
+):
+    """After a seek that skipped output there is no CRC-32 of it, and a file of one member
+    has its last four bytes compared with the length instead. In a file with a further
+    member, four bytes equal to the length must not stand in for a whole last member: the
+    last member's trailer is still checked."""
+    first = random.Random(6).randbytes(100_000)
+    second = b"second member payload\n" * 45 + b"0123456789"
+    assert len(second) == 1000
+    blob = bytearray(
+        gzip.compress(first, mtime=0)
+        + gzip.compress(second, mtime=0)
+        + gzip.compress(b"third", mtime=0)[:10]
+    )
+    blob[-4:] = (len(first) + len(second)).to_bytes(4, "little")
+
+    def skip(s: BinaryIO) -> None:
+        s.seek(50_000)
+
+    off = _outcome(Codec.GZIP, bytes(blob), _OFF, skip)
+    assert off[1] is TruncatedError
+    _assert_same(_outcome(Codec.GZIP, bytes(blob), _ON, skip), off)
+
+
+@requires("rapidgzip")
+@pytest.mark.parametrize("last_size", [50, 1000])
+def test_the_last_member_check_reads_back_little_more_than_the_last_member(
+    monkeypatch: pytest.MonkeyPatch, last_size: int
+) -> None:
+    """The trailer's place is not known exactly, so several candidates give a length.
+    They are tried shortest first, and the first match ends the search: the read-back
+    is the last member's output and at most the shorter candidates before it, never
+    the longest candidate, which can reach back across the whole file."""
+    _require_the_accelerator_in_use()
+    first = random.Random(7).randbytes(300_000)
+    last = bytes(range(256)) * (last_size // 256) + bytes(last_size % 256)
+    blob = (
+        gzip.compress(first, mtime=0)
+        + gzip.compress(b"middle\n" * 9, mtime=0)
+        + gzip.compress(last, mtime=0)
+    )
+    read_back: list[int] = []
+    check = codecs.gzip_codec._GzipTruncationCheckStream
+    original = check._output_crc_from
+
+    def spy(self: object, start: int) -> int | None:
+        read_back.append(self._pos - start)  # type: ignore[attr-defined]
+        return original(self, start)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(check, "_output_crc_from", spy)
+    got, error = _outcome(Codec.GZIP, blob, _ON, _no_seek)
+    assert error is None
+    assert got == gzip.decompress(blob)
+    assert read_back[-1] == last_size
+    assert all(size < last_size for size in read_back[:-1])
 
 
 # --- a seek that meets a data error is handed over -------------------------------------

@@ -646,7 +646,8 @@ the CRC-32 and length of the end of the output, which takes choosing four bytes 
 content. A last member of 4 GiB or more of output does not match, as its length is
 wrapped, and is read by the standard-library decoder, at the cost of a second decode. When
 a seek has skipped output, there is no CRC-32 of it, and the last four bytes of the file
-stand in as the ISIZE.
+stand in as the ISIZE of a file with no further member. In a file with a further member,
+the last member's trailer SHALL be checked as above whatever the last four bytes say.
 
 #### Scenario: accelerator error parity
 

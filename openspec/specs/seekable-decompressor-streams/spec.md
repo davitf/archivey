@@ -327,7 +327,8 @@ inside a DEFLATE block SHALL still surface as `CorruptionError`.
 | Valid concatenated multi-member gzip | Decompresses fully without false truncation |
 | A gzip member cut short and followed by a complete member, through rapidgzip, with the last trailer right or forged to match the bytes delivered | The error of the accelerator `OFF` |
 | Concatenated gzip or BGZF through rapidgzip whose last member is cut anywhere, right after its header included, or has a wrong ISIZE, however many members come before it | The bytes and the error of the accelerator `OFF` |
-| Valid concatenated gzip or BGZF through rapidgzip, an empty last member included | Read by rapidgzip to the end, with no handover to the standard library |
+| Valid concatenated gzip or BGZF through rapidgzip, an empty last member included | Read by rapidgzip to the end, with no handover to the standard library; an empty last member whose header starts more than 1 KiB before the end of the non-zero data (a long `FNAME`) is handed over, with the same bytes and no error |
+| Concatenated gzip through rapidgzip whose last member is cut, with its last four bytes forged to the length, read after a seek that skipped output | `TruncatedError`, as with the accelerator `OFF` |
 | Cut or wrong-ISIZE one-member gzip through rapidgzip, after any seek, or with `1f 8b 08` in its body | The error of the accelerator `OFF`; after a seek short of the end that skipped output, then a read to the end, a wrong ISIZE hidden by four appended bytes equal to the length is the one exception |
 | Cut gzip whose last four bytes are forged to the length rapidgzip delivers: `seek(0, SEEK_END)`, or that seek, then `seek(0)` and a read | `TruncatedError`, as with the accelerator `OFF` |
 | Valid gzip with NUL padding, seek through rapidgzip | Lands and reads as with the accelerator `OFF` |

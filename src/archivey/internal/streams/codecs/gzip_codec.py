@@ -7,7 +7,7 @@ from __future__ import annotations
 import gzip
 import io
 import zlib
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from dataclasses import replace
 from typing import BinaryIO
 
@@ -371,6 +371,7 @@ class _GzipTruncationCheckStream(DelegatingStream):
         # raise. The further member alone is not enough: rapidgzip ends a last member
         # cut right after its header with no error, at the end of the source.
         if self._source_len >= 18 and self._decoded_to_the_end():
+            further: bool | None = None  # a further member confirmed, once asked
             if self._isize is None:
                 return False  # length known but ISIZE unread (should not happen here)
             if self._crc.frontier == self._pos:
@@ -381,9 +382,16 @@ class _GzipTruncationCheckStream(DelegatingStream):
             elif self._pos % (1 << 32) == self._isize:
                 # A seek short of the end skipped output, then a read met the end, so
                 # there is no CRC-32 to find the trailer with; the last four bytes of
-                # the file stand in. A seek that meets the end reads through instead.
-                return False
-            if self._has_additional_gzip_member() and self._last_member_ends_the_file():
+                # the file stand in, for a file of one member. With a further member
+                # they are only the last member's, and four bytes equal to the length
+                # do not show it is whole, so its trailer is checked below. A seek that
+                # meets the end reads through instead.
+                further = self._has_additional_gzip_member()
+                if not further:
+                    return False
+            if further is None:
+                further = self._has_additional_gzip_member()
+            if further and self._last_member_ends_the_file():
                 return False
         # No trailer of this output ends the file: it was cut, its ISIZE is wrong, or
         # something was appended, and rapidgzip reads past all of these without a word.
@@ -489,10 +497,12 @@ class _GzipTruncationCheckStream(DelegatingStream):
 
         The trailer's place is not known exactly: it ends at the end of the non-zero data
         or up to 7 bytes into the zeros after it (its own high bytes can be zero). Each
-        of those places is a candidate, and one that matches is enough. An empty last
-        member (bgzip ends every file with one) has a trailer of eight zeros, which any
-        run of zeros would match, so it counts only when zlib decodes an empty member
-        with nothing but zeros after it (:meth:`_empty_member_ends_the_data`).
+        of those places is a candidate, tried shortest first, and the first that matches
+        ends the search, so the read-back is the last member's output and at most the
+        shorter candidates before it. An empty last member (bgzip ends every file with
+        one) has a trailer of eight zeros, which any run of zeros would match, so it
+        counts only when zlib decodes an empty member with nothing but zeros after it
+        (:meth:`_empty_member_ends_the_data`).
 
         A last member of 4 GiB or more of output does not match, as its length is
         wrapped; the read goes to the standard library, which finds nothing wrong at the
@@ -515,33 +525,28 @@ class _GzipTruncationCheckStream(DelegatingStream):
             size = int.from_bytes(trailer[4:], "little")
             if (crc or size) and size <= self._pos:
                 trailers.setdefault(self._pos - size, crc)
-        if not trailers:
-            return False
-        found = self._output_crcs_from(trailers)
-        return any(found.get(start) == crc for start, crc in trailers.items())
+        # Shortest first, and the first match ends the search: a candidate's length can
+        # be anything up to the whole output, and the right one is usually short.
+        for start in sorted(trailers, reverse=True):
+            if self._output_crc_from(start) == trailers[start]:
+                return True
+        return False
 
-    def _output_crcs_from(self, starts: Iterable[int]) -> dict[int, int]:
-        """The CRC-32 of the output from each of ``starts`` to its end (``_pos``), read
-        back from rapidgzip in one pass from the earliest; empty when the read ends
-        short. Leaves the stream at ``_pos``."""
-        crcs = dict.fromkeys(starts, 0)
-        at = min(crcs)
+    def _output_crc_from(self, start: int) -> int | None:
+        """The CRC-32 of the output from ``start`` to its end (``_pos``), read back from
+        rapidgzip; ``None`` when the read ends short. Leaves the stream at ``_pos``."""
+        crc, at = 0, start
         try:
-            self._inner.seek(at)
+            self._inner.seek(start)
             while at < self._pos:
                 data = self._inner.read(min(_DRAIN_CHUNK, self._pos - at))
                 if not data:
-                    return {}
-                view = memoryview(data)
-                for start in crcs:
-                    if start < at + len(data):
-                        crcs[start] = zlib.crc32(
-                            view[max(0, start - at) :], crcs[start]
-                        )
+                    return None
+                crc = zlib.crc32(data, crc)
                 at += len(data)
         finally:
             self._inner.seek(self._pos)
-        return crcs
+        return crc
 
     def _empty_member_ends_the_data(self, end: int) -> bool:
         """Whether an empty gzip member ends the data, which ends at ``end`` but for
