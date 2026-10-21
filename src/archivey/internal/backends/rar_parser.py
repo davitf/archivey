@@ -1173,12 +1173,15 @@ def _read_comment(
     The walks call it only for a span inside the file (:func:`_span_in_file`), so a
     cut comment is reported as a cut and the read gets every byte it asks for. A
     stored comment has no size cap of its own, and its packed bytes are what the
-    read holds, so they are weighed here, before the cost is paid (DR-9). The total
-    with the member's names (:func:`_append_member`), or, for the archive comment,
-    ``RarReader._check_header_metadata_budget``, includes this comment, so this
-    refuses nothing that total would accept, except a comment whose text stops at a
-    NUL well before its packed bytes end: those bytes are held all the same, as a
-    compressed comment's packed bytes are weighed (:func:`comment_metadata_bytes`).
+    read holds, so they are weighed here, before the cost is paid (DR-9). The later
+    total weighs the comment too: for a member's comment, the ``_charge_metadata``
+    call in :func:`_parse_rar3`'s ``file_solid`` arm, which charges it to the member
+    it attaches to; for the archive comment, ``RarReader._check_header_metadata_budget``.
+    This check weighs the packed bytes and that total weighs the decoded text
+    (:func:`comment_metadata_bytes`), so this one is stricter wherever the text is
+    smaller than its packed bytes: a UTF-16LE comment, about half as many characters
+    as it packs, and one whose text stops at a NUL. Those bytes are held all the
+    same, as a compressed comment's packed bytes are weighed.
     """
     if max_metadata_bytes is not None and n > max_metadata_bytes:
         raise metadata_limit_error(max_metadata_bytes, f"a RAR comment packs {n} bytes")

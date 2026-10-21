@@ -225,7 +225,7 @@ it. It recomputes the total rather than reusing the walk's, which is kept per li
 | RAR4 or RAR5 archive under `max_members` whose stored names weigh more than `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` at parse (`open_archive`), including `stream_members()` / `streaming=True` |
 | Volume set whose members are split across volumes, `max_metadata_bytes` at exactly what registration weighs | Opens and lists: a split member's name is weighed once |
 | RAR 1.5-4 member whose stored `CMT` comment, attached after the member was weighed, takes the total past `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` from the header walk at parse (`open_archive`); at exactly the total, opens and lists the comment |
-| RAR 1.5-4 or RAR5 `CMT` comment whose packed bytes alone are over `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` at parse, before its bytes are read |
+| RAR 1.5-4 or RAR5 `CMT` comment the walk reads (its bytes in the file, within the 256 KiB compressed cap, not encrypted or split) whose packed bytes alone are over `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` at parse, before its bytes are read |
 | Solid compressed `CMT` comments that each declare 1 byte over up to 256 KiB of packed data | Weighed by their packed bytes: `ResourceLimitError` naming `max_metadata_bytes` at parse once their sum passes it |
 
 ### Requirement: Expose RAR file-version history members
