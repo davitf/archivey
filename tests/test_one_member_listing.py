@@ -278,7 +278,7 @@ def test_a_peeked_zip_symlink_is_filled_in_place(tmp_path: Path) -> None:
 def test_a_bidi_name_is_counted_once_on_the_object_the_caller_holds(
     tmp_path: Path,
 ) -> None:
-    path = _zip(tmp_path, [("a‮b.txt", b"x", False)])
+    path = _zip(tmp_path, [("a\u202eb.txt", b"x", False)])
     with open_archive(path) as reader:
         report = reader.members_report_if_available()
         assert report is not None
