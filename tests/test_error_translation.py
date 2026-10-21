@@ -188,14 +188,43 @@ def test_a_member_whose_lazy_open_failed_raises_the_same_error_again() -> None:
     raw[8:10] = (18).to_bytes(2, "little")
     central = raw.index(b"PK\x01\x02")
     raw[central + 10 : central + 12] = (18).to_bytes(2, "little")
+    seen = 0
     with open_archive(io.BytesIO(bytes(raw))) as archive:
         for _member, stream in archive.stream_members():
+            seen += 1
             assert stream is not None
             with pytest.raises(UnsupportedFeatureError) as first:
                 stream.read()
             with pytest.raises(UnsupportedFeatureError) as second:
                 stream.read()
             assert second.value is first.value
+    assert seen == 1
+
+
+def test_an_interrupted_lazy_open_is_not_blamed_on_another_caller() -> None:
+    """A ``KeyboardInterrupt`` during the open is not stored or raised again: it is not
+    the stream's error. A retry says the open was interrupted, not that another
+    caller holds it, and still does not call the opener again."""
+    from archivey.internal.streams.archive_stream import ArchiveStream
+
+    calls = 0
+
+    def _open() -> BinaryIO:
+        nonlocal calls
+        calls += 1
+        raise KeyboardInterrupt("ctrl-c during open")
+
+    stream = ArchiveStream(_open, translate=lambda exc: None, lazy=True)
+    with pytest.raises(KeyboardInterrupt):
+        stream.read()
+    with pytest.raises(ArchiveyUsageError) as excinfo:
+        stream.read()
+    assert str(excinfo.value) == (
+        "Cannot open this member stream: an earlier attempt to open it was "
+        "interrupted (KeyboardInterrupt)."
+    )
+    assert calls == 1
+    stream.close()
 
 
 # ---------------------------------------------------------------------------
