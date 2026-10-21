@@ -12,14 +12,17 @@ from __future__ import annotations
 
 import io
 import struct
+import tracemalloc
 import zipfile
 
 import pytest
 
 from archivey import ArchiveyConfig, DiagnosticCode, ListingLimits, open_archive
 from archivey.exceptions import (
+    ArchiveyError,
     CorruptionError,
     ResourceLimitError,
+    TruncatedError,
 )
 from tests.streams_util import NonSeekableBytesIO
 
@@ -360,3 +363,39 @@ def test_declared_size_smaller_than_the_data(mode: str) -> None:
     struct.pack_into("<L", data, _central_offsets(bytes(data))[0] + 24, 10)
     with pytest.raises(CorruptionError, match="exceeds its declared size"):
         _read_everything(bytes(data), mode=mode)
+
+
+@pytest.mark.parametrize("mode", ["stream", "pipe"])
+@pytest.mark.parametrize("cut", [300, 512, 700, 1024, 1536, 2047])
+def test_cve_2026_11972_truncated_tar_in_a_stream_ends(mode: str, cut: int) -> None:
+    # tarfile in streaming mode (``r|``) mishandled the end of a cut archive and
+    # looped. A TAR cut anywhere ends with a typed error or with the members before
+    # the cut, in one pass.
+    data = _file(b"a", b"x" * 600) + _END
+    try:
+        _read_everything(data[:cut], mode=mode)
+    except ArchiveyError as exc:
+        assert isinstance(exc, (TruncatedError, CorruptionError)), exc
+
+
+@_MODES
+@pytest.mark.parametrize(
+    "method", [zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA], ids=["bzip2", "lzma"]
+)
+def test_cve_2026_15310_declared_size_is_not_preallocated(
+    mode: str, method: int
+) -> None:
+    # zipfile sized an output buffer from the member's declared size for bzip2 and
+    # LZMA members, so a small member declaring 4 GiB took 4 GiB. The declared size
+    # here only bounds the output; the member's real data is all that is held.
+    data = bytearray(_zip(("f", b"z" * 1000), compress=method))
+    struct.pack_into("<L", data, 22, 0xFFFFFFFE)
+    struct.pack_into("<L", data, _central_offsets(bytes(data))[0] + 24, 0xFFFFFFFE)
+    tracemalloc.start()
+    try:
+        with pytest.raises(TruncatedError, match="ended after 1000 of"):
+            _read_everything(bytes(data), mode=mode)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 64 << 20, peak
