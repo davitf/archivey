@@ -843,6 +843,8 @@ def test_a_zip_member_cut_where_its_size_and_crc_end_raises(case: str) -> None:
     )
     for mode in (_OFF, _ON):
         config = ArchiveyConfig(use_rapidgzip=mode)
-        with open_archive(io.BytesIO(archive), config=config) as reader:
-            with pytest.raises(TruncatedError):
-                reader.read(reader.members()[0])
+        with (
+            open_archive(io.BytesIO(archive), config=config) as reader,
+            pytest.raises(TruncatedError),
+        ):
+            reader.read(reader.members()[0])

@@ -38,7 +38,9 @@ _DANGEROUS = ("\x1b", "\r", "\n", "\x00", "\x9b")
         "\u200b",
         "\ud800",  # lone high surrogate
         "\U0001d173",  # astral non-printable
-        "\udc80",  # surrogateescape of byte 0x80
+        # surrogateescape of byte 0x80. Not a duplicate of "\ud800": ruff compares lone
+        # surrogates lossily.
+        "\udc80",  # noqa: PT014
     ],
 )
 def test_dangerous_characters_do_not_survive(text: str) -> None:
@@ -64,7 +66,7 @@ def test_astral_code_points_render_as_a_readable_escape() -> None:
     body = out[1:-1]
     assert body.startswith("\\U")
     # Recoverable: the escape names the code point it replaced.
-    assert int(body[2:], 16) == 0x1D173
+    assert int(body[2:], 16) == 0x1D173  # noqa: FURB166 - the prefix is \\U, not 0x
 
 
 def test_literal_backslash_is_distinguishable_from_a_real_control_char() -> None:
