@@ -917,7 +917,10 @@ Disclosure goes through GitHub private vulnerability reporting ([`SECURITY.md`](
 OSS-Fuzz [waits until archivey has more users](#oss-fuzz).
 
 **Tests.** `tests/test_iso.py::test_pycdlib_directory_cycle_does_not_hang` (plain, Rock
-Ridge and Joliet), `::test_pycdlib_udf_directory_cycle_does_not_hang` (UDF).
+Ridge and Joliet), `::test_pycdlib_udf_directory_cycle_does_not_hang` (UDF). They pin the
+guard on `pycdlib` before 1.22, as locked; from 1.22 `pycdlib` refuses the loop itself and
+they pin that refusal instead, so run them with `uv run --with 'pycdlib==1.16.0'` after
+touching the guard.
 
 ### Directory sources changed concurrently
 

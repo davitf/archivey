@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import builtins
 import contextlib
-import importlib.metadata
 import io
 import os
 import struct
@@ -38,7 +37,7 @@ from archivey.internal.backends.iso_reader import IsoReader, _strip_version
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.streamtools import DEFAULT_UNKNOWN_LENGTH_READ_STEP
 from archivey.types import FormatSupport
-from tests.conftest import requires
+from tests.conftest import pycdlib_at_least, requires
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.streams_util import (
     FactSizedReadRecorder,
@@ -432,9 +431,10 @@ def _pycdlib_refuses_loops() -> bool:
 
     ``uv.lock`` pins an older pycdlib, so CI's CPython legs take the ``False`` branch,
     where the guard is what these tests pin. The PyPy job installs the latest release.
+    Once the lock moves to 1.22 or later, the guard is exercised only by running them
+    with ``uv run --with 'pycdlib==1.16.0'``; do that after touching it.
     """
-    version = importlib.metadata.version("pycdlib")
-    return tuple(int(part) for part in version.split(".")[:2]) >= (1, 22)
+    return pycdlib_at_least(1, 22)
 
 
 _LOOP = r"form a loop"

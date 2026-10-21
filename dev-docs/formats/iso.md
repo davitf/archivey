@@ -427,7 +427,14 @@ ISO-specific only. General extraction and name hazards are §2.4.
   on hostile input over leaving another caller's `pycdlib` untouched, and it changes no
   result on a valid tree, which never revisits an extent
   (`test_pycdlib_directory_cycle_does_not_hang`, found on a Joliet tree;
-  `test_pycdlib_udf_directory_cycle_does_not_hang` for UDF). The same import
+  `test_pycdlib_udf_directory_cycle_does_not_hang` for UDF). From 1.22 `pycdlib` checks
+  for the loop itself and raises "ISO Directory Records form a loop" or "UDF File Entries
+  form a loop", which archivey reports as `CorruptionError` at open. So the same image
+  lists on 1.16, with the repeated extent dropped (for the UDF case, the two members
+  `7z l` lists), and is refused on 1.22. DR-5a permits that: no tool writes a cyclic
+  tree, so only a crafted image sees the difference. The two tests expect the refusal on
+  1.22+ (`_pycdlib_refuses_loops`) and pin the guard only below it, as on the locked
+  1.16. The same import
   replaces `pycdlib.rockridge.RockRidge.parse` with the System Use filter (§2.2), but that
   wrapper acts only inside `IsoReader`'s own `open_fp` call, where a `ContextVar` is set,
   so other callers are untouched (`test_pycdlib_used_directly_is_not_filtered`). The
@@ -570,7 +577,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Boot catalog reads and extracts, and one declared past the image end reads short | `::test_the_el_torito_boot_catalog_reads_and_extracts`, `::test_a_boot_catalog_declared_past_the_image_end_reads_short` |
 | Multi-extent size and data; a gap refused; a repeated identifier without the on-disc flag starts a member of its own, also after a real multi-extent file and when two records share an extent; a repeated superseded version stays not current; a directory and a file with one identifier both list, and so do an associated file and a file in either order; the raw directory walk crosses sector padding | `::test_a_multi_extent_file_lists_and_reads_every_extent`, `::test_a_multi_extent_file_with_a_gap_is_refused`, `::test_a_repeated_identifier_without_the_flag_lists_each_file`, `::test_a_multi_extent_file_and_an_unrelated_file_with_its_name_both_list`, `::test_records_sharing_an_extent_keep_their_own_multi_extent_flags`, `::test_a_repeated_superseded_version_stays_not_current`, `::test_a_directory_and_a_file_with_one_identifier_both_list`, `::test_an_associated_file_and_a_file_with_its_identifier_both_list`, `::test_the_raw_directory_walk_crosses_sector_padding` |
 | No interchange-level guess | `::test_format_version_is_not_pycdlibs_guess` |
-| Cycle guard in `pycdlib`'s own walk, in all three trees and in UDF | `::test_pycdlib_directory_cycle_does_not_hang`, `::test_pycdlib_udf_directory_cycle_does_not_hang` |
+| Cycle guard in `pycdlib`'s own walk, in all three trees and in UDF. The tests pin the guard only on `pycdlib` before 1.22; from 1.22 they pin `pycdlib`'s own refusal (`_pycdlib_refuses_loops`), so once the lock reaches 1.22 run them with `uv run --with 'pycdlib==1.16.0'` after touching the guard | `::test_pycdlib_directory_cycle_does_not_hang`, `::test_pycdlib_udf_directory_cycle_does_not_hang` |
 | UDF tree counted against `max_members` and `max_metadata_bytes` at open | `::test_listing_limits_count_udf_entries_as_pycdlib_parses_them`, `::test_listing_limits_count_udf_bytes_as_pycdlib_parses_them` |
 | Path table bounded by the image, `max_metadata_bytes` (both tables weighed) and `max_members` (entries, with an image whose directories fill the cap still opening); a `CE` area past its block refused before the read, for the record's own `CE` and a chained one, and one ending at the block end opens. The chained tests exercise the check only on `pycdlib` 1.21+; on the locked 1.16 they pin `pycdlib`'s own refusal of a second `CE` (`_pycdlib_follows_ce_chains`), so run them with `uv run --with pycdlib==1.21.0` after touching the hook | `tests/test_iso_metadata_bounds.py` |
 | Directory length bound; path sources go through the source; handles released on failure | `::test_directory_data_length_does_not_drive_the_allocation`, `::test_a_path_source_is_read_through_the_archive_source`, `::test_a_refused_path_source_does_not_hold_its_handle`, `::test_a_failure_after_open_fp_is_translated_and_releases` |
