@@ -238,10 +238,13 @@ def run(scale: str, rounds: int) -> None:
                     why = _peer_available(peer)
                     if path is None:
                         why = "fixture not built (writer missing)"
-                    elif label.startswith("RAR") and op != "list":
-                        # archivey (and rarfile) read RAR data through unrar.
-                        if not _unrar_available():
-                            why = why or "RARLAB unrar not on PATH"
+                    # archivey (and rarfile) read RAR data through unrar.
+                    elif (
+                        label.startswith("RAR")
+                        and op != "list"
+                        and not _unrar_available()
+                    ):
+                        why = why or "RARLAB unrar not on PATH"
                     if why is not None:
                         print(f"| {label} | {op} | {peer} | — | — | {why} |")
                         continue
