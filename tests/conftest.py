@@ -190,12 +190,37 @@ def unrar_refusal() -> str | None:
     return None
 
 
+def unrar_cli_refusal() -> str | None:
+    """Why a test cannot run the ``unrar`` command itself, or ``None`` when it can.
+
+    A test that runs ``unrar`` as an oracle needs that command to be the RARLAB
+    ``unrar`` archivey accepts. :func:`unrar_refusal` alone is not enough: it also
+    accepts ``rar`` 6.0+ when ``unrar`` is missing or a lookalike, and the test would
+    then run the wrong program.
+    """
+    from archivey.internal.backends.rar_unrar import find_rarlab_unrar
+
+    on_path = shutil.which("unrar")
+    if on_path is None:
+        return "unrar is not on PATH"
+    refusal = unrar_refusal()
+    if refusal is not None:
+        return refusal
+    if os.path.normcase(os.path.abspath(on_path)) != os.path.normcase(
+        find_rarlab_unrar()
+    ):
+        return f"archivey refuses the unrar at {on_path} and uses rar instead"
+    return None
+
+
 def binary_refusal(name: str) -> str | None:
     """Why a test cannot use ``name``, or ``None`` when it can.
 
     For ``unar`` and ``unrar`` this is archivey's own policy (:func:`unar_refusal`,
     :func:`unrar_refusal`), so a binary on ``PATH`` that archivey refuses reads as
-    missing. Any other name only has to be on ``PATH``.
+    missing. Any other name only has to be on ``PATH``. A test that runs the
+    ``unrar`` command itself uses :func:`unrar_cli_refusal` or
+    ``requires_binary("unrar")`` instead.
     """
     if name == "unar":
         return unar_refusal()
@@ -214,16 +239,22 @@ def requires_binary(*names: str) -> pytest.MarkDecorator:
 
     The oracle-availability rule (``testing-contract`` spec): a test that shells out to an external
     binary must *skip*, not fail, where that binary is absent, so CI legs and dev
-    machines without it stay green. ``unar`` also skips where archivey refuses the one
-    on ``PATH`` (:func:`unar_refusal`), and the reason says why.
+    machines without it stay green. ``unar`` and ``unrar`` also skip where archivey
+    refuses the one on ``PATH`` (:func:`unar_refusal`, :func:`unrar_cli_refusal`), and
+    the reason says why. The ``unrar`` rule is the stricter one, since such a test may
+    run ``unrar`` itself.
     """
     missing = [n for n in names if shutil.which(n) is None]
     reason = f"requires external binary(ies): {', '.join(missing)}"
-    if not missing and "unar" in names:
-        refusal = unar_refusal()
-        if refusal is not None:
-            missing = ["unar"]
-            reason = f"requires a unar archivey will use: {refusal}"
+    if not missing:
+        for name, refuse in (("unar", unar_refusal), ("unrar", unrar_cli_refusal)):
+            if name not in names:
+                continue
+            refusal = refuse()
+            if refusal is not None:
+                missing = [name]
+                reason = f"requires a {name} archivey will use: {refusal}"
+                break
     return pytest.mark.skipif(bool(missing), reason=reason)
 
 

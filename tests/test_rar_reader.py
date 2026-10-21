@@ -61,7 +61,7 @@ from archivey.types import (
     HashAlgorithm,
     MemberType,
 )
-from tests.conftest import requires, requires_binary
+from tests.conftest import requires, requires_binary, unrar_cli_refusal
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.streams_util import NonSeekableBytesIO, ShortReadNonSeekable
 
@@ -1141,11 +1141,10 @@ def test_blake2sp_corrupt_payload_raises(tmp_path: Path) -> None:
 
 @requires_binary("unrar")
 def test_blake2sp_unrar_oracle_crosscheck() -> None:
-    import shutil
     import subprocess
 
-    if shutil.which("unrar") is None:
-        pytest.skip("unrar unavailable")
+    if (refusal := unrar_cli_refusal()) is not None:
+        pytest.skip(f"unrar unavailable: {refusal}")
     fixture = _fixture("blake2sp.rar")
     with open_archive(fixture) as archive:
         member = next(m for m in archive.members() if m.is_file)
@@ -3068,6 +3067,60 @@ def test_unrar_on_path_is_the_rarlab_build() -> None:
     if shutil.which("unrar") is None:
         pytest.skip("no unrar on PATH — RAR data tests skip, the documented state")
     rar_unrar.find_rarlab_unrar()
+
+
+@pytest.mark.parametrize(
+    ("unrar_banner", "rar_banner", "skips"),
+    [
+        ("unrar-free fake", None, True),
+        ("unrar-free fake", "7.00", True),
+        ("7.00", "7.00", False),
+    ],
+    ids=["lookalike-unrar", "lookalike-unrar-beside-rar", "rarlab-unrar"],
+)
+def test_requires_binary_skips_unless_unrar_itself_is_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    unrar_banner: str,
+    rar_banner: str | None,
+    skips: bool,
+) -> None:
+    """A test marked ``requires_binary("unrar")`` may run the ``unrar`` command, so it
+    skips unless archivey accepts that command. A lookalike ``unrar`` beside a RARLAB
+    ``rar`` is the case where archivey's own check (``unrar_refusal``) passes."""
+    unrar = tmp_path / "unrar"
+    unrar.write_bytes(b"u")
+    programs = {"unrar": unrar}
+    banners = {
+        os.path.abspath(str(unrar)): (
+            _RARLAB_BANNER.format(version=unrar_banner)
+            if unrar_banner[0].isdigit()
+            else unrar_banner
+        )
+    }
+    if rar_banner is not None:
+        rar = tmp_path / "rar"
+        rar.write_bytes(b"r")
+        programs["rar"] = rar
+        banners[os.path.abspath(str(rar))] = _RARLAB_RAR_BANNER.format(
+            version=rar_banner
+        )
+    _clear_unrar_cache(monkeypatch)
+    _stub_which_rarlab(monkeypatch, programs)
+
+    def run(
+        argv: list[str],
+        *_args: object,
+        **_kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        banner = banners[os.path.abspath(argv[0])]
+        return subprocess.CompletedProcess(
+            argv, 0, stdout=banner.encode("utf-8"), stderr=b""
+        )
+
+    monkeypatch.setattr(rar_unrar.subprocess, "run", run)
+    mark = requires_binary("unrar")
+    assert mark.args == (skips,), mark.kwargs["reason"]
 
 
 def test_missing_unrar_raises(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

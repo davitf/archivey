@@ -62,7 +62,7 @@ from archivey.internal.filters import (
 from archivey.internal.link_watch import LinkWatch
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.types import ArchiveFormat, ArchiveInfo, ArchiveMember, MemberType
-from tests.conftest import case_sensitive
+from tests.conftest import binary_refusal, case_sensitive
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.extract_util import open_and_extract
 from tests.streams_util import SizedNonSeekable
@@ -1594,8 +1594,8 @@ def _bomb_7z(tmp_path: Path) -> tuple[Path, str, str]:
 def _bomb_rar(tmp_path: Path) -> tuple[Path, str, str]:
     # Committed, so the leg runs wherever unrar is installed (no rar writer needed).
     # prefix.bin records 1 MiB from 91 bytes. unrar reads tail.txt.
-    if shutil.which("unrar") is None:
-        pytest.skip("unrar not installed")
+    if (refusal := binary_refusal("unrar")) is not None:
+        pytest.skip(refusal)
     return _RAR_FIXTURES / "seek_respawn_solid__.rar", "prefix.bin", "tail.txt"
 
 

@@ -192,7 +192,7 @@ def _skip_unless_runnable(chain: tuple[str, ...]) -> None:
         if fmt == "rar":
             # The writer is replaced by committed fixtures (see _chain_bytes); the
             # reader still needs unrar or unar for member data.
-            if shutil.which("unrar") is None and not has_binary("unar"):
+            if not has_binary("unrar") and not has_binary("unar"):
                 pytest.skip("reading RAR member data needs unrar or unar")
             continue
         skip_unless_runnable(entry, fmt)
@@ -740,7 +740,7 @@ def test_committed_rar_fixtures_hold_the_current_leaf() -> None:
     contents check were skipped; this names the stale file instead."""
     if not RAR_FIXTURES.exists():
         pytest.skip("no committed nested RAR fixtures")
-    if shutil.which("unrar") is None and not has_binary("unar"):
+    if not has_binary("unrar") and not has_binary("unar"):
         pytest.skip("reading RAR member data needs unrar or unar")
     for chain in RAR_FIXTURE_CHAINS:
         fixture = _rar_fixture(chain)

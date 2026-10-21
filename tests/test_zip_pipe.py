@@ -12,7 +12,6 @@ import dataclasses
 import io
 import random
 import struct
-import tracemalloc
 import zipfile
 import zlib
 from collections.abc import Callable, Iterator
@@ -46,6 +45,7 @@ from archivey.internal.backends.zip_forward_reader import (
 from archivey.internal.base_reader import MAX_LINK_TARGET_BYTES
 from archivey.types import ArchiveMember, ExtractionStatus, MemberType
 from tests.conftest import importorskip
+from tests.memory_util import traced_peak
 from tests.sample_archives import (
     CORPUS,
     CorpusEntry,
@@ -1396,16 +1396,14 @@ def test_a_rejected_held_header_keeps_no_frames() -> None:
     n = 2000
 
     def peak(data: bytes) -> int:
-        tracemalloc.start()
-        try:
+        def list_members() -> None:
             with archivey.open_archive(
                 _pipe(data), streaming=True, format="zip"
             ) as reader:
                 report = reader.members_report()
             assert isinstance(report.error, CorruptionError)
-            return tracemalloc.get_traced_memory()[1]
-        finally:
-            tracemalloc.stop()
+
+        return traced_peak(list_members)
 
     rejected = peak(_cheap_rejected_held_headers(n))
     missing = peak(_cheap_rejected_held_headers(n, header=False))
