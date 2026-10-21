@@ -3075,31 +3075,33 @@ def test_unrar_on_path_is_the_rarlab_build() -> None:
         ("unrar-free fake", None, True, True),
         ("unrar-free fake", "7.00", False, True),
         ("7.00", "7.00", False, False),
+        (None, "7.00", False, True),
     ],
-    ids=["lookalike-unrar", "lookalike-unrar-beside-rar", "rarlab-unrar"],
+    ids=["lookalike-unrar", "lookalike-unrar-beside-rar", "rarlab-unrar", "rar-only"],
 )
 def test_unrar_marks_follow_archiveys_rule(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    unrar_banner: str,
+    unrar_banner: str | None,
     rar_banner: str | None,
     data_skips: bool,
     cli_skips: bool,
 ) -> None:
     """``requires_binary("unrar")`` skips where archivey has no RARLAB program to read
     RAR data with; ``requires_unrar_cli()``, for a test that runs the ``unrar`` command,
-    also skips where that command is not the one archivey accepts. A lookalike
-    ``unrar`` beside a RARLAB ``rar`` is the case where the two differ."""
-    unrar = tmp_path / "unrar"
-    unrar.write_bytes(b"u")
-    programs = {"unrar": unrar}
-    banners = {
-        os.path.abspath(str(unrar)): (
+    also skips where that command is missing or is not the one archivey accepts. A
+    RARLAB ``rar`` with no ``unrar``, or beside a lookalike, is where the two differ."""
+    programs: dict[str, Path] = {}
+    banners: dict[str, str] = {}
+    if unrar_banner is not None:
+        unrar = tmp_path / "unrar"
+        unrar.write_bytes(b"u")
+        programs["unrar"] = unrar
+        banners[os.path.abspath(str(unrar))] = (
             _RARLAB_BANNER.format(version=unrar_banner)
             if unrar_banner[0].isdigit()
             else unrar_banner
         )
-    }
     if rar_banner is not None:
         rar = tmp_path / "rar"
         rar.write_bytes(b"r")

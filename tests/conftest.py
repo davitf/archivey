@@ -242,13 +242,13 @@ def requires_binary(*names: str) -> pytest.MarkDecorator:
 
     The oracle-availability rule (``testing-contract`` spec): a test that shells out to an external
     binary must *skip*, not fail, where that binary is absent, so CI legs and dev
-    machines without it stay green. ``unar`` and ``unrar`` also skip where archivey
-    has no program to read RAR data with (:func:`unar_refusal`, :func:`unrar_refusal`),
-    and the reason says why. For ``unrar`` that is any RARLAB data program, so a
-    lookalike ``unrar`` beside a RARLAB ``rar`` still runs the test: a test that runs
-    the ``unrar`` command itself is marked :func:`requires_unrar_cli` instead.
+    machines without it stay green. ``unar`` also skips where archivey refuses the one
+    on ``PATH`` (:func:`unar_refusal`). ``unrar`` means archivey's RARLAB data program
+    (:func:`unrar_refusal`) rather than the command: ``rar`` 6.0+ alone runs the test,
+    and so does a lookalike ``unrar`` beside it. A test that runs the ``unrar`` command
+    itself is marked :func:`requires_unrar_cli` instead.
     """
-    missing = [n for n in names if shutil.which(n) is None]
+    missing = [n for n in names if n != "unrar" and shutil.which(n) is None]
     reason = f"requires external binary(ies): {', '.join(missing)}"
     if not missing:
         for name, refuse in (("unar", unar_refusal), ("unrar", unrar_refusal)):
