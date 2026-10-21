@@ -294,9 +294,11 @@ def test_a_solid_member_after_an_unknown_version_is_unsupported_on_open(
     path = _write(tmp_path, "solid.rar", mutate((_FIXTURES / fixture).read_bytes()))
     with open_archive(path) as archive:
         member = next(m for m in archive.members() if m.name == blocked)
-        with pytest.raises(UnsupportedFeatureError) as caught:
-            with archive.open(member) as stream:
-                stream.read()
+        with (
+            pytest.raises(UnsupportedFeatureError) as caught,
+            archive.open(member) as stream,
+        ):
+            stream.read()
     message = str(caught.value)
     assert repr(blocker) in message, message
     assert "in its solid stream" in message, message
@@ -398,7 +400,7 @@ def _main_solid_bit_cleared(data: bytes) -> bytes:
     """A RAR5 archive with the main header's solid bit cleared and every member's
     solid flag left as it was."""
     buf = bytearray(data)
-    size, body = load_vint(data, 8 + 4)
+    _, body = load_vint(data, 8 + 4)
     block_type, p = load_vint(data, body)
     assert block_type == 1  # precondition: the main header comes first
     flags, p = load_vint(data, p)
