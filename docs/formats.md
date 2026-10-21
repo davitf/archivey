@@ -300,7 +300,9 @@ yielded.
   then the field's UTF-8 bytes and `extra["alternate_raw_name"]` holds the stored ones. A malformed
   field (too short, or matching with an empty, cut-short or non-UTF-8 name) is dropped with a
   `member_header_record_skipped` diagnostic. The archive opens on every Python version. `zipfile` on
-  its own refuses a too-short field or a non-UTF-8 name from Python 3.12.
+  its own refuses a too-short field or a non-UTF-8 name from Python 3.12. The Info-ZIP Unicode
+  Comment field (`0x6375`) does the same for a member comment that decodes as unflagged, as 7-Zip
+  reads it.
 - **A wrongly-set UTF-8 flag is ignored.** When general-purpose bit 11 claims UTF-8
   but the stored bytes are not valid UTF-8, the flag cannot be right, so the name
   decodes as an unflagged name that is not UTF-8 does: with your `encoding=`, else
@@ -741,7 +743,7 @@ yielded.
   with the `encoding=` you passed, and otherwise as windows-1252. A byte that code page
   does not define stays in the comment as a surrogate escape, as in a name. The one
   exception is a RAR 2.9-4 comment flagged as Unicode, which is UTF-16LE. A RAR5
-  comment is UTF-8.
+  comment is UTF-8, and a byte in it that is not valid UTF-8 stays as a surrogate escape.
 - **Several members under one name.** `unrar` emits every member a name selects, in archive order:
   two members with the same name, or two names `unrar` reads the same way. Archivey skips to the one
   you asked for, so each read returns that member's own bytes. A RAR5 name that is not valid UTF-8
@@ -804,6 +806,8 @@ yielded.
   names are UTF-16 and ignore `encoding=`. A Joliet name can hold a surrogate without
   its partner, as a 7z name can: archivey keeps it in `member.name` and extracts it as
   it does a 7z name (see 7z above).
+- `ArchiveInfo.comment` is the volume identifier (`-V`), decoded as a plain ISO 9660
+  name is: UTF-8 first, then `encoding=`, then escaped.
 - Namespace auto-selected: Rock Ridge → Joliet → plain ISO 9660; reported in
   `ArchiveInfo.extra["iso.namespace"]`.
 - Plain ISO 9660 file names lose their `;N` version suffix (and the `.` of an empty

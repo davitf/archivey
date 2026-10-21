@@ -2608,7 +2608,12 @@ class IsoReader(BaseArchiveReader):
             solid_block_count=None,
         )
         pvd = self._iso.pvd
-        volume_id = pvd.volume_identifier.decode("ascii", errors="replace").rstrip()
+        # The standard allows d-characters only, but writers store the -V text as it
+        # was given (xorriso: UTF-8). It records no charset, as a Rock Ridge name does
+        # not, so it decodes the way a byte name does: UTF-8, else encoding=, else
+        # surrogateescape. The Joliet copy is not read: xorriso turns its non-ASCII
+        # bytes into "_", and its 16 characters are half the primary's 32 bytes.
+        volume_id = self._decode_bytes_name(pvd.volume_identifier.rstrip(b" ")).rstrip()
         info_extra = ArchiveInfoExtra({"iso.namespace": self._namespace})
         return ArchiveInfo(
             format=self._format,

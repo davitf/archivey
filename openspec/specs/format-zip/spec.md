@@ -1035,6 +1035,27 @@ bit 11 is set SHALL decode as UTF-8, with cp437 for bytes that are not valid UTF
 SHALL ignore `encoding=`. A comment is not a name, so decoding it SHALL NOT emit
 `MEMBER_NAME_ENCODING_INFERRED`.
 
+An Info-ZIP Unicode Comment extra field (`0x6375`) in the central directory SHALL be read
+for a member comment that decodes as unflagged, by the Unicode Path field's rules: when
+the field is version 1, its CRC-32 equals the CRC-32 of the stored comment bytes, and its
+text is non-empty valid UTF-8, the comment SHALL be that text, ahead of the sniff and of
+`encoding=`, as 7-Zip reads it. A field whose CRC does not match or whose version is not
+1 SHALL be ignored. A malformed field (shorter than 5 bytes, or with a matching CRC and
+text that is empty, not valid UTF-8 or cut short by the end of the extra field) SHALL be
+dropped, the comment decoded as above, and `MEMBER_HEADER_RECORD_SKIPPED` emitted on the
+member with `record="unicode_comment"` and `record_id=0x6375`. The field of a comment
+under a trusted bit 11 SHALL NOT be consulted. A field the comment used SHALL NOT appear
+in `extra["zip.extra_fields"]`.
+
+#### Scenario: A Unicode Comment field gives the member comment
+
+| Case | Expected |
+| --- | --- |
+| Comment `caf\x82` (cp437), field version 1 with its CRC and `café ü` | `comment == "café ü"`, with or without `encoding="cp1252"`; no diagnostic |
+| The same field with the CRC of other bytes, or version 2 | Field ignored: `comment == "café"` (cp437) |
+| Field of 3 bytes, or matching CRC and invalid UTF-8 text | `comment == "café"`; `MEMBER_HEADER_RECORD_SKIPPED`, `record="unicode_comment"`; `DiagnosticPolicy.STRICT` refuses |
+| Bit 11 set over a valid UTF-8 name, malformed field | Field not consulted: no diagnostic |
+
 #### Scenario: A flagged member comment ignores `encoding=`
 
 - **WHEN** a member with bit 11 set and a valid UTF-8 name has a comment whose bytes are

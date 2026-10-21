@@ -2999,7 +2999,13 @@ def _is_stored_rar5_cmt(member: RarMemberInfo) -> bool:
 
 
 def _decode_rar5_cmt_bytes(raw: bytes) -> str:
-    return raw.split(b"\0", 1)[0].decode("utf8", "replace")
+    """Decode a RAR5 comment: UTF-8 by the format, cut at the first NUL.
+
+    A byte that is not valid UTF-8 survives as a lone surrogate, as it does in a RAR5
+    name (``surrogateescape``), so the comment keeps every stored byte. RARLAB ``rar``
+    never writes one; only a crafted comment has it.
+    """
+    return raw.split(b"\0", 1)[0].decode("utf-8", "surrogateescape")
 
 
 def _parse_rar5_qo_payload(
