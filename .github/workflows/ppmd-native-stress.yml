@@ -6,31 +6,29 @@ name: PPMd native stress
 # tests/test_ppmd_raw_streams.py). See dev-docs/known-issues.md and
 # dev-docs/investigations/ppmd-native-investigation-results.md §K.
 #
-# Runs on every PR and on pushes to main so we keep signal, but lives in its *own*
-# workflow on purpose: do **not** add this check as a required status check — a red
-# run here must not block merge. The main CI Windows matrix runs the 7z PPMd codec
-# param but skips test_encrypted_ppmd_chunked_reads_roundtrip; default pytest
-# excludes ``ppmd_native_stress`` tests. Required CI soft-passes
-# the raw-streams exit-after-green abort; this workflow soaks that module hard.
+# Runs weekly, on demand, and on a pull request that changes the PPMd code, its tests,
+# the stress script, this file, or the dependency pins (a pyppmd upgrade). Until
+# 2026-10 it ran on every pull request and push to main; its red runs were noise on
+# unrelated pull requests, and the main CI already runs the PPMd tests on every push.
+# It lives in its *own* workflow on purpose: do **not** add this check as a required
+# status check — a red run here must not block merge. The main CI Windows matrix runs
+# the 7z PPMd codec param but skips test_encrypted_ppmd_chunked_reads_roundtrip;
+# default pytest excludes ``ppmd_native_stress`` tests. Required CI soft-passes the
+# raw-streams exit-after-green abort; this workflow soaks that module hard.
 on:
-  push:
-    branches: [main]
+  schedule:
+    - cron: "29 5 * * 3"
   pull_request:
-    # Skip documentation-only pull requests. Same list as ci.yml's pull_request paths
-    # (see the comment there), kept identical on purpose so tests/test_ci_doc_paths.py
-    # can check it; the docs/api.md and review/problem-catalogue/ re-includes matter only
-    # in ci.yml, since no test here reads them.
     paths:
-      - "**"
-      - ".*"
-      - ".*/**"
-      - "!**.md"
-      - "!docs/**"
-      - "!docs_templates/**"
-      - "!mkdocs.yml"
-      - "!LICENSE"
-      - docs/api.md
-      - review/problem-catalogue/**
+      - "src/archivey/internal/streams/codecs/ppmd_*.py"
+      - "src/archivey/internal/streams/codecs/decoder_worker.py"
+      - "src/archivey/internal/streams/codecs/isolated.py"
+      - "src/archivey/internal/streams/child_process.py"
+      - "tests/test_ppmd_*.py"
+      - "scripts/ppmd_native_stress.py"
+      - ".github/workflows/ppmd-native-stress.yml"
+      - "pyproject.toml"
+      - "uv.lock"
   workflow_dispatch:
     inputs:
       iterations:
