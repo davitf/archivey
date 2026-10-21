@@ -20,7 +20,6 @@ from archivey.exceptions import (
     CorruptionError,
     TruncatedError,
 )
-from archivey.internal.backends.tar_parser import BLOCKSIZE
 from tests.memory_util import traced_peak
 from tests.streams_util import NonSeekableBytesIO
 from tests.tar_build import END, block, data, field, pax, pax_body, pax_record
@@ -295,10 +294,11 @@ def test_declared_size_smaller_than_the_data(mode: str) -> None:
 @pytest.mark.parametrize("cut", [300, 512, 700, 1024, 1536, 2047])
 def test_cve_2026_11972_truncated_tar_in_a_stream_ends(mode: str, cut: int) -> None:
     # tarfile in streaming mode (``r|``) mishandled the end of a cut archive and
-    # looped. A TAR cut inside its member is truncated; one cut in the end-of-archive
-    # blocks after the member still reads the member whole.
-    archive = _file(b"a", b"x" * 600) + END
-    if cut < BLOCKSIZE + 1024:
+    # looped. A TAR cut inside its member (header and padded data) is truncated; one
+    # cut at the member's end or in the end-of-archive blocks reads the member whole.
+    member = _file(b"a", b"x" * 600)
+    archive = member + END
+    if cut < len(member):
         with pytest.raises(TruncatedError):
             _read_everything(archive[:cut], mode=mode)
     else:
