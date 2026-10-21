@@ -623,8 +623,8 @@ class _RunState:
 class _MemberState:
     """What the member being handled shares with its write path, in both directions.
 
-    The pass builds a new one per member, and the second pass one per orphaned
-    source and one per link, so nothing carries over.
+    The pass builds a new one per member, and the second pass one per link, so
+    nothing carries over.
     """
 
     # The destination the member asked for, published so the per-member error
@@ -3289,9 +3289,10 @@ class ExtractionCoordinator:
 
         # The excluded source's content is written to the FIRST link whose destination the
         # OverwritePolicy allows writing, never to the source's own name. A link the
-        # policy declines (SKIP over an existing entry) or refuses (ERROR, a REPLACE
-        # that cannot remove what is there) records that outcome as its own, and the
-        # content moves on to the next link: nothing of the source has been read yet.
+        # policy declines (SKIP over an existing entry), or one that fails before the
+        # source's bytes are read (ERROR over an existing entry, a REPLACE that cannot
+        # remove what is there, a temp file its directory refuses), records that
+        # outcome as its own, and the content moves on to the next link.
         for index, orphan in enumerate(group):
             placed = self._materialize_at(source_member, stream, group, index)
             if placed is None:
@@ -3319,22 +3320,26 @@ class ExtractionCoordinator:
         destination is O2-collision-resolved against the map the main pass built (a
         deferred link's key may have been claimed after it was orphaned).
 
-        A failure before the write starts belongs to the link, as for any other link
-        (``_link_orphan``). Once the write starts, the source's bytes are being read,
-        and they cannot be offered to another link: a failure from there on is the
-        source's, and fails this link and every later one as one group."""
+        Two kinds of failure are the source's, and fail this link and every later
+        one as one group: the refusal of the source's recorded size
+        (``check_recorded_size``), which every link would meet, and any failure from
+        the moment the copy into the link's temp file begins, as the source's bytes
+        are then being read and cannot be offered to another link. Every other
+        failure (collision resolution, ``_make_room``, creating the temp file) is
+        this link's own, as for any other link (``_link_orphan``)."""
         orphan = group[index]
         current = self._current = _MemberState(
             requested_path=orphan.dest_path, spelled_from=orphan.spelled_from
         )
-        writing = False
+        # True while a failure is the source's (see the docstring).
+        source_step = False
         source_error: ArchiveyError | OSError | None = None
 
         def record(error: ArchiveyError | OSError, failed: ExtractionResult) -> bool:
             nonlocal source_error
             # Nothing the second pass runs raises FilterRejectionError.
             assert failed.status is ExtractionStatus.FAILED
-            if not writing:
+            if not source_step:
                 # This link's own failure, not a source fan-out: no group id.
                 self._revise_result(orphan.result_index, failed)
                 return False
@@ -3346,6 +3351,10 @@ class ExtractionCoordinator:
             source_error = error
             return True  # stopped on or logged below, under the source's name
 
+        def copy_begins() -> None:
+            nonlocal source_step
+            source_step = True
+
         placed = False
         with self._handling(orphan.original, kind="hardlink", record=record):
             resolved, prior, collided_with = self._resolve_collision(
@@ -3356,8 +3365,14 @@ class ExtractionCoordinator:
                 orphan.original, orphan.transformed, resolved, atomic=True
             )
             if result is None:
-                writing = True
-                self._write_file_atomic(stream, resolved, orphan.transformed)
+                # ``_write_file_atomic`` runs this check again. Running it here first
+                # lets its refusal count as the source's failure.
+                source_step = True
+                self._state.tracker.check_recorded_size()
+                source_step = False
+                self._write_file_atomic(
+                    stream, resolved, orphan.transformed, copy_begins=copy_begins
+                )
                 self._state.written_paths.add(resolved)
                 self._state.source_paths.setdefault(source_member.member_id, []).append(
                     resolved
@@ -3873,6 +3888,7 @@ class ExtractionCoordinator:
         member: ArchiveMember,
         *,
         staged: Path | None = None,
+        copy_begins: Callable[[], None] | None = None,
     ) -> None:
         """Write a FILE by streaming into a temp sibling, applying ``member``'s metadata,
         then ``os.replace()``-ing it onto ``dest_path`` — atomic, so a mid-stream failure
@@ -3893,7 +3909,11 @@ class ExtractionCoordinator:
         by the same swap, and ``stream`` is not read: nothing is copied, and nothing is
         counted again, since its bytes were counted when it was staged. Where the swap
         cannot rename it (another filesystem mounted inside the destination), it is
-        copied, uncounted, as any stream is."""
+        copied, uncounted, as any stream is.
+
+        ``copy_begins`` is called once the temp file exists, just before the first
+        read of ``stream``: the orphan pass blames a failure from then on on the
+        source, not the link (``_materialize_at``)."""
         if staged is not None:
             self._land_staged(staged, dest_path, member)
             return
@@ -3913,6 +3933,8 @@ class ExtractionCoordinator:
             tmp = Path(tmp_name)
         try:
             with os.fdopen(fd, "wb") as dst:
+                if copy_begins is not None:
+                    copy_begins()
                 # A dry run reads and verifies the body like a real one; only the bytes
                 # go nowhere, and the file is left empty.
                 self._copy_to_fileobj(
