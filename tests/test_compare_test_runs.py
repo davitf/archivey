@@ -13,6 +13,9 @@ import sqlite3
 import sys
 from pathlib import Path
 
+import pytest
+from coverage.numbits import nums_to_numbits
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "compare_test_runs.py"
 
@@ -24,11 +27,11 @@ _spec.loader.exec_module(compare)
 
 
 def _junit(path: Path, cases: dict[str, str]) -> Path:
-    """A report holding ``{"file::name": outcome}``; outcome "skip:<reason>" skips."""
+    """A report holding ``{"file::[Class::]name": outcome}``; "skip:<reason>" skips."""
     rows = []
     for test_id, outcome in cases.items():
-        file, name = test_id.split("::")
-        classname = file.removesuffix(".py").replace("/", ".")
+        file, *classes, name = test_id.split("::")
+        classname = ".".join([file.removesuffix(".py").replace("/", "."), *classes])
         body = ""
         if outcome.startswith("skip:"):
             reason = outcome.removeprefix("skip:")
@@ -46,8 +49,12 @@ def _junit(path: Path, cases: dict[str, str]) -> Path:
     return path
 
 
-def _coverage(path: Path, arcs: dict[str, list[tuple[int, int]]]) -> Path:
-    """A branch-coverage data file: ``{test id: arcs it ran in src/archivey/a.py}``."""
+def _coverage(
+    path: Path,
+    arcs: dict[str, list[tuple[int, int]]] | None = None,
+    lines: dict[str, set[int]] | None = None,
+) -> Path:
+    """A coverage data file for ``src/archivey/a.py``: arcs (branch) or lines per test."""
     with sqlite3.connect(path) as db:
         db.executescript(
             "CREATE TABLE file (id INTEGER PRIMARY KEY, path TEXT);"
@@ -57,12 +64,19 @@ def _coverage(path: Path, arcs: dict[str, list[tuple[int, int]]]) -> Path:
         )
         db.execute("INSERT INTO file VALUES (1, '/repo/src/archivey/a.py')")
         db.execute("INSERT INTO context VALUES (1, '')")
-        for index, (test_id, test_arcs) in enumerate(arcs.items(), start=2):
+        tests = [*(arcs or {}), *(lines or {})]
+        for index, test_id in enumerate(tests, start=2):
             db.execute("INSERT INTO context VALUES (?, ?)", (index, f"{test_id}|run"))
-            db.executemany(
-                "INSERT INTO arc VALUES (1, ?, ?, ?)",
-                [(index, start, end) for start, end in test_arcs],
-            )
+            if arcs and test_id in arcs:
+                db.executemany(
+                    "INSERT INTO arc VALUES (1, ?, ?, ?)",
+                    [(index, start, end) for start, end in arcs[test_id]],
+                )
+            if lines and test_id in lines:
+                db.execute(
+                    "INSERT INTO line_bits VALUES (1, ?, ?)",
+                    (index, nums_to_numbits(lines[test_id])),
+                )
     db.close()
     return path
 
@@ -102,6 +116,44 @@ def test_a_fold_moves_some_tests_and_leaves_the_rest(tmp_path: Path) -> None:
     assert _run("outcomes", before, after, *moved) == 0
 
 
+def test_a_moved_test_cannot_take_the_id_of_one_that_stayed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # tests/a.py::test_t is gone; tests/b.py::test_t is in both runs, untouched.
+    before = _junit(
+        tmp_path / "b.xml",
+        {"tests/a.py::test_t": "passed", "tests/b.py::test_t": "passed"},
+    )
+    after = _junit(tmp_path / "a.xml", {"tests/b.py::test_t": "passed"})
+    assert _run("outcomes", before, after, "--moved", "tests/a.py=tests/b.py") == 1
+    out = capsys.readouterr().out
+    assert "missing from after: 1\n  tests/a.py::test_t\n" in out
+
+
+def test_a_renamed_test_matches_through_renamed(tmp_path: Path) -> None:
+    before = _junit(
+        tmp_path / "b.xml", {"tests/test_a.py::test_x[zip_stored]": "passed"}
+    )
+    after = _junit(
+        tmp_path / "a.xml", {"tests/test_a.py::test_x[zip-stored]": "passed"}
+    )
+    assert _run("outcomes", before, after) == 1
+    renamed = (
+        "--renamed",
+        "tests/test_a.py::test_x[zip_stored]=tests/test_a.py::test_x[zip-stored]",
+    )
+    assert _run("outcomes", before, after, *renamed) == 0
+
+
+def test_a_nested_class_reads_as_its_node_id(tmp_path: Path) -> None:
+    report = _junit(
+        tmp_path / "b.xml", {"tests/test_a.py::TestA::TestB::test_y": "passed"}
+    )
+    assert compare.load_outcomes(report) == {
+        "tests/test_a.py::TestA::TestB::test_y": "passed"
+    }
+
+
 def test_a_test_that_starts_skipping_is_a_change(tmp_path: Path) -> None:
     before = _junit(tmp_path / "b.xml", {"tests/test_a.py::test_x": "passed"})
     after = _junit(tmp_path / "a.xml", {"tests/test_a.py::test_x": "skip:no unrar"})
@@ -124,20 +176,90 @@ def test_a_new_test_fails_unless_allowed(tmp_path: Path) -> None:
     assert _run("outcomes", before, after, "--allow-new") == 0
 
 
-def test_a_passing_test_that_runs_nothing_is_a_coverage_change(tmp_path: Path) -> None:
+def test_an_empty_run_or_the_same_file_is_refused(tmp_path: Path) -> None:
+    empty = _junit(tmp_path / "empty.xml", {})
+    other = _junit(tmp_path / "other.xml", {})
+    with pytest.raises(SystemExit, match="holds no tests"):
+        _run("outcomes", empty, other)
+    report = _junit(tmp_path / "b.xml", {"tests/test_a.py::test_x": "passed"})
+    with pytest.raises(SystemExit, match="the same file"):
+        _run("outcomes", report, report)
+
+
+def test_a_passing_test_that_runs_nothing_is_a_coverage_change(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # test_x still runs and reaches no src/ line; test_y runs the same arcs in both
+    # runs, so nothing took test_x's up.
     before = _coverage(
         tmp_path / "b.coverage",
         {
             "tests/test_a.py::test_x": [(1, 2), (2, 3)],
-            "tests/test_a.py::test_y": [(1, 2)],
+            "tests/test_a.py::test_y": [(1, 2), (2, 3)],
         },
     )
     after = _coverage(
         tmp_path / "a.coverage",
-        {"tests/test_a.py::test_x": [], "tests/test_a.py::test_y": [(1, 2)]},
+        {"tests/test_a.py::test_x": [], "tests/test_a.py::test_y": [(1, 2), (2, 3)]},
     )
-    assert _run("coverage", before, before) == 0
     assert _run("coverage", before, after) == 1
+    out = capsys.readouterr().out
+    assert "missing from after" not in out
+    assert (
+        "tests that lost over 10% of their lines/arcs: 1\n"
+        "  tests/test_a.py::test_x: 2 (src/archivey/a.py 2) no longer run (100%), "
+        "0 newly run\n"
+    ) in out
+
+
+def test_a_test_that_runs_other_lines_is_a_coverage_change(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    before = _coverage(
+        tmp_path / "b.coverage", {"tests/test_a.py::test_x": [(1, 2), (2, 3)]}
+    )
+    after = _coverage(
+        tmp_path / "a.coverage", {"tests/test_a.py::test_x": [(1, 2), (5, 6)]}
+    )
+    assert _run("coverage", before, after) == 1
+    assert (
+        "  tests/test_a.py::test_x: 1 (src/archivey/a.py 1) no longer run (50%), "
+        "1 (src/archivey/a.py 1) newly run\n"
+    ) in capsys.readouterr().out
+
+
+def test_arcs_that_move_between_tests_are_not_a_change(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # (9, 10) is a cache body: whichever test called it first on its worker ran it.
+    before = _coverage(
+        tmp_path / "b.coverage",
+        {
+            "tests/test_a.py::test_x": [(1, 2), (9, 10)],
+            "tests/test_a.py::test_y": [(3, 4)],
+        },
+    )
+    after = _coverage(
+        tmp_path / "a.coverage",
+        {
+            "tests/test_a.py::test_x": [(1, 2)],
+            "tests/test_a.py::test_y": [(3, 4), (9, 10)],
+        },
+    )
+    assert _run("coverage", before, after) == 0
+    assert "lines/arcs that moved between tests: 1\n" in capsys.readouterr().out
+
+
+def test_line_coverage_without_branches_is_compared(tmp_path: Path) -> None:
+    before = _coverage(
+        tmp_path / "b.coverage", lines={"tests/test_a.py::test_x": {1, 2, 23}}
+    )
+    same = _coverage(
+        tmp_path / "s.coverage", lines={"tests/test_a.py::test_x": {1, 2, 23}}
+    )
+    fewer = _coverage(tmp_path / "a.coverage", lines={"tests/test_a.py::test_x": {1}})
+    assert _run("coverage", before, same) == 0
+    assert _run("coverage", before, fewer) == 1
 
 
 def test_coverage_of_a_moved_file_matches_through_moved(tmp_path: Path) -> None:
@@ -151,4 +273,32 @@ def test_coverage_of_a_moved_file_matches_through_moved(tmp_path: Path) -> None:
 
 
 def test_numbits_decode_as_coverage_writes_them() -> None:
-    assert compare._numbits_to_lines(bytes([0b0000_0110, 0, 0b1000_0000])) == {1, 2, 23}
+    lines = {1, 2, 23, 64, 1000}
+    assert compare._numbits_to_lines(nums_to_numbits(lines)) == lines
+
+
+def test_what_varies_between_two_before_runs_is_not_compared(tmp_path: Path) -> None:
+    # (7, 8) is a finalizer: garbage collection ran it in test_x once, not the next time.
+    before = _coverage(
+        tmp_path / "b.coverage", {"tests/test_a.py::test_x": [(1, 2), (7, 8)]}
+    )
+    again = _coverage(tmp_path / "b2.coverage", {"tests/test_a.py::test_x": [(1, 2)]})
+    after = _coverage(tmp_path / "a.coverage", {"tests/test_a.py::test_x": [(1, 2)]})
+    noop = _coverage(tmp_path / "n.coverage", {"tests/test_a.py::test_x": []})
+    assert _run("coverage", before, after) == 1
+    assert _run("coverage", before, after, "--baseline", again) == 0
+    assert _run("coverage", before, noop, "--baseline", again) == 1
+
+
+def test_a_small_loss_is_listed_and_does_not_fail(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ran = [(line, line + 1) for line in range(20)]
+    before = _coverage(tmp_path / "b.coverage", {"tests/test_a.py::test_x": ran})
+    after = _coverage(tmp_path / "a.coverage", {"tests/test_a.py::test_x": ran[1:]})
+    assert _run("coverage", before, after) == 0
+    assert (
+        "smaller changes, listed for a person to read: 1\n"
+        "  tests/test_a.py::test_x: 1 (src/archivey/a.py 1) no longer run (5%), 0 newly run\n"
+    ) in capsys.readouterr().out
+    assert _run("coverage", before, after, "--max-lost", "0.01") == 1

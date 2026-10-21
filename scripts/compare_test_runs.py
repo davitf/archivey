@@ -10,19 +10,44 @@ it, each over a run before the change and a run after it, on the same environmen
     uv run python scripts/compare_test_runs.py outcomes before.xml after.xml
 
     # 2. The src/ lines (or arcs, with branch coverage) each test runs. Per test, not
-    #    the total: a test that stopped testing anything still passes, but it loses
-    #    its lines.
+    #    the total: a test whose body no longer reaches the library still passes, but
+    #    it loses its lines. The before tree runs twice, for --baseline below.
     uv run pytest -n auto --cov=archivey --cov-context=test --cov-report= \
         && cp .coverage before.coverage
-    uv run python scripts/compare_test_runs.py coverage before.coverage after.coverage
+    uv run pytest -n auto --cov=archivey --cov-context=test --cov-report= \
+        && cp .coverage baseline.coverage
+    uv run python scripts/compare_test_runs.py coverage before.coverage after.coverage \
+        --baseline baseline.coverage
+
+Neither check reads test code. A test that still makes the same library calls and has
+lost an assertion, or asserts a weaker expected value, reports ``same`` on both, so a
+reviewer still reads every moved test.
+
+Per-test coverage is not exactly repeatable, and two things keep that out of the
+result. Code that runs once per worker (an import, a ``functools.cache`` body, a
+module-scoped fixture) is credited to whichever test reached that worker first, which
+changes from run to run under ``-n auto``: a line one test no longer runs and another
+test took up in the after run is counted as moved between tests, and does not fail the
+check. Code that garbage collection or thread timing runs (a finalizer that closes a
+stream) lands in a different test each time with nothing to pair it with: what differs
+per test between the before run and ``--baseline``, a second run of the same tree, is
+left out of the comparison. A test that became a no-op loses lines that other tests
+ran in both runs, which neither rule covers. What is left after both still varies a
+little, mostly in code a subprocess or a thread reaches. On seven test files run three
+times unchanged, the most any test lost was 4 of its arcs with ``--baseline`` and 65
+(2% of what it ran) without, while a test made to return at its first line lost 1,352.
+So the check fails on a test that lost more than ``--max-lost`` (a tenth) of what it
+ran, and lists smaller changes, largest first, for a person to read.
 
 A test whose file moved is matched through ``--moved OLD=NEW`` (repeatable, paths as
 pytest prints them, e.g. ``tests/test_zip_pipe.py=tests/zip/test_zip_pipe.py``). A test
 that is in the before run's ``OLD`` file and not the after run's is looked for in ``NEW``
 under the same name, so a fold that moves some tests of a file and leaves others works
-too. The exit status is 1 when any test is missing, new, or changed, so a pull request
-can quote the clean output. New tests are listed rather than failed on with
-``--allow-new``.
+too. A test whose name or parameter id changed is matched through ``--renamed OLD=NEW``
+with whole node IDs. The exit status is 1 when any test is missing or new, when an
+outcome changed, or when a test lost more than ``--max-lost`` of its coverage, so a
+pull request can quote the clean output. New tests are listed rather than failed on
+with ``--allow-new``.
 
 Stdlib only: the coverage file is read as the SQLite database ``coverage.py`` writes.
 """
@@ -31,6 +56,8 @@ from __future__ import annotations
 
 import argparse
 import collections
+import contextlib
+import importlib.util
 import sqlite3
 import sys
 import xml.etree.ElementTree as ET
@@ -39,16 +66,29 @@ from pathlib import Path
 
 # How many differences of one kind to print before summarising the rest.
 _SHOW = 40
+# How many files to name beside a test whose coverage changed.
+_SHOW_FILES = 3
+
+# One JUnit-to-node-id rule for every script that reads pytest's reports. ``scripts/``
+# is not a package, so the module is loaded by path.
+_junit_spec = importlib.util.spec_from_file_location(
+    "junit_failure_lines", Path(__file__).with_name("junit_failure_lines.py")
+)
+assert _junit_spec is not None and _junit_spec.loader is not None
+_junit = importlib.util.module_from_spec(_junit_spec)
+_junit_spec.loader.exec_module(_junit)
+
+Coverage = Mapping[str, Mapping[str, set[object]]]
 
 
-def _parse_moves(pairs: Iterable[str]) -> dict[str, str]:
-    moves: dict[str, str] = {}
+def _parse_pairs(option: str, pairs: Iterable[str]) -> dict[str, str]:
+    parsed: dict[str, str] = {}
     for pair in pairs:
         old, sep, new = pair.partition("=")
         if not sep or not old or not new:
-            raise SystemExit(f"--moved wants OLD=NEW, got {pair!r}")
-        moves[old] = new
-    return moves
+            raise SystemExit(f"{option} wants OLD=NEW, got {pair!r}")
+        parsed[old] = new
+    return parsed
 
 
 def _moved(test_id: str, moves: Mapping[str, str]) -> str | None:
@@ -60,14 +100,23 @@ def _moved(test_id: str, moves: Mapping[str, str]) -> str | None:
 
 
 def _match(
-    before: Mapping[str, object], after: Mapping[str, object], moves: Mapping[str, str]
+    before: Mapping[str, object],
+    after: Mapping[str, object],
+    moves: Mapping[str, str],
+    renames: Mapping[str, str],
 ) -> tuple[list[tuple[str, str]], list[str], list[str]]:
-    """Pair before-IDs with after-IDs: (pairs, missing from after, new in after)."""
-    pairs: list[tuple[str, str]] = []
+    """Pair before-IDs with after-IDs: (pairs, missing from after, new in after).
+
+    IDs that are in both runs pair first, so a moved or renamed test cannot take the ID
+    of a test that stayed where it was.
+    """
+    pairs = [(test_id, test_id) for test_id in before if test_id in after]
+    claimed = {test_id for test_id, _ in pairs}
     missing: list[str] = []
-    claimed: set[str] = set()
     for test_id in before:
-        target = test_id if test_id in after else _moved(test_id, moves)
+        if test_id in after:
+            continue
+        target = renames.get(test_id) or _moved(test_id, moves)
         if target is not None and target in after and target not in claimed:
             pairs.append((test_id, target))
             claimed.add(target)
@@ -87,22 +136,17 @@ def _print_list(title: str, items: list[str]) -> None:
         print(f"  ... and {len(items) - _SHOW} more")
 
 
+def _refuse_empty(kind: str, before: Path, count: int) -> None:
+    if not count:
+        raise SystemExit(
+            f"{before} holds no tests: a collection error, a wrong path or a -k that "
+            f"selected nothing would compare {kind} as the same"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Outcomes, from JUnit XML
 # ---------------------------------------------------------------------------
-
-
-def _node_id(case: ET.Element) -> str:
-    name = case.get("name", "")
-    file = case.get("file")
-    classname = case.get("classname", "")
-    if file:
-        # xunit1: classname is the dotted module, then any classes inside it.
-        module = file.removesuffix(".py").replace("/", ".")
-        inner = classname.removeprefix(module).lstrip(".")
-        parts = [file, *inner.split(".")] if inner else [file]
-        return "::".join([*parts, name])
-    return f"{classname}::{name}"
 
 
 def _outcome(case: ET.Element) -> str:
@@ -121,7 +165,7 @@ def _outcome(case: ET.Element) -> str:
 def load_outcomes(report: Path) -> dict[str, str]:
     outcomes: dict[str, str] = {}
     for case in ET.parse(report).iter("testcase"):
-        outcomes[_node_id(case)] = _outcome(case)
+        outcomes[_junit._node_id(case)] = _outcome(case)
     return outcomes
 
 
@@ -129,10 +173,11 @@ def compare_outcomes(
     before: Mapping[str, str],
     after: Mapping[str, str],
     moves: Mapping[str, str],
+    renames: Mapping[str, str],
     *,
     allow_new: bool,
 ) -> bool:
-    pairs, missing, new = _match(before, after, moves)
+    pairs, missing, new = _match(before, after, moves, renames)
     changed = [
         f"{old}: {before[old]} -> {after[new_id]}"
         + (f" (now {new_id})" if new_id != old else "")
@@ -141,7 +186,7 @@ def compare_outcomes(
     ]
     moved = sum(1 for old, new_id in pairs if old != new_id)
     print(f"before: {len(before)} tests, after: {len(after)} tests")
-    print(f"matched: {len(pairs)} ({moved} under a moved file)")
+    print(f"matched: {len(pairs)} ({moved} moved or renamed)")
     for label, outcomes in (("before", before), ("after", after)):
         counts = collections.Counter(o.split(":")[0] for o in outcomes.values())
         print(f"{label}: " + ", ".join(f"{k} {v}" for k, v in sorted(counts.items())))
@@ -184,16 +229,21 @@ def load_coverage(data_file: Path, root: str) -> dict[str, dict[str, set[object]
     "What it ran" is the set of arcs (line pairs) when the run measured branches, as
     this repo's configuration does, and the set of lines otherwise.
     """
-    with sqlite3.connect(f"file:{data_file}?mode=ro", uri=True) as db:
+    uri = f"file:{data_file}?mode=ro"
+    with contextlib.closing(sqlite3.connect(uri, uri=True)) as db:
         if not db.execute("SELECT 1 FROM context WHERE context != ''").fetchone():
             raise SystemExit(
                 f"{data_file} has no test contexts: run pytest with --cov-context=test"
             )
         files = dict(db.execute("SELECT id, path FROM file"))
         contexts = dict(db.execute("SELECT id, context FROM context"))
-        per_test: dict[str, dict[str, set[object]]] = collections.defaultdict(
-            lambda: collections.defaultdict(set)
-        )
+        # Every test context is a test that ran, including one that reached no src/
+        # line at all: that is the no-op this check exists for, not a missing test.
+        per_test: dict[str, dict[str, set[object]]] = {
+            test: collections.defaultdict(set)
+            for test in map(_test_of, contexts.values())
+            if test is not None
+        }
 
         def add(file_id: int, context_id: int, items: Iterable[object]) -> None:
             test = _test_of(contexts[context_id])
@@ -216,43 +266,103 @@ def load_coverage(data_file: Path, root: str) -> dict[str, dict[str, set[object]
     return per_test
 
 
+def _minus(
+    lines: Mapping[str, set[object]], other: Mapping[str, set[object]]
+) -> dict[str, set[object]]:
+    """Per file, what ``lines`` has and ``other`` does not; empty files left out."""
+    out = {path: items - other.get(path, set()) for path, items in lines.items()}
+    return {path: items for path, items in out.items() if items}
+
+
+def _describe(counts: Mapping[str, set[object]]) -> str:
+    """``"N (a.py 5, b.py 2, ...)"``: the total, then the files with the most."""
+    total = sum(len(items) for items in counts.values())
+    top = sorted(counts.items(), key=lambda item: (-len(item[1]), item[0]))
+    named = ", ".join(f"{path} {len(items)}" for path, items in top[:_SHOW_FILES])
+    more = ", ..." if len(top) > _SHOW_FILES else ""
+    return f"{total} ({named}{more})" if total else "0"
+
+
 def compare_coverage(
-    before: Mapping[str, Mapping[str, set[object]]],
-    after: Mapping[str, Mapping[str, set[object]]],
+    before: Coverage,
+    after: Coverage,
     moves: Mapping[str, str],
+    renames: Mapping[str, str],
     *,
     allow_new: bool,
+    baseline: Coverage | None = None,
+    max_lost: float = 0.1,
 ) -> bool:
-    pairs, missing, new = _match(before, after, moves)
-    changed: list[str] = []
+    pairs, missing, new = _match(before, after, moves, renames)
+    # What a second run of the unchanged tree shows varying, per test, is not compared.
+    unstable: dict[str, dict[str, set[object]]] = {}
+    if baseline is not None:
+        for test_id, files in before.items():
+            again = baseline.get(test_id, {})
+            unstable[test_id] = {
+                path: files.get(path, set()) ^ again.get(path, set())
+                for path in {*files, *again}
+            }
+    lost: dict[str, dict[str, set[object]]] = {}
+    gained: dict[str, dict[str, set[object]]] = {}
     for old, new_id in pairs:
-        lines_before, lines_after = before[old], after[new_id]
-        if lines_before == lines_after:
-            continue
-        lost = sum(
-            len(lines - lines_after.get(path, set()))
-            for path, lines in lines_before.items()
-        )
-        gained = sum(
-            len(lines - lines_before.get(path, set()))
-            for path, lines in lines_after.items()
-        )
-        changed.append(f"{old}: {lost} no longer run, {gained} newly run")
+        skip = unstable.get(old, {})
+        lost[old] = _minus(_minus(before[old], after[new_id]), skip)
+        gained[old] = _minus(_minus(after[new_id], before[old]), skip)
 
-    def total(data: Mapping[str, Mapping[str, set[object]]]) -> int:
-        union: dict[str, set[object]] = collections.defaultdict(set)
-        for files in data.values():
-            for path, lines in files.items():
-                union[path] |= lines
-        return sum(len(lines) for lines in union.values())
+    # What some matched test gave up and what some test took up. A line in both moved
+    # between tests: the once-per-worker code the module docstring describes.
+    def union(per_test: Iterable[Mapping[str, set[object]]]) -> dict[str, set[object]]:
+        merged: dict[str, set[object]] = collections.defaultdict(set)
+        for files in per_test:
+            for path, items in files.items():
+                merged[path] |= items
+        return merged
+
+    all_lost = union(lost.values())
+    all_gained = union([*gained.values(), *(after[test_id] for test_id in new)])
+
+    # (share of its lines a test lost, its report line), largest loss first.
+    changed: list[tuple[float, str]] = []
+    reattributed = 0
+    for old, new_id in pairs:
+        real_lost = _minus(lost[old], all_gained)
+        real_gained = _minus(gained[old], all_lost)
+        lost_count = sum(len(items) for items in real_lost.values())
+        reattributed += sum(len(items) for items in lost[old].values()) - lost_count
+        if real_lost or real_gained:
+            ran = sum(len(items) for items in before[old].values())
+            share = lost_count / ran if ran else 0.0
+            changed.append(
+                (
+                    share,
+                    f"{old}: {_describe(real_lost)} no longer run ({share:.0%}), "
+                    f"{_describe(real_gained)} newly run",
+                )
+            )
+    changed.sort(key=lambda item: -item[0])
+    hollowed = [line for share, line in changed if share > max_lost]
+    small = [line for share, line in changed if share <= max_lost]
+
+    def total(data: Coverage) -> int:
+        return sum(len(items) for items in union(data.values()).values())
 
     print(f"before: {len(before)} tests with coverage, {total(before)} lines/arcs run")
     print(f"after: {len(after)} tests with coverage, {total(after)} lines/arcs run")
     print(f"matched: {len(pairs)}")
+    print(f"lines/arcs that moved between tests: {reattributed}")
+    if baseline is not None:
+        varying = sum(
+            len(items) for files in unstable.values() for items in files.values()
+        )
+        print(
+            f"lines/arcs that vary between the two before runs, not compared: {varying}"
+        )
     _print_list("missing from after", missing)
     _print_list("new in after", new)
-    _print_list("lines/arcs changed", changed)
-    return not missing and not changed and (allow_new or not new)
+    _print_list(f"tests that lost over {max_lost:.0%} of their lines/arcs", hollowed)
+    _print_list("smaller changes, listed for a person to read", small)
+    return not missing and not hollowed and (allow_new or not new)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -268,7 +378,26 @@ def main(argv: list[str] | None = None) -> int:
         help="a test file that moved, as pytest prints its path",
     )
     parser.add_argument(
+        "--renamed",
+        action="append",
+        default=[],
+        metavar="OLD=NEW",
+        help="a test whose node ID changed, both IDs whole",
+    )
+    parser.add_argument(
         "--allow-new", action="store_true", help="list new tests without failing"
+    )
+    parser.add_argument(
+        "--baseline",
+        type=Path,
+        help="coverage: a second run of the before tree; what varies is not compared",
+    )
+    parser.add_argument(
+        "--max-lost",
+        type=float,
+        default=0.1,
+        help="coverage: the share of its lines a test may lose without failing "
+        "(default: 0.1)",
     )
     parser.add_argument(
         "--root",
@@ -276,12 +405,18 @@ def main(argv: list[str] | None = None) -> int:
         help="coverage paths are shown from this part on (default: src/archivey/)",
     )
     args = parser.parse_args(argv)
-    moves = _parse_moves(args.moved)
+    if args.before.resolve() == args.after.resolve():
+        raise SystemExit(f"before and after are the same file: {args.before}")
+    moves = _parse_pairs("--moved", args.moved)
+    renames = _parse_pairs("--renamed", args.renamed)
     if args.kind == "outcomes":
+        outcomes_before = load_outcomes(args.before)
+        _refuse_empty("outcomes", args.before, len(outcomes_before))
         same = compare_outcomes(
-            load_outcomes(args.before),
+            outcomes_before,
             load_outcomes(args.after),
             moves,
+            renames,
             allow_new=args.allow_new,
         )
     else:
@@ -289,7 +424,12 @@ def main(argv: list[str] | None = None) -> int:
             load_coverage(args.before, args.root),
             load_coverage(args.after, args.root),
             moves,
+            renames,
             allow_new=args.allow_new,
+            baseline=(
+                load_coverage(args.baseline, args.root) if args.baseline else None
+            ),
+            max_lost=args.max_lost,
         )
     print("same" if same else "DIFFERENT")
     return 0 if same else 1
