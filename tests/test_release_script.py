@@ -362,9 +362,13 @@ def _run(sha: str, status: str = "completed", conclusion: str = "success") -> di
 def released_root(fake_root: Path) -> Path:
     """``fake_root`` after the release PR for 0.2.1 merged."""
     for path in (release.ROOT_PYPROJECT, release.CLI_PYPROJECT):
-        path.write_text(release.set_project_version(path.read_text(), "0.2.1"))
+        path.write_text(
+            release.set_project_version(path.read_text(encoding="utf-8"), "0.2.1"),
+            encoding="utf-8",
+        )
     release.CHANGELOG.write_text(
-        release.changelog_for_release(CHANGELOG, "0.2.1", "v0.2.0", "2026-11-20")
+        release.changelog_for_release(CHANGELOG, "0.2.1", "v0.2.0", "2026-11-20"),
+        encoding="utf-8",
     )
     return fake_root
 
