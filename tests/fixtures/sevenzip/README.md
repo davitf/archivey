@@ -47,3 +47,13 @@ decode. Used by `tests/test_sevenzip_riscv.py`.
 7zz a -mhc=off -mtm=off -mtc=off -mta=off -m0=RISCV -m1=LZMA2 riscv_lzma2.7z code.bin
 7zz a -mhc=off -mtm=off -mtc=off -mta=off -m0=RISCV:4098 -m1=LZMA2 riscv_offset_lzma2.7z code.bin
 ```
+
+Real RISC-V code reaches only two of the filter's three conversions: it holds no AUIPC
+with `rd` = `x0` or `x2`, which the filter uses to mark a converted pair. So
+`riscv_special_lzma2.7z` holds `code.bin` = `_payload(600)` from
+`tests/test_sevenzip_riscv.py` (2 816 bytes; SHA-256 `8927dc8e...b2bae0ed`), which has
+that form too, written the same way:
+
+```sh
+7zz a -mhc=off -mtm=off -mtc=off -mta=off -m0=RISCV -m1=LZMA2 riscv_special_lzma2.7z code.bin
+```

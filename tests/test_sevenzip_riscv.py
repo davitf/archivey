@@ -344,6 +344,20 @@ def test_committed_7zip_archive_reads(name: str) -> None:
     _reference(data, 0, encode=True, counts=counts)
     assert counts["jal"] > 100
     assert counts["auipc_pair"] > 100
+    # Real code never has the x0/x2 AUIPC form: riscv_special_lzma2.7z covers it.
+    assert counts["auipc_special"] == 0
+
+
+def test_committed_7zip_archive_with_every_conversion_reads() -> None:
+    # The third conversion, AUIPC with rd = x0 or x2, checked against 7-Zip's own
+    # encoder where no 7-Zip 24 is installed too.
+    with open_archive(_FIXTURES / "riscv_special_lzma2.7z") as reader:
+        (member,) = reader.members()
+        data = reader.read(member)
+    assert data == _payload(600)
+    counts: collections.Counter[str] = collections.Counter()
+    _reference(data, 0, encode=True, counts=counts)
+    assert counts["auipc_special"] > 0
 
 
 def _require_7z_riscv() -> str:

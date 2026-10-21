@@ -187,8 +187,8 @@ class _FilterStage:
     ``lzma_filter`` is the liblzma filter dict with its options (BCJ
     ``start_offset``, Delta ``dist``). :class:`FilterStream` picks the decoder by
     filter id: ``PythonBranchFilterDecoder`` decodes ARM64 and RISC-V in Python, and
-    ``FilterDecoder``
-    runs every other filter through liblzma over its own LZMA2 framing.
+    ``FilterDecoder`` runs every other filter through liblzma over its own LZMA2
+    framing.
     """
 
     lzma_filter: dict

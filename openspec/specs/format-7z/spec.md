@@ -257,6 +257,7 @@ verification stage as data is read.
 | Delta | `0x03` | `lzma.FILTER_DELTA` | core |
 | BCJ x86/ARM/ARMT/PPC/SPARC/IA64 | `0x04`-`0x09`, `0x03030103`... | `lzma` BCJ filters | core |
 | BCJ ARM64 | `0x0A` | archivey's own decoder (pure Python) | core |
+| BCJ RISC-V | `0x0B` | archivey's own decoder (pure Python) | core |
 | Deflate | `0x040108` | raw `zlib` | core |
 | BZip2 | `0x040202` | `bz2` | core |
 | Zstd | `0x04f71101` | stdlib `compression.zstd` / `backports.zstd` | core on 3.14+; otherwise `[recommended]` |
@@ -296,9 +297,11 @@ out-streams, the limits 7-Zip applies (`k_Scan_NumCoders_MAX` and
 raise `UnsupportedFeatureError` at header parse, as 7-Zip reports it unsupported.
 
 An LZMA1 or LZMA2 coder SHALL share a liblzma raw chain only with the Delta and BCJ
-filters decoded after it, ARM64 excepted: stdlib `lzma` does not build that filter,
-so ARM64, and every filter decoded after it in its run, SHALL be decoded as its own
-stage. A filter decoded before any LZMA1/LZMA2 coder, and a second LZMA1/LZMA2 coder
+filters decoded after it, ARM64 and RISC-V excepted: stdlib `lzma` does not build
+those filters, so ARM64 or RISC-V, and every filter decoded after it in its run, SHALL
+be decoded as its own stage. An ARM64 coder whose start offset is not a multiple of 4,
+or a RISC-V coder whose start offset is not a multiple of 2, SHALL raise
+`UnsupportedFeatureError` when the folder is planned, as 7-Zip refuses it. A filter decoded before any LZMA1/LZMA2 coder, and a second LZMA1/LZMA2 coder
 in the same run, SHALL be decoded as its own stage, because a liblzma raw chain must
 end, in encode order, in its only LZMA1/LZMA2 filter.
 
@@ -355,6 +358,8 @@ where a further stream starts, so the verdict is the standard library's.
 | BCJ + LZMA2 folder | Shared `lzma` raw filter chain returns original bytes |
 | BCJ + LZMA1 folder | Staged LZMA1 then a staged liblzma BCJ returns original bytes |
 | ARM64 + LZMA2 folder (7-Zip 23's default for an AArch64 executable), with or without a start offset | LZMA2 chain, then a staged ARM64 filter, returns original bytes |
+| RISC-V + LZMA2 folder written by 7-Zip 24+ (`-mf=RISCV`), with or without a start offset | LZMA2 chain, then a staged RISC-V filter, returns original bytes; the member CRC32 verifies |
+| RISC-V coder with an odd start offset | `UnsupportedFeatureError` when the folder is planned |
 | Member with stored CRC32 | Terminal verification raises `CorruptionError` on mismatch |
 | PPMd without `pyppmd` | `PackageNotInstalledError` names `pyppmd` and the `[recommended]` extra |
 | AES + LZMA2 folder | Crypto stage decrypts before LZMA2 decompression |

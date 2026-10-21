@@ -1,7 +1,8 @@
 """RISC-V branch-conversion filter decoder: 7z method ``0x0B``, liblzma filter ``0x0B``.
 
-7-Zip 24 added this filter and picks it by default for RISC-V executables, as it picks
-BCJ for x86 and ARM64 for AArch64. Python's ``lzma`` refuses filter id 11 in a raw
+7-Zip 24 added this filter and writes it on request (``-m0=RISCV``, ``-mf=RISCV``);
+7-Zip 26.05 did not pick it by itself for a Go ``riscv64`` executable, and whether any
+input makes it do so is untested here. Python's ``lzma`` refuses filter id 11 in a raw
 chain, as it refuses ARM64, and ``pybcj`` has no RISC-V filter, so this module decodes
 it in Python. liblzma 5.6 and later decode an ``.xz`` stream with the filter inside
 their own stream decoder; an older liblzma refuses it there.
