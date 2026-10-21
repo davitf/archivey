@@ -20,9 +20,7 @@ BACKEND_ADDED = {"PKG-INFO", "pyproject.toml", ".gitignore"}
 
 def _expected(sdist_glob: str) -> set[str]:
     text = WORKFLOW.read_text(encoding="utf-8")
-    match = re.search(
-        rf"^\s*check {re.escape(sdist_glob)} \"([^\"]*)\"$", text, re.MULTILINE
-    )
+    match = re.search(rf"^\s*check {re.escape(sdist_glob)} \"([^\"]*)\"$", text, re.M)
     assert match is not None, f"publish.yml has no `check {sdist_glob} ...` line"
     return set(match.group(1).split())
 
