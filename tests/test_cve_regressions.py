@@ -122,6 +122,10 @@ def _path_max_chain(dest: Path) -> list[tuple[str, str, str | bytes]]:
     component = "d" * min(
         255, (path_max - len(str(dest.resolve())) - 1) // (len(steps) + 1)
     )
+    # The expansion through the long link must pass PATH_MAX; if it fits, ``escape``
+    # is refused as a plain escape and the test no longer covers the CVE.
+    expanded = len(str(dest.resolve())) + len(steps) * (len(component) + 1) + 255
+    assert len(component) < 255 and expanded > path_max, (len(component), expanded)
     entries: list[tuple[str, str, str | bytes]] = []
     path = ""
     for step in steps:

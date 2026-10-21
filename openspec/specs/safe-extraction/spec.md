@@ -1692,8 +1692,11 @@ bytes a real extraction counts for copying a hardlink across a filesystem bounda
 inside `dest` are not counted. And a directory of `dest` gains its owner's read,
 write and search bits in the scratch directory, so a refusal that comes from its
 permissions MAY appear only in a real extraction; a symlink of `dest` that the OS will
-not create there is copied as an empty file; and an entry that cannot be copied (the
-scratch filesystem is full, or the name is too long there) is left out. A `dest` that
+not create there is copied as an empty file; an entry that cannot be copied (the
+scratch filesystem is full, or the name is too long there) is left out; and a path
+whose links expand past `PATH_MAX` cannot be resolved and is refused, so where the
+scratch directory's path and `dest`'s differ in length, a member whose resolution
+passes that limit in only one of them MAY be refused in only one of the two runs. A `dest` that
 exists and is not a directory SHALL be refused as a real extraction refuses it. A `dest`
 that does not exist SHALL be refused with the error a real extraction gets creating it
 when the nearest part of its path that exists cannot be resolved, is not a directory, or

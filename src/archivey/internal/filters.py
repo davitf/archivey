@@ -179,7 +179,10 @@ def resolve_or_raise_on_loop(path: Path) -> Path:
 
 
 # Links followed in one resolution before it counts as a loop: Linux's own limit
-# (``MAXSYMLINKS``), so a chain the kernel follows is followed here too.
+# (``MAXSYMLINKS``), so a chain the kernel follows is followed here too. The dry run's
+# ``_MAX_LINK_HOPS`` and the CLI hoist's walk use the same bound for the same reason;
+# ``link_watch._MAX_FOLLOWS`` is 64 on purpose, as a walk that records dependencies must
+# go past every kernel's limit.
 _MAX_LINK_FOLLOWS = 40
 
 
@@ -199,7 +202,7 @@ def _realpath_posix(path: str, asked: str) -> str:
             continue
         candidate = f"{resolved}/{name}"
         try:
-            mode = os.lstat(candidate).st_mode
+            mode = os.lstat(long_path(candidate)).st_mode
         except (FileNotFoundError, NotADirectoryError):
             resolved = candidate
             continue
@@ -212,7 +215,7 @@ def _realpath_posix(path: str, asked: str) -> str:
         if follows > _MAX_LINK_FOLLOWS:
             raise OSError(errno.ELOOP, os.strerror(errno.ELOOP), asked)
         try:
-            target = os.readlink(candidate)
+            target = os.readlink(long_path(candidate))
         except OSError as exc:
             raise OSError(exc.errno, exc.strerror, asked) from exc
         if target.startswith("/"):
@@ -458,13 +461,21 @@ def check_universal(
                     member_name=name,
                 )
     except OSError as exc:
-        # A symlink loop the destination already had, in dest or below it. Links this
-        # run creates never loop: one that would is removed as an escape. The member
-        # cannot be placed, and that is the destination's state, not a policy decision.
+        # A path in dest or below it that the resolver cannot follow exactly: a symlink
+        # loop the destination already had (links this run creates never loop: one that
+        # would is removed as an escape), or a component it cannot look at, such as a
+        # directory it may not search or a link chain past PATH_MAX
+        # (``resolve_or_raise_on_loop``). The member cannot be placed, and that is the
+        # destination's state, not a policy decision.
         if show_os_error is not None:
             show_os_error(exc)
+        cause = (
+            "a symlink loop"
+            if exc.errno == errno.ELOOP
+            else "a path that cannot be looked up"
+        )
         raise ExtractionError(
-            f"A path in the destination does not resolve (a symlink loop?): {exc}",
+            f"A path in the destination does not resolve ({cause}): {exc}",
             member_name=name,
         ) from exc
 

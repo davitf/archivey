@@ -79,7 +79,12 @@ no member replaces the destination itself.
   (devices, FIFOs, sockets), and a non-directory member whose normalized name is
   `"."` or `""` (which would replace the destination root with a file). It resolves
   the parent and checks containment, and checks symlink targets lexically. A
-  rejection names the member as listed, not its disk spelling.
+  rejection names the member as listed, not its disk spelling. The resolution
+  (`resolve_or_raise_on_loop`) is archivey's own walk on POSIX, one link at a time as
+  the kernel goes: a component it cannot look at raises and the member is refused.
+  `os.path.realpath` and non-strict `Path.resolve()` keep such a component as a name
+  and go on, so a link chain whose expansion passes `PATH_MAX` (`ENAMETOOLONG`) looked
+  inside to them while the kernel followed it outside (CVE-2025-4517 in `tarfile`).
 - `internal/extraction.py` `ExtractionCoordinator._write_symlink` re-resolves a new
   symlink against the live tree after `os.symlink` and removes it if it escapes, which
   catches a chain staged by earlier members. That is the third layer after the lexical
@@ -127,7 +132,10 @@ which are safe to delete once no extraction is running.
 `test_replace_symlink_no_write_through`,
 `test_hardlink_replaces_a_destination_symlink_without_following_it`,
 `test_error_when_dest_is_a_file_never_deletes_it`,
-`test_dest_symlink_to_dir_is_followed_into_target`, `test_strict_strips_setuid`.
+`test_dest_symlink_to_dir_is_followed_into_target`, `test_strict_strips_setuid`,
+`test_resolve_or_raise_on_loop_raises_when_a_component_cannot_be_looked_up`.
+`tests/test_cve_regressions.py`: `test_cve_2025_4517_link_chain_past_path_max`, and
+replays of other readers' published escapes.
 `tests/test_hardlink_target_rule.py`: `test_a_hardlink_to_a_refused_member_is_refused`,
 `test_a_hardlink_to_an_excluded_refused_member_is_refused`,
 `test_a_hardlink_to_a_selector_excluded_member_is_materialized`,
