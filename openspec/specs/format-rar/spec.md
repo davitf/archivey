@@ -1310,10 +1310,11 @@ password is proven: in RAR5 by the archive's password check value, in RAR 1.5-4 
 earlier encrypted header whose CRC16 matched. Before that proof, a wrong key also
 decrypts a size that reads to the end of the file, so the open SHALL raise
 `EncryptionError`. When that header's read ran out of ciphertext, the message SHALL
-also name a cut in that header, or damage to it, as the cause if the password is right;
-a header refused before its read ran out SHALL NOT be named as a cut. That happens
-inside the first encrypted header of a RAR 1.5-4 archive, and inside any header of a
-RAR5 archive whose encryption record has no check value.
+also name a cut in that header, or damage to it, as the cause if the password is right,
+and in a volume set SHALL name the volume its byte offset is in; a header whose read did
+not run out of ciphertext SHALL NOT be named as a cut. That happens inside the first
+encrypted header of a RAR 1.5-4 archive, and inside any header of a RAR5 archive whose
+encryption record has no check value.
 
 A file that ends exactly at a header boundary is not a cut: RAR 1.5-4 lists as complete,
 and RAR5 lists and then emits `ARCHIVE_EOF_MARKER_MISSING`.
@@ -1446,7 +1447,9 @@ open (see the cut requirement above).
 
 With encrypted headers the damage is reported this way only once the header password is
 proven, as for a cut. Before that proof a CRC mismatch reads the same as a wrong key, so
-the open SHALL raise the wrong-password `EncryptionError`.
+the open SHALL raise the wrong-password `EncryptionError`. When that header's read ran
+out of ciphertext, its message also names a cut in that header or damage to it, under
+the condition the cut requirement above sets.
 
 #### Scenario: damaged header matrix
 
@@ -1458,7 +1461,7 @@ the open SHALL raise the wrong-password `EncryptionError`.
 | The same set with volume 2 missing | Volume 1's members listed; `TruncatedError` naming volume 2 and the damaged header |
 | `-hp` RAR 1.5-4, a FILE header damaged after one whose CRC16 matched | Members before it listed; `CorruptionError` after them |
 | `-hp` RAR 1.5-4 set, volume 2's first header damaged after volume 1 proved the key | `CorruptionError` naming volume 2 |
-| The same damage with a wrong password | `EncryptionError` ("wrong password?") at open |
+| The same damage with a wrong password | `EncryptionError` ("wrong password?") at open; when the read ran out of ciphertext, its message also names a cut or damage, and the volume |
 
 ### Requirement: Serve a solid pass's file copies from the source it decoded
 

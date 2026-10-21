@@ -764,17 +764,31 @@ def parse_rar_volumes(
         if gap and previous:
             missing.extend(range(previous + 1, number))
         previous = number
-        part = _parse_rar_volume(
-            volume,
-            password=password,
-            kdf_cache=kdf_cache,
-            volume_index=number - 1,
-            use_qo=use_qo,
-            max_members=max_members,
-            max_metadata_bytes=max_metadata_bytes,
-            name_encoding=name_encoding,
-            password_proven=password_proven,
+        # The walk's byte offsets are within this volume, not the concatenated space
+        # the member offsets below use, so a message that gives one names the volume.
+        where = (
+            f" (volume {number} of the set; the offset is within that volume)"
+            if len(volumes) > 1
+            else ""
         )
+        try:
+            part = _parse_rar_volume(
+                volume,
+                password=password,
+                kdf_cache=kdf_cache,
+                volume_index=number - 1,
+                use_qo=use_qo,
+                max_members=max_members,
+                max_metadata_bytes=max_metadata_bytes,
+                name_encoding=name_encoding,
+                password_proven=password_proven,
+            )
+        except EncryptionError as exc:
+            if not where or not getattr(exc, _OFFSET_IN_VOLUME, False):
+                raise
+            # Still the wrong-password error, so a password list moves on.
+            located = wrong_password_error(exc.raw_message + where)
+            raise located.with_traceback(exc.__traceback__) from exc.__cause__
         password_proven = part.password_proven
 
         for member in part.members:
@@ -783,10 +797,7 @@ def parse_rar_volumes(
             member.data_parts = [
                 (offset + base_offset, size) for offset, size in member.data_parts
             ]
-        if len(volumes) > 1:
-            # The walk's byte offsets are within this volume, not the concatenated
-            # space the member offsets above use, so the message names the volume.
-            where = f" (volume {number} of the set; the offset is within that volume)"
+        if where:
             if part.truncated is not None:
                 part.truncated += where
             if part.damaged is not None:
@@ -1311,6 +1322,11 @@ def _encrypted_header_cut(start: int) -> str:
     return f"RAR archive is truncated: {_ends_inside_encrypted_header(start)}"
 
 
+# Set on a raised error whose message gives a byte offset within one volume, so that
+# ``parse_rar_volumes`` can name the volume, as it does for the returned strings.
+_OFFSET_IN_VOLUME = "_archivey_rar_offset_in_volume"
+
+
 def _ends_inside_encrypted_header(start: int) -> str:
     """The clause that places a cut in an encrypted header, shared by the proven cut
     and the unproven wrong-password message so the two say it the same way."""
@@ -1447,6 +1463,10 @@ def _header_failure(
                     f"{_ends_inside_encrypted_header(start)}, "
                     "or that header is damaged"
                 )
+                error = wrong_password_error(message)
+                # The offset is within this volume; ``parse_rar_volumes`` names it.
+                setattr(error, _OFFSET_IN_VOLUME, True)
+                raise error from exc
             raise wrong_password_error(message) from exc
         if header_fd.hit_eof:
             return _encrypted_header_cut(start)
