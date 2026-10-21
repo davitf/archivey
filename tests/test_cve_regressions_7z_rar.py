@@ -348,12 +348,14 @@ def test_7zip_cve_2024_11612_copy_coder_short_of_its_size() -> None:
         names=["short"],
     )
     data = _archive(b"abcd", header)
-    with pytest.raises(TruncatedError, match="ended after 4 of"):
-        with open_archive(io.BytesIO(data)) as reader:
-            (member,) = reader.members()
-            with reader.open(member) as stream:
-                while stream.read(1 << 16):
-                    pass
+    with (
+        pytest.raises(TruncatedError, match="ended after 4 of"),
+        open_archive(io.BytesIO(data)) as reader,
+    ):
+        (member,) = reader.members()
+        with reader.open(member) as stream:
+            while stream.read(1 << 16):
+                pass
 
 
 def _three_copy_coders(bind_pairs: list[tuple[int, int]]) -> bytes:
@@ -412,9 +414,11 @@ def test_commons_compress_cve_2021_35516_huge_declared_counts(
     # few bytes declaring 2^60 files, folders or streams ran it out of memory. Here
     # the count is refused before anything is sized from it.
     def open_and_list() -> None:
-        with pytest.raises(error, match="exceeds"):
-            with open_archive(io.BytesIO(_archive(b"", header))) as reader:
-                reader.members()
+        with (
+            pytest.raises(error, match="exceeds"),
+            open_archive(io.BytesIO(_archive(b"", header))) as reader,
+        ):
+            reader.members()
 
     open_and_list()  # imports and caches stay out of the measured peak
     assert traced_peak(open_and_list) < 4 << 20
@@ -461,9 +465,11 @@ def test_rar_header_too_small_to_advance_is_an_error(data: bytes, message: str) 
     # The CRC is valid, so the size itself must end the walk: RAR5 fields are read
     # only from inside the declared header, and RAR4 checks the size against the
     # seven bytes every block needs.
-    with pytest.raises(CorruptionError, match=message):
-        with open_archive(io.BytesIO(data)) as reader:
-            reader.members()
+    with (
+        pytest.raises(CorruptionError, match=message),
+        open_archive(io.BytesIO(data)) as reader,
+    ):
+        reader.members()
 
 
 # ---------------------------------------------------------------------------
