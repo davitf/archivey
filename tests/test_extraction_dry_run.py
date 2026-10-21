@@ -16,6 +16,7 @@ import os
 import re
 import tarfile
 import tempfile
+import unicodedata
 import zipfile
 from collections.abc import Callable
 from pathlib import Path
@@ -547,7 +548,14 @@ def _put(dest: Path, entries: dict[str, object]) -> None:
             path.chmod(what)
         else:
             _, target = what  # type: ignore[misc]
-            os.symlink(str(target).format(dest=dest, parent=dest.parent), path)
+            os.symlink(_expand(str(target), dest), path)
+
+
+def _expand(text: str, dest: Path) -> str:
+    """A row's ``{dest}`` and ``{parent}`` placeholders, filled for one run's
+    ``dest``. Any other placeholder raises ``KeyError`` rather than staying a
+    literal that both runs would build alike."""
+    return text.format(dest=dest, parent=dest.parent) if "{" in text else text
 
 
 # Each case: what dest holds before the run, and the archive's members.
@@ -583,6 +591,17 @@ _EXISTING_CASES: dict[str, tuple[dict[str, object], list[tuple[str, str, object]
     "hardlink-over-files": (
         {"f": b"mine", "h": b"mine"},
         [("f", "file", b"content"), ("h", "hard", "f")],
+    ),
+    # RENAME's first numbered name is taken in dest, but the base name is free: the
+    # member collides with a directory the run made, so RENAME still tries it.
+    "rename-past-a-held-numbered-name": (
+        {"a (1)": b"mine"},
+        [("a/x", "file", b"x"), ("a", "file", b"a")],
+    ),
+    # The same, where the member collides with another member's case variant.
+    "rename-case-variant-past-a-held-numbered-name": (
+        {"A (1)": b"mine"},
+        [("a", "file", b"a"), ("A", "file", b"A")],
     ),
 }
 
@@ -640,6 +659,42 @@ _EXISTING_LINK_CASES: dict[
         {"sub/b/keep.txt": b"mine", "a": ("sym", "sub")},
         [("a/b", "file", b"theirs")],
     ),
+    # A symlink of the caller's that loops: the error names it in dest.
+    "under-a-looping-symlink": (
+        {"a": ("sym", "a")},
+        [("a/c", "file", b"x")],
+    ),
+    # A link member whose target is missing when it is made, and that a later member
+    # makes resolve through the caller's symlink out of dest: the recheck refuses it.
+    "link-member-escapes-after-a-later-member": (
+        {"real/esc": ("sym", "../../outside")},
+        [("l", "sym", "a/esc"), ("a", "sym", "real")],
+    ),
+    # A link member whose relative target passes a missing name and takes it off with
+    # a later "..": the checks resolve it to the caller's symlink out of dest.
+    "link-member-past-a-missing-name": (
+        {"real/esc": ("sym", "../../outside")},
+        [("l", "sym", "gone/../real/esc")],
+    ),
+    "link-member-past-two-missing-names": (
+        {"real/esc": ("sym", "../../outside")},
+        [("l", "sym", "x/y/../../real/esc")],
+    ),
+    "link-member-past-a-missing-name-deeper": (
+        {"real/sub/esc": ("sym", "../../../outside")},
+        [("l", "sym", "g/../real/sub/esc")],
+    ),
+    # A nested link member, whose directory is not on disk yet, with an absolute
+    # target that names dest and goes on through the caller's symlink out of it.
+    "nested-link-member-absolute-into-dest": (
+        {"x": ("sym", "../outside")},
+        [("a/l", "sym", "{dest}/x"), ("a/b/l", "sym", "{dest}/x")],
+    ),
+    # The same, where the later member replaces a directory the run made.
+    "link-member-escapes-after-a-later-member-replaces-a-directory": (
+        {"real/esc": ("sym", "../../outside")},
+        [("a", "dir", None), ("l", "sym", "a/esc"), ("a", "sym", "real")],
+    ),
 }
 
 
@@ -657,7 +712,23 @@ def _run_existing_case(
     relative: bool = False,
     dest_name: str = "out",
 ) -> None:
-    blob = _tar(members)
+    def source() -> io.BytesIO:
+        # A "{dest}" or "{parent}" in a link target names the run's own dest, as
+        # given, so each run builds its own archive. ``_both`` calls this in the run's directory.
+        dest = Path.cwd() / dest_name
+        return io.BytesIO(
+            _tar(
+                [
+                    (
+                        name,
+                        kind,
+                        _expand(extra, dest) if isinstance(extra, str) else extra,
+                    )
+                    for name, kind, extra in members
+                ]
+            )
+        )
+
     for policy in _POLICIES:
         work = tmp_path / policy.value
         (work / "tmp").mkdir(parents=True)
@@ -665,7 +736,7 @@ def _run_existing_case(
         if dest_name != "out":
             _spell_dest_ways(work)
         real, dry = _both(
-            lambda: io.BytesIO(blob),
+            source,
             work,
             relative=relative,
             dest_name=dest_name,
@@ -705,6 +776,21 @@ def test_existing_symlinks_are_met_alike(
 ) -> None:
     held, members = _EXISTING_LINK_CASES[case]
     _run_existing_case(held, members, overwrite, streaming, tmp_path)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+def test_symlink_loop_error_names_dest_in_its_cause(tmp_path: Path) -> None:
+    # The report shape compares the message only; the cause keeps a file name too.
+    dest = tmp_path / "out"
+    _put(dest, {"a": ("sym", "a")})
+    blob = _tar([("a/c", "file", b"x")])
+    with open_archive(io.BytesIO(blob)) as reader:
+        report = reader.extract_all(dest, on_error=OnError.CONTINUE, dry_run=True)
+    (result,) = report.results
+    assert result.status is ExtractionStatus.FAILED
+    cause = result.error.__cause__
+    assert isinstance(cause, OSError)
+    assert cause.filename == str(dest.resolve() / "a")
 
 
 @pytest.mark.parametrize("overwrite", list(OverwritePolicy))
@@ -963,6 +1049,35 @@ def test_dry_run_copies_only_what_the_pass_names(tmp_path: Path) -> None:
     assert seen == [[], ["f7"], ["f7", "sub", "sub/x"]]
 
 
+def test_numbered_name_held_under_another_normalization_is_copied_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # On a filesystem that compares names normalization-insensitively (APFS), a
+    # RENAME of the composed name "á" finds the decomposed "á (1)" taken. The
+    # dry run copies it in, under the name dest holds it by. Such a filesystem is
+    # simulated: dest's lookups fold names as ``_fold`` does.
+    composed = unicodedata.normalize("NFC", "á")
+    decomposed = unicodedata.normalize("NFD", "á")
+    dest = tmp_path / "out"
+    _put(dest, {f"{decomposed} (1)": b"mine"})
+    real_lexists = os.path.lexists
+
+    def lexists(path) -> bool:
+        if real_lexists(path):
+            return True
+        path = Path(path)
+        if path.parent != dest:
+            return False
+        key = dry_run_module._fold(path.name)
+        return any(dry_run_module._fold(n) == key for n in os.listdir(dest))
+
+    with dry_run_module.scratch_for(dest) as dry:
+        monkeypatch.setattr(os.path, "lexists", lexists)
+        dry._bring(dry.scratch, composed)
+        monkeypatch.undo()
+        assert os.listdir(dry.scratch) == [f"{decomposed} (1)"]
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX directory modes")
 @_NON_ROOT
 def test_unwritable_directory_in_dest_is_an_exemption(tmp_path: Path) -> None:
@@ -1042,6 +1157,8 @@ def test_cli_dry_run_into_a_populated_cwd_matches(
     case: str, overwrite: str, tmp_path: Path
 ) -> None:
     held, members = _EXISTING_CASES[case]
+    # The CLI runs build one archive for both runs, so a row here cannot name dest.
+    assert not any(isinstance(extra, str) and "{" in extra for _, _, extra in members)
     real, dry = _cli_both(
         _tar(members), held, ["-d", ".", "--overwrite", overwrite], tmp_path
     )
