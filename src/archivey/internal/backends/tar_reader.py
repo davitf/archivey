@@ -620,9 +620,7 @@ class TarReader(BaseArchiveReader):
             else:
                 # A stream whose size is not known is counted, so the live
                 # decompression-ratio guard can see compressed bytes consumed.
-                codec_source = self._track_source_seeks(
-                    self._wrap_compressed_input(source)
-                )
+                codec_source = self._codec_input(source, track_seeks=True)
             stream = open_codec_stream(
                 codec,
                 codec_source,
@@ -654,7 +652,14 @@ class TarReader(BaseArchiveReader):
             # The walker reads 512-byte blocks: a buffer in front makes each one a copy
             # from memory, not a decoder call. It reads the codec once per read, so a
             # cut member's recoverable prefix comes before its TruncatedError.
-            self._owned_stream = ReadAheadStream(stream, _WALK_BUFFER)
+            self._owned_stream = ReadAheadStream(
+                stream,
+                _WALK_BUFFER,
+                # On a source that cannot seek, the codec reads what has arrived
+                # (_codec_input), and so does this buffer: a short tar on a pipe
+                # whose writer keeps it open opens, and its members read, at once.
+                fill_arrived=not source.seekable(),
+            )
             return self._owned_stream
         if streaming and not source.seekable():
             # The buffer fills from what has arrived, not a full 8 KiB, so a short
