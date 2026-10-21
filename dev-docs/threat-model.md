@@ -1014,9 +1014,12 @@ and tqdm's `desc` (escaped) is outside the sweep.
 `test_cli_does_not_escape_a_native_path`); `tests/test_cli.py::test_extract_escapes_*`,
 `test_extract_summary_escapes_*`, `test_hoist_escapes_*`, `test_info_escapes_*`,
 `test_missing_archive_name_is_escaped_once`. The cross-platform CLI tests use U+2028;
-the ANSI/CR spoof is Unix-only, since NTFS refuses control bytes in names.
+the ANSI/CR spoof tests extract under `TRUSTED`, which writes the raw bytes, so they
+are Unix-only, since NTFS refuses control bytes in names.
 `tests/test_cve_regressions_7z_rar.py::test_unrar_cve_2024_33899_escape_sequences_in_names`
-replays the unrar advisory over a RAR's member names through `list`, `test` and `extract`.
+replays the unrar advisory over a RAR's member names through `list`, `test -v` and
+`extract`. It runs on every platform, because the default policy writes each control
+byte as `%XX` before the write.
 
 ### Detection is bounded and says when it guessed
 

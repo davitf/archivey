@@ -165,10 +165,18 @@ _ESCAPING_NAMES = [
     ".. /outside/victim",
     "a/... /.. ./outside/victim",
 ]
-# Refused under every policy. STRICT also refuses the other three; STANDARD and
-# TRUSTED re-root the absolute name, and keep the dot-and-space segments as literal
-# names, which is safe because they cannot climb (Windows CI runs this file too).
+# Refused under every policy. STRICT also refuses the other three. STANDARD and
+# TRUSTED re-root the absolute name inside the destination, and keep the
+# dot-and-space segments as literal names: on POSIX those are ordinary directory
+# names, and on Windows, which trims them to ``..``, the parent-containment check
+# resolves the path through the OS and refuses the member. The Windows statuses are
+# not pinned here; ``_assert_outside_untouched`` and the path check cover them.
 _ALWAYS_BLOCKED = ["../outside/victim", "a/../../outside/victim", "C:../outside/victim"]
+_KEPT_ON_POSIX = [
+    "/outside-abs/victim",
+    ".. /outside/victim",
+    "a/... /.. ./outside/victim",
+]
 
 
 def _assert_traversal_contained(
@@ -179,6 +187,9 @@ def _assert_traversal_contained(
         _assert_blocked(results, _ESCAPING_NAMES)
     else:
         _assert_blocked(results, _ALWAYS_BLOCKED)
+        names = _KEPT_ON_POSIX if os.name != "nt" else _KEPT_ON_POSIX[:1]
+        for name in names:
+            assert results[name].status is ExtractionStatus.EXTRACTED, results[name]
 
 
 @_POLICIES
@@ -410,10 +421,13 @@ def test_commons_compress_cve_2021_35516_huge_declared_counts(
 
 
 def _rar5_short_header(body: bytes) -> bytes:
-    """A RAR5 archive of one block whose header is ``body``, with a valid CRC."""
+    """A RAR5 archive of one block whose header is ``body``, with a valid CRC, then
+    16 zero bytes. A reader that read the block's fields past its declared size would
+    decode those zeros as valid fields of 0 and go on; one that keeps to the declared
+    size fails on the field the header does not hold."""
     sized = _vint(len(body)) + body
     signature = _rar5_with([])[:8]
-    return signature + struct.pack("<I", zlib.crc32(sized)) + sized
+    return signature + struct.pack("<I", zlib.crc32(sized)) + sized + bytes(16)
 
 
 def _rar4_short_header(size: int) -> bytes:
@@ -473,11 +487,11 @@ def test_unrar_cve_2024_33899_escape_sequences_in_names(
     archive = tmp_path / "hostile.rar"
     archive.write_bytes(_rar5_with([(n, "file", b"x") for n in names]))
     dest = tmp_path / "dest"
-    # ``extract`` exits with EXIT_POLICY because it blocks the ``../`` member, and
+    # ``test`` prints member names only with ``-v``. ``extract`` exits with EXIT_POLICY because it blocks the ``../`` member, and
     # rewrites the other names for the disk, so its report shows a ``%1B`` spelling.
     for argv, code, shown in (
         (["list", str(archive)], EXIT_OK, ["\\x1b[2J", "\\x07", "\\r", "\\x1b[1A"]),
-        (["test", str(archive)], EXIT_OK, []),
+        (["test", "-v", str(archive)], EXIT_OK, ["\\x1b[2J", "\\x07", "\\r"]),
         (
             ["extract", str(archive), "-d", str(dest)],
             EXIT_POLICY,
