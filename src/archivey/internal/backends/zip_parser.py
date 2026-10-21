@@ -1392,17 +1392,17 @@ def read_local_header(
     """Parse the local header at absolute ``header_offset``.
 
     Reads the fixed 30 bytes, then the name and extra field. Name and extra lengths are
-    uint16, so 65 535 is legal and they need no cap of their own; offsets past
-    :data:`MAX_DATA_OFFSET` are refused. The caller decides what a disagreement with the
-    central directory means. ``zip64_sizes`` is :func:`local_header_from`'s.
+    uint16, so 65 535 is legal and they need no cap of their own; a negative offset
+    and one past :data:`MAX_DATA_OFFSET` are refused, each with its own message. The
+    caller decides what a disagreement with the central directory means, and words a
+    negative offset in the archive's terms when it can (``ZipReader._local_data_region``
+    names the bytes the whole archive seems to be missing). ``zip64_sizes`` is
+    :func:`local_header_from`'s.
     """
     if header_offset < 0:
-        # The directory was found, but taking its offset from where it sits puts this
-        # header before byte 0: the bytes in front of it are gone (a front cut).
         raise CorruptionError(
-            f"The member's local header would start {-header_offset} bytes before "
-            "the start of the file: the archive seems to be missing at least its "
-            f"first {-header_offset} bytes"
+            f"The local header would start {-header_offset} bytes before the start "
+            "of the file"
         )
     if header_offset > MAX_DATA_OFFSET:
         raise CorruptionError(f"Absurd local-header offset: {header_offset}")
