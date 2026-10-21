@@ -43,7 +43,7 @@ jobs:
     env:
       UV_PYTHON: "3.11"
       # A PR run is a short check that the script and the lockfile's rapidgzip work;
-      # the weekly and manual runs search longer.
+      # the scheduled and manual runs search longer.
       SECONDS_PER_CODEC: ${{ github.event_name == 'pull_request' && '60' || inputs.seconds || '300' }}
     steps:
       - uses: actions/checkout@v4

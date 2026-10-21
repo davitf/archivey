@@ -14,7 +14,8 @@ The four accelerator targets (`gzip_accel`, `zlib_accel`, `deflate_accel`,
 nightly. `.github/workflows/accelerator-fuzz-soak.yml` runs them again once a week for 20
 minutes each, one runner per target, and keeps each target's corpus in the Actions cache
 so the next run starts from it (`workflow_dispatch` takes `seconds`). GitHub evicts a
-cache entry unread for 7 days, so a weekly run sometimes starts cold from the seeds.
+cache entry unread for 7 days, and a weekly run reads it with only minutes to spare, so a
+cold start from the seeds is common; the carry-forward is best effort.
 
 Mutation fuzz (`tests/test_mutation_fuzz.py`) and `ARCHIVEY_FUZZ=1` /
 `tests/fuzz_sevenzip_parser.py` / `tests/fuzz_rar_parser.py` stay as they are.

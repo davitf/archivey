@@ -7,9 +7,9 @@
 # pull request and 10 to 15 seconds on the nightly (a few hundred inputs), which finds
 # only shallow differences. This job gives each target a long run once a week, one runner
 # per target, and keeps each target's corpus between runs so the next run starts where
-# this one stopped. GitHub evicts a cache entry nobody has read for 7 days, so a weekly
-# run sometimes starts cold from the seeds; that costs only depth. It ran twice a week
-# until the move to a smaller AI budget in 2026-11, when fewer red runs to read won.
+# this one stopped. GitHub evicts a cache entry nobody has read for 7 days, and a weekly
+# run reads it with only minutes to spare, so a cold start from the seeds is common and
+# the carry-forward is best effort. A cold start costs only depth.
 #
 # accelerator-crash-search.yml is the other scheduled accelerator job (monthly): it looks
 # for native crashes in-process, not for wrong data. Not a required check: a red run is the signal.
