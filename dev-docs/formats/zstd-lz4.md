@@ -143,7 +143,8 @@ start. The table must end the file: zeros after it hide it, and the file then se
 any other zstd file. A single-frame file, the default `zstd` output, has nothing to resume
 from, so a backward seek decodes again from the start and the rewind report says so
 ([`single-file.md`](single-file.md) §2.3). LZ4 records no resume points, so every LZ4
-backward seek does that too. A ZIP zstd member is one frame and keeps none.
+backward seek does that too. A ZIP zstd member is read as a `.zst` file is, with the
+same seek points and table.
 
 ### 2.4 Extract
 

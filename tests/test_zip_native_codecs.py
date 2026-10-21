@@ -140,22 +140,19 @@ def test_zip_zstd_handbuilt_roundtrip() -> None:
 
 
 @requires_zstd()
-def test_zip_zstd_member_reads_no_seek_table() -> None:
-    """A ZIP zstd member is one frame, so the seekable format's table is not read.
-
-    The member's data ends in a table that splits its one frame in two. Read as a
-    table, it would put a seek point inside the frame, and a seek there would fail.
-    """
-    from archivey.internal.streams.decompressor_stream import (
-        DecompressorStream,
-        SeekPoint,
-    )
+def test_zip_zstd_member_seeks_by_its_seek_table() -> None:
+    """A ZIP zstd member's frames are one stream, as in a .zst file, so the seekable
+    format's table gives its seek points."""
+    from archivey.internal.streams.decompressor_stream import DecompressorStream
     from tests.streams_util import seekable_zstd_table
 
-    frame = zstd_backend().compress(_PAYLOAD)
+    zstd = zstd_backend()
     half = len(_PAYLOAD) // 2
-    table = seekable_zstd_table([(len(frame) - 10, half), (10, len(_PAYLOAD) - half)])
-    data = _build_minimal_zip(b"zstd.txt", frame + table, _PAYLOAD, 93)
+    frames = [zstd.compress(_PAYLOAD[:half]), zstd.compress(_PAYLOAD[half:])]
+    table = seekable_zstd_table(
+        [(len(f), n) for f, n in zip(frames, (half, len(_PAYLOAD) - half))]
+    )
+    data = _build_minimal_zip(b"zstd.txt", b"".join(frames) + table, _PAYLOAD, 93)
     with open_archive(io.BytesIO(data), seekable_members=True) as ar:
         (member,) = ar.members()
         with ar.open(member) as stream:
@@ -164,7 +161,10 @@ def test_zip_zstd_member_reads_no_seek_table() -> None:
             engine = stream
             while not isinstance(engine, DecompressorStream):
                 engine = engine._inner
-            assert engine._seek_points == [SeekPoint(0, 0)]
+            assert [p.compressed_offset for p in engine._seek_points] == [
+                0,
+                len(frames[0]),
+            ]
 
 
 @requires_binary("7z")
@@ -464,15 +464,14 @@ def test_zip_zstd_member_with_input_after_its_frame_is_corrupt(tail: bytes) -> N
 
 @requires_zstd()
 @pytest.mark.parametrize("chunk", [None, 7], ids=["whole", "chunked"])
-def test_zip_zstd_member_with_a_second_frame_is_corrupt(chunk: int | None) -> None:
-    # A second frame is input after the first frame's end, though zstd reads it as more
-    # content. The declared size and CRC cover both frames' output.
+def test_zip_zstd_member_with_a_second_frame_reads_both(chunk: int | None) -> None:
+    # Zstd data is one or more frames (RFC 8878), so a second frame is content, as in a
+    # .zst file. The declared size and CRC cover both frames' output.
     zstd = zstd_backend()
     second = b"second frame\n"
     compressed = zstd.compress(_PAYLOAD) + zstd.compress(second)
     data = _build_minimal_zip(b"z.bin", compressed, _PAYLOAD + second, 93)
-    with pytest.raises(CorruptionError, match="left after its end"):
-        _read_whole(data, chunk)
+    assert _read_whole(data, chunk) == _PAYLOAD + second
 
 
 @requires_zstd()
@@ -483,13 +482,12 @@ def test_zip_zstd_member_with_a_second_frame_is_corrupt(chunk: int | None) -> No
         pytest.param(struct.pack("<II", 0x184D2A5F, 6) + b"hidden", id="payload"),
     ],
 )
-def test_zip_zstd_member_with_a_skippable_frame_is_corrupt(skippable: bytes) -> None:
-    # A skippable frame decodes to nothing, so the size and CRC match and only the
-    # input-after-end check sees the hidden bytes.
+def test_zip_zstd_member_with_a_skippable_frame_reads(skippable: bytes) -> None:
+    # A skippable frame is part of Zstd data (RFC 8878 §3.1.2; the seekable format
+    # keeps its seek table in one) and decodes to nothing, as in a .zst file.
     compressed = zstd_backend().compress(_PAYLOAD) + skippable
     data = _build_minimal_zip(b"z.bin", compressed, _PAYLOAD, 93)
-    with pytest.raises(CorruptionError, match="left after its end"):
-        _read_whole(data, None)
+    assert _read_whole(data, None) == _PAYLOAD
 
 
 @pytest.mark.parametrize("chunk", [None, 7], ids=["whole", "chunked"])

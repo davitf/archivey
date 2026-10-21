@@ -611,9 +611,9 @@ stream's end, a zero byte too, and a second stream there SHALL raise
 declared size and CRC cover, with the accelerator on or off: an accelerator that reads
 on past the first stream hands the read to the standard-library decoder there, which
 refuses it. 7-Zip 23.01 fails such a member ("There are some data after the end of the
-payload data", or "Data Error"), and the bytes may hide a second payload. A ZIP
-Zstd member is one frame, so a second frame there SHALL raise too. The exception is a
-7z Zstd or LZ4 coder, whose concatenated frames are read as one stream: a further frame
+payload data", or "Data Error"), and the bytes may hide a second payload. The exception
+is a ZIP Zstd member and a 7z Zstd or LZ4 coder, whose concatenated frames are read as
+one stream, as RFC 8878 defines Zstd data as one or more frames: a further frame
 is content that counts against the declared size and CRC, and only bytes after the
 last frame that start no frame SHALL raise. A codec that
 stops at a declared output size (LZMA1 without an end marker, PPMd) SHALL raise the
