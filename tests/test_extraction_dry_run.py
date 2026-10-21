@@ -533,11 +533,10 @@ def test_bodies_are_read_and_verified(tmp_path: Path) -> None:
 def test_limits_still_apply(tmp_path: Path) -> None:
     blob = _tar([("big", "file", b"x" * 4096)])
     dest = tmp_path / "out"
-    with open_archive(io.BytesIO(blob)) as reader:
-        with pytest.raises(ResourceLimitError):
-            reader.extract_all(
-                dest, limits=ExtractionLimits(max_extracted_bytes=1024), dry_run=True
-            )
+    with open_archive(io.BytesIO(blob)) as reader, pytest.raises(ResourceLimitError):
+        reader.extract_all(
+            dest, limits=ExtractionLimits(max_extracted_bytes=1024), dry_run=True
+        )
     _assert_nothing_left(tmp_path, dest)
 
 
@@ -1220,9 +1219,11 @@ def test_cli_dry_run_names_where_a_root_lands_past_a_file(
 def test_destination_that_is_a_file_is_refused(tmp_path: Path) -> None:
     dest = tmp_path / "out"
     dest.write_bytes(b"")
-    with open_archive(io.BytesIO(_tar([("a", "file", 0)]))) as reader:
-        with pytest.raises(ExtractionError, match="not a directory"):
-            reader.extract_all(dest, dry_run=True)
+    with (
+        open_archive(io.BytesIO(_tar([("a", "file", 0)]))) as reader,
+        pytest.raises(ExtractionError, match="not a directory"),
+    ):
+        reader.extract_all(dest, dry_run=True)
     assert list((tmp_path / "tmp").iterdir()) == []
 
 
@@ -1232,9 +1233,8 @@ def test_destination_under_a_file_is_refused(tmp_path: Path) -> None:
     raised = []
     for dry_run in (False, True):
         dest = tmp_path / "afile" / ("dry" if dry_run else "real") / "out"
-        with open_archive(io.BytesIO(blob)) as reader:
-            with pytest.raises(OSError) as caught:
-                reader.extract_all(dest, dry_run=dry_run)
+        with open_archive(io.BytesIO(blob)) as reader, pytest.raises(OSError) as caught:
+            reader.extract_all(dest, dry_run=dry_run)
         raised.append(caught.value)
     real, dry = raised
     if os.name != "nt":
@@ -1314,14 +1314,16 @@ def test_errors_and_warnings_name_dest(
     # The directory is locked before its file is written, so the write fails.
     blob = _tar([("ro", "dir", 0o555), ("ro/f", "file", 0)])
     dest = tmp_path / "out"
-    with caplog.at_level(logging.WARNING, logger="archivey"):
-        with open_archive(io.BytesIO(blob)) as reader:
-            report = reader.extract_all(
-                dest,
-                policy=ExtractionPolicy.TRUSTED,
-                on_error=OnError.CONTINUE,
-                dry_run=True,
-            )
+    with (
+        caplog.at_level(logging.WARNING, logger="archivey"),
+        open_archive(io.BytesIO(blob)) as reader,
+    ):
+        report = reader.extract_all(
+            dest,
+            policy=ExtractionPolicy.TRUSTED,
+            on_error=OnError.CONTINUE,
+            dry_run=True,
+        )
     failed = report.results[-1]
     assert failed.status is ExtractionStatus.FAILED
     assert isinstance(failed.error, PermissionError)
@@ -1330,14 +1332,16 @@ def test_errors_and_warnings_name_dest(
     assert str(dest / "ro") in caplog.text
     assert "archivey-dry-run-" not in caplog.text
 
-    with open_archive(io.BytesIO(blob)) as reader:
-        with pytest.raises(PermissionError) as caught:
-            reader.extract_all(
-                dest,
-                policy=ExtractionPolicy.TRUSTED,
-                on_error=OnError.STOP,
-                dry_run=True,
-            )
+    with (
+        open_archive(io.BytesIO(blob)) as reader,
+        pytest.raises(PermissionError) as caught,
+    ):
+        reader.extract_all(
+            dest,
+            policy=ExtractionPolicy.TRUSTED,
+            on_error=OnError.STOP,
+            dry_run=True,
+        )
     assert str(dest / "ro") in str(caught.value)
     assert "archivey-dry-run-" not in str(caught.value)
     _assert_nothing_left(tmp_path, dest)
@@ -1361,9 +1365,11 @@ def test_scratch_is_removed_on_abort_and_the_message_names_dest(
 ) -> None:
     blob = _tar([("A", "file", 0), ("a", "file", 0)])
     dest = tmp_path / "out"
-    with open_archive(io.BytesIO(blob)) as reader:
-        with pytest.raises(NameCollisionError) as caught:
-            reader.extract_all(dest, abort_on=[AbortOn.NAME_COLLISION], dry_run=True)
+    with (
+        open_archive(io.BytesIO(blob)) as reader,
+        pytest.raises(NameCollisionError) as caught,
+    ):
+        reader.extract_all(dest, abort_on=[AbortOn.NAME_COLLISION], dry_run=True)
     assert display_path(dest / "A") in str(caught.value)
     assert "archivey-dry-run-" not in str(caught.value)
     _assert_nothing_left(tmp_path, dest)

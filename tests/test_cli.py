@@ -3076,9 +3076,11 @@ def test_stored_zipcrypto_provider_none_is_password_required(tmp_path: Path) -> 
     path = tmp_path / "zc_stored.zip"
     path.write_bytes(blob)
 
-    with pytest.raises(EncryptionError, match="Password required") as caught:
-        with open_archive(path, password=lambda _r: None) as ar:
-            ar.read(next(m for m in ar.members() if m.is_file))
+    with (
+        pytest.raises(EncryptionError, match="Password required") as caught,
+        open_archive(path, password=lambda _r: None) as ar,
+    ):
+        ar.read(next(m for m in ar.members() if m.is_file))
     assert "Wrong password" not in caught.value.message
 
 
@@ -4496,9 +4498,11 @@ def test_library_log_records_reach_other_handlers_unescaped(
     from archivey.cli.logging_config import cli_logging
 
     err = io.StringIO()
-    with caplog.at_level(logging.WARNING, logger="archivey.test"):
-        with cli_logging(verbose=False, err=err):
-            logging.getLogger("archivey.test").warning("name: %r", "ev\x1b[2Kil.txt")
+    with (
+        caplog.at_level(logging.WARNING, logger="archivey.test"),
+        cli_logging(verbose=False, err=err),
+    ):
+        logging.getLogger("archivey.test").warning("name: %r", "ev\x1b[2Kil.txt")
 
     assert caplog.records[-1].getMessage() == "name: 'ev\\x1b[2Kil.txt'"
     assert caplog.records[-1].args == ("ev\x1b[2Kil.txt",)

@@ -70,9 +70,11 @@ def test_rapidgzip_corrupt_translates_to_corruption() -> None:
     corrupt[15:35] = b"\x00" * 20  # clobber the deflate body past the 10-byte header
     # An in-memory source exercises the "Failed to parse gzip/zlib header" path that was
     # previously left untranslated (leaking a raw RuntimeError).
-    with open_codec_stream(Codec.GZIP, io.BytesIO(bytes(corrupt)), config=_GZ_ON) as s:
-        with raises_corruption_not_truncation():
-            s.read()
+    with (
+        open_codec_stream(Codec.GZIP, io.BytesIO(bytes(corrupt)), config=_GZ_ON) as s,
+        raises_corruption_not_truncation(),
+    ):
+        s.read()
 
 
 @pytest.mark.parametrize(
@@ -140,18 +142,22 @@ def test_rapidgzip_truncation_is_reported(tmp_path: Path) -> None:
     # Truncation must surface as a read/close error (testing-contract: "CorruptionError or
     # TruncatedError"). Linux often soft-EOFs then empty→stdlib / ISIZE → TruncatedError;
     # macOS often raises from rapidgzip itself (CorruptionError). Either satisfies.
-    with pytest.raises(CorruptionError):
-        with open_codec_stream(Codec.GZIP, path, config=_GZ_ON) as s:
-            s.read()
+    with (
+        pytest.raises(CorruptionError),
+        open_codec_stream(Codec.GZIP, path, config=_GZ_ON) as s,
+    ):
+        s.read()
 
 
 def test_rapidgzip_header_only_truncation_raises(tmp_path: Path) -> None:
     """Bare 10-byte gzip header: rapidgzip silent-empty; empty→stdlib must raise."""
     pytest.importorskip("rapidgzip")
     path = _write(tmp_path, "header.gz", bytes.fromhex("1f8b08000000000000ff"))
-    with pytest.raises(CorruptionError):
-        with open_codec_stream(Codec.GZIP, path, config=_GZ_ON) as s:
-            s.read()
+    with (
+        pytest.raises(CorruptionError),
+        open_codec_stream(Codec.GZIP, path, config=_GZ_ON) as s,
+    ):
+        s.read()
 
 
 def test_rapidgzip_empty_payload_still_ok(tmp_path: Path) -> None:
@@ -340,9 +346,11 @@ def test_gzip_cut_member_before_a_complete_one_raises(
         _write(tmp_path, "cut.gz", data) if source_kind == "path" else io.BytesIO(data)
     )
     config = StreamConfig(use_rapidgzip=mode, seekable=True)
-    with open_codec_stream(Codec.GZIP, source, config=config) as s:
-        with pytest.raises(TruncatedError):
-            s.read()
+    with (
+        open_codec_stream(Codec.GZIP, source, config=config) as s,
+        pytest.raises(TruncatedError),
+    ):
+        s.read()
 
 
 # Reads a cut gzip with raw rapidgzip and prints how many bytes it delivered. It runs in a
@@ -447,9 +455,11 @@ def test_rapidgzip_stream_truncation_is_reported() -> None:
     pytest.importorskip("rapidgzip")
     full = gzip.compress(b"the quick brown fox\n" * 800)
     src = io.BytesIO(full[: max(18, len(full) // 2)])  # mid-body cut
-    with pytest.raises(CorruptionError):
-        with open_codec_stream(Codec.GZIP, src, config=_GZ_ON) as s:
-            s.read()
+    with (
+        pytest.raises(CorruptionError),
+        open_codec_stream(Codec.GZIP, src, config=_GZ_ON) as s,
+    ):
+        s.read()
 
 
 def test_rapidgzip_stream_header_only_truncation_raises() -> None:
@@ -457,9 +467,11 @@ def test_rapidgzip_stream_header_only_truncation_raises() -> None:
     # ISIZE capture preserves the too-short tri-state that a path source raised on.
     pytest.importorskip("rapidgzip")
     src = io.BytesIO(bytes.fromhex("1f8b08000000000000ff"))  # 10-byte header only
-    with pytest.raises(CorruptionError):
-        with open_codec_stream(Codec.GZIP, src, config=_GZ_ON) as s:
-            s.read()
+    with (
+        pytest.raises(CorruptionError),
+        open_codec_stream(Codec.GZIP, src, config=_GZ_ON) as s,
+    ):
+        s.read()
 
 
 def test_rapidgzip_stream_empty_payload_still_ok() -> None:
@@ -509,9 +521,11 @@ def test_rapidgzip_caller_file_object_truncation(tmp_path: Path) -> None:
     p = _write(tmp_path, "trunc-fileobj.gz", full[: max(18, len(full) // 2)])
     fh = open(p, "rb")
     try:
-        with pytest.raises(CorruptionError):
-            with open_codec_stream(Codec.GZIP, fh, config=_GZ_ON) as s:
-                s.read()
+        with (
+            pytest.raises(CorruptionError),
+            open_codec_stream(Codec.GZIP, fh, config=_GZ_ON) as s,
+        ):
+            s.read()
         assert not fh.closed  # caller still owns and can close it
     finally:
         fh.close()
@@ -525,9 +539,11 @@ def test_indexed_bzip2_corrupt_translates_to_corruption(tmp_path: Path) -> None:
     corrupt = bytearray(bz2.compress(b"payload " * 400))
     corrupt[20:45] = b"\x00" * 25  # clobber block data/header
     path = _write(tmp_path, "corrupt.bz2", bytes(corrupt))
-    with open_codec_stream(Codec.BZIP2, path, config=_BZ_ON) as s:
-        with raises_corruption_not_truncation():
-            s.read()
+    with (
+        open_codec_stream(Codec.BZIP2, path, config=_BZ_ON) as s,
+        raises_corruption_not_truncation(),
+    ):
+        s.read()
 
 
 def test_indexed_bzip2_intact_reads_clean(tmp_path: Path) -> None:
@@ -678,10 +694,12 @@ def test_indexed_bzip2_seek_before_read_still_raises(
     source = (
         _write(tmp_path, "bad.bz2", data) if source_kind == "path" else io.BytesIO(data)
     )
-    with open_codec_stream(Codec.BZIP2, source, config=_BZ_ON) as s:
-        with raises_corruption_not_truncation():
-            s.seek(100)
-            s.read()
+    with (
+        open_codec_stream(Codec.BZIP2, source, config=_BZ_ON) as s,
+        raises_corruption_not_truncation(),
+    ):
+        s.seek(100)
+        s.read()
 
 
 def _soft_short_backstop() -> tuple[_GzipTruncationCheckStream, bytes]:
@@ -898,9 +916,11 @@ def test_bzip2_accelerator_stops_at_a_skipped_stream_after_a_seek_past_it() -> N
     # 1500 lands inside the stream after the damage; 2000 is the end of the output the
     # decoder produced, where the read comes back empty and is still checked.
     for target, whence in ((1500, io.SEEK_SET), (2000, io.SEEK_SET), (0, io.SEEK_END)):
-        with open_codec_stream(Codec.BZIP2, io.BytesIO(data), config=_BZ_ON) as s:
-            with pytest.raises(CorruptionError):
-                s.seek(target, whence)
+        with (
+            open_codec_stream(Codec.BZIP2, io.BytesIO(data), config=_BZ_ON) as s,
+            pytest.raises(CorruptionError),
+        ):
+            s.seek(target, whence)
 
 
 @pytest.mark.parametrize(

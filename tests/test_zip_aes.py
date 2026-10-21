@@ -224,9 +224,11 @@ def test_aes_wrong_password_fails_fast() -> None:
     data = _build_aes_zip(
         payload=_PAYLOAD, password=_PASSWORD, vendor_version=2, strength=3, method=8
     )
-    with open_archive(io.BytesIO(data), password=b"wrong") as ar:
-        with pytest.raises(EncryptionError, match="Wrong password"):
-            ar.read(ar.members()[0])
+    with (
+        open_archive(io.BytesIO(data), password=b"wrong") as ar,
+        pytest.raises(EncryptionError, match="Wrong password"),
+    ):
+        ar.read(ar.members()[0])
 
 
 @pytest.mark.parametrize("method", [0, 8], ids=["stored", "deflate"])
@@ -240,9 +242,11 @@ def test_aes_tampered_hmac_raises_corruption(method: int) -> None:
         method=method,
         tamper_hmac=True,
     )
-    with open_archive(io.BytesIO(data), password=_PASSWORD) as ar:
-        with raises_corruption_not_truncation(match="HMAC"):
-            ar.read(ar.members()[0])
+    with (
+        open_archive(io.BytesIO(data), password=_PASSWORD) as ar,
+        raises_corruption_not_truncation(match="HMAC"),
+    ):
+        ar.read(ar.members()[0])
 
 
 @pytest.mark.parametrize("method", [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED])
@@ -371,10 +375,12 @@ def test_aes_tampered_hmac_partial_read_then_close_is_quiet(method: int) -> None
         method=method,
         tamper_hmac=True,
     )
-    with open_archive(io.BytesIO(data), password=_PASSWORD) as ar:
-        with ar.open(ar.members()[0]) as stream:
-            assert len(stream.read(16)) == 16
-            stream.close()  # must not raise CorruptionError
+    with (
+        open_archive(io.BytesIO(data), password=_PASSWORD) as ar,
+        ar.open(ar.members()[0]) as stream,
+    ):
+        assert len(stream.read(16)) == 16
+        stream.close()  # must not raise CorruptionError
 
 
 class _CloseCounter(io.BytesIO):
@@ -726,9 +732,11 @@ def test_aes_only_colliding_candidates_report_damage(
         method=method,
     )
     _collide_pw_verify(monkeypatch)
-    with open_archive(io.BytesIO(data), password=[_COLLIDER, b"plain-wrong"]) as ar:
-        with raises_corruption_not_truncation(match="most likely damaged"):
-            ar.read(ar.members()[0])
+    with (
+        open_archive(io.BytesIO(data), password=[_COLLIDER, b"plain-wrong"]) as ar,
+        raises_corruption_not_truncation(match="most likely damaged"),
+    ):
+        ar.read(ar.members()[0])
 
 
 @requires("cryptography")
@@ -740,9 +748,11 @@ def test_aes_lone_colliding_password_fails_on_the_hmac(
         payload=_PAYLOAD, password=_PASSWORD, vendor_version=2, strength=3, method=0
     )
     _collide_pw_verify(monkeypatch)
-    with open_archive(io.BytesIO(data), password=_COLLIDER) as ar:
-        with raises_corruption_not_truncation(match="HMAC"):
-            ar.read(ar.members()[0])
+    with (
+        open_archive(io.BytesIO(data), password=_COLLIDER) as ar,
+        raises_corruption_not_truncation(match="HMAC"),
+    ):
+        ar.read(ar.members()[0])
 
 
 def _ctr_stream(payload: bytes, *, tamper_mac: bool = False) -> WinZipAesDecryptStream:
@@ -960,9 +970,11 @@ def test_aes_tampered_hmac_with_candidates_raises_corruption(method: int) -> Non
         method=method,
         tamper_hmac=True,
     )
-    with open_archive(io.BytesIO(data), password=[b"nope", _PASSWORD]) as ar:
-        with raises_corruption_not_truncation(match="most likely damaged"):
-            ar.read(ar.members()[0])
+    with (
+        open_archive(io.BytesIO(data), password=[b"nope", _PASSWORD]) as ar,
+        raises_corruption_not_truncation(match="most likely damaged"),
+    ):
+        ar.read(ar.members()[0])
 
 
 @pytest.mark.parametrize(
@@ -989,9 +1001,11 @@ def test_aes_short_payload_is_truncated_on_both_password_paths(
     )
     for signature, size_at in ((b"PK\x03\x04", 22), (b"PK\x01\x02", 24)):
         struct.pack_into("<I", data, data.index(signature) + size_at, 100)
-    with open_archive(io.BytesIO(bytes(data)), password=passwords) as ar:
-        with pytest.raises(TruncatedError):
-            ar.read(ar.members()[0])
+    with (
+        open_archive(io.BytesIO(bytes(data)), password=passwords) as ar,
+        pytest.raises(TruncatedError),
+    ):
+        ar.read(ar.members()[0])
 
 
 @pytest.mark.parametrize("method", [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED])
@@ -1019,9 +1033,11 @@ def test_aes_short_payload_is_truncated_whichever_candidate_fails_first(
         struct.pack_into("<I", data, data.index(signature) + size_at, 100_000)
     _collide_pw_verify(monkeypatch)
     passwords = [_COLLIDER, _PASSWORD] if collider_first else [_PASSWORD, _COLLIDER]
-    with open_archive(io.BytesIO(bytes(data)), password=passwords) as ar:
-        with pytest.raises(TruncatedError):
-            ar.read(ar.members()[0])
+    with (
+        open_archive(io.BytesIO(bytes(data)), password=passwords) as ar,
+        pytest.raises(TruncatedError),
+    ):
+        ar.read(ar.members()[0])
 
 
 @requires("cryptography")

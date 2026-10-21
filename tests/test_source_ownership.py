@@ -100,9 +100,11 @@ def test_open_archive_never_closes_a_caller_stream(
 
     for shape, stream in _caller_streams(path):
         if measure:
-            with enable_measurement():
-                with open_archive(stream, config=_ALWAYS_PROBE) as reader:
-                    _read_everything(reader)
+            with (
+                enable_measurement(),
+                open_archive(stream, config=_ALWAYS_PROBE) as reader,
+            ):
+                _read_everything(reader)
         else:
             with open_archive(stream, config=_ALWAYS_PROBE) as reader:
                 _read_everything(reader)

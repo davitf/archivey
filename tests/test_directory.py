@@ -217,9 +217,11 @@ def test_bidi_control_name_warns_once(
 ) -> None:
     name = "invoice\u202ecod.exe"
     (tmp_path / name).write_bytes(b"x")
-    with caplog.at_level(logging.WARNING, logger="archivey.normalization"):
-        with open_archive(tmp_path) as reader:
-            assert reader.members()[0].name == name
+    with (
+        caplog.at_level(logging.WARNING, logger="archivey.normalization"),
+        open_archive(tmp_path) as reader,
+    ):
+        assert reader.members()[0].name == name
     warnings = [
         record for record in caplog.records if "bidirectional control" in record.message
     ]
@@ -703,9 +705,11 @@ def test_subdirectory_vanishing_mid_walk_is_skipped(
     monkeypatch.setattr(
         os, "scandir", _scandir_raising_for(sub, FileNotFoundError(2, "gone"))
     )
-    with caplog.at_level(logging.WARNING, logger="archivey.backends"):
-        with open_archive(simple_dir) as ar:
-            names = {m.name for m in ar.members()}
+    with (
+        caplog.at_level(logging.WARNING, logger="archivey.backends"),
+        open_archive(simple_dir) as ar,
+    ):
+        names = {m.name for m in ar.members()}
     assert "a.txt" in names
     assert "sub/" in names  # the dir entry itself was listed before it vanished
     assert not any(n.startswith("sub/") and n != "sub/" for n in names)
@@ -894,9 +898,11 @@ def test_streaming_extract_with_first_name_filtered_out_fails_the_link(
     src = tmp_path / "src"
     _hardlinked_pair(src)
     dest = tmp_path / "dest"
-    with open_archive(src, streaming=True) as reader:
-        with pytest.raises(ExtractionError, match="forward-only"):
-            reader.extract_all(dest, filter=lambda m: None if m.name == "a.txt" else m)
+    with (
+        open_archive(src, streaming=True) as reader,
+        pytest.raises(ExtractionError, match="forward-only"),
+    ):
+        reader.extract_all(dest, filter=lambda m: None if m.name == "a.txt" else m)
 
 
 # ---------------------------------------------------------------------------
@@ -1277,7 +1283,9 @@ def test_extracting_into_the_root_is_refused(tmp_path: Path, streaming: bool) ->
 
     (tmp_path / "a").write_bytes(b"x")
     dest = tmp_path / "out"
-    with open_archive(tmp_path, streaming=streaming) as reader:
-        with pytest.raises(ExtractionError, match="into itself"):
-            reader.extract_all(dest)
+    with (
+        open_archive(tmp_path, streaming=streaming) as reader,
+        pytest.raises(ExtractionError, match="into itself"),
+    ):
+        reader.extract_all(dest)
     assert not dest.exists()

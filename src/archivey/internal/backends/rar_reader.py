@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import itertools
 import os
 import shutil
 import subprocess
@@ -212,7 +213,6 @@ from archivey.types import (
     MissingComponent,
     SpecialFileType,
 )
-import itertools
 
 
 def _single_disk_copy_note(program: str) -> str:

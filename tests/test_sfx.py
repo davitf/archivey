@@ -987,11 +987,11 @@ def test_auto_open_matches_an_explicitly_sliced_stream(
         assert auto.format == expected
         auto_read = {m.name: auto.read(m) for m in auto.members() if m.is_file}
 
-    with path.open("rb") as handle:
-        with open_archive(SlicingStream(handle, start=len(_STUB))) as sliced:
-            sliced_read = {
-                m.name: sliced.read(m) for m in sliced.members() if m.is_file
-            }
+    with (
+        path.open("rb") as handle,
+        open_archive(SlicingStream(handle, start=len(_STUB))) as sliced,
+    ):
+        sliced_read = {m.name: sliced.read(m) for m in sliced.members() if m.is_file}
 
     assert auto_read == sliced_read == _FILES
 

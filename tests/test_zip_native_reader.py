@@ -135,10 +135,12 @@ def test_damaged_directory_lists_the_members_the_local_headers_hold(
 
 def test_damaged_directory_iteration_yields_then_raises() -> None:
     seen: list[str] = []
-    with open_archive(io.BytesIO(_with_bad_third_header())) as reader:
-        with raises_corruption_not_truncation(match="Bad magic number"):
-            for member in reader:
-                seen.append(member.name)
+    with (
+        open_archive(io.BytesIO(_with_bad_third_header())) as reader,
+        raises_corruption_not_truncation(match="Bad magic number"),
+    ):
+        for member in reader:
+            seen.append(member.name)
     assert seen == ["a.txt", "b.txt", "c.txt"]
 
 
@@ -146,9 +148,11 @@ def test_damaged_directory_extract_all_writes_then_raises(tmp_path: object) -> N
     from pathlib import Path
 
     dest = Path(str(tmp_path)) / "out"
-    with open_archive(io.BytesIO(_with_bad_third_header())) as reader:
-        with raises_corruption_not_truncation(match="Bad magic number"):
-            reader.extract_all(dest)
+    with (
+        open_archive(io.BytesIO(_with_bad_third_header())) as reader,
+        raises_corruption_not_truncation(match="Bad magic number"),
+    ):
+        reader.extract_all(dest)
     assert sorted(p.name for p in dest.iterdir()) == ["a.txt", "b.txt", "c.txt"]
 
 
@@ -429,18 +433,20 @@ def test_a_damaged_directory_lists_alike_whichever_walk_meets_it_first(
         ]
     # A streaming pass walks the directory before reading any member's data.
     streamed = []
-    with open_archive(io.BytesIO(bytes(data)), streaming=True) as reader:
-        with raises_corruption_not_truncation(match="magic"):
-            for member, stream in reader.stream_members():
-                assert stream is not None
-                streamed.append(
-                    (
-                        member.name,
-                        member.size,
-                        member.compressed_size,
-                        outcome(stream.read),
-                    )
+    with (
+        open_archive(io.BytesIO(bytes(data)), streaming=True) as reader,
+        raises_corruption_not_truncation(match="magic"),
+    ):
+        for member, stream in reader.stream_members():
+            assert stream is not None
+            streamed.append(
+                (
+                    member.name,
+                    member.size,
+                    member.compressed_size,
+                    outcome(stream.read),
                 )
+            )
     assert [(name, read) for name, _, _, read in listed_first] == expected
     assert counted_first == listed_first
     assert streamed == listed_first
@@ -522,9 +528,11 @@ def test_junk_inside_a_declared_comment_is_the_comment() -> None:
 
 def test_strict_policy_refuses_trailing_data() -> None:
     config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
-    with pytest.raises(DiagnosticRaisedError) as ei:
-        with open_archive(io.BytesIO(_zip() + b"JUNK"), config=config) as reader:
-            reader.members()
+    with (
+        pytest.raises(DiagnosticRaisedError) as ei,
+        open_archive(io.BytesIO(_zip() + b"JUNK"), config=config) as reader,
+    ):
+        reader.members()
     assert ei.value.diagnostic.code is DiagnosticCode.ARCHIVE_TRAILING_DATA
 
 
@@ -594,9 +602,11 @@ def test_junk_past_the_search_window_after_a_stub_and_a_comment() -> None:
 
 def test_junk_past_the_search_window_is_refused_under_strict() -> None:
     config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
-    with pytest.raises(DiagnosticRaisedError) as ei:
-        with open_archive(io.BytesIO(_zip() + _PAST_WINDOW), config=config) as reader:
-            reader.members()
+    with (
+        pytest.raises(DiagnosticRaisedError) as ei,
+        open_archive(io.BytesIO(_zip() + _PAST_WINDOW), config=config) as reader,
+    ):
+        reader.members()
     assert ei.value.diagnostic.code is DiagnosticCode.ARCHIVE_TRAILING_DATA
 
 
@@ -693,9 +703,11 @@ def test_a_zip_cut_before_its_directory_extracts_its_members_then_raises(
 
     data = _zip()
     dest = Path(str(tmp_path)) / "out"
-    with open_archive(io.BytesIO(data[: data.index(b"PK\x01\x02")])) as reader:
-        with pytest.raises(TruncatedError, match="before the central directory"):
-            reader.extract_all(dest)
+    with (
+        open_archive(io.BytesIO(data[: data.index(b"PK\x01\x02")])) as reader,
+        pytest.raises(TruncatedError, match="before the central directory"),
+    ):
+        reader.extract_all(dest)
     assert sorted(p.name for p in dest.iterdir()) == list(_NAMES)
 
 

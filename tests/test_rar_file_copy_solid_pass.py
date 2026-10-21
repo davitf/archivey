@@ -588,6 +588,8 @@ def test_stream_members_without_copy_streams_on_a_nonsolid_archive(
 def test_file_copy_streams_takes_a_bool(tmp_path: Path) -> None:
     config = _config("unrar")
     archive, _ = _solid_with_copies(tmp_path)
-    with open_archive(archive, config=config) as reader:
-        with pytest.raises(ArchiveyUsageError, match="file_copy_streams"):
-            reader.stream_members(file_copy_streams=0)  # type: ignore[arg-type]
+    with (
+        open_archive(archive, config=config) as reader,
+        pytest.raises(ArchiveyUsageError, match="file_copy_streams"),
+    ):
+        reader.stream_members(file_copy_streams=0)  # type: ignore[arg-type]

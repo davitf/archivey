@@ -767,9 +767,8 @@ def test_ensure_binaryio_rejects_text_mode(tmp_path) -> None:
         ensure_binaryio(io.StringIO("hello"))
     path = tmp_path / "note.txt"
     path.write_text("x", encoding="utf-8")
-    with open(path, encoding="utf-8") as f:
-        with pytest.raises(TypeError, match="text-mode"):
-            ensure_binaryio(f)
+    with open(path, encoding="utf-8") as f, pytest.raises(TypeError, match="text-mode"):
+        ensure_binaryio(f)
 
 
 def test_ensure_bufferedio_rejects_text_mode() -> None:
@@ -801,9 +800,11 @@ def test_open_stream_rejects_text_mode_handle(tmp_path) -> None:
 
     path = tmp_path / "note.txt"
     path.write_text("not a stream\n", encoding="utf-8")
-    with open(path, encoding="utf-8") as handle:
-        with pytest.raises(TypeError, match="text-mode"):
-            open_stream(handle)
+    with (
+        open(path, encoding="utf-8") as handle,
+        pytest.raises(TypeError, match="text-mode"),
+    ):
+        open_stream(handle)
 
 
 # --- ensure_bufferedio -----------------------------------------------------------------

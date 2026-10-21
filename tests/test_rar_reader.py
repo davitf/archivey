@@ -327,11 +327,10 @@ def test_refused_second_open_does_not_spawn_unrar(
 @pytest.mark.parametrize("name", ["basic_solid__.rar", "basic_solid__rar4.rar"])
 def test_unrar_route_is_not_seekable_by_default(name: str) -> None:
     """Without ``seekable_members``, a compressed member stays a pipe."""
-    with open_archive(_fixture(name)) as archive:
-        with archive.open("file1.txt") as stream:
-            assert stream.seekable() is False
-            with pytest.raises(io.UnsupportedOperation):
-                stream.seek(0)
+    with open_archive(_fixture(name)) as archive, archive.open("file1.txt") as stream:
+        assert stream.seekable() is False
+        with pytest.raises(io.UnsupportedOperation):
+            stream.seek(0)
 
 
 @requires_binary("unrar")
@@ -357,19 +356,21 @@ def test_seekable_members_respawns_unrar_on_backward_seek(
     monkeypatch.setattr(rar_reader, "open_unrar_p", spy)
 
     expected = _BASIC_CONTENTS["file1.txt"]
-    with open_archive(_fixture(name), seekable_members=True) as archive:
-        with archive.open("file1.txt") as stream:
-            assert stream.seekable() is True
-            assert stream.read(5) == expected[:5]
-            assert len(spawns) == 1
-            stream.seek(0)
-            assert len(spawns) == 1
-            assert stream.read() == expected
-            assert len(spawns) == 2
-            stream.seek(5)
-            assert stream.read() == expected[5:]
-            stream.seek(len(expected) + 100)
-            assert stream.read() == b""
+    with (
+        open_archive(_fixture(name), seekable_members=True) as archive,
+        archive.open("file1.txt") as stream,
+    ):
+        assert stream.seekable() is True
+        assert stream.read(5) == expected[:5]
+        assert len(spawns) == 1
+        stream.seek(0)
+        assert len(spawns) == 1
+        assert stream.read() == expected
+        assert len(spawns) == 2
+        stream.seek(5)
+        assert stream.read() == expected[5:]
+        stream.seek(len(expected) + 100)
+        assert stream.read() == b""
 
 
 def test_unrar_respawn_overrun_probe_sees_trailing_bytes() -> None:
@@ -1114,11 +1115,13 @@ def test_blake2sp_verified_no_unverifiable_diagnostic(
 ) -> None:
     import logging
 
-    with caplog.at_level(logging.WARNING, logger="archivey.integrity"):
-        with open_archive(_fixture("blake2sp.rar")) as archive:
-            member = next(m for m in archive.members() if m.is_file)
-            assert archive.read(member) == b"stored payload"
-            assert archive.diagnostics.total_count == 0
+    with (
+        caplog.at_level(logging.WARNING, logger="archivey.integrity"),
+        open_archive(_fixture("blake2sp.rar")) as archive,
+    ):
+        member = next(m for m in archive.members() if m.is_file)
+        assert archive.read(member) == b"stored payload"
+        assert archive.diagnostics.total_count == 0
     assert not any(
         "Cannot verify digest 'blake2sp'" in rec.message for rec in caplog.records
     )
@@ -3826,9 +3829,8 @@ def test_rar_parser_max_members_at_parse() -> None:
     assert n > 2
     with path.open("rb") as fh:
         assert len(parse_rar_archive(fh, max_members=n).members) == n
-    with path.open("rb") as fh:
-        with pytest.raises(ResourceLimitError, match="max_members"):
-            parse_rar_archive(fh, max_members=2)
+    with path.open("rb") as fh, pytest.raises(ResourceLimitError, match="max_members"):
+        parse_rar_archive(fh, max_members=2)
     with path.open("rb") as fh:
         # None is ListingLimits.UNLIMITED: no count bound.
         assert len(parse_rar_archive(fh, max_members=None).members) == n
@@ -4586,11 +4588,13 @@ def test_auto_reads_with_unar_a_member_unrar_cannot_name(
 def test_auto_keeps_the_unrar_refusal_when_unar_refuses_the_archive() -> None:
     """unar 1.10 misreads a RAR5 solid archive with data after a directory, so it is
     not used there, and the unrar refusal stands."""
-    with open_archive(_fixture("wildcard_names_solid__.rar")) as archive:
-        with pytest.raises(
+    with (
+        open_archive(_fixture("wildcard_names_solid__.rar")) as archive,
+        pytest.raises(
             UnsupportedFeatureError, match="rar_allow_glob_member_concatenation"
-        ):
-            archive.read("a*.txt")
+        ),
+    ):
+        archive.read("a*.txt")
 
 
 @requires_binary("unrar")
@@ -4667,9 +4671,11 @@ def test_auto_keeps_the_unrar_refusal_when_unar_would_need_a_copy(
 @requires_binary("unrar")
 def test_glob_concatenation_flag_names_itself_in_the_refusal() -> None:
     """The refusal tells the caller the byte count and the exact flag to set."""
-    with open_archive(_fixture("wildcard_names__.rar"), config=_UNRAR_ONLY) as archive:
-        with pytest.raises(UnsupportedFeatureError) as excinfo:
-            archive.read("a*.txt")
+    with (
+        open_archive(_fixture("wildcard_names__.rar"), config=_UNRAR_ONLY) as archive,
+        pytest.raises(UnsupportedFeatureError) as excinfo,
+    ):
+        archive.read("a*.txt")
     message = str(excinfo.value)
     assert "rar_allow_glob_member_concatenation" in message
     assert str(len(_WILDCARD_CONTENTS["subdir/aY.txt"])) in message
@@ -4726,13 +4732,13 @@ def test_wildcard_nonsolid_stream_members_hits_the_refusal() -> None:
     "right now don't exempt iteration, it can fail as the other modes." So this is
     the decided behaviour, not a placeholder.
     """
-    with open_archive(_fixture("wildcard_names__.rar"), config=_UNRAR_ONLY) as archive:
-        with pytest.raises(
-            UnsupportedFeatureError, match="would decompress"
-        ) as excinfo:
-            for member, stream in archive.stream_members():
-                if stream is not None:
-                    stream.read()
+    with (
+        open_archive(_fixture("wildcard_names__.rar"), config=_UNRAR_ONLY) as archive,
+        pytest.raises(UnsupportedFeatureError, match="would decompress") as excinfo,
+    ):
+        for member, stream in archive.stream_members():
+            if stream is not None:
+                stream.read()
     assert str(len(_WILDCARD_CONTENTS["subdir/aY.txt"])) in str(excinfo.value)
 
 
@@ -4882,9 +4888,11 @@ def test_header_encryption_wrong_password_is_encryption_error(name: str) -> None
     ``CorruptionError``) even without a check value (always RAR3, checkval-less RAR5),
     so password-candidate iteration keeps trying instead of aborting."""
     path = _fixture(name)
-    with pytest.raises(EncryptionError):
-        with open_archive(path, password="DEFINITELY_WRONG") as archive:
-            archive.members()
+    with (
+        pytest.raises(EncryptionError),
+        open_archive(path, password="DEFINITELY_WRONG") as archive,
+    ):
+        archive.members()
     # A candidate list whose first entry is wrong must fall through to the correct one.
     with open_archive(
         path, password=["DEFINITELY_WRONG", "header_password"]
@@ -5659,9 +5667,11 @@ def test_rar4_member_password_cut_inside_a_surrogate_pair_is_refused(
 
     monkeypatch.setattr(rar_unrar, "spawn_for_stdout", _no_spawn)
     path = _fixture("encryption__rar4.rar")
-    with open_archive(path, password=_PASSWORD_CUT_INSIDE_A_PAIR) as archive:
-        with pytest.raises(UnsupportedFeatureError, match="unrar reads the password"):
-            archive.read("secret.txt")
+    with (
+        open_archive(path, password=_PASSWORD_CUT_INSIDE_A_PAIR) as archive,
+        pytest.raises(UnsupportedFeatureError, match="unrar reads the password"),
+    ):
+        archive.read("secret.txt")
 
 
 @requires_binary("unrar")
@@ -5691,9 +5701,11 @@ def test_wrong_password_after_a_line_break_does_not_decrypt() -> None:
     path = _fixture("encryption__.rar")
     with open_archive(path, password="password") as archive:
         assert archive.read("secret.txt") == b"This is secret"
-    with open_archive(path, password="password\nIGNORED") as archive:
-        with pytest.raises((UnsupportedFeatureError, EncryptionError)):
-            archive.read("secret.txt")
+    with (
+        open_archive(path, password="password\nIGNORED") as archive,
+        pytest.raises((UnsupportedFeatureError, EncryptionError)),
+    ):
+        archive.read("secret.txt")
 
 
 # ``wrong3`` survives the 64 KiB prefix of ``large1.txt`` in both compressed fixtures:
@@ -5754,9 +5766,11 @@ def test_rar4_password_list_with_no_right_password_is_an_encryption_error(
 ) -> None:
     path = _fixture(name)
     member = _RAR4_LARGE[name][0]
-    with open_archive(path, password=["wrong", "wrong1"]) as archive:
-        with pytest.raises(EncryptionError):
-            archive.read(member)
+    with (
+        open_archive(path, password=["wrong", "wrong1"]) as archive,
+        pytest.raises(EncryptionError),
+    ):
+        archive.read(member)
 
 
 @requires_binary("unrar")
@@ -5770,9 +5784,11 @@ def test_rar4_lone_wrong_survivor_fails_on_its_crc(name: str) -> None:
     password gives: the member's CRC mismatches at its end.
     """
     path = _fixture(name)
-    with open_archive(path, password=[_RAR4_PREFIX_SURVIVOR, "wrong"]) as archive:
-        with pytest.raises(CorruptionError, match="Digest mismatch"):
-            archive.read("large1.txt")
+    with (
+        open_archive(path, password=[_RAR4_PREFIX_SURVIVOR, "wrong"]) as archive,
+        pytest.raises(CorruptionError, match="Digest mismatch"),
+    ):
+        archive.read("large1.txt")
 
 
 @requires_binary("unrar")
@@ -5790,9 +5806,11 @@ def test_rar4_damaged_member_is_not_reported_as_a_wrong_password(
     data[20000] ^= 0xFF
     path = tmp_path / "damaged.rar"
     path.write_bytes(data)
-    with open_archive(path, password=passwords) as archive:
-        with pytest.raises(EncryptionError) as info:
-            archive.read("large1.txt")
+    with (
+        open_archive(path, password=passwords) as archive,
+        pytest.raises(EncryptionError) as info,
+    ):
+        archive.read("large1.txt")
     assert "Wrong password" not in str(info.value)
     assert "may be damaged" in str(info.value)
 

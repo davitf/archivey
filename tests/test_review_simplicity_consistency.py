@@ -36,6 +36,7 @@ import pytest
 from archivey import (
     ArchiveFormat,
     ArchiveyConfig,
+    ArchiveyError,
     ArchiveyUsageError,
     DiagnosticPolicy,
     StreamNotSeekableError,
@@ -311,9 +312,11 @@ def test_right_explicit_format_stays_silent(tmp_path: Path) -> None:
 def test_wrong_explicit_format_is_loud_for_most_formats(tmp_path: Path) -> None:
     """F7 (guardrail): the non-zero-prefixed formats do fail loudly — keep them loud."""
     path = _archive("basic", "zip", tmp_path)
-    with pytest.raises(Exception):  # noqa: B017
-        with open_archive(path, format=ArchiveFormat.TAR) as reader:
-            reader.members()
+    with (
+        pytest.raises(ArchiveyError),
+        open_archive(path, format=ArchiveFormat.TAR) as reader,
+    ):
+        reader.members()
 
 
 @pytest.mark.parametrize(

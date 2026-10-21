@@ -915,9 +915,8 @@ def test_members_bytes_message_does_not_advise_wrapping(
 ) -> None:
     """Pass [b'notes.txt'] is itself a usage error; do not suggest it (K4)."""
     dest = tmp_path / "b"
-    with open_archive(archive) as reader:
-        with pytest.raises(ArchiveyUsageError) as caught:
-            reader.extract_all(dest, members=b"notes.txt")
+    with open_archive(archive) as reader, pytest.raises(ArchiveyUsageError) as caught:
+        reader.extract_all(dest, members=b"notes.txt")
     assert "Pass [" not in str(caught.value)
 
 

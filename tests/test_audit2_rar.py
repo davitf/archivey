@@ -371,9 +371,11 @@ def test_solid_rar4_wrong_password_is_an_encryption_error(
         sizes = [len(s.read()) for _, s in archive.stream_members() if s is not None]
     assert sizes and all(sizes)
     # The random-access path already says "wrong password":
-    with open_archive(path, password="wrong", config=_UNRAR_ONLY) as archive:
-        with pytest.raises(EncryptionError):
-            archive.read(archive.members()[0])
+    with (
+        open_archive(path, password="wrong", config=_UNRAR_ONLY) as archive,
+        pytest.raises(EncryptionError),
+    ):
+        archive.read(archive.members()[0])
     with pytest.raises(EncryptionError):
         if via == "stream_members":
             with open_archive(path, password="wrong", config=_UNRAR_ONLY) as archive:
@@ -643,6 +645,8 @@ def test_rar3_comment_huge_packed_size_is_not_a_memory_error(tmp_path: Path) -> 
 def test_stored_comment_over_the_metadata_budget_is_refused() -> None:
     """Sibling of R23: an honest stored comment is weighed like a compressed one."""
     config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=16))
-    with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
-        with open_archive(_fixture("comment__.rar"), config=config):
-            pass
+    with (
+        pytest.raises(ResourceLimitError, match="max_metadata_bytes"),
+        open_archive(_fixture("comment__.rar"), config=config),
+    ):
+        pass

@@ -375,10 +375,12 @@ def test_what_a_cut_stream_delivers_before_the_abort_is_a_correct_prefix(
     payload = _payload()
     path = _write(tmp_path, f"cut.{codec.value}", _compress(codec, payload)[:-cut])
     got = bytearray()
-    with open_codec_stream(codec, str(path), config=_ON) as stream:
-        with pytest.raises(CorruptionError):
-            while block := stream.read(chunk):
-                got += block
+    with (
+        open_codec_stream(codec, str(path), config=_ON) as stream,
+        pytest.raises(CorruptionError),
+    ):
+        while block := stream.read(chunk):
+            got += block
     assert len(got) < len(payload)
     assert payload.startswith(got)
 
@@ -541,10 +543,12 @@ def test_a_fault_archivey_raises_about_the_source_is_not_marked_as_the_sources()
     """Only what the caller's source itself raised is marked as the caller's (and so
     left untranslated): archivey's own guard against an over-long read is not."""
     source = _OverReadingSource(zlib.compress(_payload()))
-    with open_codec_stream(Codec.ZLIB, source, config=_ON) as stream:
-        with pytest.raises(ValueError, match="the excess is already consumed") as info:
-            while stream.read(1 << 16):
-                pass
+    with (
+        open_codec_stream(Codec.ZLIB, source, config=_ON) as stream,
+        pytest.raises(ValueError, match="the excess is already consumed") as info,
+    ):
+        while stream.read(1 << 16):
+            pass
     assert not rapidgzip_child.from_callers_source(info.value)
 
 

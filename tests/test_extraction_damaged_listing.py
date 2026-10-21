@@ -141,9 +141,11 @@ def test_streaming_extract_writes_the_same_prefix(
     contents, error_type, message = _listing(data)
     assert set(contents) == prefix  # precondition
     dest = tmp_path / "out"
-    with open_archive(io.BytesIO(data), streaming=True) as reader:
-        with pytest.raises(error_type) as excinfo:
-            reader.extract_all(dest)
+    with (
+        open_archive(io.BytesIO(data), streaming=True) as reader,
+        pytest.raises(error_type) as excinfo,
+    ):
+        reader.extract_all(dest)
     assert str(excinfo.value) == message
     assert _files_on_disk(dest) == contents
 

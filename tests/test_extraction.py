@@ -2078,9 +2078,11 @@ def test_extracting_into_a_self_looping_symlink_raises_extraction_error(
         src = tmp_path / "a.tar"
         src.write_bytes(_tar_bytes([("file", "f.txt", b"x")]))
     os.symlink("loop", tmp_path / "loop")
-    with open_archive(src) as reader:
-        with pytest.raises(ExtractionError, match="exists and is not a directory"):
-            reader.extract_all(tmp_path / "loop", dry_run=dry_run)
+    with (
+        open_archive(src) as reader,
+        pytest.raises(ExtractionError, match="exists and is not a directory"),
+    ):
+        reader.extract_all(tmp_path / "loop", dry_run=dry_run)
     assert sorted(p.name for p in tmp_path.iterdir()) == sorted([src.name, "loop"])
 
 
@@ -2397,9 +2399,11 @@ def test_tar_hardlink_orphan_forward_only_onerror(tmp_path: Path) -> None:
 
     # STOP: raises on the unrecoverable orphan.
     dest = tmp_path / "out_stop"
-    with open_archive(NonSeekableBytesIO(raw), streaming=True) as r:
-        with pytest.raises(ExtractionError):
-            r.extract_all(dest, filter=drop_source)
+    with (
+        open_archive(NonSeekableBytesIO(raw), streaming=True) as r,
+        pytest.raises(ExtractionError),
+    ):
+        r.extract_all(dest, filter=drop_source)
 
     # CONTINUE: records FAILED, does not raise.
     dest2 = tmp_path / "out_continue"
@@ -2651,18 +2655,20 @@ def test_streaming_live_ratio_halts_under_continue(tmp_path: Path) -> None:
 
     raw = _tar_bytes([("file", "z.bin", b"\x00" * (8 * 1024 * 1024))], mode="w:gz")
     dest = tmp_path / "out"
-    with open_archive(NonSeekableBytesIO(raw), streaming=True) as r:
-        with pytest.raises(ResourceLimitError):
-            r.extract_all(
-                dest,
-                limits=ExtractionLimits(
-                    max_ratio=10.0,
-                    ratio_activation_threshold=1024,
-                    live_ratio_activation_threshold=1024,
-                    max_extracted_bytes=100 * 2**20,
-                ),
-                on_error=OnError.CONTINUE,  # global guard halts anyway
-            )
+    with (
+        open_archive(NonSeekableBytesIO(raw), streaming=True) as r,
+        pytest.raises(ResourceLimitError),
+    ):
+        r.extract_all(
+            dest,
+            limits=ExtractionLimits(
+                max_ratio=10.0,
+                ratio_activation_threshold=1024,
+                live_ratio_activation_threshold=1024,
+                max_extracted_bytes=100 * 2**20,
+            ),
+            on_error=OnError.CONTINUE,  # global guard halts anyway
+        )
 
 
 def test_streaming_plain_tar_no_live_ratio_trip(tmp_path: Path) -> None:
@@ -2768,12 +2774,14 @@ def test_piped_blank_start_passes_like_a_file(tmp_path: Path) -> None:
 
     # A live floor under the blank start judges it before the data arrives: this is the
     # trade-off the floor sets, and what the old behaviour did at 5 MiB.
-    with open_archive(NonSeekableBytesIO(raw), streaming=True) as r:
-        with pytest.raises(ResourceLimitError, match="Live decompression ratio"):
-            r.extract_all(
-                tmp_path / "low",
-                limits=replace(limits, live_ratio_activation_threshold=1024),
-            )
+    with (
+        open_archive(NonSeekableBytesIO(raw), streaming=True) as r,
+        pytest.raises(ResourceLimitError, match="Live decompression ratio"),
+    ):
+        r.extract_all(
+            tmp_path / "low",
+            limits=replace(limits, live_ratio_activation_threshold=1024),
+        )
 
 
 def test_non_seekable_member_stream_keeps_its_declared_size(tmp_path: Path) -> None:
@@ -2786,12 +2794,11 @@ def test_non_seekable_member_stream_keeps_its_declared_size(tmp_path: Path) -> N
         info = tarfile.TarInfo("inner.gz")
         info.size = len(inner)
         t.addfile(info, io.BytesIO(inner))
-    with open_archive(outer) as outer_ar:
-        with outer_ar.open("inner.gz") as member_stream:
-            assert not member_stream.seekable()
-            with open_archive(member_stream, streaming=True) as inner_ar:
-                assert inner_ar.compressed_source_size == len(inner)
-                assert inner_ar.compressed_bytes_consumed is None
+    with open_archive(outer) as outer_ar, outer_ar.open("inner.gz") as member_stream:
+        assert not member_stream.seekable()
+        with open_archive(member_stream, streaming=True) as inner_ar:
+            assert inner_ar.compressed_source_size == len(inner)
+            assert inner_ar.compressed_bytes_consumed is None
 
 
 def test_plain_tar_from_sized_pipe_has_no_archive_wide_denominator() -> None:

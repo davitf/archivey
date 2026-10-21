@@ -491,9 +491,11 @@ def test_f4_password_passed_via_stdin_not_argv(monkeypatch: pytest.MonkeyPatch) 
 @requires_binary("unrar")
 def test_f4_stdin_password_wrong_still_fails() -> None:
     path = _rar_fixture("encryption__.rar")
-    with open_archive(path, password="wrong") as reader:
-        with pytest.raises((EncryptionError, CorruptionError)):
-            reader.read("secret.txt")
+    with (
+        open_archive(path, password="wrong") as reader,
+        pytest.raises((EncryptionError, CorruptionError)),
+    ):
+        reader.read("secret.txt")
 
 
 @requires_binary("unrar")

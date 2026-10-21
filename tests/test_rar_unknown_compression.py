@@ -178,9 +178,11 @@ def test_an_unknown_rar4_version_is_unsupported(tmp_path: Path, version: int) ->
     path = _write(tmp_path, f"v{version}.rar", _set_rar4_unp_ver(data, version))
     with open_archive(path) as archive:
         member = archive.members()[0]
-        with pytest.raises(UnsupportedFeatureError, match=f"version {version}"):
-            with archive.open(member) as stream:
-                stream.read()
+        with (
+            pytest.raises(UnsupportedFeatureError, match=f"version {version}"),
+            archive.open(member) as stream,
+        ):
+            stream.read()
 
 
 def test_the_solid_unrar_pass_refuses_the_member_and_keeps_the_ones_before(

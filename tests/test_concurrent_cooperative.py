@@ -208,11 +208,13 @@ def test_body_exception_survives_with_exit_over_suspended_stream_members(
     tmp_path: Path, make_source, streaming: bool
 ) -> None:
     """A wrapped pass held in a variable is still alive at exit; the body's error wins."""
-    with pytest.raises(RuntimeError, match="boom") as excinfo:
-        with open_archive(make_source(tmp_path), streaming=streaming) as reader:
-            numbered = enumerate(reader.stream_members())
-            for _i, (_member, _stream) in numbered:
-                raise RuntimeError("boom")
+    with (
+        pytest.raises(RuntimeError, match="boom") as excinfo,
+        open_archive(make_source(tmp_path), streaming=streaming) as reader,
+    ):
+        numbered = enumerate(reader.stream_members())
+        for _i, (_member, _stream) in numbered:
+            raise RuntimeError("boom")
     assert excinfo.value.__context__ is None
     with pytest.raises(ArchiveyUsageError, match="closed"):
         reader.stream_members()

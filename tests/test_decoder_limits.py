@@ -786,9 +786,11 @@ def test_refused_before_any_decoder_is_built(
     params: CodecParams,
 ) -> None:
     # Raw LZMA refuses on open, before any decoder is built.
-    with pytest.raises(ResourceLimitError):
-        with open_codec_stream(codec, io.BytesIO(payload), params=params) as stream:
-            stream.read()
+    with (
+        pytest.raises(ResourceLimitError),
+        open_codec_stream(codec, io.BytesIO(payload), params=params) as stream,
+    ):
+        stream.read()
     assert lzma_decoders_built == []
 
 
@@ -1034,11 +1036,13 @@ def test_zstd_window_against_the_cap(tmp_path: Path, cap: int, refused: bool) ->
 @requires_zstd()
 def test_zstd_window_cap_on_the_codec_stream() -> None:
     frame = _zstd_frame_with_window_log(28)
-    with pytest.raises(ResourceLimitError, match="max_decoder_memory"):
-        with open_codec_stream(
+    with (
+        pytest.raises(ResourceLimitError, match="max_decoder_memory"),
+        open_codec_stream(
             Codec.ZSTD, io.BytesIO(frame), config=_stream_config(2**27)
-        ) as stream:
-            stream.read()
+        ) as stream,
+    ):
+        stream.read()
     for cap in (None, 2**40):
         with open_codec_stream(
             Codec.ZSTD, io.BytesIO(frame), config=_stream_config(cap)
@@ -1090,18 +1094,24 @@ def test_zstd_window_over_libzstd_s_ceiling() -> None:
     """
     frame = bytearray(_zstd_frame_with_window_log(28))
     frame[5] = (32 - 10) << 3
-    with pytest.raises(UnsupportedFeatureError, match="largest window") as default:
-        with open_codec_stream(Codec.ZSTD, io.BytesIO(bytes(frame))) as stream:
-            stream.read()
+    with (
+        pytest.raises(UnsupportedFeatureError, match="largest window") as default,
+        open_codec_stream(Codec.ZSTD, io.BytesIO(bytes(frame))) as stream,
+    ):
+        stream.read()
     assert "max_decoder_memory" not in str(default.value)
-    with pytest.raises(UnsupportedFeatureError, match="largest window"):
-        with open_codec_stream(
+    with (
+        pytest.raises(UnsupportedFeatureError, match="largest window"),
+        open_codec_stream(
             Codec.ZSTD, io.BytesIO(bytes(frame)), config=_stream_config(None)
-        ) as stream:
-            stream.read()
+        ) as stream,
+    ):
+        stream.read()
     # Under a cap below the ceiling the same frame is the cap's refusal.
-    with pytest.raises(ResourceLimitError, match=f"max_decoder_memory={2**30}"):
-        with open_codec_stream(
+    with (
+        pytest.raises(ResourceLimitError, match=f"max_decoder_memory={2**30}"),
+        open_codec_stream(
             Codec.ZSTD, io.BytesIO(bytes(frame)), config=_stream_config(2**30)
-        ) as stream:
-            stream.read()
+        ) as stream,
+    ):
+        stream.read()

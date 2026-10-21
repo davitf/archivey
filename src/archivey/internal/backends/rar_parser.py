@@ -39,6 +39,7 @@ import functools
 import hashlib
 import hmac
 import io
+import itertools
 import struct
 import zlib
 from collections.abc import Sequence
@@ -70,7 +71,6 @@ from archivey.internal.timestamps import (
 from archivey.internal.trailing_scan import first_nonzero_offset
 from archivey.internal.windows_reparse import normalize_windows_link_target
 from archivey.terminal import quoted
-import itertools
 
 
 class _Readable(Protocol):

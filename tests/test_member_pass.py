@@ -47,10 +47,12 @@ def test_a_paused_pass_blocks_the_reader_until_closed() -> None:
 
 def test_with_block_ends_the_pass_when_the_body_raises() -> None:
     with open_archive(_zip()) as reader:
-        with pytest.raises(RuntimeError, match="boom"):
-            with reader.stream_members() as members:
-                for _member, _stream in members:
-                    raise RuntimeError("boom")
+        with (
+            pytest.raises(RuntimeError, match="boom"),
+            reader.stream_members() as members,
+        ):
+            for _member, _stream in members:
+                raise RuntimeError("boom")
         assert reader.read("b.txt") == b"second"
 
 

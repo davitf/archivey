@@ -348,9 +348,11 @@ def test_malformed_unicode_path_field_is_dropped_with_a_diagnostic(
 def test_malformed_unicode_path_field_refuses_under_strict() -> None:
     blob, _ = _unicode_path_zip(extra=_short_unicode_path_field(2))
     strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
-    with pytest.raises(DiagnosticRaisedError) as raised:
-        with archivey.open_archive(io.BytesIO(blob), config=strict) as ar:
-            ar.members()
+    with (
+        pytest.raises(DiagnosticRaisedError) as raised,
+        archivey.open_archive(io.BytesIO(blob), config=strict) as ar,
+    ):
+        ar.members()
     assert raised.value.diagnostic.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
 
 
@@ -729,11 +731,10 @@ def test_zero_declared_size_with_data_raises_rather_than_serving_it(
     with archivey.open_archive(io.BytesIO(blob)) as ar:
         (member,) = ar.members()
         assert member.size == 0
-        with ar.open(member) as stream:
-            # read(-1) raises "exceeds its declared size of 0 bytes"; a bounded read
-            # must reach the same verdict rather than b"" followed by b"hello".
-            with pytest.raises(CorruptionError):
-                stream.read(8192)
+        # read(-1) raises "exceeds its declared size of 0 bytes"; a bounded read
+        # must reach the same verdict rather than b"" followed by b"hello".
+        with ar.open(member) as stream, pytest.raises(CorruptionError):
+            stream.read(8192)
 
 
 def test_zero_declared_size_with_data_does_not_extract_clean(tmp_path: Path) -> None:

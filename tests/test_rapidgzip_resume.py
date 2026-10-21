@@ -282,10 +282,12 @@ def test_a_bytes_source_cut_stream_matches_too() -> None:
     whole = zlib.decompressobj(31)
     expected = whole.decompress(cut)
     got = bytearray()
-    with pytest.raises(TruncatedError):
-        with open_codec_stream(Codec.GZIP, io.BytesIO(cut), config=_ON) as stream:
-            while block := stream.read(1 << 20):
-                got += block
+    with (
+        pytest.raises(TruncatedError),
+        open_codec_stream(Codec.GZIP, io.BytesIO(cut), config=_ON) as stream,
+    ):
+        while block := stream.read(1 << 20):
+            got += block
     assert bytes(got) == expected
 
 

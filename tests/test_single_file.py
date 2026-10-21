@@ -148,9 +148,11 @@ def test_inferred_bidi_control_name_warns_once(
     # (U+202E); this test covers inferred-name presentation warnings, not the
     # accelerator, so pin the stdlib gzip path.
     config = ArchiveyConfig(use_rapidgzip=AcceleratorMode.OFF)
-    with caplog.at_level(logging.WARNING, logger="archivey.normalization"):
-        with open_archive(path, config=config) as archive:
-            assert archive.members()[0].name == name
+    with (
+        caplog.at_level(logging.WARNING, logger="archivey.normalization"),
+        open_archive(path, config=config) as archive,
+    ):
+        assert archive.members()[0].name == name
     warnings = [
         record for record in caplog.records if "bidirectional control" in record.message
     ]
@@ -555,9 +557,11 @@ def test_lzip_version_0_is_unsupported_at_open(tmp_path: Path) -> None:
     member[4] = 0
     path = tmp_path / "old.lz"
     path.write_bytes(bytes(member))
-    with pytest.raises(UnsupportedFeatureError, match="lzip version 0 "):
-        with open_archive(path) as ar:
-            ar.read(ar.members()[0])
+    with (
+        pytest.raises(UnsupportedFeatureError, match="lzip version 0 "),
+        open_archive(path) as ar,
+    ):
+        ar.read(ar.members()[0])
 
 
 def test_multi_member_lzip_exposes_combined_crc32(tmp_path: Path) -> None:
@@ -895,9 +899,11 @@ def _read_single_streamed_member(ar) -> bytes:
 def test_truncated_gzip_raises_truncated() -> None:
     full = gzip.compress(b"streamed payload" * 1000)
     truncated = full[: len(full) // 2]  # gzip magic intact -> detection picks GZ
-    with open_archive(NonSeekableBytesIO(truncated), streaming=True) as ar:
-        with pytest.raises(TruncatedError):
-            _read_single_streamed_member(ar)
+    with (
+        open_archive(NonSeekableBytesIO(truncated), streaming=True) as ar,
+        pytest.raises(TruncatedError),
+    ):
+        _read_single_streamed_member(ar)
 
 
 def test_truncation_is_caught_as_corruption() -> None:
@@ -905,18 +911,22 @@ def test_truncation_is_caught_as_corruption() -> None:
     # ``except CorruptionError`` catches it.
     assert issubclass(TruncatedError, CorruptionError)
     full = gzip.compress(b"streamed payload" * 1000)
-    with open_archive(NonSeekableBytesIO(full[: len(full) // 2]), streaming=True) as ar:
-        with pytest.raises(CorruptionError) as caught:
-            _read_single_streamed_member(ar)
+    with (
+        open_archive(NonSeekableBytesIO(full[: len(full) // 2]), streaming=True) as ar,
+        pytest.raises(CorruptionError) as caught,
+    ):
+        _read_single_streamed_member(ar)
     assert isinstance(caught.value, TruncatedError)
 
 
 def test_corrupt_gzip_raises_corruption() -> None:
     data = bytearray(gzip.compress(b"streamed payload" * 100))
     data[15:35] = b"\x00" * 20  # clobber the deflate body (past the 10-byte header)
-    with open_archive(NonSeekableBytesIO(bytes(data)), streaming=True) as ar:
-        with raises_corruption_not_truncation():
-            _read_single_streamed_member(ar)
+    with (
+        open_archive(NonSeekableBytesIO(bytes(data)), streaming=True) as ar,
+        raises_corruption_not_truncation(),
+    ):
+        _read_single_streamed_member(ar)
 
 
 def test_open_from_mid_positioned_stream() -> None:
@@ -1173,6 +1183,8 @@ def test_corrupt_bz2_raises_whatever_the_accelerator_mode(
     path = tmp_path / "garbage.bz2"
     path.write_bytes(_NOT_A_STREAM[contents])
     config = ArchiveyConfig(use_indexed_bzip2=mode)
-    with pytest.raises(CorruptionError):
-        with open_archive(path, seekable_members=True, config=config) as ar:
-            ar.read(ar.members()[0])
+    with (
+        pytest.raises(CorruptionError),
+        open_archive(path, seekable_members=True, config=config) as ar,
+    ):
+        ar.read(ar.members()[0])

@@ -321,9 +321,11 @@ def test_a_child_that_cannot_start_is_a_resource_limit(
         monkeypatch.setattr(decoder_child, "WORKER", worker)
     packed = _encode_ppmd7(_ZERO_RUN)
     params = _params(7, len(packed), len(_ZERO_RUN))
-    with open_codec_stream(Codec.PPMD, io.BytesIO(packed), params=params) as stream:
-        with pytest.raises(ResourceLimitError, match="none can be started"):
-            stream.read(10)
+    with (
+        open_codec_stream(Codec.PPMD, io.BytesIO(packed), params=params) as stream,
+        pytest.raises(ResourceLimitError, match="none can be started"),
+    ):
+        stream.read(10)
 
 
 @pytest.mark.parametrize(
@@ -710,9 +712,11 @@ def test_without_sys_executable_a_member_is_refused(
         open_ppmd_child(variant=7, order=_ORDER, mem_size=_MEM)
     packed = _encode_ppmd7(_ZERO_RUN)
     params = _params(7, len(packed), len(_ZERO_RUN))
-    with open_codec_stream(Codec.PPMD, io.BytesIO(packed), params=params) as stream:
-        with pytest.raises(ResourceLimitError, match="sys.executable is not set"):
-            stream.read(10)
+    with (
+        open_codec_stream(Codec.PPMD, io.BytesIO(packed), params=params) as stream,
+        pytest.raises(ResourceLimitError, match="sys.executable is not set"),
+    ):
+        stream.read(10)
 
 
 def test_close_with_an_unread_reply_does_not_wait_for_the_timeout() -> None:

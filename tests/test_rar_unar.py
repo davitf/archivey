@@ -514,11 +514,13 @@ def test_numbered_neighbour_is_not_read_as_the_next_volume(tmp_path: Path) -> No
 @requires_binary("unar")
 def test_seekable_member_respawns_unar() -> None:
     path = _RAR / "seek_respawn_solid__.rar"
-    with open_archive(path, config=_UNAR, seekable_members=True) as archive:
-        with archive.open("tail.txt") as stream:
-            first = stream.read()
-            stream.seek(0)
-            assert stream.read() == first
+    with (
+        open_archive(path, config=_UNAR, seekable_members=True) as archive,
+        archive.open("tail.txt") as stream,
+    ):
+        first = stream.read()
+        stream.seek(0)
+        assert stream.read() == first
 
 
 # --- selection is explicit -----------------------------------------------------------

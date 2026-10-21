@@ -651,9 +651,11 @@ def test_a_password_that_only_passes_the_check_byte_fails_as_unverified() -> Non
     """``wrong896`` passes ``stored.txt``'s one-byte check (fixture README); only the
     CRC at the end shows it is wrong, and then it may be a wrong password or damage."""
     data = _COLLISION.read_bytes()
-    with archivey.open_archive(io.BytesIO(data), password="wrong896") as reader:
-        with pytest.raises(EncryptionError) as from_file:
-            reader.read(next(m for m in reader.members() if m.name == "stored.txt"))
+    with (
+        archivey.open_archive(io.BytesIO(data), password="wrong896") as reader,
+        pytest.raises(EncryptionError) as from_file,
+    ):
+        reader.read(next(m for m in reader.members() if m.name == "stored.txt"))
     with archivey.open_archive(
         NonSeekableBytesIO(data), streaming=True, password="wrong896"
     ) as reader:
@@ -1269,9 +1271,11 @@ def test_a_link_whose_codec_is_refused_says_so_as_from_a_file(
     assert from_file[0] == [("link", archivey.MemberType.SYMLINK, None)]
     assert from_file[1] == ["target_data_unsupported"]
     assert calls == ["link"]
-    with archivey.open_archive(io.BytesIO(data), password=_PASSWORD) as reader:
-        with pytest.raises(UnsupportedFeatureError) as opened:
-            reader.open(reader.get("link"))
+    with (
+        archivey.open_archive(io.BytesIO(data), password=_PASSWORD) as reader,
+        pytest.raises(UnsupportedFeatureError) as opened,
+    ):
+        reader.open(reader.get("link"))
     assert from_file[2] == [
         (
             "The symlink target of 'link' could not be read: "
@@ -1309,9 +1313,11 @@ def test_a_failed_open_is_not_retried_on_the_data_past_the_header(
     twelve bytes as one. The caller's error stands, for the link target too."""
     data = _method_6_link()
     calls = _counted_decrypts(monkeypatch)
-    with archivey.open_archive(io.BytesIO(data), password=_PASSWORD) as reader:
-        with pytest.raises(UnsupportedFeatureError) as from_file:
-            reader.read(reader.members()[0])
+    with (
+        archivey.open_archive(io.BytesIO(data), password=_PASSWORD) as reader,
+        pytest.raises(UnsupportedFeatureError) as from_file,
+    ):
+        reader.read(reader.members()[0])
     with archivey.open_archive(
         NonSeekableBytesIO(data), streaming=True, password=_PASSWORD
     ) as reader:

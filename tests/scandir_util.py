@@ -14,9 +14,9 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable, Iterator
+from typing import Self
 
 import pytest
-from typing import Self
 
 StatReplacement = Callable[["os.DirEntry[str]", Callable[[], os.stat_result]], object]
 

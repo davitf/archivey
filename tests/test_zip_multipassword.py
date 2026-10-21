@@ -133,10 +133,12 @@ def test_single_distinct_candidate_is_not_eagerly_read(
         build_zipcrypto_zip(RIGHT, NAME.encode(), DATA, compression=compression)
     )
 
-    with open_archive(io.BytesIO(blob), password=passwords) as ar:
-        with pytest.raises(EncryptionError, match=UNCONFIRMED):
-            with _open_decoding_header(ar, compression) as stream:
-                stream.read()
+    with (
+        open_archive(io.BytesIO(blob), password=passwords) as ar,
+        pytest.raises(EncryptionError, match=UNCONFIRMED),
+        _open_decoding_header(ar, compression) as stream,
+    ):
+        stream.read()
 
 
 @pytest.mark.parametrize("compression", COMPRESSION_METHODS)
@@ -163,10 +165,12 @@ def test_single_colliding_password_fails_a_forward_seek(compression: int) -> Non
     blob = build_zipcrypto_zip(RIGHT, NAME.encode(), DATA, compression=compression)
     collider = find_check_byte_collision(blob, NAME, RIGHT)
 
-    with open_archive(io.BytesIO(blob), password=collider, seekable_members=True) as ar:
-        with pytest.raises(EncryptionError, match=UNCONFIRMED):
-            with _open_decoding_header(ar, compression) as stream:
-                stream.seek(len(DATA))
+    with (
+        open_archive(io.BytesIO(blob), password=collider, seekable_members=True) as ar,
+        pytest.raises(EncryptionError, match=UNCONFIRMED),
+        _open_decoding_header(ar, compression) as stream,
+    ):
+        stream.seek(len(DATA))
 
 
 def test_single_colliding_password_stored_seek_reports_unverified() -> None:
@@ -200,12 +204,14 @@ def test_single_colliding_password_fails_readinto(compression: int) -> None:
     blob = build_zipcrypto_zip(RIGHT, NAME.encode(), DATA, compression=compression)
     collider = find_check_byte_collision(blob, NAME, RIGHT)
 
-    with open_archive(io.BytesIO(blob), password=collider) as ar:
-        with pytest.raises(EncryptionError, match=UNCONFIRMED):
-            with _open_decoding_header(ar, compression) as stream:
-                buf = bytearray(len(DATA) + 1)
-                while stream.readinto(buf):
-                    pass
+    with (
+        open_archive(io.BytesIO(blob), password=collider) as ar,
+        pytest.raises(EncryptionError, match=UNCONFIRMED),
+        _open_decoding_header(ar, compression) as stream,
+    ):
+        buf = bytearray(len(DATA) + 1)
+        while stream.readinto(buf):
+            pass
 
 
 class _FailingInner(io.RawIOBase):
@@ -317,11 +323,13 @@ def test_damaged_encrypted_symlink_names_both_causes(passwords: PasswordArg) -> 
 def test_corrupt_encrypted_data_with_multiple_candidates_reports_ambiguity() -> None:
     blob = corrupt_zipcrypto_payload(build_zipcrypto_zip(RIGHT, NAME.encode(), DATA))
 
-    with open_archive(io.BytesIO(blob), password=[RIGHT, b"also-wrong"]) as ar:
-        with pytest.raises(
+    with (
+        open_archive(io.BytesIO(blob), password=[RIGHT, b"also-wrong"]) as ar,
+        pytest.raises(
             EncryptionError, match=r"password\(s\) may be wrong, or .* may be corrupt"
-        ):
-            ar.open(NAME)
+        ),
+    ):
+        ar.open(NAME)
 
 
 def test_a_local_name_that_differs_is_reported_once_under_a_password_list() -> None:
@@ -389,9 +397,11 @@ def test_stored_confirm_refuses_an_overlapped_member_before_any_pass(
         return original(*args, **kwargs)
 
     monkeypatch.setattr(zip_reader, "parallel_plaintext_crc32", counting)
-    with open_archive(io.BytesIO(blob), password=[b"also-wrong", RIGHT]) as ar:
-        with raises_corruption_not_truncation(match="Overlapped entries"):
-            ar.open(NAME)
+    with (
+        open_archive(io.BytesIO(blob), password=[b"also-wrong", RIGHT]) as ar,
+        raises_corruption_not_truncation(match="Overlapped entries"),
+    ):
+        ar.open(NAME)
     assert passes == []
 
 
@@ -422,14 +432,16 @@ def test_unverified_zipcrypto_error_keeps_raising_after_a_seek_back() -> None:
     blob = corrupt_zipcrypto_payload(
         build_zipcrypto_zip(RIGHT, NAME.encode(), DATA, compression=zipfile.ZIP_STORED)
     )
-    with open_archive(io.BytesIO(blob), password=RIGHT, seekable_members=True) as ar:
-        with ar.open(NAME) as stream:
-            with pytest.raises(EncryptionError, match=UNCONFIRMED) as first:
-                stream.read()
-            stream.seek(0)
-            with pytest.raises(EncryptionError) as again:
-                stream.read()
-            assert again.value is first.value
+    with (
+        open_archive(io.BytesIO(blob), password=RIGHT, seekable_members=True) as ar,
+        ar.open(NAME) as stream,
+    ):
+        with pytest.raises(EncryptionError, match=UNCONFIRMED) as first:
+            stream.read()
+        stream.seek(0)
+        with pytest.raises(EncryptionError) as again:
+            stream.read()
+        assert again.value is first.value
 
 
 def test_stored_crc_floor_counts_the_body_not_the_declared_size(
@@ -451,9 +463,11 @@ def test_stored_crc_floor_counts_the_body_not_the_declared_size(
         original(self, password)
 
     monkeypatch.setattr(password_module._PasswordCandidates, "record_success", spy)
-    with open_archive(io.BytesIO(bytes(blob)), password=[b"also-wrong", RIGHT]) as ar:
-        with contextlib.suppress(ArchiveyError):
-            ar.read("small.txt")
+    with (
+        open_archive(io.BytesIO(bytes(blob)), password=[b"also-wrong", RIGHT]) as ar,
+        contextlib.suppress(ArchiveyError),
+    ):
+        ar.read("small.txt")
     assert recorded == []
 
 
@@ -598,9 +612,11 @@ def test_stored_zipcrypto_provider_repeat_terminates(
         asks.append(request.attempt)
         return wrong
 
-    with pytest.raises(EncryptionError, match="integrity"):
-        with open_archive(io.BytesIO(blob), password=provider) as archive:
-            archive.read(name.decode())
+    with (
+        pytest.raises(EncryptionError, match="integrity"),
+        open_archive(io.BytesIO(blob), password=provider) as archive,
+    ):
+        archive.read(name.decode())
 
     assert asks == [1, 2, 3, 4]
     assert crc_calls == 1
@@ -789,9 +805,11 @@ def test_stored_caller_stream_is_crc_checked() -> None:
             RIGHT, NAME.encode(), plaintext, compression=zipfile.ZIP_STORED
         )
     )
-    with open_archive(io.BytesIO(blob), password=RIGHT) as ar:
-        with pytest.raises(EncryptionError, match=UNCONFIRMED):
-            ar.read(NAME)
+    with (
+        open_archive(io.BytesIO(blob), password=RIGHT) as ar,
+        pytest.raises(EncryptionError, match=UNCONFIRMED),
+    ):
+        ar.read(NAME)
 
 
 # ---------------------------------------------------------------------------

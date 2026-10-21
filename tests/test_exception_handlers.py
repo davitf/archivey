@@ -8,6 +8,7 @@ are ``dev-docs/topics/exception-handlers.md``.
 from __future__ import annotations
 
 import io
+import itertools
 import struct
 import subprocess
 import sys
@@ -22,7 +23,6 @@ from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.reader_state import LifecycleState
 from archivey.internal.streams.verify import VerifyingStream
 from tests.conftest import requires
-import itertools
 
 
 def _zip_with_corrupt_deflate_body() -> bytes:
@@ -111,9 +111,11 @@ def test_overrun_probe_raises_a_decoder_error_past_the_end(n: int) -> None:
     size returned its bytes as verified and only a later read raised.
     """
     inner = _ExactThenFails(b"x" * 10, zlib.error("invalid block type"))
-    with VerifyingStream(inner, {}, expected_size=10) as stream:
-        with pytest.raises(zlib.error):
-            stream.read(n)
+    with (
+        VerifyingStream(inner, {}, expected_size=10) as stream,
+        pytest.raises(zlib.error),
+    ):
+        stream.read(n)
 
 
 def _stored_block(data: bytes) -> bytes:

@@ -144,12 +144,11 @@ def test_default_streams_are_not_seekable(tmp_path: Path) -> None:
 
 def test_seekable_flag_restores_positioning(tmp_path: Path) -> None:
     root = _two_file_dir(tmp_path)
-    with open_archive(root, seekable_members=True) as reader:
-        with reader.open("a.txt") as s:
-            assert s.seekable() is True
-            assert s.read(1) == b"a"
-            s.seek(0)
-            assert s.read() == b"aaa"
+    with open_archive(root, seekable_members=True) as reader, reader.open("a.txt") as s:
+        assert s.seekable() is True
+        assert s.read(1) == b"a"
+        s.seek(0)
+        assert s.read() == b"aaa"
 
 
 def test_member_streams_kwarg_is_gone(tmp_path: Path) -> None:

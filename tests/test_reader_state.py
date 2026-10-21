@@ -775,10 +775,11 @@ def test_a_failed_pass_close_does_not_hide_the_extraction_error() -> None:
         def close(self) -> None:
             raise OSError("close failed")
 
-    with pytest.raises(RuntimeError, match="body failed") as excinfo:
-        with _closing_pass(FailingClose()):
-            raise RuntimeError("body failed")
+    with (
+        pytest.raises(RuntimeError, match="body failed") as excinfo,
+        _closing_pass(FailingClose()),
+    ):
+        raise RuntimeError("body failed")
     assert any("close failed" in note for note in excinfo.value.__notes__)
-    with pytest.raises(OSError, match="close failed"):
-        with _closing_pass(FailingClose()):
-            pass
+    with pytest.raises(OSError, match="close failed"), _closing_pass(FailingClose()):
+        pass

@@ -57,9 +57,11 @@ def test_open_detected_reads_a_zip_behind_a_stub() -> None:
 def test_open_detected_refuses_a_udif_image() -> None:
     data = _koly_block()
     open_detected_one(data)
-    with pytest.raises(ArchiveyError, match="UDIF"):
-        with open_archive(io.BytesIO(data)) as arc:
-            list(arc)
+    with (
+        pytest.raises(ArchiveyError, match="UDIF"),
+        open_archive(io.BytesIO(data)) as arc,
+    ):
+        list(arc)
 
 
 def test_open_detected_reads_a_compressed_tar_and_the_gzip_around_it() -> None:
