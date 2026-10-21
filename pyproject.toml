@@ -237,7 +237,11 @@ testpaths = ["tests"]
 # --timeout: a hung test fails fast (with a traceback of all threads) instead of stalling
 # the whole job until the CI hard limit. 60s is far above any real test here (all run in
 # milliseconds), so only a genuine hang trips it.
-addopts = "--cov=archivey --cov-report=term-missing --cov-report=xml --timeout=60 -m 'not ppmd_native_stress'"
+# --cov-branch repeats `branch = true` for child processes. pytest-cov before 7 measures a
+# child `python` through its COV_CORE_* variables. A child started in a temporary
+# directory cannot find this file, so without the flag it writes statement-only data, and
+# the final combine refuses to merge that data with the branch data.
+addopts = "--cov=archivey --cov-branch --cov-report=term-missing --cov-report=xml --timeout=60 -m 'not ppmd_native_stress'"
 # thread, not pytest-timeout's POSIX default of signal. SIGALRM is delivered to the main
 # thread and only runs when it next reaches the interpreter, so a thread blocked in C or a
 # deadlock off the main thread is invisible to it: on 2026-09-21 both the free-threaded job
