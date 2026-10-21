@@ -77,6 +77,8 @@ def test_cve_2025_8194_negative_tar_size(mode: str) -> None:
 @_MODES
 def test_cve_2025_8194_negative_pax_size(mode: str) -> None:
     # The same loop from a PAX ``size`` record, which tarfile also took as signed.
+    # Here a ``size`` value that is not an unsigned number is refused at the record,
+    # before any size reaches a member.
     archive = pax({"size": "-1024"}) + _file(b"loop", b"") + _file(b"after", b"x") + END
     with pytest.raises(CorruptionError, match="size is not a number"):
         _read_everything(archive, mode=mode)
