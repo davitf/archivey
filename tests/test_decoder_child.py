@@ -22,7 +22,7 @@ from archivey.exceptions import (
     ReadError,
     ResourceLimitError,
 )
-from archivey.internal.streams.codecs import decoder_child
+from archivey.internal.streams.codecs import decoder_child, decoder_worker
 from archivey.internal.streams.codecs.decoder_child import POOL, DecoderChild
 from archivey.internal.streams.codecs.isolated import ISOLATED
 
@@ -37,7 +37,9 @@ pytestmark = pytest.mark.skipif(
 # - "liar": returns its input, except that in a damaged process its first call returns
 #   it reversed and its second crashes;
 # - "die": a decoder whose ``decompress`` ends the process with the signal its argument
-#   names.
+#   names;
+# - "intflags": a decoder whose ``eof`` and ``needs_input`` are the ints 1 and 0, as
+#   PyPy reads a C ``bool`` member.
 _STAND_IN = textwrap.dedent(
     """
     import importlib.util, os, signal, sys
@@ -86,9 +88,16 @@ _STAND_IN = textwrap.dedent(
             return Crashing()
         return make
 
+    class IntFlags:
+        eof = 1
+        needs_input = 0
+        def decompress(self, data, max_length=-1):
+            return b""
+
     worker.LOADERS["poison"] = lambda: Poison
     worker.LOADERS["die"] = lambda: Die
     worker.LOADERS["liar"] = lambda: Liar
+    worker.LOADERS["intflags"] = lambda: IntFlags
     worker.LOADERS["zlib"] = load_zlib
     worker.main()
     """
@@ -138,6 +147,91 @@ def test_a_child_is_not_reused_after_an_error() -> None:
     with pytest.raises(zlib.error):
         child.call("decompress", b"not zlib data")
     child.close()
+    assert POOL.idle_count() == 0
+
+
+def _interrupt_on_write(
+    monkeypatch: pytest.MonkeyPatch, process: decoder_child._Process, nth: int
+) -> None:
+    """Make the ``nth`` write (from 0) to the child write 100 bytes, then raise
+    ``KeyboardInterrupt``, as a Ctrl-C part-way through a blocking pipe write does."""
+    stdin = process.proc.stdin
+    assert stdin is not None
+    seen: list[int] = []
+    real_write = stdin.write
+
+    def write(data: bytes) -> int:
+        if len(seen) == nth:
+            real_write(bytes(data[:100]))
+            stdin.flush()
+            raise KeyboardInterrupt
+        seen.append(len(data))
+        return real_write(data)
+
+    monkeypatch.setattr(stdin, "write", write)
+
+
+def test_a_child_is_not_reused_after_an_interrupted_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    child = DecoderChild("zlib")
+    process = child._lease.process
+    assert process is not None
+    # A ``decompress`` request is three writes: the frame header, the marshalled
+    # call, then the input. The third is cut after 100 of its 65536 bytes.
+    _interrupt_on_write(monkeypatch, process, 2)
+    with pytest.raises(KeyboardInterrupt):
+        child.call("decompress", os.urandom(1 << 16))
+    monkeypatch.undo()
+    # Back in the pool, the child would read the next decoder's frames as the rest
+    # of the input and never reply.
+    assert not child._lease.reusable
+    with pytest.raises(ArchiveyUsageError, match="interrupted in the middle of a"):
+        child.call("decompress", b"")
+    child.close()
+    assert POOL.idle_count() == 0
+    assert _zlib_round_trip(b"after") == b"after"
+
+
+def test_a_child_is_not_reused_after_an_interrupted_reply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    child = DecoderChild("zlib")
+    process = child._lease.process
+    assert process is not None
+    stdout = process.proc.stdout
+    assert stdout is not None
+
+    def interrupted_read(size: int = -1) -> bytes:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(stdout, "read", interrupted_read)
+    with pytest.raises(KeyboardInterrupt):
+        child.call("decompress", zlib.compress(b"reply"))
+    monkeypatch.undo()
+    # The reply is still in the pipe: the next read would take it for a header.
+    assert not child._lease.reusable
+    with pytest.raises(ArchiveyUsageError, match="interrupted in the middle of a"):
+        child.call("decompress", b"")
+    child.close()
+    assert POOL.idle_count() == 0
+    assert _zlib_round_trip(b"after") == b"after"
+
+
+def test_an_interrupted_close_frame_ends_the_child(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    child = DecoderChild("zlib")
+    child.call("decompress", zlib.compress(b"a"))
+    process = child._lease.process
+    assert process is not None
+    _interrupt_on_write(monkeypatch, process, 0)
+    # The pool's CLOSE frame is the write that is cut. No lease holds the child after
+    # that, so a child left running here would never be ended.
+    with pytest.raises(KeyboardInterrupt):
+        child.close()
+    monkeypatch.undo()
+    assert process.proc.poll() is not None
     assert POOL.idle_count() == 0
 
 
@@ -415,5 +509,29 @@ def test_a_forked_process_cannot_move_its_parents_decoder_to_a_child_of_its_own(
         assert os.read(read_fd, 100) == b"ArchiveyUsageError"
         os.close(read_fd)
         assert first + child.call("decompress", packed[500:]) == data
+    finally:
+        child.close()
+
+
+def test_a_flag_read_as_an_int_is_reported_as_a_bool() -> None:
+    """Under PyPy, backports.zstd's ``eof`` (a C ``bool`` member) reads as the int 1
+    once a frame ends. The state carries an int flag as a bool, 0 as ``False``."""
+
+    class _IntFlags:
+        eof = 1
+        needs_input = 0
+
+    state = decoder_worker._state("zstd", _IntFlags(), None)
+    assert state["eof"] is True
+    assert state["needs_input"] is False
+
+
+def test_an_int_flag_reaches_the_parent_as_a_bool(stand_in: Path) -> None:
+    """The same, end to end: the child sends the state and ``flag`` reads it."""
+    child = DecoderChild("intflags")
+    try:
+        child.call("decompress", b"x")
+        assert child.flag("eof") is True
+        assert child.flag("needs_input") is False
     finally:
         child.close()

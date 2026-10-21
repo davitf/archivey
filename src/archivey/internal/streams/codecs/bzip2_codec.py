@@ -47,9 +47,9 @@ from archivey.internal.streams.codecs.rapidgzip_child import (
     reported_by_child,
 )
 from archivey.internal.streams.codecs.rapidgzip_select import (
-    _RAPIDGZIP_REQUIREMENT,
     _bound_rapidgzip_source,
     _open_rapidgzip,
+    _rapidgzip_requirement,
     _refuse_forward_only_accelerator,
     _StdlibSeekContract,
     _translate_rapidgzip_shared,
@@ -800,7 +800,7 @@ class Bzip2Codec(StreamCodec):
                 return stream
         elif config.use_indexed_bzip2 is AcceleratorMode.ON:
             raise PackageNotInstalledError(
-                _RAPIDGZIP_REQUIREMENT.message("bzip2 random access")
+                _rapidgzip_requirement().message("bzip2 random access")
             )
         # A rewind re-decompresses from the start; the outer ArchiveStream warns about
         # that (see rewind_warning). The [seekable] accelerator gives real random
