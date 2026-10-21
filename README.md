@@ -58,6 +58,9 @@ with archivey.open_archive("photos.tar.gz") as reader:
 
 **<https://davitf.github.io/archivey/>**
 
+The [cheat sheet](https://davitf.github.io/archivey/cheat-sheet/) has the main calls, their errors
+and the zipfile and tarfile equivalents on one page.
+
 [Install](https://davitf.github.io/archivey/install/) ·
 [Opening an archive](https://davitf.github.io/archivey/opening/) ·
 [Choosing how to read](https://davitf.github.io/archivey/reading/) ·
