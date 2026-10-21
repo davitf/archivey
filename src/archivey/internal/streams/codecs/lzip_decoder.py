@@ -50,11 +50,7 @@ from archivey.internal.config import (
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.hashing import crc32_combine
-from archivey.internal.streams.codecs.isolated import (
-    IN_PROCESS,
-    Decompressor,
-    Natives,
-)
+from archivey.internal.streams.codecs.isolated import IN_PROCESS, Decompressor, Natives
 from archivey.internal.streams.codecs.xz_decoder import lzma_error_to_archivey
 from archivey.internal.streams.decompressor_stream import (
     TRAILING_DATA_CANDIDATES,

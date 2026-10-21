@@ -31,11 +31,7 @@ from archivey.internal.streams.codecs.base import (
 from archivey.internal.streams.codecs.deflate_decoder import ZlibDecompressorStream
 from archivey.internal.streams.codecs.deflate_family_codec import _DeflateFamilyCodec
 from archivey.internal.streams.codecs.deflate_resume import stream_end
-from archivey.internal.streams.codecs.isolated import (
-    IN_PROCESS,
-    Natives,
-    natives_for,
-)
+from archivey.internal.streams.codecs.isolated import IN_PROCESS, Natives, natives_for
 from archivey.internal.streams.codecs.stdlib_takeover import (
     _DRAIN_CHUNK,
     _drain_into,

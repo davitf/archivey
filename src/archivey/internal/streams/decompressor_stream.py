@@ -459,6 +459,14 @@ MAX_SEEK_POINTS = 1 << 18
 # ``SeekIndexContext.error_type`` when a table was thinned; no exception is involved.
 SEEK_TABLE_THINNED = "SeekTableThinned"
 
+# What each codec's seek index is read from, for the error a mismatched index raises.
+_INDEX_SOURCES = {
+    "xz": "xz block index",
+    "lzip": "lzip member trailers",
+    "zstd": "zstd seek table",
+    "gzip": "BGZF block sizes",
+}
+
 
 def emit_index_thinned(
     collector: DiagnosticCollector | None,
@@ -924,9 +932,18 @@ class DecompressorStream(ReadOnlyIOStream):
             return
         if existing.state is not None and point.state is None:
             return
+        # A trusted index (threat-model O17) and the decode, or two index entries, put
+        # one output offset at two places in the input. Two decode-discovered points
+        # cannot collide: a point is recorded only once its unit has output, so they
+        # rise in both coordinates. The index is what can disagree.
+        codec = self._codec_name or "compressed"
+        index_source = _INDEX_SOURCES.get(codec, f"{codec} seek index")
         raise CorruptionError(
-            "seek-point collision at the same decompressed_offset with "
-            f"differing resume data: existing={existing!r} new={point!r}"
+            f"The {index_source} and the data do not agree. Output offset "
+            f"{point.decompressed_offset} starts at compressed offset "
+            f"{existing.compressed_offset} and also at compressed offset "
+            f"{point.compressed_offset}. The file is damaged or was made to "
+            f"mislead a seek. Seek points: {existing!r} and {point!r}"
         )
 
     def _find_best_seek_point(self, pos: int) -> SeekPoint:
@@ -1531,53 +1548,49 @@ def report_trailing_data(
     )
 
 
-class _HoldsChild(Protocol):
-    def close(self) -> None: ...
-
-
 _CODECS_PACKAGE = "archivey.internal.streams.codecs."
 
 
-def release_decoder(decoder: object, depth: int = 3) -> None:
-    """Give back now the child process of a decoder that ``Natives``
-    (codecs/isolated.py) built, when it has one; a no-op for an in-process decoder or
-    ``None``.
+def release_decoder(decoder: object) -> None:
+    """Give back the child process ``decoder`` holds now, and end it now when it is an
+    in-process liblzma decoder (``native_memory.end_lzma_decoder``).
 
-    The child proxy may be ``decoder`` itself (``holds_decoder_child``) or sit in an
-    attribute of a codec-layer wrapper (the clamped Alone header, the lz4 picker), so
-    this looks through those attributes a few levels down. Call it before a decoder
-    is dropped or replaced (the next gzip member, xz stream or zstd frame). Otherwise
-    the child stays leased until the collector frees the proxy: at once on CPython,
-    but on PyPy only at a later collection, and until then every new decoder starts a
-    process of its own. An in-process liblzma decoder is ended at once, which frees
-    its buffers on PyPy (``native_memory.end_lzma_decoder``).
+    For a native decoder, or a codec-layer wrapper of one, that its owner is done with
+    while it goes on: CPython frees a dropped child proxy at once and its finalizer
+    gives the child back then, but PyPy frees it at a later collection, and the child
+    stays leased until that runs. A wrapper (the lz4 picker, the clamped Alone header)
+    is looked through as :func:`release_decoder_children` does.
     """
     if getattr(type(decoder), "holds_decoder_child", False):
-        cast("_HoldsChild", decoder).close()
+        cast(Any, decoder).close()
     elif type(decoder) is lzma.LZMADecompressor:
         end_lzma_decoder(decoder)
-    elif (
-        depth > 0
-        and type(decoder).__module__.startswith(_CODECS_PACKAGE)
-        and not isinstance(decoder, io.IOBase)
-    ):
-        for value in list(getattr(decoder, "__dict__", {}).values()):
-            release_decoder(value, depth - 1)
+    elif type(decoder).__module__.startswith(_CODECS_PACKAGE):
+        release_decoder_children(decoder)
 
 
-def release_decoder_children(holder: object) -> None:
+def release_decoder_children(holder: object, depth: int = 3) -> None:
     """Give back every decoder process ``holder`` holds now, not when GC frees it.
 
     A decoder keeps its native object in an attribute, sometimes inside a small helper
     of its own (the xz and lzip state, the clamped Alone header, the lz4 picker), so
-    this hands each attribute to :func:`release_decoder`, which looks a few levels down
-    for a child proxy. An archive reader can sit in a reference cycle, and without this
-    its decoders' child processes would stay leased until the cycle collector ran. It
-    also ends the in-process liblzma decoders it finds, which matters on PyPy only
-    (``native_memory.end_lzma_decoder``).
+    this looks through the attributes of codec-layer helpers a few levels down for a
+    child proxy (``holds_decoder_child``, codecs/isolated.py). An archive reader can
+    sit in a reference cycle, and without this its decoders' child processes would
+    stay leased until the cycle collector ran. It also ends the in-process liblzma
+    decoders it finds, which matters on PyPy only (``native_memory.end_lzma_decoder``).
     """
     for value in list(getattr(holder, "__dict__", {}).values()):
-        release_decoder(value)
+        if getattr(type(value), "holds_decoder_child", False):
+            value.close()
+        elif type(value) is lzma.LZMADecompressor:
+            end_lzma_decoder(value)
+        elif (
+            depth > 0
+            and type(value).__module__.startswith(_CODECS_PACKAGE)
+            and not isinstance(value, io.IOBase)
+        ):
+            release_decoder_children(value, depth - 1)
 
 
 # How many wrappers ``retire_decoder_children`` looks through; a member stream has a

@@ -29,11 +29,7 @@ from archivey.internal.streams.codecs.base import (
 )
 from archivey.internal.streams.codecs.deflate_decoder import GzipDecompressorStream
 from archivey.internal.streams.codecs.deflate_family_codec import _DeflateFamilyCodec
-from archivey.internal.streams.codecs.isolated import (
-    IN_PROCESS,
-    Natives,
-    natives_for,
-)
+from archivey.internal.streams.codecs.isolated import IN_PROCESS, Natives, natives_for
 from archivey.internal.streams.codecs.stdlib_takeover import (
     _DRAIN_CHUNK,
     _drain_into,
@@ -624,8 +620,10 @@ class GzipCodec(_DeflateFamilyCodec):
     def _open_stdlib(self, source: CodecSource, config: StreamConfig) -> BinaryIO:
         # Stdlib path: gzip-window DecompressorStream (not gzip.GzipFile). CRC/ISIZE
         # outcomes come from zlib's gzip window; members with nothing between them
-        # chain, and NULs end the data as in GNU gzip (GzipDecoder). O(n) rewind with
-        # a warning.
+        # chain, and NULs end the data as in GNU gzip (GzipDecoder). With declared seek
+        # demand, a backward seek resumes at the nearest member or BGZF block start.
+        # Otherwise it decodes again from the start, and warns once the discarded
+        # progress reaches REWIND_REDECODE_WARN_BYTES.
         return _stdlib_gzip(source, config)
 
     def _open_accelerated(

@@ -18,10 +18,7 @@ from archivey.internal.streams.codecs.deflate_resume import (
     DeflateResume,
     DeflateResumeDecoder,
 )
-from archivey.internal.streams.codecs.isolated import (
-    IN_PROCESS,
-    Natives,
-)
+from archivey.internal.streams.codecs.isolated import IN_PROCESS, Natives
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
     DecodeOut,

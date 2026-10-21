@@ -257,8 +257,25 @@ def stream_end(
         produced, bit = point.decompressed_offset, resume.bit
         source.seek(point.compressed_offset)
     else:
-        produced, bit, decomp = 0, 0, natives.zlib_decompressobj(RAW_DEFLATE_WBITS)
+        produced, bit = 0, 0
+        decomp = natives.zlib_decompressobj(RAW_DEFLATE_WBITS)
         source.seek(0)
+    try:
+        return _decode_to_end(source, decomp, produced, bit, cap, check_input_after)
+    finally:
+        release_decoder(decomp)
+
+
+def _decode_to_end(
+    source: BinaryIO,
+    decomp: ZlibDecompressor,
+    produced: int,
+    bit: int,
+    cap: int,
+    check_input_after: bool,
+) -> tuple[int | None, bool]:
+    """:func:`stream_end` from where ``decomp`` stands: ``produced`` bytes out, and
+    ``bit`` bits of ``source``'s next byte already read."""
     data = b""
     try:
         while not decomp.eof:
@@ -281,12 +298,9 @@ def stream_end(
                 data, bit = _splice(bit, data), 0
             produced += len(decomp.decompress(data, 1 << 20))
             data = decomp.unconsumed_tail
-        if produced > cap:
-            return None, False
-        unused = decomp.unused_data
     except zlib.error:
         return None, False
-    finally:
-        release_decoder(decomp)
-    after = check_input_after and (bool(unused) or bool(source.read(1)))
+    if produced > cap:
+        return None, False
+    after = check_input_after and (bool(decomp.unused_data) or bool(source.read(1)))
     return produced, after
