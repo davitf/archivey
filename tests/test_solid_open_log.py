@@ -16,7 +16,6 @@ import threading
 import zipfile
 from pathlib import Path
 
-import py7zr
 import pytest
 
 from archivey import open_archive
@@ -26,7 +25,9 @@ from tests.conftest import binary_refusal
 
 _LOGGER = "archivey.backends"
 _NAMES = ("a.txt", "b.txt", "c.txt")
-_RAR_SOLID = Path(__file__).parent / "fixtures" / "rar" / "basic_solid__.rar"
+_FIXTURES = Path(__file__).parent / "fixtures"
+_SOLID_7Z = _FIXTURES / "sevenzip" / "solid_three_members.7z"
+_RAR_SOLID = _FIXTURES / "rar" / "basic_solid__.rar"
 _UNRAR_REFUSAL = binary_refusal("unrar")
 
 
@@ -38,14 +39,6 @@ def _records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
 
 def _data(name: str) -> bytes:
     return name.encode() * 10
-
-
-def _solid_7z(tmp_path: Path) -> Path:
-    path = tmp_path / "a.7z"
-    with py7zr.SevenZipFile(path, "w") as z:
-        for name in _NAMES:
-            z.writestr(_data(name), name)
-    return path
 
 
 def _tar_gz(tmp_path: Path) -> Path:
@@ -67,10 +60,10 @@ def _zip(tmp_path: Path) -> Path:
 
 
 def test_an_open_that_decodes_a_7z_folder_again_logs_once(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.INFO, logger=_LOGGER)
-    with open_archive(_solid_7z(tmp_path)) as reader:
+    with open_archive(_SOLID_7Z) as reader:
         assert reader.cost.access_cost is AccessCost.SOLID
         assert reader.read("a.txt") == _data("a.txt")
         assert _records(caplog) == []
@@ -78,7 +71,7 @@ def test_an_open_that_decodes_a_7z_folder_again_logs_once(
         (record,) = _records(caplog)
         assert record.levelno == logging.INFO
         message = record.getMessage()
-        assert "a.7z" in message
+        assert "solid_three_members.7z" in message
         assert "'b.txt' decoded again 50 bytes" in message
         assert "stream_members()" in message
         reader.read("c.txt")
@@ -88,10 +81,10 @@ def test_an_open_that_decodes_a_7z_folder_again_logs_once(
 
 
 def test_an_open_that_decodes_nothing_twice_does_not_log(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.INFO, logger=_LOGGER)
-    with open_archive(_solid_7z(tmp_path)) as reader:
+    with open_archive(_SOLID_7Z) as reader:
         # c decodes a and b once; a starts the folder, so nothing before it is decoded.
         reader.read("c.txt")
         reader.read("a.txt")
@@ -112,11 +105,9 @@ def test_a_tar_gz_read_in_archive_order_does_not_log(
     assert _records(caplog) == []
 
 
-def test_each_reader_logs_its_own_record(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
+def test_each_reader_logs_its_own_record(caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.INFO, logger=_LOGGER)
-    path = _solid_7z(tmp_path)
+    path = _SOLID_7Z
     for _ in range(2):
         with open_archive(path) as reader:
             reader.read("a.txt")
@@ -124,11 +115,9 @@ def test_each_reader_logs_its_own_record(
     assert len(_records(caplog)) == 2
 
 
-def test_stream_members_does_not_count(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
+def test_stream_members_does_not_count(caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.INFO, logger=_LOGGER)
-    with open_archive(_solid_7z(tmp_path)) as reader:
+    with open_archive(_SOLID_7Z) as reader:
         for _member, stream in reader.stream_members():
             if stream is not None:
                 stream.read()
@@ -147,11 +136,9 @@ def test_a_direct_archive_never_logs(
     assert _records(caplog) == []
 
 
-def test_a_failed_open_does_not_count(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
+def test_a_failed_open_does_not_count(caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.INFO, logger=_LOGGER)
-    with open_archive(_solid_7z(tmp_path)) as reader:
+    with open_archive(_SOLID_7Z) as reader:
         reader.read("a.txt")
         with pytest.raises(KeyError):
             reader.open("missing.txt")
@@ -160,11 +147,9 @@ def test_a_failed_open_does_not_count(
         assert len(_records(caplog)) == 1
 
 
-def test_concurrent_opens_log_one_record(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
+def test_concurrent_opens_log_one_record(caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.INFO, logger=_LOGGER)
-    with open_archive(_solid_7z(tmp_path), concurrent_operations=True) as reader:
+    with open_archive(_SOLID_7Z, concurrent_operations=True) as reader:
         reader.read("a.txt")
         barrier = threading.Barrier(2)
         errors: list[BaseException] = []
@@ -198,8 +183,8 @@ def test_a_solid_rar_logs_on_the_second_member(
         assert len(_records(caplog)) == 1
 
 
-def test_the_cli_drops_the_advice_for_its_own_opens(tmp_path: Path) -> None:
-    path = _solid_7z(tmp_path)
+def test_the_cli_drops_the_advice_for_its_own_opens() -> None:
+    path = _SOLID_7Z
     err = io.StringIO()
     with cli_logging(verbose=True, err=err):
         with open_archive(path) as reader, cli_opens_members():
