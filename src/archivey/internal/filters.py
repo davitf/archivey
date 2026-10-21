@@ -21,6 +21,7 @@ from __future__ import annotations
 import errno
 import os
 import re
+import stat
 import string
 import sys
 import unicodedata
@@ -143,26 +144,85 @@ _ERROR_CANT_RESOLVE_FILENAME = 1921
 
 
 def resolve_or_raise_on_loop(path: Path) -> Path:
-    """``path.resolve()``, raising ``OSError`` (``ELOOP``) when a symlink loop is on
-    the way, on every Python version.
+    """``path`` with every symlink on the way followed, raising ``OSError`` when that
+    cannot be done exactly: ``ELOOP`` for a symlink loop, on every Python version, and
+    the error itself when a component exists but cannot be looked at.
 
-    A missing component is kept as a name, as ``resolve()`` does, and any other error
-    from the ``stat`` (``ENOENT`` for a dangling link) is ignored. Before Python 3.13,
-    ``resolve()`` raised ``RuntimeError`` on a loop; from 3.13 it returns a path that
-    still contains the looping link. The ``RuntimeError`` is turned into an ``OSError``
-    and the ``stat`` finds the loop on 3.13+, so callers catch ``OSError`` alone and
-    one archive gets the same outcome on every version. The error names ``path``.
+    A missing component is kept as a name, as ``os.path.realpath`` does, and so is a
+    component under a file (``ENOTDIR``), which no path lookup can go through either.
+    Any other error is raised, because ``realpath`` would keep that component as a
+    name too and carry on with the rest of the path, while the kernel may still follow
+    it. ``ENAMETOOLONG`` is the one that matters: a chain of links whose expansion is
+    longer than ``PATH_MAX`` cannot be looked up as one string, but the kernel follows
+    it one link at a time, so a check that kept the long name would see a path inside
+    the destination where the kernel goes outside (CVE-2025-4517 in ``tarfile``).
+    Python's own fix, ``realpath(strict=ALLOW_MISSING)``, is missing from older
+    patch releases and also raises for ``ENOTDIR``, so the walk is done here on POSIX.
 
-    The errno is ``ELOOP`` on every platform too: Windows reports a loop as
-    ``ERROR_CANT_RESOLVE_FILENAME``, which Python maps to ``EINVAL``. The platform's
-    own error stays on the chain as ``__cause__``.
+    On Windows ``Path.resolve()`` is used, as the platform resolves links itself:
+    before Python 3.13 it raised ``RuntimeError`` on a loop, from 3.13 it returns a
+    path that still contains the looping link. The ``RuntimeError`` is turned into an
+    ``OSError`` and a ``stat`` finds the loop on 3.13+. Windows reports a loop as
+    ``ERROR_CANT_RESOLVE_FILENAME``, which Python maps to ``EINVAL``, so it is raised
+    as ``ELOOP``, with the platform's own error on the chain as ``__cause__``. A path
+    past ``MAX_PATH`` is resolved in the extended form (``long_paths``), so a link
+    deep in the tree is followed as it is for a short path, and the result is given
+    without the prefix, for comparison with a plain root.
 
-    On Windows a path past ``MAX_PATH`` is resolved in the extended form
-    (``long_paths``), so a link deep in the tree is followed as it is for a short
-    path, and the result is given without the prefix, for comparison with a plain
-    root. A short path whose links lead past ``MAX_PATH`` comes back from Windows with
-    the prefix too, and loses it the same way.
+    Either way the error names ``path``, and callers catch ``OSError`` alone.
     """
+    if os.name == "nt":
+        return _resolve_with_pathlib(path)
+    # Joined with the working directory, not ``os.path.abspath``, which would drop a
+    # ``name/..`` pair before ``name`` is looked at.
+    return Path(_realpath_posix(os.path.join(os.getcwd(), path), str(path)))
+
+
+# Links followed in one resolution before it counts as a loop: Linux's own limit
+# (``MAXSYMLINKS``), so a chain the kernel follows is followed here too.
+_MAX_LINK_FOLLOWS = 40
+
+
+def _realpath_posix(path: str, asked: str) -> str:
+    """``os.path.realpath(path)`` that raises instead of guessing (see
+    :func:`resolve_or_raise_on_loop`). ``path`` is absolute; ``asked`` is the path
+    the caller passed, for the error."""
+    rest = path.split("/")[::-1]
+    resolved = ""
+    follows = 0
+    while rest:
+        name = rest.pop()
+        if name in ("", "."):
+            continue
+        if name == "..":
+            resolved = resolved[: resolved.rfind("/")]
+            continue
+        candidate = f"{resolved}/{name}"
+        try:
+            mode = os.lstat(candidate).st_mode
+        except (FileNotFoundError, NotADirectoryError):
+            resolved = candidate
+            continue
+        except OSError as exc:
+            raise OSError(exc.errno, exc.strerror, asked) from exc
+        if not stat.S_ISLNK(mode):
+            resolved = candidate
+            continue
+        follows += 1
+        if follows > _MAX_LINK_FOLLOWS:
+            raise OSError(errno.ELOOP, os.strerror(errno.ELOOP), asked)
+        try:
+            target = os.readlink(candidate)
+        except OSError as exc:
+            raise OSError(exc.errno, exc.strerror, asked) from exc
+        if target.startswith("/"):
+            resolved = ""
+        rest.extend(target.split("/")[::-1])
+    return resolved or "/"
+
+
+def _resolve_with_pathlib(path: Path) -> Path:
+    """The Windows half of :func:`resolve_or_raise_on_loop`."""
     try:
         resolved = Path(plain(os.fspath(Path(long_path(path)).resolve())))
     except RuntimeError as exc:

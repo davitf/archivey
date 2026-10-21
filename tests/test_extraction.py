@@ -53,6 +53,7 @@ from archivey.internal.bomb_tracker import AlwaysStopResourceLimitError, BombTra
 from archivey.internal.extraction import _CHUNK, ExtractionCoordinator
 from archivey.internal.filters import (
     POLICY_TRANSFORMS,
+    _resolve_with_pathlib,
     apply_name_policy,
     check_universal,
     resolve_or_raise_on_loop,
@@ -2106,6 +2107,30 @@ def test_resolve_or_raise_on_loop_keeps_a_missing_component(tmp_path: Path) -> N
 
 
 @pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+def test_resolve_or_raise_on_loop_raises_when_a_component_cannot_be_looked_up(
+    tmp_path: Path,
+) -> None:
+    # Links whose expansion is longer than PATH_MAX: os.path.realpath keeps the long
+    # name and drops it again at the "..", so it gives a path inside tmp_path, while
+    # the kernel follows `up` one link at a time to tmp_path's parent.
+    component = "d" * 200
+    path_max = os.pathconf(tmp_path, "PC_PATH_MAX")
+    depth = path_max // len(component) + 1
+    here = tmp_path
+    for _ in range(depth):
+        (here / component).mkdir()
+        os.symlink(component, here / "s")
+        here = here / "s"  # The short spelling, which stays under PATH_MAX.
+    os.symlink(os.path.join(*[".."] * (depth + 1)), here / "x")
+    os.symlink(os.path.join(*["s"] * depth, "x", ".."), tmp_path / "up")
+    assert os.path.realpath(tmp_path / "up").startswith(str(tmp_path.resolve()))
+    with pytest.raises(OSError) as info:
+        resolve_or_raise_on_loop(tmp_path / "up")
+    assert info.value.errno == errno.ENAMETOOLONG
+    assert info.value.filename == str(tmp_path / "up")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
 def test_resolve_or_raise_on_loop_swallows_enoent_from_the_stat(
     tmp_path: Path,
 ) -> None:
@@ -2117,7 +2142,7 @@ def test_resolve_or_raise_on_loop_swallows_enoent_from_the_stat(
     )
 
 
-def test_resolve_or_raise_on_loop_treats_winerror_1921_as_a_loop(
+def test_windows_resolution_treats_winerror_1921_as_a_loop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Windows reports a loop as ERROR_CANT_RESOLVE_FILENAME, not ELOOP. Raised here by
@@ -2134,7 +2159,7 @@ def test_resolve_or_raise_on_loop_treats_winerror_1921_as_a_loop(
     monkeypatch.setattr(Path, "stat", stat)
     path = tmp_path / "x"
     with pytest.raises(OSError) as info:
-        resolve_or_raise_on_loop(path)
+        _resolve_with_pathlib(path)
     assert type(info.value) is OSError
     assert info.value.errno == errno.ELOOP
     assert info.value.filename == str(path)
