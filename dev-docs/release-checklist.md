@@ -195,8 +195,9 @@ Also:
 `scripts/release.py` does the mechanical steps. Run each command from a clean,
 up-to-date `main`, with your own `gh` login; `--dry-run` before a command prints what it
 would do. A patch release (bug fixes only) can skip §2 and §3 unless its fixes touch
-performance or documented behaviour, so it is these four commands plus the CHANGELOG
-text.
+performance or documented behaviour. A release that carries a security fix never skips
+§3: its `docs/security.md` and threat-model checks are the point. Otherwise a patch
+release is these four commands plus the CHANGELOG text.
 
 1. `uv run python scripts/release.py notes` lists the merged pull requests since the last
    tag. Write the entry under `## [Unreleased]` from it (§1). This can be its own small
