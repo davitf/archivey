@@ -570,7 +570,7 @@ class ArchiveSource(ReadOnlyIOStream):
         return self._seek_is_expensive
 
     @property
-    def name(self) -> str:  # pyrefly: ignore[bad-override]  # base is Never; a source has a path when the caller gave one
+    def name(self) -> str:  # pyrefly: ignore[bad-override]  # ty: ignore[invalid-property-type-override]  # base is Never; a source has a path when the caller gave one
         """The source's path, or raise :exc:`AttributeError` if it has none.
 
         Raising keeps ``hasattr(..., "name")`` false for a nameless stream, the

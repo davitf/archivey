@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import lzma
 import random
+import subprocess
 import sys
 from pathlib import Path
 
@@ -155,7 +156,22 @@ def test_closing_an_archive_member_ends_its_liblzma_decoder(
     assert any(type(d) is lzma.LZMADecompressor for d in ended), kind
 
 
-def _private_writable_mib() -> int:
+# Run in a fresh interpreter. In an xdist worker the same 800 drops once grew 3,725 MiB
+# (PR 901, a docs-only change) and passed on a re-run. The likely reason, inferred from
+# how the failure varies between runs and not reproduced, is that PyPy's major-collection
+# threshold scales with the heap the last collection left, so a worker that earlier tests
+# grew lets more pressure build before collecting. A fresh process measures the
+# add_memory_pressure accounting itself, not what earlier tests left behind. The cap only
+# has to tell accounting from none (6.4 GB without it, dev-docs/known-issues.md); the
+# estimates themselves are pinned exactly by the tests above.
+_PILE_UP_CHILD = """
+import lzma
+from pathlib import Path
+
+from archivey.internal.streams.codecs.isolated import IN_PROCESS
+
+
+def private_writable_mib():
     total = 0
     for line in Path("/proc/self/maps").read_text().splitlines():
         span, perms = line.split()[:2]
@@ -165,14 +181,27 @@ def _private_writable_mib() -> int:
     return total >> 20
 
 
+data = lzma.compress(b"x" * 100)
+before = private_writable_mib()
+for _ in range(800):
+    IN_PROCESS.lzma_decompressor(format=lzma.FORMAT_XZ).decompress(data)
+print(private_writable_mib() - before)
+"""
+
+
 @pytest.mark.skipif(
     not native_memory.UNDER_PYPY or not sys.platform.startswith("linux"),
     reason="PyPy's deferred freeing of native buffers, measured through /proc",
 )
+@pytest.mark.timeout(300, func_only=True)
 def test_dropped_xz_decoders_do_not_pile_up_on_pypy() -> None:
     """800 default-preset decoders hold 6.4 GiB if nothing frees them between drops."""
-    data = lzma.compress(b"x" * 100)
-    before = _private_writable_mib()
-    for _ in range(800):
-        IN_PROCESS.lzma_decompressor(format=lzma.FORMAT_XZ).decompress(data)
-    assert _private_writable_mib() - before < 2048
+    done = subprocess.run(
+        [sys.executable, "-c", _PILE_UP_CHILD],
+        capture_output=True,
+        text=True,
+        timeout=240,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    assert int(done.stdout) < 2048, done.stdout

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import TextIO
@@ -35,7 +35,7 @@ _hold: ContextVar[_MemberSkipHold | None] = ContextVar("_hold", default=None)
 
 
 @contextmanager
-def cli_logging(*, verbose: bool, err: TextIO) -> Iterator[None]:
+def cli_logging(*, verbose: bool, err: TextIO) -> Generator[None, None, None]:
     """Route the ``archivey`` logger tree to ``err`` for one CLI invocation (D4).
 
     Default level is WARNING so normalization / diagnostic warnings are visible
@@ -74,7 +74,7 @@ def cli_logging(*, verbose: bool, err: TextIO) -> Iterator[None]:
 
 
 @contextmanager
-def member_skips_reported_elsewhere() -> Iterator[None]:
+def member_skips_reported_elsewhere() -> Generator[None, None, None]:
     """Keep the library's ``Skipping …`` warnings off stderr for a run that reports.
 
     ``extract`` prints a ``blocked:`` or ``failed:`` line for each ``BLOCKED`` or

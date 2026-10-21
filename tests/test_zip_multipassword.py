@@ -9,7 +9,7 @@ import struct
 import tempfile
 import zipfile
 import zlib
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from typing import Any, BinaryIO, cast
 
 import pytest
@@ -66,7 +66,7 @@ COMPRESSION_METHODS = [
 
 
 @contextlib.contextmanager
-def _open_decoding_header(ar: Any, compression: int) -> Iterator[Any]:
+def _open_decoding_header(ar: Any, compression: int) -> Generator[Any, None, None]:
     """``ar.open(NAME)``; for LZMA, the open is where a wrong key first shows.
 
     The ZIP LZMA header is peeled off the plaintext when the member opens, so garbage

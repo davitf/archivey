@@ -18,7 +18,7 @@ property on the reader.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -36,7 +36,7 @@ def measurement_enabled() -> bool:
 
 
 @contextmanager
-def enable_measurement() -> Iterator[None]:
+def enable_measurement() -> Generator[None, None, None]:
     """Enable bytes-decompressed / seek counters for archives opened in this context."""
     token = _ENABLED.set(True)
     try:

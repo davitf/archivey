@@ -9,7 +9,7 @@ import contextlib
 import io
 import os
 import struct
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from pathlib import Path
 from typing import IO, Any
 
@@ -810,7 +810,7 @@ def test_a_path_source_refuses_the_same_image(tmp_path: Path) -> None:
 @contextlib.contextmanager
 def _recording_opens(
     path: Path, monkeypatch: pytest.MonkeyPatch
-) -> Iterator[list[IO[bytes]]]:
+) -> Generator[list[IO[bytes]], None, None]:
     """Collect every file object opened for ``path`` while the block runs.
 
     A handle leak is asserted on the objects themselves rather than on

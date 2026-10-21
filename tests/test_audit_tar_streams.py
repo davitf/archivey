@@ -13,7 +13,7 @@ import signal
 import sys
 import tarfile
 import tracemalloc
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -110,7 +110,7 @@ class _OverBudget(BaseException):
 
 
 @contextmanager
-def _watchdog(seconds: float) -> Iterator[None]:
+def _watchdog(seconds: float) -> Generator[None, None, None]:
     """Interrupt the body after ``seconds`` of wall time (POSIX only)."""
 
     def _fire(signum: int, frame: object) -> None:
