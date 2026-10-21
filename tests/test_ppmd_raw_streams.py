@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import io
 import os
+import random
 import struct
 import subprocess
 import sys
@@ -873,10 +874,15 @@ class _DecodeCallSpy:
         return self._inner.needs_input  # type: ignore[attr-defined]
 
 
-def _calls_after_payload_spent(calls: list[tuple[int, int, int, bool]]) -> list:
-    """The calls made after one that came back short at ``eof`` (payload spent)."""
-    for i, (_, length, got, eof) in enumerate(calls):
-        if eof and got < length:
+def _calls_after_payload_spent(
+    calls: list[tuple[int, int, int, bool]], pack_size: int = 0
+) -> list:
+    """The calls made after one that came back short at ``eof`` (payload spent) once
+    ``pack_size`` input bytes had been fed; before that, more input is coming."""
+    fed = 0
+    for i, (data_len, length, got, eof) in enumerate(calls):
+        fed += data_len
+        if eof and got < length and fed >= pack_size:
             return calls[i + 1 :]
     return []
 
@@ -886,41 +892,74 @@ def _calls_after_payload_spent(calls: list[tuple[int, int, int, bool]]) -> list:
 # it decodes none, so the stream ends short straight away.
 _K6_PAYLOAD = b"hello ppmd world, compress me a little bit more please\n"
 
+# A member of several stream chunks that pyppmd 1.3.1, fed one chunk at a time with
+# whole-remainder requests, returned short at ``eof`` on its last chunk: a parked
+# worker, resumed, counted its earlier output against the new request (see
+# ``PpmdDecoder._native_decode``). A random block repeated decodes fast enough after
+# its first copy for that to happen; measured: the unsplit decoder raised
+# ``TruncatedError`` on ``read()``. The model needs the larger memory to remember a
+# whole block. The ``_K6_PAYLOAD`` tail makes an overstated size end short at once, as
+# it does for ``_K6_PAYLOAD`` alone.
+_PIECES_PAYLOAD = random.Random(0).randbytes(1 << 16) * 4 + _K6_PAYLOAD
+_PIECES_MEM = 1 << 24
+
 
 @pytest.mark.parametrize("overstate", [1, 1 << 40], ids=["plus-1", "plus-1TiB"])
 @pytest.mark.parametrize(
-    "reads",
-    ["readall", "exact-then-more", "one-byte-at-a-time", "one-3GB-read"],
+    ("feed", "reads"),
+    [
+        (feed, reads)
+        for feed in ("whole", "pieces")
+        for reads in (
+            "readall",
+            "exact-then-more",
+            "one-byte-at-a-time",
+            "one-3GB-read",
+        )
+        # 256 KiB read a byte at a time is a decode call per byte: too slow.
+        if (feed, reads) != ("pieces", "one-byte-at-a-time")
+    ],
 )
 def test_archivey_ppmd7_overstated_unpack_size_raises_truncated_error(
-    overstate: int, reads: str
+    overstate: int, reads: str, feed: str
 ) -> None:
     """A complete pack under an overstated ``unpack_size`` ends in ``TruncatedError``.
 
     The payload itself comes back intact, and once pyppmd has returned short at
     ``eof`` no further ``decode`` is issued while reading — that later call is the
     one that raised ``MemoryError``. A single read larger than a C ``int`` reaches
-    pyppmd capped, where it used to raise ``OverflowError``.
+    pyppmd capped, where it used to raise ``OverflowError``. ``pieces`` feeds a
+    member of several stream chunks to pyppmd one chunk at a time, the path that
+    splits each call (``PpmdDecoder._native_decode``): its ``b""`` second call must
+    never reach a worker parked on empty input.
     """
+    if feed == "whole":
+        payload, mem, max_input = "_K6_PAYLOAD", "_MEM", "None"
+    else:
+        payload, mem, max_input = "_PIECES_PAYLOAD", "_PIECES_MEM", "0"
     _run_ppmd_child(
         textwrap.dedent(
             f"""\
             import io
+            from archivey.config import ProcessIsolation
             from archivey.exceptions import TruncatedError
             from archivey.internal.streams.codecs.ppmd_decoder import PpmdDecompressorStream
             from tests.test_ppmd_raw_streams import (
-                _K6_PAYLOAD, _ORDER, _MEM, _DecodeCallSpy, _calls_after_payload_spent,
-                _encode_ppmd7,
+                _K6_PAYLOAD, _PIECES_PAYLOAD, _ORDER, _MEM, _PIECES_MEM, _DecodeCallSpy,
+                _calls_after_payload_spent, _encode_ppmd7,
             )
 
-            packed = _encode_ppmd7(_K6_PAYLOAD)
+            payload = {payload}
+            packed = _encode_ppmd7(payload, mem={mem})
             stream = PpmdDecompressorStream(
                 io.BytesIO(packed),
                 order=_ORDER,
-                mem_size=_MEM,
+                mem_size={mem},
                 variant=7,
-                unpack_size=len(_K6_PAYLOAD) + {overstate},
+                unpack_size=len(payload) + {overstate},
                 pack_size=len(packed),
+                in_process_max_input={max_input},
+                isolation=ProcessIsolation.NONE,
             )
             stream._decoder._open_native(in_child=False)
             spy = _DecodeCallSpy(stream._decoder._decomp)
@@ -936,7 +975,7 @@ def test_archivey_ppmd7_overstated_unpack_size_raises_truncated_error(
                 else:
                     step = 1 if reads == "one-byte-at-a-time" else 64
                     if reads == "exact-then-more":
-                        got += stream.read(len(_K6_PAYLOAD))
+                        got += stream.read(len(payload))
                     while True:
                         got += stream.read(step)
             except TruncatedError:
@@ -947,9 +986,113 @@ def test_archivey_ppmd7_overstated_unpack_size_raises_truncated_error(
             stream.close()
             if reads != "readall":
                 # readall() drops a truncated stream's bytes by contract.
-                assert bytes(got) == _K6_PAYLOAD, bytes(got)
-            assert _calls_after_payload_spent(calls) == [], calls
+                assert bytes(got) == payload, len(got)
+            assert _calls_after_payload_spent(calls, len(packed)) == [], calls[-4:]
             assert all(length < 2**31 for _, length, _, _ in calls), calls
+            print("ok")
+            """
+        )
+    )
+
+
+_PIECES_SCRIPT = """\
+import io
+from archivey.config import ProcessIsolation
+from archivey.internal.streams.codecs.ppmd_decoder import PpmdDecompressorStream
+from tests.test_ppmd_raw_streams import (
+    _ORDER, _PIECES_MEM, _PIECES_PAYLOAD, _encode_ppmd7,
+)
+
+packed = _encode_ppmd7(_PIECES_PAYLOAD, mem=_PIECES_MEM)
+with PpmdDecompressorStream(
+    io.BytesIO(packed),
+    order=_ORDER,
+    mem_size=_PIECES_MEM,
+    variant=7,
+    unpack_size=len(_PIECES_PAYLOAD),
+    pack_size=len(packed),
+    in_process_max_input=0,
+    refuse_input_after_end=True,
+    isolation=ProcessIsolation.{isolation},
+) as stream:
+    got = bytearray()
+    while chunk := stream.read({read_size}):
+        got += chunk
+assert bytes(got) == _PIECES_PAYLOAD, len(got)
+print("ok")
+"""
+
+
+@pytest.mark.parametrize("read_size", [-1, 65536], ids=["readall", "64KiB-reads"])
+@pytest.mark.parametrize("isolation", ["NONE", "KNOWN_CRASHES"])
+def test_archivey_ppmd7_fed_in_pieces_decodes_in_full(
+    read_size: int, isolation: str
+) -> None:
+    """A valid member fed to pyppmd one stream chunk at a time decodes in full.
+
+    ``in_process_max_input=0`` makes the decoder feed pyppmd in pieces, as it does
+    for a member over ``DecoderLimits.max_ppmd_in_process_input``. pyppmd used to
+    return short at ``eof`` on the last piece, which read as a spent payload: the
+    member raised ``TruncatedError`` 30 KiB short. ``refuse_input_after_end`` runs the
+    7z end check on top. ``NONE`` runs pyppmd in this test's own child interpreter.
+    """
+    script = _PIECES_SCRIPT.format(isolation=isolation, read_size=read_size)
+    _run_ppmd_child(script)
+
+
+@pytest.mark.parametrize("overstate", [0, 1 << 40], ids=["exact", "plus-1TiB"])
+def test_archivey_ppmd7_fed_a_byte_at_a_time_never_resumes_a_parked_worker_empty(
+    overstate: int,
+) -> None:
+    """Fed one compressed byte per piece, a resumed worker often parks again before
+    its first symbol: the 1-byte call comes back empty. ``_native_decode`` must then
+    not ask the rest with ``b""``, which would resume that worker on empty input
+    (pyppmd reads past its input and raises ``MemoryError``). The exact size reads in
+    full; an overstated one ends in ``TruncatedError`` with the payload intact."""
+    _run_ppmd_child(
+        textwrap.dedent(
+            f"""\
+            import random
+            from archivey.config import ProcessIsolation
+            from archivey.exceptions import TruncatedError
+            from archivey.internal.streams.codecs.ppmd_decoder import PpmdDecoder
+            from tests.test_ppmd_raw_streams import (
+                _K6_PAYLOAD, _ORDER, _MEM, _DecodeCallSpy, _encode_ppmd7,
+            )
+
+            payload = random.Random(1).randbytes(4096) + _K6_PAYLOAD
+            packed = _encode_ppmd7(payload)
+            decoder = PpmdDecoder(
+                order=_ORDER,
+                mem_size=_MEM,
+                variant=7,
+                unpack_size=len(payload) + {overstate},
+                pack_size=len(packed),
+                in_process_max_input=0,
+                isolation=ProcessIsolation.NONE,
+            )
+            decoder._open_native(in_child=False)
+            spy = _DecodeCallSpy(decoder._decomp)
+            decoder._decomp = spy
+            got = bytearray()
+            # The stream layer reads its source in large chunks; drive the decoder
+            # itself to feed it one byte at a time. The first piece holds the range
+            # coder's 5 start bytes.
+            got += decoder.feed(packed[:5], 4096).data
+            for i in range(5, len(packed)):
+                got += decoder.feed(packed[i : i + 1], 4096).data
+            got += decoder.flush().data
+            while decoder.drains_after_flush:
+                got += decoder.feed(b"", 4096).data
+            error = decoder._pending_error
+            calls = list(spy.calls)
+            decoder.close()
+            assert any(n == 1 and length == 1 and out == 0 for n, length, out, _ in calls)
+            assert bytes(got) == payload, len(got)
+            if {overstate}:
+                assert isinstance(error, TruncatedError), error
+            else:
+                assert error is None, error
             print("ok")
             """
         )

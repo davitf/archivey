@@ -252,6 +252,8 @@ class PpmdDecoder(BaseDecoder):
         # no decoder to go on with.
         self._refusal: str | None = None
         self._decomp: _PpmdNativeDecoder | None = None
+        # Set once ``_native_decode`` has made its first call (see there).
+        self._native_called = False
         self._refuse_input_after_end = refuse_input_after_end
         self._input_runs_on = input_runs_on
         # Set once an ``input_runs_on`` stream has decoded its end mark.
@@ -351,10 +353,11 @@ class PpmdDecoder(BaseDecoder):
         its bounded NUL at teardown, which is what keeps the parked worker from
         writing into freed memory when the decoder is freed. A valid member never gets
         here, because its ``unpack_size`` matches the payload and every request is
-        met in full — premature ``eof`` (the ``Code == 0`` proxy) arrives on a *full*
-        return, which is why ``eof`` alone cannot be the stop. Reached when the
-        container overstates ``unpack_size``; ``flush`` then reports
-        ``TruncatedError``.
+        met in full (fed in pieces, because :meth:`_native_decode` keeps a resumed
+        worker from returning short) — premature ``eof`` (the ``Code == 0`` proxy)
+        arrives on a *full* return, which is why ``eof`` alone cannot be the stop.
+        Reached when the container overstates ``unpack_size``; ``flush`` then
+        reports ``TruncatedError``.
 
         ``_decode_unsized`` (PPMd8 without ``unpack_size``) is deliberately not
         wrapped: its end mark stops the worker on valid data, ``_decode`` refuses to
@@ -369,6 +372,36 @@ class PpmdDecoder(BaseDecoder):
             self._exhausted = True
         return out
 
+    def _native_decode(self, data: bytes, length: int) -> bytes:
+        """One ``decode`` of new input, made so that a short return means what it says.
+
+        pyppmd 1.3.1 runs each decode in a worker thread that keeps its own output
+        budget and output count from the call that started it. A worker that ran out
+        of input stays parked, and the next ``decode`` with input resumes it with that
+        old budget and count. When the resumed worker stops, pyppmd subtracts its whole
+        count, output of earlier calls included, from this call's request, so the call
+        can return short of its request although the stream has more output and the
+        worker did not wait for input. With ``eof`` up that looks like a spent payload,
+        and a valid member fed in pieces ended in ``TruncatedError`` some KiB short.
+
+        So a call with new input after the first one asks for 1 byte, which makes a
+        resumed worker stop after one symbol: its output buffer is full. A full 1-byte
+        return means that the worker has stopped, so the rest is asked of a new worker
+        with ``decode(b"", length - 1)``, which starts from zero and reads only input
+        that pyppmd holds; it never resumes a parked worker on empty input (the
+        spurious ``MemoryError``). An empty return means the worker parked again, and
+        no second call is made. The first call is not split: no worker exists yet,
+        and a member handed over whole goes to pyppmd in one ``decode``, as before.
+        """
+        native = self._native
+        if not data or length <= 1 or not self._native_called:
+            self._native_called = True
+            return native.decode(data, length)
+        first = native.decode(data, 1)
+        if not first:
+            return first
+        return first + native.decode(b"", length - 1)
+
     def _decode_unsized(self, data: bytes) -> bytes:
         # Unsized PPMd8 only (PPMd7 without a size is rejected in __init__). Never
         # hand pyppmd max_length=-1; request one bounded chunk per call. Valid PPMd8
@@ -377,7 +410,7 @@ class PpmdDecoder(BaseDecoder):
         # drain loop: a held member arrives whole, and draining it here would build
         # its entire output in one call. The stream asks again while ``needs_input``
         # is False.
-        return self._native.decode(data, _request_size(-1))
+        return self._native_decode(data, _request_size(-1))
 
     def _nul_budget(self, max_length: int) -> int:
         budget = _PPMD_EXTRA_NUL_MAX_OUTPUT
@@ -393,7 +426,7 @@ class PpmdDecoder(BaseDecoder):
             return b""
         self._nul_injected = True
         budget = self._nul_budget(max_length)
-        return self._note_decoded(self._native.decode(b"\0", budget), budget)
+        return self._note_decoded(self._native_decode(b"\0", budget), budget)
 
     def _drain_empty_chunked(self, max_length: int) -> bytes:
         """Pull remaining output in ``_PPMD_EXTRA_NUL_MAX_OUTPUT`` empty decodes.
@@ -455,7 +488,7 @@ class PpmdDecoder(BaseDecoder):
         if max_length < 0:
             return self._decode_unsized(data)
         max_length = _request_size(max_length)
-        return self._note_decoded(self._native.decode(data, max_length), max_length)
+        return self._note_decoded(self._native_decode(data, max_length), max_length)
 
     def _refuse(self, reason: str, cause: BaseException | None = None) -> NoReturn:
         """Refuse this member for good; see ``_refusal``."""
@@ -511,10 +544,10 @@ class PpmdDecoder(BaseDecoder):
                 self._pack_complete() is True
             ):
                 # Whole when the member fits under the limit, in pieces past it. A
-                # child gets the same: pyppmd fed in pieces can stop at a false end
-                # on valid data, so whole is the path that is known to work. Both
-                # tests lead to the same hand-over, so their order does not matter;
-                # where the member decodes is ``isolation``'s alone.
+                # child gets the same: whole, pyppmd is asked least after a corrupt
+                # stream ends early, and it is the path measured most. Both tests
+                # lead to the same hand-over, so their order does not matter; where
+                # the member decodes is ``isolation``'s alone.
                 chunk = self._release_now()
             else:
                 return DecodeOut(b"")
