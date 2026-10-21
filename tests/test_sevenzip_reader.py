@@ -1498,7 +1498,7 @@ def _bools(values: list[bool]) -> bytes:
 
 
 def _property(prop: int, payload: bytes) -> bytes:
-    return bytes([prop]) + _u64(len(payload)) + payload
+    return bytes([prop]) + _sevenzip_uint64(len(payload)) + payload
 
 
 def _names_payload(names: list[str]) -> bytes:
@@ -2106,6 +2106,10 @@ def _lzma2_dict_prop(dict_size: int) -> int:
     return 2 * (dict_size.bit_length() - 1 - 12)
 
 
+# ``many/`` plus one ``dNNN/`` per 1000 files of the archives below.
+_ABOVE_CAP_DIRS = 1 + -(-(_MAX_NUM_STREAMS + 1) // 1000)
+
+
 def _above_stream_cap_archive(*, solid: bool) -> bytes:
     """A 7z of ``_MAX_NUM_STREAMS + 1`` one-byte files, written in Python.
 
@@ -2118,7 +2122,7 @@ def _above_stream_cap_archive(*, solid: bool) -> bytes:
       ``kNumUnPackStream`` of 65 537 with 65 536 ``kSize`` entries (F1);
     * non-solid: one Copy folder and one pack stream per file, 65 537 of each,
       and no ``kNumUnPackStream`` because every folder holds one stream (F2);
-    * both: the 67 directories as leading empty-stream entries, a CRC for every
+    * both: the ``_ABOVE_CAP_DIRS`` (67) directories as leading empty-stream entries, a CRC for every
       file stream, names and Windows attributes, and the whole header
       LZMA-encoded behind a ``kEncodedHeader``, as 7-Zip's default does.
 
@@ -2128,11 +2132,13 @@ def _above_stream_cap_archive(*, solid: bool) -> bytes:
     Built here rather than by ``7z a``: that needs the 65 537 files on disk, and
     writing them took 17 s of setup on Linux and timed out a Windows runner.
     ``test_above_stream_cap_archives_pass_7z_test`` has real 7-Zip test both
-    archives, so a layout this builder got wrong is caught by the writer it copies.
+    archives. That catches a wrong structure (counts, sizes, empty-stream bits) or
+    CRC, but not every coder property: a too-small LZMA2 dictionary still passes,
+    because this content never reaches back that far.
     """
     n = _MAX_NUM_STREAMS + 1
     u64 = _sevenzip_uint64
-    dirs = ["many", *(f"many/d{k:03d}" for k in range((n + 999) // 1000))]
+    dirs = ["many", *(f"many/d{k:03d}" for k in range(_ABOVE_CAP_DIRS - 1))]
     names = dirs + [f"many/d{i // 1000:03d}/f{i:05d}.txt" for i in range(n)]
     content = b"x" * n
     crcs = (zlib.crc32(b"x") & 0xFFFFFFFF).to_bytes(4, "little") * n
@@ -2154,21 +2160,18 @@ def _above_stream_cap_archive(*, solid: bool) -> bytes:
         packed = content
         pack_info = b"\x06\x00" + u64(n) + b"\x09" + u64(1) * n + b"\x00"
         unpack_info = (
-            b"\x07\x0b" + u64(n) + b"\x00" + b"\x01\x00" * n + b"\x0c" + u64(1) * n
+            b"\x07\x0b" + u64(n) + b"\x00" + b"\x01\x01\x00" * n + b"\x0c" + u64(1) * n
         ) + b"\x00"
         sub_streams = b"\x08\x0a\x01" + crcs + b"\x00"
-
-    def prop(prop_id: int, payload: bytes) -> bytes:
-        return bytes([prop_id]) + u64(len(payload)) + payload
 
     dir_attributes = (0x41ED8010).to_bytes(4, "little")  # 0o40755, directory
     file_attributes = (0x81A48020).to_bytes(4, "little")  # 0o100644, archive
     files_info = (
         b"\x05"
         + u64(len(names))
-        + prop(0x0E, _bools([True] * len(dirs) + [False] * n))
-        + prop(0x11, _names_payload(names))
-        + prop(
+        + _property(0x0E, _bools([True] * len(dirs) + [False] * n))
+        + _property(0x11, _names_payload(names))
+        + _property(
             0x15,
             b"\x01\x00" + dir_attributes * len(dirs) + file_attributes * n,
         )
@@ -2291,7 +2294,7 @@ def test_above_stream_cap_archives_pass_7z_test(
     assert result.returncode == 0, (banner, result.stdout[-2000:], result.stderr)
     assert "Everything is Ok" in result.stdout, banner
     assert f"Files: {_MAX_NUM_STREAMS + 1}" in result.stdout, banner
-    assert "Folders: 67" in result.stdout, banner
+    assert f"Folders: {_ABOVE_CAP_DIRS}" in result.stdout, banner
     blocks = 1 if shape == "solid" else _MAX_NUM_STREAMS + 1
     assert f"Blocks = {blocks}" in result.stdout, banner
 
