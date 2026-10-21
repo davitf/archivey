@@ -202,6 +202,9 @@ def _realpath_posix(path: str, asked: str) -> str:
             continue
         candidate = f"{resolved}/{name}"
         try:
+            # Every filesystem call under the destination goes through ``long_path``
+            # (identity on POSIX; ``test_filesystem_calls_take_the_long_path_form``
+            # checks the routing). Safe here because no candidate holds a ``..``.
             mode = os.lstat(long_path(candidate)).st_mode
         except (FileNotFoundError, NotADirectoryError):
             resolved = candidate

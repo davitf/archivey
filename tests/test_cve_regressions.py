@@ -83,22 +83,22 @@ def _assert_no_link_leaves(dest: Path) -> None:
     st = dest.stat()
     inside = {(st.st_dev, st.st_ino)}
     seen: dict[tuple[int, int], list[int]] = {}  # inode: [links found, st_nlink]
-    links: list[tuple[str, int, str]] = []
     # By directory descriptor: the tree's real paths can be longer than PATH_MAX.
-    fds: list[int] = []
-    try:
-        for parent, dirnames, filenames, dir_fd in os.fwalk(dest, onerror=_reraise):
-            fds.append(os.dup(dir_fd))
-            for name in dirnames + filenames:
-                st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
-                if stat.S_ISLNK(st.st_mode):
-                    links.append((parent, fds[-1], name))
-                elif stat.S_ISDIR(st.st_mode):
-                    inside.add((st.st_dev, st.st_ino))
-                else:
-                    seen.setdefault((st.st_dev, st.st_ino), [0, st.st_nlink])[0] += 1
-        inside |= {key for key, (found, nlink) in seen.items() if found >= nlink}
-        for parent, dir_fd, name in links:
+    # Two passes, so no descriptor outlives its directory's turn in the walk.
+    for _, dirnames, filenames, dir_fd in os.fwalk(dest, onerror=_reraise):
+        for name in dirnames + filenames:
+            st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+            if stat.S_ISDIR(st.st_mode):
+                inside.add((st.st_dev, st.st_ino))
+            elif not stat.S_ISLNK(st.st_mode):
+                seen.setdefault((st.st_dev, st.st_ino), [0, st.st_nlink])[0] += 1
+    inside |= {key for key, (found, nlink) in seen.items() if found >= nlink}
+    for parent, dirnames, filenames, dir_fd in os.fwalk(dest, onerror=_reraise):
+        for name in dirnames + filenames:
+            if not stat.S_ISLNK(
+                os.stat(name, dir_fd=dir_fd, follow_symlinks=False).st_mode
+            ):
+                continue
             try:
                 st = os.stat(name, dir_fd=dir_fd)
             except FileNotFoundError:
@@ -112,9 +112,6 @@ def _assert_no_link_leaves(dest: Path) -> None:
                 assert exc.errno in (errno.ELOOP, errno.ENAMETOOLONG), (parent, name)
                 continue
             assert (st.st_dev, st.st_ino) in inside, (parent, name)
-    finally:
-        for fd in fds:
-            os.close(fd)
 
 
 def _path_max_chain(dest: Path) -> list[tuple[str, str, str | bytes]]:
@@ -135,7 +132,13 @@ def _path_max_chain(dest: Path) -> list[tuple[str, str, str | bytes]]:
     )
     # The expansion through the long link must pass PATH_MAX; if it fits, ``escape``
     # is refused as a plain escape and the test no longer covers the CVE.
-    expanded = len(str(dest.resolve())) + len(steps) * (len(component) + 1) + 255
+    long_name = "l" * 254
+    expanded = (
+        len(str(dest.resolve()))
+        + len(steps) * (len(component) + 1)
+        + len(long_name)
+        + 1
+    )
     assert len(component) < 255 and expanded > path_max, (len(component), expanded)
     entries: list[tuple[str, str, str | bytes]] = []
     path = ""
@@ -143,7 +146,7 @@ def _path_max_chain(dest: Path) -> list[tuple[str, str, str | bytes]]:
         entries.append(("dir", os.path.join(path, component), ""))
         entries.append(("sym", os.path.join(path, step), component))
         path = os.path.join(path, component)
-    long_link = os.path.join(*steps, "l" * 254)
+    long_link = os.path.join(*steps, long_name)
     entries.append(("sym", long_link, os.path.join(*[".."] * len(steps))))
     entries.append(("sym", "escape", os.path.join(long_link, "..")))
     entries.append(("hard", "flaglink", "escape/outside/victim"))
