@@ -1354,9 +1354,11 @@ def test_a_rar4_link_whose_data_is_out_of_reach_says_why(
                 isinstance(r.error, LinkTargetNotFoundError) for r in link_results
             )
             # The library default aborts on it, as it did before this status existed.
-            with open_archive(fixture) as opened:
-                with pytest.raises(LinkTargetNotFoundError):
-                    opened.extract_all(dest / "stop", members=only_links)
+            with (
+                open_archive(fixture) as opened,
+                pytest.raises(LinkTargetNotFoundError),
+            ):
+                opened.extract_all(dest / "stop", members=only_links)
         else:
             assert all(
                 r.status is ExtractionStatus.LINK_TARGET_UNAVAILABLE

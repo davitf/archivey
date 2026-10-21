@@ -1041,9 +1041,12 @@ def decode_folder_to_bytes(
         decoded = read_exact(stream, uncompressed_size)
         if len(decoded) != uncompressed_size:
             raise TruncatedError("7z folder is truncated after decoding")
-        if folder.digest_defined and folder.crc is not None:
-            if zlib.crc32(decoded) & 0xFFFFFFFF != folder.crc & 0xFFFFFFFF:
-                raise CorruptionError("Decoded 7z folder CRC mismatch")
+        if (
+            folder.digest_defined
+            and folder.crc is not None
+            and zlib.crc32(decoded) & 0xFFFFFFFF != folder.crc & 0xFFFFFFFF
+        ):
+            raise CorruptionError("Decoded 7z folder CRC mismatch")
         return decoded
     finally:
         stream.close()

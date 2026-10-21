@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import lzma
 import os
 import random
 import shutil
@@ -507,12 +508,14 @@ def test_decoder_truncated_error_during_confirm_is_wrong_password(
     _write_py7zr_archive(archive, {"a.txt": b"hello" * 200}, password="secret")
     state = _patch_codec_raises_truncated(monkeypatch)
 
-    with pytest.raises(EncryptionError, match="Wrong password or corrupt 7z folder"):
-        with open_archive(archive, password="wrong") as reader:
-            member = next(m for m in reader.members() if m.is_file)
-            # Mutation D: catch base TruncatedError in the confirm
-            # passthrough — this leaks TruncatedError and never remaps.
-            reader.read(member)
+    with (
+        pytest.raises(EncryptionError, match="Wrong password or corrupt 7z folder"),
+        open_archive(archive, password="wrong") as reader,
+    ):
+        member = next(m for m in reader.members() if m.is_file)
+        # Mutation D: catch base TruncatedError in the confirm
+        # passthrough — this leaks TruncatedError and never remaps.
+        reader.read(member)
 
     assert state["wrapped"] >= 1, "codec stage was never opened"
 
@@ -772,9 +775,8 @@ def test_encrypted_ppmd_chunked_reads_roundtrip(tmp_path: Path) -> None:
         password="secret",
     )
     # Guard the fixture: a non-encrypted archive would make this test vacuous.
-    with pytest.raises(EncryptionError):
-        with open_archive(archive) as unauth:
-            unauth.read(next(m for m in unauth.members() if m.is_file))
+    with pytest.raises(EncryptionError), open_archive(archive) as unauth:
+        unauth.read(next(m for m in unauth.members() if m.is_file))
     with open_archive(archive, password="secret") as reader:
         members = {m.name: m for m in reader.members() if m.is_file}
         assert set(members) == set(files)
@@ -1292,18 +1294,20 @@ def test_password_confirm_does_not_request_the_whole_folder(
     # rewritten CRC branch: store+AES has no decompressor to reject a wrong key, so
     # the confirm CRC is the sole rejector. Without this the branch is covered only
     # by BytesIO unit tests.
-    with pytest.raises(EncryptionError, match="Wrong password or corrupt 7z folder"):
-        with open_archive(archive, password="wrong") as reader:
-            member = next(m for m in reader.members() if m.is_file)
-            with reader.open(member) as stream:
-                stream.read(1)
+    with (
+        pytest.raises(EncryptionError, match="Wrong password or corrupt 7z folder"),
+        open_archive(archive, password="wrong") as reader,
+    ):
+        member = next(m for m in reader.members() if m.is_file)
+        with reader.open(member) as stream:
+            stream.read(1)
 
 
 def _reader_for_unit_tests() -> SevenZipReader:
     reader = object.__new__(SevenZipReader)
-    reader._stream_config = DEFAULT_STREAM_CONFIG  # noqa: SLF001 - focused unit test
-    reader._diagnostics_collector = None  # noqa: SLF001 - focused unit test
-    reader._key_cache = sevenzip_aes.SevenZipKeyCache()  # noqa: SLF001 - focused unit test
+    reader._stream_config = DEFAULT_STREAM_CONFIG
+    reader._diagnostics_collector = None
+    reader._key_cache = sevenzip_aes.SevenZipKeyCache()
     return reader
 
 
@@ -1324,9 +1328,9 @@ def _open_pipeline(
         [source],
         folder,
         password=password,
-        key_cache=reader._key_cache,  # noqa: SLF001 - focused reader unit test
-        stream_config=reader._stream_config,  # noqa: SLF001 - focused reader unit test
-        collector=reader._diagnostics_collector,  # noqa: SLF001 - focused reader unit test
+        key_cache=reader._key_cache,
+        stream_config=reader._stream_config,
+        collector=reader._diagnostics_collector,
     )
 
 
@@ -1497,7 +1501,7 @@ def _bools(values: list[bool]) -> bytes:
 
 
 def _property(prop: int, payload: bytes) -> bytes:
-    return bytes([prop]) + _u64(len(payload)) + payload
+    return bytes([prop]) + _sevenzip_uint64(len(payload)) + payload
 
 
 def _names_payload(names: list[str]) -> bytes:
@@ -1951,9 +1955,11 @@ def test_encoded_header_self_copy_is_typed_corruption() -> None:
     next_header = bytes.fromhex("17060001091100070b010001000c110000")
     blob = _sevenzip_blob(packed=next_header, next_header=next_header)
     assert len(blob) == 66
-    with raises_corruption_not_truncation(match="decoded to another encoded header"):
-        with open_archive(io.BytesIO(blob)):
-            pass
+    with (
+        raises_corruption_not_truncation(match="decoded to another encoded header"),
+        open_archive(io.BytesIO(blob)),
+    ):
+        pass
 
 
 _NOT_ONE_FOLDER = "must have exactly one"
@@ -2030,9 +2036,8 @@ def test_header_that_is_not_one_plain_header_is_corruption(
 ) -> None:
     """7-Zip refuses each of these; none may open as an archive (DR-1)."""
     blob = _sevenzip_blob(packed=packed, next_header=next_header)
-    with raises_corruption_not_truncation(match=match):
-        with open_archive(io.BytesIO(blob)):
-            pass
+    with raises_corruption_not_truncation(match=match), open_archive(io.BytesIO(blob)):
+        pass
 
 
 def test_encoded_header_to_empty_header_opens() -> None:
@@ -2099,102 +2104,125 @@ def test_encoded_header_unpack_size_is_capped() -> None:
         load_sevenzip_archive(io.BytesIO(blob))
 
 
-# Per-shape ``7z a`` arguments for the archives above the stream cap; see
-# test_archives_above_stream_cap_still_open for why non-solid uses ``-mx=0``.
-_ABOVE_STREAM_CAP_SHAPES = {"solid": [], "nonsolid": ["-ms=off", "-mx=0"]}
+def _lzma2_dict_prop(dict_size: int) -> int:
+    """The one-byte LZMA2 coder property for ``dict_size``, a power of two of 4 KiB or more."""
+    assert dict_size >= 4096 and dict_size & (dict_size - 1) == 0
+    return 2 * (dict_size.bit_length() - 1 - 12)
+
+
+# ``many/`` plus one ``dNNN/`` per 1000 files of the archives below.
+_ABOVE_CAP_DIRS = 1 + -(-(_MAX_NUM_STREAMS + 1) // 1000)
+
+
+def _above_stream_cap_archive(*, solid: bool) -> bytes:
+    """A 7z of ``_MAX_NUM_STREAMS + 1`` one-byte files, written in Python.
+
+    The layout is the one 7-Zip 23.01 writes for a tree of that many files under
+    ``many/dNNN/`` -- ``7z a`` for the solid shape, ``7z a -ms=off -mx=0`` for the
+    non-solid one -- read off that writer's output with the header left plain
+    (``-mhc=off``):
+
+    * solid: one LZMA2 folder holding every file, so one pack stream and
+      ``kNumUnPackStream`` of 65 537 with 65 536 ``kSize`` entries (F1);
+    * non-solid: one Copy folder and one pack stream per file, 65 537 of each,
+      and no ``kNumUnPackStream`` because every folder holds one stream (F2);
+    * both: the ``_ABOVE_CAP_DIRS`` (67) directories as leading empty-stream entries, a CRC for every
+      file stream, names and Windows attributes, and the whole header
+      LZMA-encoded behind a ``kEncodedHeader``, as 7-Zip's default does.
+
+    The fields 7-Zip writes that no limit reads are left out: modification times
+    and the ``kDummy`` it pads names to alignment with.
+
+    Built here rather than by ``7z a``: that needs the 65 537 files on disk, and
+    writing them took 17 s of setup on Linux and timed out a Windows runner.
+    ``test_above_stream_cap_archives_pass_7z_test`` has real 7-Zip test both
+    archives. That catches a wrong structure (counts, sizes, empty-stream bits) or
+    CRC, but not every coder property: a too-small LZMA2 dictionary still passes,
+    because this content never reaches back that far.
+    """
+    n = _MAX_NUM_STREAMS + 1
+    u64 = _sevenzip_uint64
+    dirs = ["many", *(f"many/d{k:03d}" for k in range(_ABOVE_CAP_DIRS - 1))]
+    names = dirs + [f"many/d{i // 1000:03d}/f{i:05d}.txt" for i in range(n)]
+    content = b"x" * n
+    crcs = (zlib.crc32(b"x") & 0xFFFFFFFF).to_bytes(4, "little") * n
+
+    if solid:
+        dict_size = 1 << 16
+        packed = lzma.compress(
+            content,
+            format=lzma.FORMAT_RAW,
+            filters=[{"id": lzma.FILTER_LZMA2, "dict_size": dict_size}],
+        )
+        coder = b"\x21\x21\x01" + bytes([_lzma2_dict_prop(dict_size)])
+        pack_info = b"\x06\x00\x01\x09" + u64(len(packed)) + b"\x00"
+        unpack_info = b"\x07\x0b\x01\x00\x01" + coder + b"\x0c" + u64(n) + b"\x00"
+        sub_streams = (
+            b"\x08\x0d" + u64(n) + b"\x09" + u64(1) * (n - 1) + b"\x0a\x01" + crcs
+        ) + b"\x00"
+    else:
+        packed = content
+        pack_info = b"\x06\x00" + u64(n) + b"\x09" + u64(1) * n + b"\x00"
+        unpack_info = (
+            b"\x07\x0b" + u64(n) + b"\x00" + b"\x01\x01\x00" * n + b"\x0c" + u64(1) * n
+        ) + b"\x00"
+        sub_streams = b"\x08\x0a\x01" + crcs + b"\x00"
+
+    dir_attributes = (0x41ED8010).to_bytes(4, "little")  # 0o40755, directory
+    file_attributes = (0x81A48020).to_bytes(4, "little")  # 0o100644, archive
+    files_info = (
+        b"\x05"
+        + u64(len(names))
+        + _property(0x0E, _bools([True] * len(dirs) + [False] * n))
+        + _property(0x11, _names_payload(names))
+        + _property(
+            0x15,
+            b"\x01\x00" + dir_attributes * len(dirs) + file_attributes * n,
+        )
+        + b"\x00"
+    )
+    header = (
+        b"\x01\x04" + pack_info + unpack_info + sub_streams + b"\x00" + files_info
+    ) + b"\x00"
+
+    # LZMA (``03 01 01``) with lc=3, lp=0, pb=2: the coder 7-Zip encodes headers with.
+    header_dict = 1 << 20
+    encoded = lzma.compress(
+        header,
+        format=lzma.FORMAT_RAW,
+        filters=[
+            {"id": lzma.FILTER_LZMA1, "dict_size": header_dict, "lc": 3, "lp": 0},
+        ],
+    )
+    lzma_coder = b"\x23\x03\x01\x01\x05\x5d" + header_dict.to_bytes(4, "little")
+    next_header = (
+        b"\x17"
+        + (b"\x06" + u64(len(packed)) + b"\x01\x09" + u64(len(encoded)) + b"\x00")
+        + (b"\x07\x0b\x01\x00\x01" + lzma_coder + b"\x0c" + u64(len(header)))
+        + (b"\x0a\x01" + (zlib.crc32(header) & 0xFFFFFFFF).to_bytes(4, "little"))
+        + b"\x00\x00"
+    )
+    return _sevenzip_blob(packed=packed + encoded, next_header=next_header)
 
 
 @pytest.fixture(scope="module")
 def above_stream_cap_archives(
     tmp_path_factory: pytest.TempPathFactory,
-) -> dict[str, tuple[Path | None, str]]:
-    """Both 7z archives of ``_MAX_NUM_STREAMS + 1`` one-byte files, built once.
+) -> dict[str, Path]:
+    """Both archives of :func:`_above_stream_cap_archive`, written once per module.
 
-    Each shape maps to ``(archive, banner)``: the archive is ``None`` when ``7z``
-    could not build it, and the text is then its stderr instead of its banner.
-
-    Both shapes need the same 65 537 files and nothing mutates them, so one tree
-    is written, both archives are built from it, and the tree is deleted, all
-    inside this setup. The two archives are left for pytest's own pruning. The
-    tree is not, because pruning unlinks it file by file in some later session,
-    a single-test run included: measured on a slow container disk, that later
-    run spent about 100 s in the cleanup. A run killed partway still leaves it.
-
-    Everything costly happens here so that it lands in setup, which the
-    tests' ``func_only=True`` mark leaves outside their 120 s budget. Without
-    it, ``pytest-timeout`` charges a module fixture's setup to whichever item
-    runs first, and its teardown to the last item of the module on that worker,
-    usually an unrelated test on the 60 s default. On a slow Windows runner the
-    first item, setup included, went past 120 s, and the thread-method timeout
-    killed the worker with no traceback. Writing the tree is the volatile
-    phase: repeated runs of identical work on one idle container spanned 3.8 s
-    to 22.2 s, against a steady ~2 s for either archive build. Setup has no
-    timer, so a stall here falls to the job's own limit without naming the
-    test; the file writes cannot hang, and each ``7z`` call carries its own
-    timeout, which names the shape when it fires.
-
-    Every timing here and below is Linux with 7z 23.01. The two runs that timed
-    out before the split were macOS and Windows, where 65 537 file creates can
-    cost considerably more, so these figures are a floor for those runners
-    rather than the margin they see.
-
-    Those two also run whatever ``7z`` their runner image happens to ship: CI
-    installs and verifies it on Linux only. That was decided for the
-    encrypted-ZIP corpus rows, which need ``7z`` to *write* their fixtures --
-    see ``.github/workflows/ci.yml`` and residual 1 of
-    ``review/archive/2026-07-28-debt-ledger/corpus-matrix.md``, which also
-    carries the cost of any other answer (Homebrew ships ``7zz``, not ``7z``,
-    so ``requires_binary("7z")`` would go on skipping on macOS regardless).
-    This test is a later consumer of that binary and was never weighed in that
-    decision, so the shape claims below are *measured* on Linux 7-Zip 23.01 and
-    merely *assumed* elsewhere. The shape assertions therefore carry the
-    writer's own banner, so a failure on a runner nobody measured says which
-    writer produced it.
+    Building one is about a second, so the module scope only saves repeating it for
+    the 7-Zip check below; the tests' 120 s budget covers it either way.
     """
     root = tmp_path_factory.mktemp("above-stream-cap")
-    src = root / "many"
-    built: dict[str, tuple[Path | None, str]] = {}
-    try:
-        src.mkdir()
-        for i in range(_MAX_NUM_STREAMS + 1):
-            directory = src / f"d{i // 1000:03d}"
-            directory.mkdir(exist_ok=True)
-            (directory / f"f{i:05d}.txt").write_bytes(b"x")
-        for shape, extra_args in _ABOVE_STREAM_CAP_SHAPES.items():
-            archive = root / f"{shape}.7z"
-            result = run_7z(
-                ["a", "-t7z", *extra_args, str(archive), src.name],
-                cwd=root,
-                check=False,
-                timeout=300,
-            )
-            if result.returncode != 0:
-                built[shape] = (None, repr(result.stderr))
-                continue
-            # The fixture is only useful if it still has the shape it is named for;
-            # a 7z release that laid these out differently would otherwise leave the
-            # test green while covering neither F1 nor F2. CI pins the writer on
-            # Linux only, so name it in the failure: elsewhere it is whatever the
-            # image ships.
-            banner = next(
-                (
-                    line.strip()
-                    for line in result.stdout.decode("utf-8", "replace").splitlines()
-                    if line.strip()
-                ),
-                "7z banner not captured",
-            )
-            built[shape] = (archive, banner)
-    finally:
-        # Best effort: a file that will not unlink is left for pytest's own pruning
-        # rather than failing a setup whose archives were built.
-        shutil.rmtree(src, ignore_errors=True)
+    built = {}
+    for shape, solid in (("solid", True), ("nonsolid", False)):
+        built[shape] = root / f"{shape}.7z"
+        built[shape].write_bytes(_above_stream_cap_archive(solid=solid))
     return built
 
 
-# func_only: the archives are built in setup; see above_stream_cap_archives.
-@pytest.mark.timeout(120, func_only=True)
-@requires_binary("7z")
+@pytest.mark.timeout(120)
 @pytest.mark.parametrize(
     ("shape", "single_folder"),
     [
@@ -2203,7 +2231,7 @@ def above_stream_cap_archives(
     ],
 )
 def test_archives_above_stream_cap_still_open(
-    above_stream_cap_archives: dict[str, tuple[Path | None, str]],
+    above_stream_cap_archives: dict[str, Path],
     shape: str,
     single_folder: bool,
 ) -> None:
@@ -2216,36 +2244,27 @@ def test_archives_above_stream_cap_still_open(
 
     The two shapes are separate tests because they shared one 120 s budget and
     together came close enough to it to time out on the slower CI runners. The
-    worst item measured after that split, with its ``7z`` build still in the
-    body, was 25-30 s; the build has since moved into the fixture, and the mark
-    stays at 120 s anyway: the margin is for the spread, not for the mean.
+    worst item measured on Linux, with coverage on, took 26-35 s, nearly all of
+    it the reader opening the non-solid archive's 65 537 folders three times; the
+    mark stays at 120 s because the margin is for the spread, not for the mean.
 
-    The non-solid archive is built with ``-mx=0``. That is not a shortcut past
-    what F2 covers: measured against 7z 23.01, ``-ms=off -mx=0`` produces the
-    same 65 537 folders and 65 537 unpack streams as the default codec and
-    costs 2.0 s instead of 11.5 s. It does change the coder, LZMA2 (``0x21``)
-    to Copy (``0x00``), which these caps do not depend on:
-    ``_require_header_count`` and ``_require_member_scaled_count`` compare a
-    count read from the header against the header size and against the
-    configured ``max_members``, and both run at header-parse time, before any
-    coder is instantiated, so the codec cannot reach them. The next header stays
-    LZMA-encoded (``kEncodedHeader``) in all four build variants, so that path
-    is exercised either way. ``-mx=0`` must
-    not be used for the solid shape, where it splits the single folder F1 needs
-    into one per member -- which is why this test asserts the folder layout
-    rather than trusting it.
+    The non-solid archive uses the Copy coder, as ``7z a -ms=off -mx=0`` does,
+    where 7-Zip's default would write LZMA2. The caps do not depend on the coder:
+    ``_require_header_count`` and ``_require_member_scaled_count`` compare a count
+    read from the header against the header size and against the configured
+    ``max_members``, and both run at header-parse time, before any coder is
+    instantiated. The header is LZMA-encoded in both shapes, so the
+    ``kEncodedHeader`` path runs at this size too.
     """
     from archivey.config import ListingLimits
     from archivey.exceptions import ResourceLimitError
 
     n = _MAX_NUM_STREAMS + 1
-    archive, writer = above_stream_cap_archives[shape]
-    if archive is None:
-        pytest.skip(f"7z CLI cannot build {shape} fixture: {writer}")
+    archive = above_stream_cap_archives[shape]
     with archive.open("rb") as raw:
         parsed = load_sevenzip_archive(raw)
-    assert sum(parsed.num_unpackstreams_folders) == n, writer
-    assert len(parsed.folders) == (1 if single_folder else n), writer
+    assert sum(parsed.num_unpackstreams_folders) == n
+    assert len(parsed.folders) == (1 if single_folder else n)
 
     with open_archive(archive) as reader:
         files = [m for m in reader.members() if m.is_file]
@@ -2261,11 +2280,33 @@ def test_archives_above_stream_cap_still_open(
         assert sum(1 for m in reader.members() if m.is_file) == n
 
 
+@pytest.mark.timeout(120)
+@requires_binary("7z")
+@pytest.mark.parametrize("shape", ["solid", "nonsolid"])
+def test_above_stream_cap_archives_pass_7z_test(
+    above_stream_cap_archives: dict[str, Path], shape: str
+) -> None:
+    """Real 7-Zip reads the archives built above as the tree they stand for.
+
+    ``7z t`` decodes the header, every folder and every CRC, so a field the builder
+    encodes wrongly fails here rather than leaving the open test above checking an
+    archive no 7-Zip would write. The counts are those of the source tree, 65 537
+    files in 67 directories, and the blocks are the folders each shape is named for.
+    """
+    result = run_7z(["t", str(above_stream_cap_archives[shape])], text=True)
+    banner = next((line for line in result.stdout.splitlines() if line.strip()), "")
+    assert result.returncode == 0, (banner, result.stdout[-2000:], result.stderr)
+    assert "Everything is Ok" in result.stdout, banner
+    assert f"Files: {_MAX_NUM_STREAMS + 1}" in result.stdout, banner
+    assert f"Folders: {_ABOVE_CAP_DIRS}" in result.stdout, banner
+    blocks = 1 if shape == "solid" else _MAX_NUM_STREAMS + 1
+    assert f"Blocks = {blocks}" in result.stdout, banner
+
+
 @pytest.mark.timeout(30)
 @requires_binary("7z")
 def test_bcj2_nonsolid_pack_streams_are_not_member_scaled(tmp_path: Path) -> None:
     """Non-solid BCJ2 has four pack streams per folder; max_members must not use that count."""
-    import shutil
 
     from archivey.config import ListingLimits
     from archivey.exceptions import ResourceLimitError
