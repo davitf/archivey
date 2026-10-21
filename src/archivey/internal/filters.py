@@ -865,8 +865,20 @@ def collision_key(name: str, policy: ExtractionPolicy) -> str:
     ``STRICT``/``STANDARD`` fold case and Unicode normalization so ``README``/``readme`` and
     NFC/NFD ``café`` collide on every platform; ``TRUSTED`` keys on the exact name (defer to
     the local OS). Separators are normalized so ``a/b`` and ``a\\b`` share a key.
+
+    A trailing dot or space on a segment is dropped from the key too: Win32 trims it, so
+    ``foo.`` and ``foo`` are one file on Windows. ``STRICT`` has already rewritten the name;
+    ``STANDARD`` keeps it, and without this the second member would silently replace the
+    first on Windows and land beside it elsewhere. A segment of only dots and spaces keeps
+    its spelling, as it has no trimmed form.
     """
     rel = name.replace("\\", "/").rstrip("/")
     if policy is ExtractionPolicy.TRUSTED:
         return rel
-    return unicodedata.normalize("NFC", rel).casefold()
+    return _map_segments(unicodedata.normalize("NFC", rel).casefold(), _trim_for_key)
+
+
+def _trim_for_key(segment: str) -> str:
+    """``segment`` as Win32 names it: a trailing dot or space dropped, unless nothing
+    else is left (``.``, ``..``, ``...``)."""
+    return segment.rstrip(". ") or segment

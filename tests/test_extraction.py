@@ -4007,6 +4007,28 @@ def test_o3_trailing_dot_space_stripped_strict_kept_standard(
         assert sorted(p.name for p in (tmp_path / "standard").iterdir()) == [name]
 
 
+@pytest.mark.parametrize("policy", [ExtractionPolicy.STRICT, ExtractionPolicy.STANDARD])
+def test_o3_trailing_dot_name_collides_with_trimmed_name(
+    tmp_path: Path, policy: ExtractionPolicy
+) -> None:
+    # Win32 writes 'notes.' as 'notes', so the pair is one file there. STANDARD keeps the
+    # name, and the collision must still be caught on every platform, as for README and
+    # readme: ERROR fails the second member instead of a silent replace on Windows.
+    archive = _tar_bytes([("file", "notes", b"A"), ("file", "notes. ", b"B")])
+    dest = tmp_path / "out"
+    report = open_and_extract(
+        io.BytesIO(archive),
+        dest,
+        policy=policy,
+        overwrite=OverwritePolicy.ERROR,
+        on_error=OnError.CONTINUE,
+    )
+    statuses = [r.status for r in report.results]
+    assert statuses == [ExtractionStatus.EXTRACTED, ExtractionStatus.FAILED]
+    assert (dest / "notes").read_bytes() == b"A"
+    assert sorted(p.name for p in dest.iterdir()) == ["notes"]
+
+
 def test_o3_trailing_dot_directory_tree_stays_connected(tmp_path: Path) -> None:
     # The reported real-world case: a macOS folder named 'stuff_etc.' with a file inside.
     # STRICT must strip the same segment identically in the dir entry and its children, so

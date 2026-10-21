@@ -242,7 +242,9 @@ bytes. The outcome is the same on every platform. ADR
   trims it silently and the reported path would differ from the real one. The rewrite is
   recorded as `ExtractionResult.presented_name`, the only record that survives a caller
   filter rename. An all-dots segment has no portable spelling and is rejected.
-  `STANDARD` and `TRUSTED` keep the name.
+  `STANDARD` and `TRUSTED` keep the name. Under `STRICT` and `STANDARD` the collision key
+  drops a trailing dot or space too, so `notes.` and `notes` collide on every platform, as
+  Win32 would merge them.
 - Two classes of character are percent-escaped (`_sanitize_portable_name`: `%XX`,
   literal `%` as `%25`), a deterministic and reversible spelling: non-UTF-8 bytes, and
   the characters Win32 refuses in a name, `<>"|?*` and the controls 0x01 to 0x1F.

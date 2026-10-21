@@ -1467,8 +1467,10 @@ keyed off `ExtractionPolicy`, so the same archive yields the same logical outcom
 rules compose with — and never bypass — the non-bypassable path-safety constraints.
 
 **Collision determinism (O2).** Under `STRICT` and `STANDARD`, the coordinator SHALL track
-a `casefold(NFC(path))` key per written destination and treat a second member resolving to
-the same key as an existing destination on **all** platforms. The key is taken on where
+a `casefold(NFC(path))` key per written destination, with a trailing dot or space dropped
+from each segment that has other characters (Win32 trims it, so `foo.` and `foo` are one
+file there), and treat a second member resolving to the same key as an existing
+destination on **all** platforms. The key is taken on where
 the entry physically lands (its parent resolved), so a member written through a
 directory symlink the archive created (`s/f` with `s -> d`) collides with `d/f`. A
 member whose destination holds an entry that no member of this run claimed by key, but that
