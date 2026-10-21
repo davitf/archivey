@@ -433,7 +433,9 @@ sending side when the ZIP is done.
 - **Comments** decode the same way. A member comment follows its name's flag (a flag the name's
   bytes refute counts as unset for the comment too), and the archive comment, which has no flag,
   decodes as an unflagged name. A byte the chosen encoding does not define stays in the comment as
-  a surrogate escape, as in a name.
+  a surrogate escape, as in a name. An Info-ZIP Unicode Comment field (`0x6375`) whose checksum
+  matches the stored comment gives a member comment whose bit 11 is clear in UTF-8, by the Unicode
+  Path field's rules, as 7-Zip reads it.
 
 ### Times, owners and extra fields
 
@@ -851,7 +853,9 @@ would need its own copy of it), or when `unar` is known to misread the archive.
 - A RAR 1.5-4 comment is 8-bit text that does not say which code page it is in. Archivey reads it
   up to the first NUL, as UTF-8 if it is valid, otherwise with the `encoding=` you passed, and
   otherwise as windows-1252. A byte that code page does not define stays as a surrogate escape, as
-  in a name. A RAR 2.9-4 comment flagged as Unicode is UTF-16LE. A RAR5 comment is UTF-8.
+  in a name. A RAR 2.9-4 comment flagged as Unicode is UTF-16LE, and an unpaired surrogate in it
+  stays, as in a name. A RAR5 comment is UTF-8, and a byte in it that is not valid UTF-8 stays as a
+  surrogate escape.
 
 ### Member types and fields
 
@@ -895,6 +899,8 @@ would need its own copy of it), or when `unar` is known to misread the archive.
   take turns on it, as in TAR.
 - **From a pipe:** no; an ISO needs a source that can seek.
 - `ArchiveInfo.format_version` is `None`: ISO 9660 records no interchange level.
+- `ArchiveInfo.comment` is the volume identifier (`-V`), decoded as a plain ISO 9660 name is:
+  UTF-8 first, then `encoding=`, then escaped.
 
 ### Names
 
