@@ -481,7 +481,9 @@ directory, and raises the damage ahead of a check a member before it fails.
 local-header offset past the file's end SHALL raise `CorruptionError` when that member
 opens, never `TruncatedError` (the directory follows every local header, so the offset
 is wrong, not the file cut) and never an untyped error for an offset too large to seek
-to.
+to. A local-header offset that falls before the file's start, as when the archive lost
+its first bytes, SHALL raise `CorruptionError` when that member opens, and its message
+SHALL say how many bytes the archive seems to be missing, not give the negative offset.
 
 An entry's lengths are damaged when:
 
@@ -526,6 +528,7 @@ ruling (PR 860).
 | First entry's comment length cut from 13 to 8, from a file and from a pipe | Both members listed with comment `None`, never `hello-co`, then `CorruptionError` |
 | 40 members, each with two signatures in its comment and one in its name, from a file and from a pipe | Every member listed with its mode and comment; no error and no diagnostic |
 | Second entry's ZIP64 local-header offset 2^41, 2^63 − 1 or 2^64 − 1 | Both members listed; `a.txt` reads, `b.txt` raises `CorruptionError` when it opens |
+| First 60 bytes of a three-member stored ZIP cut off | All three members listed; `a.txt` and `b.txt` raise `CorruptionError` saying the archive seems to be missing at least its first 60 and 10 bytes; `c.txt` reads |
 
 ### Requirement: Read ZIP members whatever version they say they need
 

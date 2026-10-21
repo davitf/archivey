@@ -1396,7 +1396,15 @@ def read_local_header(
     :data:`MAX_DATA_OFFSET` are refused. The caller decides what a disagreement with the
     central directory means. ``zip64_sizes`` is :func:`local_header_from`'s.
     """
-    if not 0 <= header_offset <= MAX_DATA_OFFSET:
+    if header_offset < 0:
+        # The directory was found, but taking its offset from where it sits puts this
+        # header before byte 0: the bytes in front of it are gone (a front cut).
+        raise CorruptionError(
+            f"The member's local header would start {-header_offset} bytes before "
+            "the start of the file: the archive seems to be missing at least its "
+            f"first {-header_offset} bytes"
+        )
+    if header_offset > MAX_DATA_OFFSET:
         raise CorruptionError(f"Absurd local-header offset: {header_offset}")
     fixed = read_at(header_offset, LOCAL_HEADER_SIZE)
     if len(fixed) == LOCAL_HEADER_SIZE and fixed[:4] != LOCAL_HEADER_SIGNATURE:

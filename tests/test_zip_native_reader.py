@@ -356,6 +356,29 @@ def test_an_offset_no_file_can_seek_to_is_corruption(
         assert reader.read(report.members[2]) == b"b.txtb.txtb.txt"
 
 
+def test_a_zip_missing_its_first_bytes_says_so(tmp_path: object) -> None:
+    """A ZIP whose first 60 bytes are gone: the directory still finds the members, but
+    the first two local headers would start before the file. Each of those reads
+    raises ``CorruptionError`` that names how many bytes are missing, never the raw
+    negative offset, and the third member still reads."""
+    from pathlib import Path
+
+    data = _zip()
+    path = Path(str(tmp_path)) / "front-cut.zip"
+    path.write_bytes(data[60:])
+    with open_archive(path) as reader:
+        report = reader.members_report()
+        assert report.error is None
+        a, b, c = report.members
+        for member, missing in ((a, 60), (b, 10)):
+            with raises_corruption_not_truncation(
+                match=f"missing at least its first {missing} bytes"
+            ) as caught:
+                reader.read(member)
+            assert "offset: -" not in str(caught.value)
+        assert reader.read(c) == b"c.txtc.txtc.txt"
+
+
 def _bad_utf8_second_name(*, local_too: bool, header_offset: int | None) -> bytes:
     """Three bit-3 members whose second directory entry is flagged UTF-8 over a name
     that is not (read as unflagged), optionally pointing at ``header_offset``, and
