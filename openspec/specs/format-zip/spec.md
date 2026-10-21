@@ -1043,8 +1043,9 @@ text is non-empty valid UTF-8, the comment SHALL be that text, ahead of the snif
 1 SHALL be ignored. A malformed field (shorter than 5 bytes, or with a matching CRC and
 text that is empty, not valid UTF-8 or cut short by the end of the extra field) SHALL be
 dropped, the comment decoded as above, and `MEMBER_HEADER_RECORD_SKIPPED` emitted on the
-member with `record="unicode_comment"` and `record_id=0x6375`. The field of a comment
-under a trusted bit 11 SHALL NOT be consulted. A field the comment used SHALL NOT appear
+member with `record="unicode_comment"` and `record_id=0x6375`. As for a name, the field
+SHALL be consulted only when bit 11 is clear: a comment under a set bit 11, trusted or
+refuted by the name, SHALL NOT read it. A field the comment used SHALL NOT appear
 in `extra["zip.extra_fields"]`.
 
 #### Scenario: A Unicode Comment field gives the member comment
@@ -1055,6 +1056,7 @@ in `extra["zip.extra_fields"]`.
 | The same field with the CRC of other bytes, or version 2 | Field ignored: `comment == "café"` (cp437) |
 | Field of 3 bytes, or matching CRC and invalid UTF-8 text | `comment == "café"`; `MEMBER_HEADER_RECORD_SKIPPED`, `record="unicode_comment"`; `DiagnosticPolicy.STRICT` refuses |
 | Bit 11 set over a valid UTF-8 name, malformed field | Field not consulted: no diagnostic |
+| Bit 11 set over the name `caf\xe9.txt`, which refutes it, good or malformed field | Field not consulted: `comment == "café"`; only the name's `MEMBER_NAME_ENCODING_INFERRED` |
 
 #### Scenario: A flagged member comment ignores `encoding=`
 

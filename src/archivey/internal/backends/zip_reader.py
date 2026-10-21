@@ -2569,12 +2569,13 @@ class ZipReader(BaseArchiveReader):
             if entry.flags & _ZIP_MASK_UTF8 and decoded_name.declared_encoding is None:
                 member.comment = _decode_with_fallback(entry.comment)
             else:
-                # An unflagged comment with an Info-ZIP Unicode Comment field (0x6375)
-                # whose CRC matches the stored bytes takes the field's text, ahead of
-                # the sniff and of encoding=, as 7-Zip does; the rule is the Unicode
-                # Path field's for a name. A malformed field is dropped and reported
-                # below.
-                if entry.extra:
+                # A comment with bit 11 clear and an Info-ZIP Unicode Comment field
+                # (0x6375) whose CRC matches the stored bytes takes the field's text,
+                # ahead of the sniff and of encoding=, as 7-Zip does. The rule is the
+                # Unicode Path field's for a name: the field is read only when bit 11 is
+                # clear, so a flag the name refutes leaves both fields unread, as 7-Zip
+                # 23.01 does. A malformed field is dropped and reported below.
+                if entry.extra and not entry.flags & _ZIP_MASK_UTF8:
                     unicode_comment = _unicode_comment_text(fields, entry.comment)
                 member.comment = (
                     unicode_comment.name.decode("utf-8")

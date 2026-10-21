@@ -481,6 +481,31 @@ def test_malformed_unicode_comment_field_is_dropped_with_a_diagnostic(
 
 
 @pytest.mark.filterwarnings("error")
+@pytest.mark.parametrize(
+    "field",
+    [
+        pytest.param(_unicode_comment_field(), id="good"),
+        pytest.param(struct.pack("<HH", 0x6375, 3) + b"\x01\x02\x03", id="malformed"),
+    ],
+)
+def test_unicode_comment_field_under_a_refuted_flag_is_not_consulted(
+    field: bytes,
+) -> None:
+    # Bit 11 set over a name that is not UTF-8: the flag is refuted, so name and comment
+    # decode as unflagged ones, but neither Unicode field is read, because both fields
+    # are read only when bit 11 is clear. 7-Zip 23.01 does the same: `7z l -slt` lists
+    # this comment as the header bytes, not the field's `café ü`.
+    blob = _unicode_comment_zip(field, flags=0x800, name=b"caf\xe9.txt")
+    with archivey.open_archive(io.BytesIO(blob)) as ar:
+        (member,) = ar.members()
+        assert member.comment == "café"  # the cp437 reading of the header bytes
+        assert [d.code for d in member.diagnostics] == [
+            DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED
+        ]
+        assert member.extra["zip.extra_fields"] == {0x6375: field[4:]}
+
+
+@pytest.mark.filterwarnings("error")
 def test_unicode_comment_field_of_a_flagged_comment_is_not_consulted() -> None:
     # Bit 11 over a valid UTF-8 name covers the comment too, so its field is an unused
     # record: a bad one costs nothing and says nothing, and a good one is not needed.

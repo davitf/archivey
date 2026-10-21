@@ -1629,13 +1629,14 @@ def decode_rar3_cmt_text(raw: bytes, *, utf16: bool, encoding: str | None) -> st
     ``utf16`` is ``_RAR3_SUBHEAD_CMT_UNICODE`` from a ``CMT`` header's attribute field.
     With it, unrar converts ``CmtSize / 2`` units, so an odd trailing byte is
     dropped rather than shown as U+FFFD, and the text is cut at the first NUL
-    *character*: ASCII text in UTF-16LE is full of NUL bytes. Without it, the
-    payload is 8-bit text (:func:`_decode_comment_text`).
+    *character*: ASCII text in UTF-16LE is full of NUL bytes. A unit without its
+    partner stays as that unit (``surrogatepass``), as it does in a RAR3 Unicode name.
+    Without it, the payload is 8-bit text (:func:`_decode_comment_text`).
     """
     if not utf16:
         return _decode_comment_text(raw, encoding=encoding)
     even = raw[: len(raw) - len(raw) % 2]
-    return even.decode("utf-16le", "replace").split("\0", 1)[0]
+    return even.decode("utf-16le", "surrogatepass").split("\0", 1)[0]
 
 
 def _decode_comment_text(raw: bytes, *, encoding: str | None) -> str:

@@ -226,6 +226,17 @@ def test_volume_id_decodes_as_a_byte_name(
         assert ar.info.comment == expected
 
 
+def test_volume_id_keeps_its_own_trailing_character(tmp_path: Path) -> None:
+    # Only the standard's space padding is removed: a label ending in a no-break space
+    # keeps it, though Python counts it as whitespace.
+    image = bytearray(_build_iso(rock_ridge=True, joliet=True))
+    image[_PVD_VOLUME_ID] = "Café\xa0".encode().ljust(32, b" ")
+    path = tmp_path / "v.iso"
+    path.write_bytes(image)
+    with open_archive(path) as ar:
+        assert ar.info.comment == "Café\xa0"
+
+
 # ---------------------------------------------------------------------------
 # Reading
 # ---------------------------------------------------------------------------
