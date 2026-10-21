@@ -215,6 +215,95 @@ lock baseline lives in `benchmarks/tar_iso_lock_baseline.py`).
   nightly hard-fails on wall-ratio *drift* vs the last measured artifact, pass or
   fail.
 
+## Third-party peers: py7zr, rarfile, libarchive-c
+
+The tables above compare against the stdlib only. `benchmarks/peers.py` times
+archivey against the other Python readers on the same realistic corpus:
+
+```bash
+uv run --extra all python -m benchmarks.peers --scale realistic
+```
+
+It is a report, not a gate: none of these rows feeds the nightly drift check.
+libarchive-c needs the system `libarchive` (Ubuntu package `libarchive13t64`); without
+it, and without `py7zr`, `rarfile` or RARLAB `unrar`, the rows print as skipped.
+
+**Host and versions:** 2026-10-21, `main` @ `8808382`, 4-core Intel Xeon @ 2.80 GHz
+(KVM), Linux x86_64, CPython 3.11.17. py7zr 1.1.4, rarfile 4.5 (with `unrar` 7.00),
+libarchive-c over libarchive 3.7.2. Three runs of 9 alternating timed calls per side;
+each cell is the median of the three per-run medians, and the last column is the
+range of the three ratios.
+
+**Read the method notes first:**
+
+- The corpus is the harness corpus. Its payloads repeat a 4 KiB block, so they
+  compress far past real data (16 MiB packs into 3.9 KB of 7z, 6.1 KB of RAR,
+  93 KB of ZIP). `read_all` and `extract` measure per-member and output handling
+  much more than codec speed.
+- `list` reads names and metadata only. `read_all` reads every member into memory,
+  and checks first that both sides return the same number of bytes. `extract`
+  writes to an empty directory. archivey extracts with its default checks (path and
+  link safety, atomic writes) and the ratio guard off: these payloads exceed the
+  default 1000:1, and the peers have no such guard.
+- 7z fixtures: py7zr writes the solid LZMA2 archive (64×256 KiB) and the
+  10 000-member solid Copy archive; the 7-Zip CLI writes the 1 000-member non-solid
+  store archive (`-ms=off -mx=0`). RAR fixtures are RAR5, written by `rar` 7.00 (solid `-m3` 64×256 KiB;
+  10 000 and 1 000 tiny store members).
+- Which peer runs `unrar`: archivey and rarfile both send RAR member data through
+  RARLAB `unrar`. archivey starts one process for the whole solid archive; rarfile
+  starts `unrar p` once per member, and on a solid archive each process decodes
+  from the start up to that member. libarchive decodes RAR in C, with no `unrar`.
+
+Ratio is archivey ÷ peer: below 1× archivey is faster.
+
+| Archive | Operation | Peer | archivey | peer | ratio | range |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| 7z solid | list | py7zr | 3.8 ms | 1.3 ms | **2.65×** | 2.45–2.89× |
+| 7z solid | read_all | py7zr | 47.3 ms | 59.4 ms | **0.87×** | 0.74–0.87× |
+| 7z solid | extract | py7zr | 104.4 ms | 85.3 ms | 1.24× | 1.05–1.32× |
+| 7z 10 000 members | list | py7zr | 285.3 ms | 194.1 ms | **1.49×** | 1.47–1.54× |
+| 7z 1 000 non-solid | list | py7zr | 35.7 ms | 29.9 ms | 1.48× | 1.03–1.69× |
+| RAR solid | list | rarfile | 4.2 ms | 1.5 ms | **2.80×** | 2.46–2.83× |
+| RAR solid | read_all | rarfile | 75.8 ms | 1497 ms | **0.05×** | 0.05–0.06× |
+| RAR solid | extract | rarfile | 150.8 ms | 1568 ms | 0.10× | 0.09–0.10× |
+| RAR 10 000 members | list | rarfile | 516.0 ms | 298.3 ms | **1.92×** | 1.70–2.07× |
+| RAR 1 000 non-solid | list | rarfile | 38.1 ms | 19.2 ms | 2.02× | 1.96–2.29× |
+| ZIP | list | libarchive-c | 3.9 ms | 1.1 ms | 3.58× | 3.57–3.66× |
+| ZIP | read_all | libarchive-c | 35.7 ms | 24.9 ms | 1.90× | 1.40–1.90× |
+| ZIP | extract | libarchive-c | 81.5 ms | 20.4 ms | 3.92× | 3.59–4.54× |
+| TAR | list | libarchive-c | 6.2 ms | 1.4 ms | 4.36× | 4.21–5.06× |
+| TAR | read_all | libarchive-c | 22.8 ms | 15.2 ms | 1.48× | 1.34–1.52× |
+| TAR | extract | libarchive-c | 78.1 ms | 22.2 ms | 3.51× | 3.40–3.51× |
+| 7z solid | list | libarchive-c | 3.0 ms | 0.4 ms | 6.58× | 6.44–7.39× |
+| 7z solid | read_all | libarchive-c | 43.3 ms | 35.2 ms | 1.19× | 1.03–1.23× |
+| 7z solid | extract | libarchive-c | 116.2 ms | 56.6 ms | 2.07× | 2.03–2.21× |
+| 7z 10 000 members | list | libarchive-c | 289.3 ms | 53.9 ms | 5.10× | 4.18–6.55× |
+| 7z 1 000 non-solid | list | libarchive-c | 31.6 ms | 4.9 ms | 6.45× | 5.59–6.50× |
+| RAR solid | list | libarchive-c | 4.3 ms | 43.6 ms | 0.14× | 0.10–0.15× |
+| RAR solid | read_all | libarchive-c | 76.3 ms | 55.9 ms | 1.38× | 1.12–1.77× |
+| RAR solid | extract | libarchive-c | 121.3 ms | 58.1 ms | 2.09× | 1.94–2.29× |
+| RAR 10 000 members | list | libarchive-c | 481.5 ms | 49.8 ms | 9.67× | 9.42–10.76× |
+| RAR 1 000 non-solid | list | libarchive-c | 42.9 ms | 4.6 ms | 8.66× | 8.38–9.92× |
+
+What the numbers show:
+
+- **Listing is not at parity with py7zr and rarfile.** VISION's target is about
+  1.25×. Measured: 1.5× on the many-member 7z archives, about 2× on the
+  many-member RAR archives, and 2.7–2.8× on the 64-member solid archives (there
+  the gap is under 3 ms in absolute terms). A cProfile of the 10 000-member
+  archives puts about 40% of 7z listing in `_to_member` (building `ArchiveMember`),
+  and about 60% of RAR listing in RAR5 header parsing, with `_to_member` next.
+- **Reading data, archivey is at or ahead of the pure-Python peers.** Solid 7z
+  `read_all` is 0.87× py7zr. Solid RAR is 20× faster than rarfile to read and
+  10× faster to extract, because rarfile decodes a solid archive again for every
+  member.
+- **libarchive is faster on nearly everything:** 4–10× on listing, 1.2–1.9× on
+  `read_all`, 2–4× on `extract`. The exception is listing a solid RAR, where
+  libarchive decodes the data to skip it (0.14×).
+- **Extraction pays a fixed cost per member** on top of reading: ZIP extract is
+  about 2.3× ZIP `read_all` for 64 members. Solid 7z goes from 0.87× py7zr on
+  `read_all` to 1.24× on `extract`, so the cost is not specific to ZIP.
+
 ## Why the published guide no longer quotes numbers
 
 `docs/access-and-cost.md` used to carry a Measured column from the
