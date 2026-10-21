@@ -3290,9 +3290,9 @@ class ExtractionCoordinator:
         # The excluded source's content is written to the FIRST link whose destination the
         # OverwritePolicy allows writing, never to the source's own name. A link the
         # policy declines (SKIP over an existing entry), or one that fails before the
-        # source's bytes are read (ERROR over an existing entry, a REPLACE that cannot
-        # remove what is there, a temp file its directory refuses), records that
-        # outcome as its own, and the content moves on to the next link.
+        # copy of the source's bytes begins (ERROR over an existing entry, a REPLACE
+        # that cannot remove what is there, a temp file its directory refuses), records
+        # that outcome as its own, and the content moves on to the next link.
         for index, orphan in enumerate(group):
             placed = self._materialize_at(source_member, stream, group, index)
             if placed is None:
@@ -3913,7 +3913,9 @@ class ExtractionCoordinator:
 
         ``copy_begins`` is called once the temp file exists, just before the first
         read of ``stream``: the orphan pass blames a failure from then on on the
-        source, not the link (``_materialize_at``)."""
+        source, not the link (``_materialize_at``). A staged write copies nothing, so
+        the two are never passed together."""
+        assert copy_begins is None or staged is None
         if staged is not None:
             self._land_staged(staged, dest_path, member)
             return
