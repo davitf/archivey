@@ -1430,6 +1430,75 @@ def test_peek_arrived_refuses_a_seekable_source_and_a_negative_size() -> None:
         source.peek_arrived(-1)
 
 
+def test_read_arrived_serves_the_replay_prefix_then_one_read_of_the_source() -> None:
+    """Replayed bytes come first and need no read; then one read's worth each call."""
+    inner = QueuedChunks(b"abcd", b"efg", b"hi")
+    source = ArchiveSource.for_stream(inner)  # type: ignore[arg-type]  # test double
+    assert source.peek(4) == b"abcd"
+    calls = inner.calls
+    assert source.read_arrived(3) == b"abc"
+    assert source.read_arrived(10) == b"d"  # the rest of the prefix, not the source
+    assert inner.calls == calls
+    assert source.read_arrived(10) == b"efg"
+    assert inner.calls == calls + 1
+    assert source.read_arrived(0) == b""
+    assert source.read(10) == b"hi"  # the full-count read goes on where it stopped
+    assert source.read_arrived(10) == b""
+
+
+def test_read_arrived_refuses_a_stall_a_seekable_source_and_a_negative_size() -> None:
+    stalled = ArchiveSource.for_stream(QueuedChunks(b"ab", None))  # type: ignore[arg-type]  # test double
+    assert stalled.read_arrived(10) == b"ab"
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        stalled.read_arrived(10)
+    with pytest.raises(io.UnsupportedOperation, match="seekable"):
+        ArchiveSource.for_stream(io.BytesIO(b"abc")).read_arrived(2)
+    with pytest.raises(ValueError, match="non-negative"):
+        stalled.read_arrived(-1)
+
+
+def test_read_arrived_refuses_a_read_after_close() -> None:
+    source = ArchiveSource.for_stream(QueuedChunks(b"abcd", b"ef"))  # type: ignore[arg-type]  # test double
+    assert source.peek(4) == b"abcd"
+    source.close()
+    with pytest.raises(ValueError, match="closed"):
+        source.read_arrived(2)
+
+
+def test_arrived_view_fills_a_buffer_with_what_has_arrived() -> None:
+    """A ``BufferedReader`` over the view gets what is there, not a full buffer."""
+    source = ArchiveSource.for_stream(QueuedChunks(b"abc", b"defg", None))  # type: ignore[arg-type]  # test double
+    assert source.peek(2) == b"ab"
+    view = source.arrived_view()
+    assert not view.seekable()
+    buffered = io.BufferedReader(view, buffer_size=64)
+    assert buffered.read1(64) == b"ab"  # the replay prefix first
+    assert buffered.read1(64) == b"c"
+    assert buffered.read1(64) == b"defg"
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        buffered.read1(64)
+    buffered.close()
+    assert not source.closed  # the view does not own the source
+    source.close()
+
+
+def test_arrived_view_drains_to_the_end_and_refuses_a_seekable_source() -> None:
+    source = ArchiveSource.for_stream(QueuedChunks(b"abc", b"def"))  # type: ignore[arg-type]  # test double
+    assert source.arrived_view().read(-1) == b"abcdef"
+    with pytest.raises(io.UnsupportedOperation, match="seekable"):
+        ArchiveSource.for_stream(io.BytesIO(b"abc")).arrived_view()
+
+
+def test_arrived_view_refuses_a_read_after_it_is_closed() -> None:
+    source = ArchiveSource.for_stream(QueuedChunks(b"abc", b"def"))  # type: ignore[arg-type]  # test double
+    view = source.arrived_view()
+    assert view.read(2) == b"ab"
+    view.close()
+    with pytest.raises(ValueError, match="closed"):
+        view.read(2)
+    assert source.read() == b"cdef"  # the source is still open, and nothing was taken
+
+
 def test_peek_with_a_start_returns_only_the_later_bytes_and_keeps_the_prefix() -> None:
     source = ArchiveSource.for_stream(QueuedChunks(b"abc", b"defg"))  # type: ignore[arg-type]  # test double
     assert source.peek_arrived(10, 1) == b"bc"

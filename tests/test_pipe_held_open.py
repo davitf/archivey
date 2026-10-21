@@ -31,7 +31,8 @@ from typing import BinaryIO
 
 import pytest
 
-from archivey import ArchiveFormat, detect_format, open_archive
+from archivey import ArchiveFormat, ArchiveReader, detect_format, open_archive
+from tests.conftest import requires, requires_zstd, zstd_backend
 
 _HOLD_SECONDS = 10.0
 
@@ -63,6 +64,38 @@ def _tar_gz(size: int) -> bytes:
     return gzip.compress(_tar(size), mtime=0)
 
 
+def _zstd(data: bytes) -> bytes:
+    return zstd_backend().compress(data)
+
+
+def _lz4(data: bytes) -> bytes:
+    import lz4.frame
+
+    return lz4.frame.compress(data)
+
+
+def _gzip_bytes(data: bytes) -> bytes:
+    return gzip.compress(data, mtime=0)
+
+
+# Each single-file compressor: how to compress, its bare and TAR formats, and the marks
+# it needs. A bzip2 or xz stream under 4 KiB waits in detection (the
+# trailer step needs the source length), so the cases that must not wait use 5000
+# random bytes, which compress to more than that.
+_CODECS = [
+    pytest.param(_gzip_bytes, ArchiveFormat.GZ, ArchiveFormat.TAR_GZ, id="gz"),
+    pytest.param(
+        _zstd, ArchiveFormat.ZST, ArchiveFormat.TAR_ZST, id="zst", marks=requires_zstd()
+    ),
+    pytest.param(
+        _lz4, ArchiveFormat.LZ4, ArchiveFormat.TAR_LZ4, id="lz4", marks=requires("lz4")
+    ),
+    pytest.param(bz2.compress, ArchiveFormat.BZ2, ArchiveFormat.TAR_BZ2, id="bz2"),
+    pytest.param(lzma.compress, ArchiveFormat.XZ, ArchiveFormat.TAR_XZ, id="xz"),
+]
+_NO_WAIT_SIZE = 5000
+
+
 @contextmanager
 def _releasable_pipe(
     payload: bytes, *, buffered: bool
@@ -70,7 +103,9 @@ def _releasable_pipe(
     """A pipe holding ``payload``, a flag set when the writer closes its end, and
     ``release_in(delay)``, which closes the writer ``delay`` seconds from now.
 
-    The writer sends ``payload`` in as many writes as the pipe buffer needs.
+    The writer sends ``payload`` in as many writes as the pipe buffer needs. On exit
+    the read end closes before the writer is joined, so a test that fails before it
+    has read the whole payload ends the writer's blocked write instead of hanging.
     """
     read_fd, write_fd = os.pipe()
     release = threading.Event()
@@ -82,6 +117,11 @@ def _releasable_pipe(
             while view:
                 view = view[os.write(write_fd, view) :]
             release.wait(_HOLD_SECONDS)
+        except OSError:
+            # The reader closed its end before it read the whole payload: the test
+            # failed early, or it passed without draining a payload larger than the
+            # pipe buffer.
+            pass
         finally:
             closed.set()
             os.close(write_fd)
@@ -98,18 +138,36 @@ def _releasable_pipe(
         yield stream, closed, release_in  # type: ignore[misc]  # FileIO when unbuffered
     finally:
         release.set()
-        thread.join()
         stream.close()
+        thread.join()
 
 
 @contextmanager
 def _held_open_pipe(
     payload: bytes, *, buffered: bool
 ) -> Iterator[tuple[BinaryIO, threading.Event]]:
-    """A pipe holding ``payload`` and a flag set when the writer closes its end."""
-    assert len(payload) < 4096, "one write fits the pipe buffer on every platform"
+    """A pipe holding ``payload`` and a flag set when the writer closes its end.
+
+    The writer holds the pipe open until the test ends, or ``_HOLD_SECONDS`` at most.
+    ``payload`` need not fit the pipe buffer: the reader's reads unblock the writer,
+    and no test that uses this needs the end of the source, so a payload the reader
+    leaves in the pipe only makes the writer's last write fail on exit.
+    """
     with _releasable_pipe(payload, buffered=buffered) as (stream, closed, _):
         yield stream, closed
+
+
+def _members(payload: bytes) -> list[tuple[str, bytes]]:
+    """Every member's name and data, read from memory: what a pipe read must match."""
+    with open_archive(io.BytesIO(payload), streaming=True) as reader:
+        return _read_members(reader)
+
+
+def _read_members(reader: ArchiveReader) -> list[tuple[str, bytes]]:
+    return [
+        (member.name, stream.read() if stream is not None else b"")
+        for member, stream in reader.stream_members()
+    ]
 
 
 _CASES: list[tuple[str, Callable[[int], bytes], ArchiveFormat]] = [
@@ -118,6 +176,24 @@ _CASES: list[tuple[str, Callable[[int], bytes], ArchiveFormat]] = [
     ("gz", _gzip, ArchiveFormat.GZ),
     ("tar.gz", _tar_gz, ArchiveFormat.TAR_GZ),
 ]
+
+
+def _detects_without_waiting(payload: bytes, expected: ArchiveFormat) -> None:
+    # The answer on the bytes alone, with the end of the source in view.
+    assert detect_format(io.BytesIO(payload)).format == expected
+    for buffered in (False, True):
+        with _held_open_pipe(payload, buffered=buffered) as (stream, closed):
+            info = detect_format(stream)
+            assert not closed.is_set(), "detection waited for the writer to close"
+        assert info.format == expected
+
+
+@pytest.mark.parametrize(("compress", "bare", "in_tar"), _CODECS)
+def test_detect_format_does_not_wait_for_a_compressed_file_or_tar(
+    compress: Callable[[bytes], bytes], bare: ArchiveFormat, in_tar: ArchiveFormat
+) -> None:
+    _detects_without_waiting(compress(os.urandom(_NO_WAIT_SIZE)), bare)
+    _detects_without_waiting(compress(_tar(_NO_WAIT_SIZE)), in_tar)
 
 
 @pytest.mark.parametrize("buffered", [False, True], ids=["raw", "buffered"])
@@ -334,16 +410,10 @@ def test_a_streaming_tar_read_in_small_pieces_matches_the_whole_bytes() -> None:
             tf.addfile(info, io.BytesIO(bytes([i]) * size))
     payload = buf.getvalue()
 
-    def contents(source: BinaryIO) -> list[tuple[str, bytes]]:
-        with open_archive(source, streaming=True) as reader:
-            return [
-                (member.name, stream.read() if stream is not None else b"")
-                for member, stream in reader.stream_members()
-            ]
-
-    expected = contents(io.BytesIO(payload))
+    expected = _members(payload)
     assert len(expected) == 5
-    assert contents(_Trickle(payload, 7)) == expected  # type: ignore[arg-type]  # RawIOBase double
+    with open_archive(_Trickle(payload, 7), streaming=True) as reader:  # type: ignore[arg-type]  # RawIOBase double
+        assert _read_members(reader) == expected
 
 
 _KOLY = b"koly" + (4).to_bytes(4, "big") + (512).to_bytes(4, "big")
@@ -430,3 +500,109 @@ def test_an_inner_tar_probe_waits_only_for_the_bytes_it_needs() -> None:
         thread.join()
         stream.close()
     assert info.format == ArchiveFormat.TAR_GZ
+
+
+def _open_waits_for_the_writer(payload: bytes) -> None:
+    """``open_archive`` returns only after the close, and then reads the same members.
+
+    The check is made as soon as ``open_archive`` returns, before any member is read,
+    since the read that reaches the end waits for the close in every case.
+    """
+    with _releasable_pipe(payload, buffered=True) as (stream, closed, release_in):
+        release_in(_RELEASE_DELAY_SECONDS)
+        with open_archive(stream, streaming=True) as reader:
+            assert closed.is_set(), "open_archive returned before the writer closed"
+            got = _read_members(reader)
+    assert got == _members(payload)
+
+
+@pytest.mark.parametrize(("compress", "bare", "in_tar"), _CODECS)
+def test_a_short_compressed_file_opens_at_once_and_its_first_read_waits(
+    compress: Callable[[bytes], bytes], bare: ArchiveFormat, in_tar: ArchiveFormat
+) -> None:
+    """Under 64 KiB, the decoder's first 64 KiB feed comes only with the close."""
+    data = os.urandom(20_000)
+    with _releasable_pipe(compress(data), buffered=True) as (
+        stream,
+        closed,
+        release_in,
+    ):
+        with open_archive(stream, streaming=True) as reader:
+            assert not closed.is_set(), "open_archive waited for the writer"
+            assert reader.format == bare
+            for _, member_stream in reader.stream_members():
+                assert member_stream is not None
+                release_in(_RELEASE_DELAY_SECONDS)
+                head = member_stream.read(100)
+                assert closed.is_set(), "the first read returned before the close"
+                rest = member_stream.read()
+    assert head + rest == data
+
+
+@pytest.mark.parametrize(("compress", "bare", "in_tar"), _CODECS)
+def test_open_archive_waits_for_a_compressed_tar_under_64_kib(
+    compress: Callable[[bytes], bytes], bare: ArchiveFormat, in_tar: ArchiveFormat
+) -> None:
+    """Detection answers at once; the first header read waits for the first feed.
+
+    The TAR holds 30 000 random bytes, more than the backend's 8 KiB read-ahead once
+    decoded. For gzip and xz the 64 KiB feed is what makes it wait. zstd, LZ4 and
+    bzip2 also give no output here until the whole block, which is the whole file,
+    has arrived.
+    """
+    payload = compress(_tar(30_000))
+    assert len(payload) < 64 * 1024
+    assert detect_format(io.BytesIO(payload)).format == in_tar
+    _open_waits_for_the_writer(payload)
+
+
+def test_a_bzip2_file_of_one_block_waits_at_its_first_read() -> None:
+    """bzip2 gives no output until a whole block has arrived, past 64 KiB too.
+
+    200 000 random bytes are one block at the default level (900 KB), so the first
+    byte decodes only from the last feed.
+    """
+    data = os.urandom(200_000)
+    payload = bz2.compress(data)
+    assert len(payload) > 64 * 1024
+    with _releasable_pipe(payload, buffered=True) as (stream, closed, release_in):
+        with open_archive(stream, streaming=True) as reader:
+            assert not closed.is_set(), "open_archive waited for the writer"
+            for _, member_stream in reader.stream_members():
+                assert member_stream is not None
+                release_in(_RELEASE_DELAY_SECONDS)
+                head = member_stream.read(100)
+                assert closed.is_set(), "the first read returned before the close"
+                rest = member_stream.read()
+    assert head + rest == data
+
+
+_SHORT_WAITS = [
+    # Under 258 bytes: TAR's ``ustar`` at offset 257 is ahead of every other row in the
+    # signature table, so no match settles before byte 257 has arrived. The zstd stream holds
+    # zeros, so it decodes past the 512 bytes the inner-TAR probe needs.
+    pytest.param(lambda: _zip(20), id="zip-under-258-bytes"),
+    pytest.param(
+        lambda: _zstd(bytes(2000)), id="zst-under-258-bytes", marks=requires_zstd()
+    ),
+    # A bzip2 or xz hit under 4 KiB: the trailer step needs the source length.
+    pytest.param(lambda: bz2.compress(os.urandom(2000)), id="bz2-under-4-kib"),
+    pytest.param(lambda: lzma.compress(os.urandom(2000)), id="xz-under-4-kib"),
+    # Decodes to under 512 bytes: the inner-TAR probe reads to 512 bytes or the end.
+    pytest.param(
+        lambda: _zstd(os.urandom(300)),
+        id="zst-decodes-under-512-bytes",
+        marks=requires_zstd(),
+    ),
+    # A .gz under 512 bytes: the reader peeks a 512-byte header for the stored name.
+    # Past 261 bytes, and decoding past 512, so only that peek waits.
+    pytest.param(
+        lambda: _gzip_bytes(os.urandom(380) + bytes(1000)), id="gz-under-512-bytes"
+    ),
+]
+
+
+@pytest.mark.parametrize("make", _SHORT_WAITS)
+def test_open_archive_waits_for_a_short_file(make: Callable[[], bytes]) -> None:
+    """Detection cannot answer until the writer closes, so neither can open."""
+    _open_waits_for_the_writer(make())

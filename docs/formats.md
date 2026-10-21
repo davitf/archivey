@@ -179,7 +179,8 @@ yielded.
   members are final, only when the sender closes the pipe. A sender that keeps the pipe
   open after the ZIP keeps the pass waiting after the last member, and, when the sizes
   come after each member's data (bit 3), in the read that ends the last member's data.
-  Close the sending side when the ZIP is done.
+  A ZIP under 258 bytes also waits at `open_archive`: a tar header starts at offset 257,
+  and until that byte has arrived the file could still be a tar. Close the sending side when the ZIP is done.
 - **A member whose local header disagrees with the central directory on its name, or
   stores a real CRC-32 where the directory stores 0, is read**, from a file and a pipe
   alike, as `unzip` reads it. The directory's name is used, reported as
@@ -965,12 +966,28 @@ yielded.
   deep: damage further in still fails on the read. It costs one decoded block, which is
   noticeable only for `.bz2` (a block is up to 900 KB of output; about 30 ms on
   incompressible data). A pipe is not checked at open, because the check would consume
-  bytes of its one pass; it fails on the first read as before. So a `.gz` sent down a
-  pipe that the sender keeps open opens at once, but a read can wait. The decoder reads
-  the compressed data in 64 KiB pieces, and its read of each piece returns only when it
-  has 64 KiB or the sender closes the pipe. So the read that needs the last piece waits
-  until the sender closes the pipe, at any size. For a `.gz` under 64 KiB, that is the
-  first read. Close the sending side when the file is done.
+  bytes of its one pass; it fails on the first read as before.
+- **From a pipe that the sender keeps open**, a compressed file or a compressed tar can
+  wait for the sender to close the pipe. These are the places it waits:
+    - `open_archive` of a short file, because archivey reads a fixed amount from the
+      start before it decides:
+        - Under 258 bytes. A tar header starts at offset 257, and until that byte has
+          arrived the file could still be a tar, even a `.gz` whose first two bytes say
+          gzip. A few files up to 261 bytes wait too, when their bytes from offset 257
+          spell the start of a tar header.
+        - A `.gz` under 512 bytes, whose first 512 bytes are read for the stored name.
+        - A `.bz2` or `.xz` under 4 KiB, and a `.tar.bz2` or `.tar.xz` too. These are
+          checked for a disk image, which needs the length of the file.
+        - A file that decompresses to under 512 bytes, the size of a tar header.
+    - `open_archive` of a compressed tar under 64 KiB, and the first read of any other
+      compressed file under 64 KiB. The decoder reads the compressed data in 64 KiB
+      pieces, and it gets a piece only when the piece is full or the sender closes the
+      pipe.
+    - The read that reaches the end of the file, at any size, for the same reason.
+
+  bzip2 decompresses nothing until a whole block has arrived (up to 900 KB of original
+  data). So a `.bz2` or `.tar.bz2` that fits in one block waits as if it were under
+  64 KiB. Close the sending side when the file is done.
 - The `[seekable]` accelerator's bzip2 decoder reads input that is not bzip2 as an empty
   stream. When it yields nothing, Archivey decodes the source again with the standard
   library, so a corrupt `.bz2` raises the same error whether or not
