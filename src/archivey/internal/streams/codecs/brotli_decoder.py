@@ -7,11 +7,13 @@ from typing import BinaryIO, Protocol
 
 from archivey.exceptions import TruncatedError
 from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.streams.codecs.isolated import IN_PROCESS, Natives
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
     DecodeOut,
     DecompressorStream,
     SeekPoint,
+    release_decoder,
 )
 
 
@@ -31,7 +33,8 @@ class _BrotliDecompressor(Protocol):
 class BrotliDecoder(BaseDecoder):
     """Decode a raw Brotli stream via the ``brotli`` package's incremental decompressor.
 
-    The ``brotli`` import is local because it's an optional dependency with no type stubs;
+    The decompressor comes from ``natives``: ``brotli`` is imported only in-process,
+    being an optional dependency with no type stubs;
     ``BrotliCodec.open`` in the codec layer gates on its presence before constructing this, so
     the import here always succeeds.
 
@@ -50,17 +53,19 @@ class BrotliDecoder(BaseDecoder):
     byte at a time. If the stream finishes on one of those bytes, what follows is trailing
     data and the output lost with the failed call is delivered; if not, the original
     error was corruption and is raised. The replay reads the source again, so it needs a
-    seekable one; on a pipe the failure stays a ``CorruptionError``. It costs one more
+    seekable one; on a pipe the failure stays a ``CorruptionError``, and so do bytes
+    that arrive after the end in a later call (:meth:`_bytes_after_end`). It costs one more
     decode up to the failure, paid only by a file with bytes after its stream or a corrupt
     one.
     """
 
-    def __init__(self, inner: BinaryIO | None = None) -> None:
-        import brotli
-
-        self._brotli = brotli
+    def __init__(
+        self, inner: BinaryIO | None = None, natives: Natives = IN_PROCESS
+    ) -> None:
+        self._natives = natives
+        self._errors = natives.brotli_errors()
         self._inner = inner
-        self._decomp: _BrotliDecompressor = brotli.Decompressor()
+        self._decomp: _BrotliDecompressor = natives.brotli_decompressor()
         self._pending = b""
         # True while a prior budgeted process may still have output to drain via
         # process(b"", output_buffer_limit=…).
@@ -85,7 +90,7 @@ class BrotliDecoder(BaseDecoder):
 
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> BrotliDecoder:
         del point
-        return BrotliDecoder(inner)
+        return BrotliDecoder(inner, self._natives)
 
     def _process(self, data: bytes, max_length: int) -> bytes:
         try:
@@ -93,7 +98,7 @@ class BrotliDecoder(BaseDecoder):
                 out = self._decomp.process(data, output_buffer_limit=max_length)
             else:
                 out = self._decomp.process(data)
-        except self._brotli.error as e:
+        except self._errors as e:
             self._start_replay(self._handed + len(data), e)
             return b""
         self._handed += len(data)
@@ -109,7 +114,7 @@ class BrotliDecoder(BaseDecoder):
 
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
         if self._ended:
-            self._past_end(chunk)
+            self._bytes_after_end(chunk)
             return DecodeOut(b"")
         if self._replay is not None:
             self._pending += chunk
@@ -159,8 +164,8 @@ class BrotliDecoder(BaseDecoder):
             # Whatever is still waiting was read past the end; the stream decides what
             # it is. (Handing it to the finished decompressor would fail.)
             self._ended = True
-            self._past_end(self._pending)
-            self._pending = b""
+            pending, self._pending = self._pending, b""
+            self._bytes_after_end(pending)
         # Keep draining while output is flowing or the decoder refuses more input.
         self._drain_budgeted = (
             self._supports_output_limit
@@ -170,14 +175,34 @@ class BrotliDecoder(BaseDecoder):
         )
         return DecodeOut(out)
 
+    def _bytes_after_end(self, data: bytes) -> None:
+        """Account for ``data``, which came after the stream's end.
+
+        A replay can tell such bytes from damage only on a source it can read again.
+        On one it cannot, bytes that reach ``brotli`` in the same call as the end fail
+        that call, and there is no telling them from damage. Whether they do depends
+        only on where a read of the source happened to end, so bytes that arrive in a
+        later call fail the same way, with the error ``brotli`` gives the combined
+        call. A pipe then gives one verdict however its writes arrive.
+        """
+        inner = self._inner
+        if data and (inner is None or not inner.seekable()):
+            # The combined call's error, from a fresh decompressor: an empty stream,
+            # then the first byte after it.
+            try:
+                self._natives.brotli_decompressor().process(_EMPTY_STREAM + data[:1])
+            except self._errors as error:
+                raise error from None
+        self._past_end(data)
+
     def _start_replay(self, failed_end: int, error: BaseException) -> None:
         """Rebuild the state at ``_settled`` and queue the bytes up to ``failed_end``."""
         inner = self._inner
         if inner is None or not inner.seekable():
             raise error
         position = inner.tell()
+        decomp: _BrotliDecompressor = self._natives.brotli_decompressor()
         try:
-            decomp: _BrotliDecompressor = self._brotli.Decompressor()
             inner.seek(0)
             remaining = self._settled
             while remaining:
@@ -198,8 +223,12 @@ class BrotliDecoder(BaseDecoder):
                 parts.append(chunk)
                 wanted -= len(chunk)
             region = b"".join(parts)
+        except BaseException:
+            release_decoder(decomp)
+            raise
         finally:
             inner.seek(position)
+        release_decoder(self._decomp)
         self._decomp = decomp
         self._replay = region
         self._replay_at = 0
@@ -253,7 +282,7 @@ class BrotliDecoder(BaseDecoder):
                         self._replay_draining = bool(produced)
                     else:
                         produced = self._decomp.process(byte)
-                except self._brotli.error:
+                except self._errors:
                     # Damage before the stream could end: the original failure stands.
                     raise self._replay_error from None
             else:
@@ -305,6 +334,8 @@ class BrotliDecoder(BaseDecoder):
 # Bytes handed to, and output taken from, the Brotli decompressor per call while a
 # replay rebuilds its state (see BrotliDecoder).
 _BROTLI_REPLAY_CHUNK = 65536
+# A complete Brotli stream with no output (``brotli.compress(b"")``).
+_EMPTY_STREAM = b";"
 
 
 def BrotliDecompressorStream(
@@ -313,11 +344,12 @@ def BrotliDecompressorStream(
     collector: DiagnosticCollector | None = None,
     report_trailing_data: bool = False,
     refuse_input_after_end: bool = False,
+    natives: Natives = IN_PROCESS,
 ) -> DecompressorStream:
     """Decode a raw Brotli stream (forward-only)."""
     return DecompressorStream(
         path,
-        make_decoder=lambda _p, inner: BrotliDecoder(inner),
+        make_decoder=lambda _p, inner: BrotliDecoder(inner, natives),
         collector=collector,
         codec_name="brotli",
         report_trailing_data=report_trailing_data,

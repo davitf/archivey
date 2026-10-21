@@ -293,6 +293,17 @@ class MissingComponent:
     unlocks: tuple[str, ...] = ()
     """The codecs or features it enables, such as ``("ppmd",)``."""
 
+    reason: str = ""
+    """Why archivey does not use the package on this interpreter, where installing it
+    would not help, such as ``"archivey does not use lz4 under PyPy, where its frame
+    decoder crashes the interpreter"``. Empty when installing it is the fix."""
+
+    @property
+    def advice(self) -> str:
+        """What a report of this component says to do: ``reason`` when set, otherwise
+        ``install_hint``."""
+        return self.reason or self.install_hint
+
     def message(self, purpose: str, *, note: str = "") -> str:
         """Text for the ``PackageNotInstalledError`` raised when this component is absent.
 
@@ -305,10 +316,15 @@ class MissingComponent:
         ``note`` appends a sentence for cases where the bare hint would mislead (e.g.
         a backport that is pointless on a Python version shipping the module).
 
+        When ``reason`` is set it replaces the install advice, which would not help.
+
         For package entries only: a program entry's ``install_hint`` is already a
         complete message.
         """
-        text = f"The {self.name!r} package is required for {purpose} ({self.install_hint})."
+        if self.reason:
+            text = f"The {self.name!r} package is required for {purpose}, but {self.reason}."
+        else:
+            text = f"The {self.name!r} package is required for {purpose} ({self.install_hint})."
         return f"{text} {note}" if note else text
 
 
@@ -1270,8 +1286,10 @@ MemberSelectorArg = (
 )
 # ``MemberFilter`` — a per-member sanitize/rename hook run after the policy transform and
 # before the safety checks, so it sees unsafe members too and can rename them; the
-# safety checks run on what it returns. Returns a ``.replace()``d copy, or ``None`` to
-# skip the member. ``archivey.sanitize_names`` is a ready-made one.
+# safety checks run on what it returns. From a ZIP read from a pipe the checks also run
+# on each member's local-header name before its data is staged, so a member they refuse
+# there fails whatever name the filter gives it. Returns a ``.replace()``d copy, or
+# ``None`` to skip the member. ``archivey.sanitize_names`` is a ready-made one.
 MemberFilter = Callable[[ArchiveMember], "ArchiveMember | None"]
 
 
@@ -1535,10 +1553,11 @@ class ExtractionResult:
     member, or a directory it is in, was renamed (``dd/f`` written at ``dd (1)/f``).
     After a collision settled by ``SKIP`` or ``ERROR``, this is set and ``path`` is
     ``None``. On an ``OVERWRITTEN`` result it keeps the path this member wrote to, which
-    a later member then took over. When this member wrote a file, the later member's
-    ``collided_with`` equals this path. A directory is never recorded as a collision, so
-    no result names the member that replaced one, and on a case-insensitive file system
-    that member's ``path`` can differ from this one in case. ``None`` for a member
+    a later member then took over. That later member's ``collided_with`` equals this
+    path, whether this member wrote a file or a directory (outside
+    ``ExtractionPolicy.TRUSTED``), so join the two through ``collided_with``: the later
+    member's own ``path`` can differ from this one in case on a case-insensitive file
+    system, or in spelling through a symlink of the archive's. ``None`` for a member
     refused or failed before its destination was settled."""
 
     presented_name: str | None = None
@@ -1566,7 +1585,13 @@ class ExtractionResult:
     with, whatever ``overwrite`` then did. ``None`` when no member of this run held the
     name: an entry already on disk before the run started is not counted, and stays in
     ``requested_path``. The member it collided with is the result whose ``path`` equals
-    this, or whose ``requested_path`` does once that result is ``OVERWRITTEN``."""
+    this, or whose ``requested_path`` does once that result is ``OVERWRITTEN``.
+
+    A directory this run created on disk, from a ``DIRECTORY`` member or as the parent
+    of an earlier member, holds its name too: a file landing on it records the
+    directory's path. A directory that was only created as a parent has no result of its
+    own. A directory that was already in ``dest`` is not counted, even when a
+    ``DIRECTORY`` member of this run merged into it and reports it."""
 
     kept_mode: int | None = None
     """On a ``DIRECTORY`` result whose directory existed before the run, such as the

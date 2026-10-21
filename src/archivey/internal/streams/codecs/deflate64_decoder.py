@@ -7,6 +7,7 @@ from typing import BinaryIO, Protocol
 
 from archivey.exceptions import TruncatedError
 from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.streams.codecs.isolated import IN_PROCESS, Natives
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
     DecodeOut,
@@ -56,10 +57,9 @@ class Deflate64Decoder(BaseDecoder):
     # Compressed bytes per inflate() under a max_length budget. See class docstring.
     _BUDGETED_FEED = 64
 
-    def __init__(self) -> None:
-        import inflate64
-
-        self._decomp: _Inflate64Inflater = inflate64.Inflater()
+    def __init__(self, natives: Natives = IN_PROCESS) -> None:
+        self._natives = natives
+        self._decomp: _Inflate64Inflater = natives.inflater()
         self._pending = b""
         self._pending_out = b""
         # The last input byte, held back from inflate64 (see the class docstring).
@@ -67,7 +67,7 @@ class Deflate64Decoder(BaseDecoder):
 
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> Deflate64Decoder:
         del point, inner
-        return Deflate64Decoder()
+        return Deflate64Decoder(self._natives)
 
     def _inflate(self, data: bytes) -> bytes:
         if self._decomp.eof:
@@ -140,11 +140,12 @@ def Deflate64DecompressorStream(
     *,
     refuse_input_after_end: bool = False,
     collector: DiagnosticCollector | None = None,
+    natives: Natives = IN_PROCESS,
 ) -> DecompressorStream:
     """Decode a Deflate64 stream (forward-only)."""
     return DecompressorStream(
         path,
-        make_decoder=lambda _p, _i: Deflate64Decoder(),
+        make_decoder=lambda _p, _i: Deflate64Decoder(natives),
         codec_name="deflate64",
         collector=collector,
         refuse_input_after_end=refuse_input_after_end,

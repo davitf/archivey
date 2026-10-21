@@ -45,6 +45,7 @@ from archivey.internal.backends.zip_forward_reader import (
 )
 from archivey.internal.base_reader import MAX_LINK_TARGET_BYTES
 from archivey.types import ArchiveMember, ExtractionStatus, MemberType
+from tests.conftest import importorskip
 from tests.sample_archives import (
     CORPUS,
     CorpusEntry,
@@ -644,9 +645,9 @@ def test_the_kept_data_drops_the_longest_first() -> None:
 def test_a_link_whose_kept_data_was_dropped_leaves_no_file_behind(
     tmp_path: Path,
 ) -> None:
-    """The pass writes the link's data as a file before the directory makes it a
-    link. With the target dropped, the end of the pass takes that file back and
-    fails the link alone, as for any link whose target the read cannot reach."""
+    """The pass stages the link's data as a file's before the directory makes it a
+    link. With the target dropped, placement does not place the link and fails it
+    alone, as for any link whose target the read cannot reach."""
     data = _small_files_then_link(10, 3000, "d/" * 1750)
     with archivey.open_archive(
         _pipe(data), streaming=True, config=_limited(20_000)
@@ -1938,7 +1939,7 @@ def test_the_walk_scans_past_a_failed_decode_longer_than_what_it_keeps() -> None
 def test_a_bit3_ppmd_member_with_no_end_mark_fails_as_from_a_file() -> None:
     """PPMd has no flag for a missing end mark, so its decode fails as a file
     read's does, and the walk's scan passes the member."""
-    pyppmd = pytest.importorskip("pyppmd")
+    pyppmd = importorskip("pyppmd")
 
     content = b"ppmd without its end mark\n" * 40
     encoder = pyppmd.Ppmd8Encoder(6, 16 << 20, 0)

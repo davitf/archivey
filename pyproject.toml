@@ -73,7 +73,7 @@ recommended = [
     # stdlib. RAR5 BLAKE2sp is native on hashlib (internal/hashing/blake2sp.py) and needs
     # no package at all.
     "cryptography>=45.0.0",
-    "pycdlib>=1.16.0",
+    "pycdlib>=1.22.0",
     "tqdm>=4.67.0",
 ]
 # rapidgzip backs BOTH gzip (RapidgzipFile) and bzip2 (its bundled IndexedBzip2File). The
@@ -101,7 +101,7 @@ seekable = [
 # the GIL still disabled. That gap is also why `pip install archivey[recommended]` fails
 # on 3.13t — documented in docs/install.md, not worked around.
 free-threaded = [
-    "pycdlib>=1.16.0",
+    "pycdlib>=1.22.0",
     "lz4>=4.4.5",
     "tqdm>=4.67.0",
     "backports.zstd>=1.0.0; python_version < '3.14'",
@@ -155,7 +155,7 @@ dev = [
     # the ISO backend's tests run in the default dev env and the type checkers can resolve the
     # PyCdlibIO annotation. The core-only CI leg installs with --no-dev, so it stays absent
     # there and the zero-dep core / graceful-degradation paths are still exercised.
-    "pycdlib>=1.16.0",
+    "pycdlib>=1.22.0",
     # ncompress is a test-only LZW *compressor* used to generate .Z fixtures for the
     # native unix-compress decoder (core; decode-only).
     "ncompress>=1.0.0",

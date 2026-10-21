@@ -729,6 +729,36 @@ def test_lzip_trailer_member_size_mismatch_raises_on_forward_read() -> None:
             stream.read()
 
 
+@pytest.mark.parametrize("index_first", [False, True])
+def test_lzip_empty_member_reads_the_same_with_or_without_the_index(
+    index_first: bool,
+) -> None:
+    """An empty member's start and the next member's start share an output offset.
+
+    The trailer index and the decode each give one of the two; both are valid. Once
+    the pair raised a CorruptionError, whichever came first.
+    """
+    from archivey.internal.diagnostics_collector import DiagnosticCollector
+
+    parts = [bytes(range(256)) * 400, b"", b"B" * 50_000, b"C" * 50_000]
+    data = b"".join(make_lzip_member(p) for p in parts)
+    full = b"".join(parts)
+    seen: list[Any] = []
+    collector = DiagnosticCollector(on_diagnostic=seen.append)
+    with LzipDecompressorStream(io.BytesIO(data), collector=collector) as stream:
+        if index_first:
+            assert stream.seek(0, io.SEEK_END) == len(full)
+            stream.seek(0)
+            assert stream.read() == full
+        else:
+            stream.read(len(parts[0]) + len(parts[2]) + 10)
+            stream.seek(len(full) - 5)  # past the known points: reads the index
+            assert stream.read() == full[-5:]
+        stream.seek(len(parts[0]) + 3)
+        assert stream.read(5) == full[len(parts[0]) + 3 : len(parts[0]) + 8]
+    assert seen == []
+
+
 def test_lzip_cold_seek_trusts_a_self_consistent_trailer_chain() -> None:
     """Pins the residual recorded as threat-model O17: an index-only seek trusts trailers.
 

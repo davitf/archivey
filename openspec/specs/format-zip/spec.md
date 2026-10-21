@@ -197,9 +197,11 @@ A ZIP read from a non-seekable source SHALL be read under `streaming=True` in on
 forward pass over the local headers, with the central directory read after the last
 member. Under `streaming=False` it SHALL raise `StreamNotSeekableError` at open, naming
 `streaming=True`. The library MUST NOT buffer, spool, or copy the source into seekable
-storage. What the pass keeps SHALL be bounded: the directory and end records by the
-listing limits, and the member data it keeps (a password-confirmation prefix, a short
-member that may turn out to be a link) by fixed caps.
+storage. The member data `extract_all` stages in the destination (`safe-extraction`) is
+extraction output, not a copy of the source. What the pass keeps SHALL be bounded: the
+directory and end records by the listing limits, and the member data it keeps (a
+password-confirmation prefix, a short member that may turn out to be a link) by fixed
+caps.
 
 Each member's data ends where its local header says, or, when bit 3 defers the sizes to
 a data descriptor, where its codec's end marker is (DEFLATE, Deflate64, bzip2,
@@ -220,8 +222,9 @@ cannot find its end SHALL be passed by the same scan for its descriptor on its s
 bytes, with no key. The scan starts at the last 4 MiB the decode read and counts the
 bytes before them into the size it matches; a decode that read more than that past the
 data's end leaves the descriptor behind the scan's start, and the pass SHALL then end
-with the scan's error. A bit-3 PPMd member is decoded in a child process, and
-`max_ppmd_in_process_input=None` SHALL refuse it with `ResourceLimitError`. Several
+with the scan's error. A bit-3 PPMd member is decoded in a child process, like every
+PPMd member, except under `process_isolation=NONE`, which SHALL decode it in-process,
+fed in pieces. Several
 password candidates SHALL be confirmed on a kept prefix of the member's data
 (`archive-reading`, "A unit read once").
 
@@ -282,12 +285,8 @@ and an archive-wide refusal the directory or end record makes is raised by a fil
 before anything is written and by the pass after every member is written. A policy that
 raises on `MEMBER_LOCAL_NAME_DIFFERS` or `MEMBER_LOCAL_CRC_USED` is the same: a file
 read raises when it lists or opens the member, the pass once it has read the directory.
-A run that stops before the end of the pass, for these or any other reason, never learns
-which members are links: it SHALL remove every file it wrote whose data could be a
-link's (4096 bytes or less, or starting with a Windows symlink or junction reparse tag),
-so no link is left on disk as a file holding its target. The longer files stay as the
-pass wrote them, with no mode applied: a member whose local header names it differently
-stays under the local header's name, since the pass stops before the end-of-pass rename.
+A run that stops before the end of the pass, for these or any other reason, places no
+member (`safe-extraction`), so no link is left on disk as a file holding its target.
 
 The data the pass keeps of short members until the directory says which are links SHALL
 NOT be charged to the listing limits: an archive a file read lists within them SHALL
@@ -307,14 +306,14 @@ short members' data before it. The archive comment SHALL be weighed against
 | --- | --- |
 | Non-seekable ZIP with default `streaming=False` | `StreamNotSeekableError` at open, naming `streaming=True`; no reader |
 | Non-seekable ZIP with `streaming=True` | Opens; `stream_members()` and `extract_all()` read every member in one pass; after the pass the members equal the file read's |
-| Implementation lacks seekable source | No implicit seekable-copy, temp-file, or spool fallback |
+| Implementation lacks seekable source | No implicit seekable-copy, temp-file, or spool fallback of the source; the member data `extract_all` stages is not one |
 | `stream_members()` from a pipe, a Unix symlink member | Yielded as `FILE`, `member_state_final` false; after the pass `SYMLINK` with its target |
 | A pipe, many small files whose data passes `max_metadata_bytes`, a symlink after them | Lists every member and the link's target, as a file read does |
-| `extract_all()` from a pipe, a Unix symlink member | The link is made at the end of the pass, after the filter runs again on it |
-| `extract_all()` from a pipe that stops before the end of the pass (`abort_on`, `on_error="stop"`, a limit, a `STRICT` refusal at the directory, or any other reason) | Every file the pass wrote whose data could be a link's (4096 bytes or less, or starting with a Windows symlink or junction reparse tag) is removed; a longer file stays, with no mode applied |
+| `extract_all()` from a pipe, a Unix symlink member | The link is made when the member is placed, after the directory is read; the filter sees it once, as a symlink |
+| `extract_all()` from a pipe that stops before the end of the pass (`abort_on`, `on_error="stop"`, a limit, a `STRICT` refusal at the directory, or any other reason) | No member is placed; the destination holds nothing the run wrote |
 | Bit-3 STORED members (stdlib `zipfile` writing to a pipe) | Each ends at its descriptor; contents as from a file |
 | Bit-3 LZMA member without the end-of-stream marker | `UnsupportedFeatureError` at that member |
-| Bit-3 PPMd member, `max_ppmd_in_process_input=None` | `ResourceLimitError` |
+| Bit-3 PPMd member, `process_isolation=NONE` | Decoded in-process |
 | Two same-name members whose directory order reverses their file order | `is_current` from the directory order; `stream_members()` raises nothing |
 | A data descriptor that understates a STORED member, `stream_members()` | `CorruptionError` at the end of the pass |
 | A local entry the directory does not list | Dropped from the listing; `ARCHIVE_UNLISTED_DATA` |

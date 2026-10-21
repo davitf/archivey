@@ -106,7 +106,7 @@ The three legs, which `--all-configs` runs in order:
 uv sync --group dev --extra all && uv run --no-sync pytest -n auto
 
 # 2. Minimum supported versions — every declared dependency pinned to its floor
-#    (`pycdlib 1.16`, `backports.zstd 1.0`, …), so version-specific library bugs in the
+#    (`pycdlib 1.22`, `backports.zstd 1.0`, …), so version-specific library bugs in the
 #    supported range surface. --no-sync keeps the lowest resolution for the test run.
 uv sync --group dev --extra all --resolution lowest-direct && uv run --no-sync pytest -n auto
 
@@ -247,6 +247,13 @@ maintainer.
     files you touched: a comment naming a deleted call site, or explaining a case the
     change made unreachable, is now wrong. This is the single most common finding in
     this repo's reviews, and it is cheapest to catch before pushing.
+- **A `readinto` releases every view of the caller's buffer before it returns**
+  (`with memoryview(b) as view:`), test doubles included. The caller may resize the
+  buffer next, and PyPy frees a dropped view only at a collection; the full contract is
+  in `try_readinto`'s docstring.
+- **Read a flag from a C extension by its truth, not its type.** PyPy can read a C `bool`
+  member as the int 1 (dev-docs/known-issues.md, "PyPy: a C `bool` member reads as an
+  int"), so `isinstance(value, bool)` drops it.
 - **Match the surrounding code.** Naming, structure, and idiom should read like the file
   you're editing.
 - **Type-checker suppressions must be justified, and are a last resort.** A bare

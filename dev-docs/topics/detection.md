@@ -466,6 +466,25 @@ A backward seek puts the handle back. It does not re-read the prefix:
 | Member stream (`ArchiveStream`): bare, under a buffer, through `open_archive`, or one volume of a list | Reads forward from the caller's position and restores it, like any seekable stream | No tail, including the `koly` block (`trailer` is recorded as `CAPABILITY_UNAVAILABLE` when the source is 512 bytes or more), and probe reads at an offset grow the prefix (§4.2): a seek would re-decode. `seek_is_expensive` in `internal/source.py` looks through pass-through layers, an `ArchiveSource` keeps the answer for the stream it borrows, and a joined set answers for its volumes |
 | Directory | Nothing | Nothing to do |
 
+A non-seekable source is read for what has arrived, not to fill the window, and the near
+step stops once no later byte can change its answer: every signature ahead of the match in
+table order has either all of its bytes in hand or a byte that already differs
+(`_near_magic_settled`). So a ZIP or a gzip stream of a few KiB sent down a pipe whose
+writer keeps it open is detected without waiting for the writer to close. Detection is
+not the whole read: §5 says where open and the reads still wait, per format. The inner-TAR
+probe decodes what has arrived the same way. Three cases still wait for 4 KiB or the end of
+the source, because the answer can depend on bytes not yet sent: a match whose
+earlier-listed signatures are not settled yet (TAR's `ustar` row comes first and starts at
+offset 257, so a source shorter than 258 bytes, or one whose bytes from offset 257 on are
+still a prefix of `ustar`), a bzip2 or xz hit (the trailer step needs the source length,
+§2.4), and every source with no near match (the later steps read the whole window, and a
+short window is how they learn the length). The inner-TAR probe also waits while it has
+fewer than 512 decoded bytes: its read is full-count, and the codec stream learns that
+the data ended only from an empty read of the source or from bytes after the end. Another
+member could follow (a concatenated `.gz` or `.zst`), and so could trailing bytes. So a bare
+compressed stream that decodes to under 512 bytes, of any codec, also waits for the end of
+the source.
+
 Detection never spools a pipe to a temporary file. The one temporary copy the library makes
 is RAR's, for `unrar`, bounded by `SpoolLimits` and made after detection.
 
@@ -484,6 +503,9 @@ is RAR's, for `unrar`, bounded by `SpoolLimits` and made after detection.
 | A 7z SFX with data after the archive reads the whole 2 MiB window to detect | **archivey** | By choice (§2.2) |
 | A source of 32 774 bytes or more that matches nothing near pays the far peek | **archivey** | The price of running far magic before the probes (§2.3) |
 | `detect_format` on a raw pipe leaves the caller without the bytes it read | **archivey** | By design: `open_archive` and `open_stream` keep them (§4.3) |
+| A compressed TAR sent down a pipe the writer keeps open opens at once and yields its members, but its listing does not end until the writer closes the pipe. A short one waits in detection: under 258 bytes (§4.3 has the exact rule), and a `.tar.bz2` or `.tar.xz` under 4 KiB. bzip2 gives no output until a whole block has arrived, so a `.tar.bz2` waits for the end of its first block at open | **format** / **archivey** | Detection answers at once except in the cases §4.3 lists. Past detection, the codec reads what has arrived (`BaseArchiveReader._codec_input`: `arrived_view` under `OneReadEachStream`, one source read per feed), and the walk buffer fills through `read_ahead`, which decodes only as far as the bytes the walk needs. The end waits because another stream or trailing bytes could follow the last one; the trailing-data scan reads past the trailer ([`formats/tar.md`](../formats/tar.md) §2.2) |
+| A bare compressed stream (`.gz`, `.zst`, `.lz4`, `.bz2`, `.xz`, `.lz`, `.lzma`, `.zz`, `.br`, `.Z`) sent down a pipe the writer keeps open opens at once, and its reads return the data whose compressed bytes have arrived, up to its last byte. The read past the last byte waits until the writer closes the pipe. A `.bz2` read waits for the end of the block it is in, and a detected `.bz2` of any size waits at open for the end of its first block, because the inner-TAR probe decodes it; with `format=` the open returns and the first read waits instead. A short stream waits at open: under 258 bytes (§4.3 has the exact rule), a `.bz2` or `.xz` under 4 KiB, and one that decodes to under 512 bytes. A `.gz` under 512 bytes waits at open too: the single-file reader peeks a 512-byte header for FNAME and mtime (`_GZIP_HEADER_PEEK`), and that peek is full-count | **format** / **archivey** | Only an empty read of the source tells the codec that its input ended, and another member or trailing bytes could follow the stream. A short feed is not the end: the decoder asks again. The same holds for `open_stream`. A seekable source and a path read as before, in full feeds |
+| A ZIP of 258 bytes or more sent down a pipe the writer keeps open opens at once, and its members come at once, but the listing does not end until the writer closes the pipe. When the sizes come after each member's data (bit 3, which a writer to a pipe sets), the last member's data also ends only at the close; the earlier members read whole at once | **format** / **archivey** | The pipe pass reads to the end of the source before it reads the central directory, which is last in the file ([`formats/zip.md`](../formats/zip.md) §2.2.2). A ZIP whose local headers carry the sizes reads every member at once. Under 258 bytes, a ZIP waits at open: TAR's `ustar` row at offset 257 is ahead of the ZIP rows in the signature table, so the near step cannot settle until byte 257 has arrived and is not `u` (§4.3). Measured: 257 bytes waits, 258 opens at once. [`docs/formats.md`](../../docs/formats.md#zip) tells senders to close the pipe |
 | A polyglot opens as whichever format comes first | **archivey** | The tie rule (§3.1); pass `format=` |
 | A bzip2- or xz-compressed `.dmg` read from a pipe or as a member stream detects as `BZ2` / `XZ`, with `trailer` in `unavailable_tiers` | **archivey** | Its `koly` block is at the end, and those sources are not seeked there (§2.4, §4.3) |
 
@@ -545,6 +567,7 @@ is RAR's, for `unrar`, bounded by `SpoolLimits` and made after detection.
 | The detection receipt is not merged into the reader's cost (§4.1) | `::test_detection_receipt_is_not_merged_into_archive_cost` |
 | One forward pass over the prefix. Gzip, ZIP and ISO fetch each byte once and seek backward only to restore the handle. A seekable bzip2 or xz file also reads the 512-byte trailer, then fetches those bytes again when a later tier reads the file (§4.2) | `tests/test_detection_workspace.py::test_seekable_detection_has_zero_backward_seeks`, `::test_seekable_bzip2_rereads_the_trailer_bytes`, `::test_seekable_koly_image_reads_the_trailer_once`, `::test_growing_prefix_fetches_each_byte_once`, `::test_seekable_stream_restored_on_error_path`, `tests/test_udif.py::test_detection_restores_the_stream_position` |
 | A zlib, bzip2 or xz first block with a `koly` trailer is the disk image (§2.4) | `tests/test_udif.py` |
+| A short archive on a pipe the writer keeps open is detected without waiting for the close, and with the answer the whole source gives (§4.3) | `tests/test_pipe_held_open.py` |
 | Detection leaves a non-seekable stream readable by the backend (§4.3) | `tests/test_detection.py::test_peekable_stream_not_consumed` |
 | A directory is decided without reading, with the zero receipt (§2.7) | `::test_detect_format_reports_directory_for_a_directory_path`, `::test_detect_format_directory_carries_a_zero_receipt` |
 | A short 7z hit costs up to the scan window (§2.2) | `tests/test_sfx.py::test_short_7z_hit_scan_cost_is_bounded_by_the_window` |

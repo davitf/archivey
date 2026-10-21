@@ -110,7 +110,13 @@ Optional packages that re-enable the GIL when imported (today `pyppmd`, `inflate
 and their availability. The system SHALL import each one only when it opens a stream that
 decodes with it in this process, so having one installed does not by itself re-enable the
 GIL. rapidgzip decodes only in a child process, so the caller's process never imports it. A
-package that is installed but fails to import SHALL be treated as absent.
+package that is installed but fails to import SHALL be treated as absent. So SHALL a package
+archivey does not use on the running interpreter because it misreads data or crashes there
+(today rapidgzip, lz4, pyppmd and inflate64 under PyPy): its `MissingComponent` carries a `reason`, and
+every report of that component SHALL give the reason in place of the install advice, since
+installing the package would not help. lz4, pyppmd and inflate64 lower format support, so
+both reporting channels carry them. rapidgzip is an accelerator and never lowers support, so it
+reaches only the `ON` refusal and the rewind report.
 
 The system SHALL keep `[all]` as the conventional superset; it MUST resolve to
 `[recommended]` + `[seekable]`.
@@ -148,6 +154,7 @@ NOT list `uncompresspy` in any user-facing extra or the `dev` group.
 | `pip install archivey[all]` | `[recommended]` + `[seekable]` |
 | ZIP member needs Deflate64 with no extras | `PackageNotInstalledError` naming `archivey[recommended]`, never a format-named extra |
 | Any optional package absent, compared across both channels | The hint in the raised error and the one reported by `format_availability()` are the same string |
+| A package archivey does not use under PyPy that lowers format support (lz4, pyppmd, inflate64), installed, running under PyPy | Treated as absent; both channels give the reason archivey does not use it there, not install advice |
 | `pip install archivey[7z]` | Fails: the extra no longer exists |
 
 ### Requirement: RAR data uses RARLAB unrar only

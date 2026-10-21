@@ -30,7 +30,8 @@ src/archivey/
     ├── base_reader.py   BaseArchiveReader ABC + the ReadBackend ABC
     ├── extraction.py    extraction coordinator
     ├── bomb_tracker.py  decompression-bomb tracker: byte, ratio and entry-count limits
-    ├── dry_run.py       the dry run's scratch tree and its path translation
+    ├── dry_run.py       the dry run's scratch tree, what it copies in from dest, and
+    │                    its path translation
     ├── filters.py       path-safety checks and policy permission transforms
     ├── detection.py     detect_format() and FormatInfo
     ├── registry.py      ArchiveFormat → backend; format_availability()
@@ -121,7 +122,7 @@ Three things about this path are worth knowing before you debug it:
 | 7z internals | `sevenzip_parser.py` (headers) · `sevenzip_pipeline.py` (coder graph) · `sevenzip_reader.py` · `sevenzip_methods.py` · `sevenzip_aes.py` (KDF, AES properties, key cache) · `sevenzip_detect.py` (scan-hit validator); handbook [`formats/7z.md`](formats/7z.md) |
 | RAR internals | `rar_parser.py` (native RAR3/RAR5 metadata) · `rar_reader.py` · `rar_unrar.py` (the external binary, data only) · `rar_unar.py` + `internal/external/unar.py` (the opt-in `unar` data path) · `rar_copy_sources.py` (a solid pass keeps file-copy sources) · `rar_detect.py` (scan-hit validator); handbook [`formats/rar.md`](formats/rar.md) |
 | TAR internals | `tar_parser.py` (header parser and `TarWalker`, over the source or archivey's own decompressor; sparse maps and their checks) · `tar_reader.py` (members, member streams, the end-of-archive checks) · `streams/streamtools/sparse.py` (`SparseStream`, a sparse member's logical bytes) · `detection.py` `_probe_inner_tar` (a tar inside a compressor); handbook [`formats/tar.md`](formats/tar.md) |
-| ISO internals | `iso_reader.py` (`pycdlib` boundary, record walk, raw-sector refusal, the `pycdlib` cycle guard); handbook [`formats/iso.md`](formats/iso.md) |
+| ISO internals | `iso_reader.py` (`pycdlib` boundary, record walk, raw-sector refusal); handbook [`formats/iso.md`](formats/iso.md) |
 | Directory pseudo-archive | `directory_reader.py` (the `scandir` walk, scan-race diagnostics, hardlink grouping, open-by-path); handbook [`formats/directory.md`](formats/directory.md) |
 | A codec, or adding one | `streams/codecs/`: one `<name>_codec.py` per codec (`registry.py` lists them), its engine beside it (`<name>_decoder.py`, framing and resume helpers, the PPMd and rapidgzip child processes and workers), and the rapidgzip modules for the accelerator; handbook [`formats/single-file.md`](formats/single-file.md) and the codec's own page |
 | Seeking inside a compressed stream | `streams/decompressor_stream.py`; spec `seekable-decompressor-streams` |

@@ -1,9 +1,10 @@
 """``dry_run=True``: the same extraction, into a scratch directory, with no content kept.
 
-The contract is parity: a dry run reports what a real extraction into an empty
+The contract is parity: a dry run reports what a real extraction into the same
 destination reports, member for member, and leaves nothing behind. Most tests here
-run both and compare, over the declarative corpus, the adversarial name corpus, and
-the symlink-redirection cases that only a real filesystem answers (threat model O22).
+run both and compare, over the declarative corpus, the adversarial name corpus, the
+symlink-redirection cases that only a real filesystem answers (threat model O22), and
+destinations that already hold files, directories and symlinks.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ import os
 import re
 import tarfile
 import tempfile
+import unicodedata
 import zipfile
 from collections.abc import Callable
 from pathlib import Path
@@ -36,7 +38,9 @@ from archivey import (
 )
 from archivey.cli.exit_codes import EXIT_OK, EXIT_POLICY
 from archivey.cli.main import main
+from archivey.internal import dry_run as dry_run_module
 from archivey.terminal import display_path
+from tests.conftest import CPYTHON
 from tests.create_adversarial import adversarial_archives
 from tests.extract_util import lock_directories_at_once, open_and_extract
 from tests.sample_archives import CORPUS, corpus_archive_path, skip_unless_runnable
@@ -96,6 +100,12 @@ def _normalize(text: str, dest: Path, cwd: Path) -> str:
         text = text.replace(spelling, "<cwd>")
     if not dest.is_absolute():
         text = re.sub(rf"(?<=['\"]){re.escape(str(dest))}(?=['\"/\\])", "<rel>", text)
+    # The real run's OSError comes from the OS call, which gets a Path; the dry run's
+    # comes from archivey's own raise, which passes str(dest). PyPy keeps the Path in
+    # the message (CPython stores a str either way), so only there do the spellings
+    # differ. Elsewhere this stays off, so a Path in an archivey message still shows.
+    if not CPYTHON:
+        text = re.sub(r"\b(?:Posix|Windows)Path\(('[^']*')\)", r"\1", text)
     # The staging file's random suffix is the one thing two runs never share.
     return _TMP_NAME.sub(".archivey-tmp-*", text)
 
@@ -115,6 +125,7 @@ def _shape(results, dest: Path, cwd: Path) -> list[tuple[object, ...]]:
                 _rel(r.collided_with, dest),
                 r.presented_name,
                 r.failure_group_size,
+                r.kept_mode,
                 type(error),
                 message,
             )
@@ -128,20 +139,28 @@ def _both(
     *,
     relative: bool = False,
     dest_name: str = "out",
+    populate: Callable[[Path], None] | None = None,
     **kwargs,
 ):
     """Extract ``source`` for real and as a dry run; return both report shapes.
 
     Each run extracts into ``<tmp_path>/<real|dry>/<dest_name>``. With ``relative``,
     it is given ``dest_name`` relative to the current directory, as the CLI gives it.
+    ``populate``, given the absolute dest, fills it before each run; the dry run must
+    then leave it exactly as it was.
     """
     kwargs.setdefault("on_error", OnError.CONTINUE)
     open_kwargs = kwargs.pop("open_kwargs", {})
     outcomes = []
+    before = None
     for kind, dry_run in (("real", False), ("dry", True)):
         cwd = tmp_path / kind
         cwd.mkdir(exist_ok=True)
         dest = Path(dest_name) if relative else cwd / dest_name
+        if populate is not None:
+            populate(cwd / dest_name)
+            if dry_run:
+                before = _snapshot(cwd / dest_name)
         previous = os.getcwd()
         os.chdir(cwd)
         try:
@@ -156,8 +175,36 @@ def _both(
                     outcomes.append(_shape(report.results, dest, cwd))
         finally:
             os.chdir(previous)
-    _assert_nothing_left(tmp_path, tmp_path / "dry" / dest_name)
+    dry_dest = tmp_path / "dry" / dest_name
+    if populate is None:
+        _assert_nothing_left(tmp_path, dry_dest)
+    else:
+        assert _snapshot(dry_dest) == before, "a dry run changed its destination"
+        assert list((tmp_path / "tmp").iterdir()) == [], "scratch directory left behind"
     return outcomes[0], outcomes[1]
+
+
+def _snapshot(root: Path) -> dict[str, tuple[object, ...]] | None:
+    """Every entry under ``root``, with its kind, mode, mtime and content or target;
+    ``None`` when ``root`` is absent."""
+    if not os.path.lexists(root):
+        return None
+    found: dict[str, tuple[object, ...]] = {}
+    st = root.stat()
+    found["."] = ("root", st.st_mode, st.st_mtime_ns)
+    for parent, dirnames, filenames in os.walk(root):
+        for name in (*dirnames, *filenames):
+            path = Path(parent) / name
+            st = path.lstat()
+            if path.is_symlink():
+                detail: object = os.readlink(path)
+            elif path.is_dir():
+                detail = None
+            else:
+                detail = path.read_bytes()
+            rel = path.relative_to(root).as_posix()
+            found[rel] = (st.st_mode, st.st_mtime_ns, detail)
+    return found
 
 
 # --- parity over the corpora --------------------------------------------------------
@@ -273,6 +320,15 @@ _FILESYSTEM_CASES = {
         ("d", "file", 0),
         ("d/f", "file", 0),
     ],
+    # A file landing on a directory this run made, which holds a member: REPLACE
+    # fails it with an error that names the directory under ``dest``.
+    "file-over-run-directory": [
+        ("x/f", "file", 0),
+        ("y", "dir", None),
+        ("y/f", "file", 0),
+        ("x", "file", 0),
+        ("y", "file", 0),
+    ],
 }
 
 
@@ -333,6 +389,42 @@ def test_orphan_links_folded_onto_each_other_match(
         assert dry == real, policy
 
 
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+@pytest.mark.parametrize("overwrite", list(OverwritePolicy))
+@pytest.mark.parametrize(
+    "held",
+    [
+        pytest.param({"h1": b"mine"}, id="file"),
+        pytest.param({"h1/keep": b"mine"}, id="full-dir"),
+    ],
+)
+def test_orphan_first_link_destination_taken_matches(
+    held: dict[str, object],
+    overwrite: OverwritePolicy,
+    streaming: bool,
+    tmp_path: Path,
+) -> None:
+    # The source excluded and its first link's destination held by the caller: the
+    # policy decides that link alone, and the content goes to the next link.
+    blob = _tar(
+        [("src", "file", b"data"), ("h1", "hard", "src"), ("h2", "hard", "src")]
+    )
+    for policy in _POLICIES:
+        work = tmp_path / policy.value
+        (work / "tmp").mkdir(parents=True)
+        tempfile.tempdir = str(work / "tmp")
+        real, dry = _both(
+            lambda: io.BytesIO(blob),
+            work,
+            populate=lambda dest: _put(dest, held),
+            members=["h1", "h2"],
+            policy=policy,
+            overwrite=overwrite,
+            open_kwargs={"streaming": streaming},
+        )
+        assert dry == real, policy
+
+
 def _dest_named_links(dest: Path) -> list[tuple[str, str, object]]:
     """Links whose targets name ``dest`` itself, so each run needs its own archive."""
     return [
@@ -340,6 +432,8 @@ def _dest_named_links(dest: Path) -> list[tuple[str, str, object]]:
         # Absolute, into dest: kept by a real extraction.
         ("abs", "sym", f"{dest}/data"),
         ("abs-dotdot", "sym", f"{dest}/sub/../data"),
+        # Absolute, into dest past a component that does not exist.
+        ("abs-gone", "sym", f"{dest.parent}/gone/../{dest.name}/data"),
         # A file written through an absolute link to a directory in dest.
         ("sub", "dir", None),
         ("abs-dir", "sym", f"{dest}/sub"),
@@ -378,8 +472,39 @@ def test_link_targets_that_name_dest_match(streaming: bool, tmp_path: Path) -> N
         statuses = {entry[0]: entry[1] for entry in dry}
         assert statuses["abs"] is ExtractionStatus.EXTRACTED
         assert statuses["up"] is ExtractionStatus.EXTRACTED
+        assert statuses["abs-gone"] is ExtractionStatus.EXTRACTED
         assert statuses["abs-dir/f"] is ExtractionStatus.EXTRACTED
         assert statuses["later"] is ExtractionStatus.BLOCKED
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+def test_link_past_a_missing_name_meets_what_dest_holds(
+    streaming: bool, tmp_path: Path
+) -> None:
+    # A link member whose absolute target reaches dest past a component that does
+    # not exist, then goes on through the caller's symlink out of dest.
+    for policy in _POLICIES:
+        work = tmp_path / policy.value
+        (work / "tmp").mkdir(parents=True)
+        tempfile.tempdir = str(work / "tmp")
+        blobs = {
+            dry_run: _tar([("l", "sym", f"{work / kind}/gone/../out/evil/x")])
+            for dry_run, kind in ((False, "real"), (True, "dry"))
+        }
+        calls = iter((False, True))
+        real, dry = _both(
+            lambda: io.BytesIO(blobs[next(calls)]),
+            work,
+            policy=policy,
+            populate=lambda dest: _put(
+                dest, {"evil": ("sym", "/archivey-dry-run-test-elsewhere")}
+            ),
+            open_kwargs={"streaming": streaming},
+        )
+        assert dry == real, policy
+        if policy is not ExtractionPolicy.TRUSTED:
+            assert real[0][1] is ExtractionStatus.BLOCKED, policy
 
 
 # --- what the dry run does and does not touch ---------------------------------------
@@ -416,19 +541,680 @@ def test_limits_still_apply(tmp_path: Path) -> None:
     _assert_nothing_left(tmp_path, dest)
 
 
-def test_existing_destination_is_neither_read_nor_changed(tmp_path: Path) -> None:
+def test_existing_destination_is_met_but_not_changed(tmp_path: Path) -> None:
     dest = tmp_path / "out"
     dest.mkdir()
     (dest / "a").write_bytes(b"mine")
     blob = _tar([("a", "file", b"theirs")])
     with open_archive(io.BytesIO(blob)) as reader:
-        report = reader.extract_all(dest, dry_run=True)
-    # The run shows an extraction into an empty destination: no collision with "a".
+        report = reader.extract_all(dest, on_error=OnError.CONTINUE, dry_run=True)
+    # The run meets "a" as a real run would, under the default OverwritePolicy.ERROR.
     (result,) = report.results
-    assert result.status is ExtractionStatus.EXTRACTED
-    assert result.path == dest / "a"
+    assert result.status is ExtractionStatus.FAILED
+    assert isinstance(result.error, ExtractionError)
+    assert f"Destination already exists: {display_path(dest / 'a')}" in str(
+        result.error
+    )
     assert (dest / "a").read_bytes() == b"mine"
     assert sorted(p.name for p in dest.iterdir()) == ["a"]
+
+
+def _zip_blob(entries: dict[str, bytes]) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name, data in entries.items():
+            zf.writestr(name, data)
+    return buf.getvalue()
+
+
+def _put(dest: Path, entries: dict[str, object]) -> None:
+    """Create ``entries`` under ``dest``: bytes for a file, ``None`` for a directory,
+    ``("sym", target)`` for a symlink, an int for a directory with that mode. A
+    target's ``{dest}`` and ``{parent}`` name ``dest`` and the directory holding it."""
+    dest.mkdir(parents=True, exist_ok=True)
+    for name, what in entries.items():
+        path = dest / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(what, bytes):
+            path.write_bytes(what)
+        elif what is None:
+            path.mkdir()
+        elif isinstance(what, int):
+            path.mkdir()
+            path.chmod(what)
+        else:
+            _, target = what  # type: ignore[misc]
+            os.symlink(_expand(str(target), dest), path)
+
+
+def _expand(text: str, dest: Path) -> str:
+    """A row's ``{dest}`` and ``{parent}`` placeholders, filled for one run's
+    ``dest``. Any other placeholder raises ``KeyError`` rather than staying a
+    literal that both runs would build alike."""
+    return text.format(dest=dest, parent=dest.parent) if "{" in text else text
+
+
+# Each case: what dest holds before the run, and the archive's members.
+_EXISTING_CASES: dict[str, tuple[dict[str, object], list[tuple[str, str, object]]]] = {
+    # The reported case: a file member over a file of the caller's.
+    "file-over-file": (
+        {"hello.txt": b"mine", "other": b"untouched"},
+        [("hello.txt", "file", b"theirs")],
+    ),
+    # Deeper, so the directory on the way is copied in too, with RENAME's next name
+    # taken already.
+    "file-over-file-in-dir": (
+        {"sub/a": b"mine", "sub/a (1)": b"mine too"},
+        [("sub/a", "file", b"theirs"), ("sub/b", "file", b"new")],
+    ),
+    # A directory member, and a file member, where the caller has a directory: with
+    # entries (REPLACE refuses it) and empty (REPLACE removes it).
+    "over-directories": (
+        {"full/x": b"mine", "empty": None},
+        [("full", "file", b"f"), ("empty", "file", b"e"), ("d", "dir", None)],
+    ),
+    # A directory member over a file, then a file inside it.
+    "directory-over-file": (
+        {"d": b"mine"},
+        [("d", "dir", None), ("d/f", "file", b"f")],
+    ),
+    # A file inside a directory the archive only implies, where dest has a file.
+    "implicit-parent-is-a-file": (
+        {"p": b"mine"},
+        [("p/f", "file", b"f")],
+    ),
+    # A hardlink to a member, where both names are taken already.
+    "hardlink-over-files": (
+        {"f": b"mine", "h": b"mine"},
+        [("f", "file", b"content"), ("h", "hard", "f")],
+    ),
+    # RENAME's first numbered name is taken in dest, but the base name is free: the
+    # member collides with a directory the run made, so RENAME still tries it.
+    "rename-past-a-held-numbered-name": (
+        {"a (1)": b"mine"},
+        [("a/x", "file", b"x"), ("a", "file", b"a")],
+    ),
+    # The same, where the member collides with another member's case variant.
+    "rename-case-variant-past-a-held-numbered-name": (
+        {"A (1)": b"mine"},
+        [("a", "file", b"a"), ("A", "file", b"A")],
+    ),
+}
+
+_EXISTING_LINK_CASES: dict[
+    str, tuple[dict[str, object], list[tuple[str, str, object]]]
+] = {
+    # A symlink of the caller's where a member lands: replaced, never written
+    # through, and an error under ERROR.
+    "file-over-symlink": (
+        {"real": b"mine", "ln": ("sym", "real")},
+        [("ln", "file", b"theirs")],
+    ),
+    # A dangling one counts as existing.
+    "file-over-dangling-symlink": (
+        {"dangling": ("sym", "nowhere")},
+        [("dangling", "file", b"theirs")],
+    ),
+    # A file under the caller's symlink to a directory in dest: written through it.
+    "through-symlink-inside": (
+        {"sub/x": b"mine", "ln": ("sym", "sub"), "abs": ("sym", "{dest}/sub")},
+        [("ln/x", "file", b"theirs"), ("ln/y", "file", b"y"), ("abs/z", "file", b"")],
+    ),
+    # Under one whose absolute target reaches dest past a component that does not
+    # exist: the OS cannot follow it, so the member lands on the link itself.
+    "through-symlink-past-a-missing-name": (
+        {"sub/x": b"mine", "ln": ("sym", "{parent}/gone/../out/sub")},
+        [("ln/y", "file", b"y")],
+    ),
+    # The same, where what it reaches in dest is a symlink out of dest: refused.
+    "through-symlink-past-a-missing-name-and-out": (
+        {
+            "sub": ("sym", "/archivey-dry-run-test-elsewhere"),
+            "ln": ("sym", "{parent}/gone/../out/sub"),
+        },
+        [("ln/y", "file", b"y")],
+    ),
+    # And under one that leaves dest: refused.
+    "through-symlink-outside": (
+        {"out": ("sym", "../../elsewhere")},
+        [("out/f", "file", b"theirs")],
+    ),
+    # A link member resolved through the caller's links: in, then out.
+    "link-member-through-symlink": (
+        {"sub/x": b"mine", "ln": ("sym", "sub"), "up": ("sym", "..")},
+        [("in", "sym", "ln/x"), ("out", "sym", "up/secret")],
+    ),
+    # A directory member over the caller's symlink to a directory.
+    "directory-over-symlink": (
+        {"sub": None, "ln": ("sym", "sub")},
+        [("ln", "dir", None), ("ln/f", "file", b"f")],
+    ),
+    # A file member over a directory of dest that holds entries, reached through
+    # the caller's symlink: REPLACE refuses it, as the directory is not empty.
+    "file-over-full-directory-through-symlink": (
+        {"sub/b/keep.txt": b"mine", "a": ("sym", "sub")},
+        [("a/b", "file", b"theirs")],
+    ),
+    # A symlink of the caller's that loops: the error names it in dest.
+    "under-a-looping-symlink": (
+        {"a": ("sym", "a")},
+        [("a/c", "file", b"x")],
+    ),
+    # A link member whose target is missing when it is made, and that a later member
+    # makes resolve through the caller's symlink out of dest: the recheck refuses it.
+    "link-member-escapes-after-a-later-member": (
+        {"real/esc": ("sym", "../../outside")},
+        [("l", "sym", "a/esc"), ("a", "sym", "real")],
+    ),
+    # A link member whose relative target passes a missing name and takes it off with
+    # a later "..": the checks resolve it to the caller's symlink out of dest.
+    "link-member-past-a-missing-name": (
+        {"real/esc": ("sym", "../../outside")},
+        [("l", "sym", "gone/../real/esc")],
+    ),
+    "link-member-past-two-missing-names": (
+        {"real/esc": ("sym", "../../outside")},
+        [("l", "sym", "x/y/../../real/esc")],
+    ),
+    "link-member-past-a-missing-name-deeper": (
+        {"real/sub/esc": ("sym", "../../../outside")},
+        [("l", "sym", "g/../real/sub/esc")],
+    ),
+    # A nested link member, whose directory is not on disk yet, with an absolute
+    # target that names dest and goes on through the caller's symlink out of it.
+    "nested-link-member-absolute-into-dest": (
+        {"x": ("sym", "../outside")},
+        [("a/l", "sym", "{dest}/x"), ("a/b/l", "sym", "{dest}/x")],
+    ),
+    # The same, where the later member replaces a directory the run made.
+    "link-member-escapes-after-a-later-member-replaces-a-directory": (
+        {"real/esc": ("sym", "../../outside")},
+        [("a", "dir", None), ("l", "sym", "a/esc"), ("a", "sym", "real")],
+    ),
+}
+
+
+def _existing_case_params(cases: dict[str, object]) -> list[object]:
+    return [pytest.param(name, id=name) for name in sorted(cases)]
+
+
+def _run_existing_case(
+    held: dict[str, object],
+    members: list[tuple[str, str, object]],
+    overwrite: OverwritePolicy,
+    streaming: bool,
+    tmp_path: Path,
+    *,
+    relative: bool = False,
+    dest_name: str = "out",
+) -> None:
+    def source() -> io.BytesIO:
+        # A "{dest}" or "{parent}" in a link target names the run's own dest, as
+        # given, so each run builds its own archive. ``_both`` calls this in the run's directory.
+        dest = Path.cwd() / dest_name
+        return io.BytesIO(
+            _tar(
+                [
+                    (
+                        name,
+                        kind,
+                        _expand(extra, dest) if isinstance(extra, str) else extra,
+                    )
+                    for name, kind, extra in members
+                ]
+            )
+        )
+
+    for policy in _POLICIES:
+        work = tmp_path / policy.value
+        (work / "tmp").mkdir(parents=True)
+        tempfile.tempdir = str(work / "tmp")
+        if dest_name != "out":
+            _spell_dest_ways(work)
+        real, dry = _both(
+            source,
+            work,
+            relative=relative,
+            dest_name=dest_name,
+            populate=lambda dest: _put(dest, held),
+            policy=policy,
+            overwrite=overwrite,
+            open_kwargs={"streaming": streaming},
+        )
+        assert dry == real, policy
+
+
+def _spell_dest_ways(work: Path) -> None:
+    """What ``link/out`` and ``x/../out`` need under each run's directory."""
+    for kind in ("real", "dry"):
+        cwd = work / kind
+        (cwd / "realdir").mkdir(parents=True)
+        (cwd / "link").symlink_to("realdir")
+        (cwd / "x").mkdir()
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+@pytest.mark.parametrize("overwrite", list(OverwritePolicy))
+@pytest.mark.parametrize("case", _existing_case_params(_EXISTING_CASES))
+def test_existing_contents_meet_the_overwrite_policy_alike(
+    case: str, overwrite: OverwritePolicy, streaming: bool, tmp_path: Path
+) -> None:
+    held, members = _EXISTING_CASES[case]
+    _run_existing_case(held, members, overwrite, streaming, tmp_path)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+@pytest.mark.parametrize("overwrite", list(OverwritePolicy))
+@pytest.mark.parametrize("case", _existing_case_params(_EXISTING_LINK_CASES))
+def test_existing_symlinks_are_met_alike(
+    case: str, overwrite: OverwritePolicy, streaming: bool, tmp_path: Path
+) -> None:
+    held, members = _EXISTING_LINK_CASES[case]
+    _run_existing_case(held, members, overwrite, streaming, tmp_path)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+def test_symlink_loop_error_names_dest_in_its_cause(tmp_path: Path) -> None:
+    # The report shape compares the message only; the cause keeps a file name too.
+    dest = tmp_path / "out"
+    _put(dest, {"a": ("sym", "a")})
+    blob = _tar([("a/c", "file", b"x")])
+    with open_archive(io.BytesIO(blob)) as reader:
+        report = reader.extract_all(dest, on_error=OnError.CONTINUE, dry_run=True)
+    (result,) = report.results
+    assert result.status is ExtractionStatus.FAILED
+    cause = result.error.__cause__
+    assert isinstance(cause, OSError)
+    assert cause.filename == str(dest.resolve() / "a")
+
+
+@pytest.mark.parametrize("overwrite", list(OverwritePolicy))
+def test_existing_contents_match_from_a_zip(
+    overwrite: OverwritePolicy, tmp_path: Path
+) -> None:
+    # The reported case, as reported: a zip holding hello.txt, and out/hello.txt.
+    blob = _zip_blob({"hello.txt": b"theirs"})
+    real, dry = _both(
+        lambda: io.BytesIO(blob),
+        tmp_path,
+        populate=lambda dest: _put(dest, {"hello.txt": b"mine"}),
+        overwrite=overwrite,
+    )
+    assert dry == real
+    (entry,) = dry
+    expected = {
+        OverwritePolicy.ERROR: ExtractionStatus.FAILED,
+        OverwritePolicy.SKIP: ExtractionStatus.NOT_OVERWRITTEN,
+        OverwritePolicy.REPLACE: ExtractionStatus.EXTRACTED,
+        OverwritePolicy.RENAME: ExtractionStatus.EXTRACTED,
+    }
+    assert entry[1] is expected[overwrite]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory modes")
+def test_destination_mode_is_kept_alike(tmp_path: Path) -> None:
+    # A `./` member over dest, and a directory member over one of its directories:
+    # each keeps the caller's mode and reports it.
+    # The high bits are kept too: setgid on a directory, sticky on dest (as on /tmp).
+    blob = _tar([("./", "dir", 0o755), ("sub", "dir", 0o755)])
+
+    def populate(dest: Path) -> None:
+        _put(dest, {"sub": 0o2750})
+        dest.chmod(0o1700)
+
+    real, dry = _both(lambda: io.BytesIO(blob), tmp_path, populate=populate)
+    assert dry == real
+    assert [entry[7] for entry in dry] == [0o1700, 0o2750]
+
+
+def test_record_leaves_out_what_dest_held(tmp_path: Path) -> None:
+    # What the CLI reads to name where a single root lands: only the run's own
+    # entries, not the caller's that the pass met on its way.
+    dest = tmp_path / "out"
+    _put(dest, {"keep": b"mine", "sub/old": b"mine", "skipped": b"mine"})
+    blob = _tar(
+        [("sub/new", "file", b"n"), ("skipped", "file", b"s"), ("keep2", "file", b"")]
+    )
+    with open_archive(io.BytesIO(blob)) as reader:
+        report = reader.extract_all(dest, overwrite=OverwritePolicy.SKIP, dry_run=True)
+    assert report._dry_run_top_level == (("keep2", False), ("sub", True))
+    blob = _tar([("sub/new", "file", b"n")])
+    with open_archive(io.BytesIO(blob)) as reader:
+        report = reader.extract_all(dest, dry_run=True)
+    assert report._dry_run_top_level == (("sub", True),)
+    assert report._dry_run_entries == (("sub", True), ("sub/new", False))
+
+
+_NON_ROOT = pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0, reason="root writes anywhere"
+)
+
+
+_SPELLINGS = pytest.mark.parametrize(
+    "dest_name", ["out", "link/out", "x/../out"], ids=["plain", "symlink", "dotdot"]
+)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+@pytest.mark.parametrize("relative", [False, True], ids=["absolute", "relative"])
+@_SPELLINGS
+@pytest.mark.parametrize("overwrite", [OverwritePolicy.ERROR, OverwritePolicy.RENAME])
+@pytest.mark.parametrize(
+    "case",
+    _existing_case_params(_EXISTING_CASES)
+    + _existing_case_params(_EXISTING_LINK_CASES),
+)
+def test_existing_contents_match_with_each_dest_spelling(
+    case: str,
+    overwrite: OverwritePolicy,
+    dest_name: str,
+    relative: bool,
+    tmp_path: Path,
+) -> None:
+    held, members = {**_EXISTING_CASES, **_EXISTING_LINK_CASES}[case]
+    _run_existing_case(
+        held,
+        members,
+        overwrite,
+        False,
+        tmp_path,
+        relative=relative,
+        dest_name=dest_name,
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+def test_hardlink_to_an_absolute_source_meets_dest_alike(tmp_path: Path) -> None:
+    # The link's source is not selected, so the policy checks it re-rooted, as
+    # "a/b/f": through the caller's "a/b", which leaves dest.
+    blob = _tar([("/a/b/f", "file", b"data"), ("link", "hard", "/a/b/f")])
+    real, dry = _both(
+        lambda: io.BytesIO(blob),
+        tmp_path,
+        populate=lambda dest: _put(dest, {"a/b": ("sym", "../../..")}),
+        members=["link"],
+        policy=ExtractionPolicy.STANDARD,
+    )
+    assert dry == real
+    assert dry[0][1] is ExtractionStatus.BLOCKED
+
+
+@pytest.mark.parametrize("on_error", [OnError.CONTINUE, OnError.STOP])
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+def test_chained_hardlink_source_meets_dest_alike(
+    streaming: bool, on_error: OnError, tmp_path: Path
+) -> None:
+    # "outer" names "mid", which names "escaped/f": the policy checks the end of
+    # the chain, through the caller's "escaped", which leaves dest.
+    blob = _tar(
+        [
+            ("escaped/f", "file", b"data"),
+            ("mid", "hard", "escaped/f"),
+            ("outer", "hard", "mid"),
+        ]
+    )
+    for policy in _POLICIES:
+        work = tmp_path / policy.value
+        (work / "tmp").mkdir(parents=True)
+        tempfile.tempdir = str(work / "tmp")
+        real, dry = _both(
+            lambda: io.BytesIO(blob),
+            work,
+            populate=lambda dest: _put(dest, {"escaped": ("sym", "../..")}),
+            members=["outer"],
+            policy=policy,
+            on_error=on_error,
+            open_kwargs={"streaming": streaming},
+        )
+        assert dry == real, policy
+        assert real[0][1] is ExtractionStatus.BLOCKED, policy
+
+
+def test_matching_an_absolute_target_is_linear_in_its_depth(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A link target's depth is the archive's to choose. Matching it against dest
+    # resolves one short path per component that exists, and nothing past the
+    # first that does not.
+    asked: list[str] = []
+    realpath = os.path.realpath
+
+    def counted(path, *args, **kwargs):
+        asked.append(os.fspath(path))
+        return realpath(path, *args, **kwargs)
+
+    dest = tmp_path / "out"
+    with dry_run_module.scratch_for(dest) as dry:
+        monkeypatch.setattr(os.path, "realpath", counted)
+        missing = "/" + "/".join(f"archivey-no-such-{i}" for i in range(2000))
+        assert dry.target_on_disk(missing) == missing
+        assert asked == []
+        # Every prefix exists: each step resolves the last prefix plus one name.
+        climbing = str(tmp_path) + "/x/.." * 1000 + "/elsewhere"
+        (tmp_path / "x").mkdir()
+        assert dry.target_on_disk(climbing) == climbing
+        monkeypatch.undo()
+    assert len(asked) <= 2001 + len(tmp_path.parts)
+    assert max(len(path) for path in asked) <= len(str(tmp_path)) + 20
+
+
+def test_matching_a_missing_target_joins_a_linear_amount(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Past a component that does not exist no filesystem call is made, so what the
+    # match costs there is the joining of path strings: pathlib joins a path's parts
+    # each time it is hashed, compared or shown. Counted as the characters handed
+    # to ``os.path.join``, which pathlib joins through from Python 3.12 (3.11 joins
+    # with ``str.join``, unseen here), it stays linear in the target's length.
+    joined = 0
+    join = os.path.join
+
+    def counted(*parts):
+        nonlocal joined
+        joined += sum(len(os.fspath(part)) for part in parts)
+        return join(*parts)
+
+    dest = tmp_path / "out"
+    deep = "/".join(f"n{i}" for i in range(2000))
+    targets = [
+        # Missing from its first component: no match.
+        f"/archivey-no-such/{deep}",
+        # Down past a missing name and back up into dest: a match.
+        f"{tmp_path}/gone/{deep}/" + "../" * 2001 + "out/data",
+    ]
+    with dry_run_module.scratch_for(dest) as dry:
+        monkeypatch.setattr(os.path, "join", counted)
+        matched = [dry.target_on_disk(target) for target in targets]
+        monkeypatch.undo()
+        # Rewritten through the gap, as ``gone`` is on the way.
+        detour = dry.scratch.parent / "missing" / ".." / dry.scratch.name / "data"
+    assert matched == [targets[0], str(detour)]
+    assert joined <= 4 * sum(len(target) for target in targets)
+
+
+def test_record_keeps_the_top_when_the_tree_cannot_be_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # What dest held does not change what the record says sits at its top, even
+    # when the rest of the tree cannot be walked.
+    monkeypatch.setattr(dry_run_module, "scratch_tree", lambda root: None)
+    blob = _tar([("r", "dir", None), ("r/f", "file", b"f")])
+    tops = []
+    for held in ({}, {"unrelated": b"mine"}):
+        dest = tmp_path / f"out{len(tops)}"
+        if held:
+            _put(dest, held)
+        with open_archive(io.BytesIO(blob)) as reader:
+            report = reader.extract_all(dest, dry_run=True)
+        tops.append(report._dry_run_top_level)
+        assert report._dry_run_entries is None
+    assert tops == [(("r", True),), (("r", True),)]
+
+
+def test_record_leaves_out_a_directory_member_that_failed(tmp_path: Path) -> None:
+    dest = tmp_path / "out"
+    _put(dest, {"d": b"mine"})
+    blob = _tar([("d", "dir", None)])
+    with open_archive(io.BytesIO(blob)) as reader:
+        report = reader.extract_all(dest, on_error=OnError.CONTINUE, dry_run=True)
+    assert [r.status for r in report.results] == [ExtractionStatus.FAILED]
+    assert report._dry_run_top_level == ()
+
+
+def test_dry_run_copies_only_what_the_pass_names(tmp_path: Path) -> None:
+    # A crowded dest costs the dry run a listing, not a copy of every entry: each
+    # member finds in the scratch copy only what earlier members and their paths
+    # brought in.
+    dest = tmp_path / "out"
+    _put(dest, {f"f{i}": b"" for i in range(200)} | {"sub/x": b"", "sub/y": b""})
+    seen: list[list[str]] = []
+
+    def look(member):
+        (work,) = (tmp_path / "tmp").glob(f"{dry_run_module.DRY_RUN_PREFIX}*/out")
+        seen.append(sorted(p.relative_to(work).as_posix() for p in work.rglob("*")))
+        return member
+
+    blob = _tar([("f7", "file", b"n"), ("sub", "dir", None), ("last", "file", b"")])
+    with open_archive(io.BytesIO(blob)) as reader:
+        reader.extract_all(
+            dest, overwrite=OverwritePolicy.REPLACE, filter=look, dry_run=True
+        )
+    # "sub" named as a directory brings one of its entries, so a REPLACE there
+    # finds it not empty.
+    assert seen == [[], ["f7"], ["f7", "sub", "sub/x"]]
+
+
+def test_numbered_name_held_under_another_normalization_is_copied_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # On a filesystem that compares names normalization-insensitively (APFS), a
+    # RENAME of the composed name "á" finds the decomposed "á (1)" taken. The
+    # dry run copies it in, under the name dest holds it by. Such a filesystem is
+    # simulated: dest's lookups fold names as ``_fold`` does.
+    composed = unicodedata.normalize("NFC", "á")
+    decomposed = unicodedata.normalize("NFD", "á")
+    dest = tmp_path / "out"
+    _put(dest, {f"{decomposed} (1)": b"mine"})
+    real_lexists = os.path.lexists
+
+    def lexists(path) -> bool:
+        if real_lexists(path):
+            return True
+        path = Path(path)
+        if path.parent != dest:
+            return False
+        key = dry_run_module._fold(path.name)
+        return any(dry_run_module._fold(n) == key for n in os.listdir(dest))
+
+    with dry_run_module.scratch_for(dest) as dry:
+        monkeypatch.setattr(os.path, "lexists", lexists)
+        dry._bring(dry.scratch, composed)
+        monkeypatch.undo()
+        assert os.listdir(dry.scratch) == [f"{decomposed} (1)"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory modes")
+@_NON_ROOT
+def test_unwritable_directory_in_dest_is_an_exemption(tmp_path: Path) -> None:
+    # Stated exemption: a refusal that comes from the permissions of a directory of
+    # dest appears only in a real run, as the scratch copy can always be written.
+    blob = _tar([("ro/f", "file", b"f")])
+    try:
+        real, dry = _both(
+            lambda: io.BytesIO(blob),
+            tmp_path,
+            populate=lambda dest: _put(dest, {"ro": 0o555}),
+        )
+    finally:
+        for kind in ("real", "dry"):
+            (tmp_path / kind / "out" / "ro").chmod(0o755)
+    assert real[0][1] is ExtractionStatus.FAILED
+    assert real[0][8] is PermissionError
+    assert dry[0][1] is ExtractionStatus.EXTRACTED
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+def test_symlink_the_os_will_not_create_is_an_exemption(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Stated exemption: a symlink of dest that the OS will not create in the
+    # scratch tree (Windows without the privilege) is copied as an empty file, so
+    # a member under it meets a file where a real run writes through the link.
+    monkeypatch.setattr(
+        dry_run_module.DryRun, "_copy_link", lambda self, source, path: False
+    )
+    blob = _tar([("ln/x", "file", b"theirs")])
+    real, dry = _both(
+        lambda: io.BytesIO(blob),
+        tmp_path,
+        populate=lambda dest: _put(dest, {"sub": None, "ln": ("sym", "sub")}),
+    )
+    assert real[0][1] is ExtractionStatus.EXTRACTED
+    assert dry[0][1] is ExtractionStatus.FAILED
+    assert "Destination already exists" in str(dry[0][9])
+
+
+def _cli_both(
+    blob: bytes, held: dict[str, object], argv: list[str], tmp_path: Path
+) -> tuple[tuple[int, str], tuple[int, str]]:
+    """``archivey x`` run for real and with ``--dry-run`` in a cwd holding ``held``
+    and the archive: the exit code and stderr of each, with what only a dry run
+    prints taken out."""
+    runs = []
+    previous = os.getcwd()
+    for dry in (False, True):
+        cwd = tmp_path / ("dry" if dry else "real")
+        _put(cwd, held)
+        (cwd / "a.tar").write_bytes(blob)
+        os.chdir(cwd)
+        try:
+            extra = ["--dry-run"] if dry else []
+            code, err = _cli(["x", "a.tar", "--hide-progress", *argv, *extra])
+        finally:
+            os.chdir(previous)
+        for only_dry in (
+            "dry run, nothing written: ",
+            "dry run: nothing was written\n",
+        ):
+            err = err.replace(only_dry, "")
+        for would, did in (
+            ("would extract into", "extracting into"),
+            ("would keep in", "kept in"),
+        ):
+            err = err.replace(would, did)
+        runs.append((code, err.replace(str(cwd), "<cwd>")))
+    return runs[0], runs[1]
+
+
+@pytest.mark.parametrize("overwrite", ["error", "skip", "replace", "rename"])
+@pytest.mark.parametrize("case", _existing_case_params(_EXISTING_CASES))
+def test_cli_dry_run_into_a_populated_cwd_matches(
+    case: str, overwrite: str, tmp_path: Path
+) -> None:
+    held, members = _EXISTING_CASES[case]
+    # The CLI runs build one archive for both runs, so a row here cannot name dest.
+    assert not any(isinstance(extra, str) and "{" in extra for _, _, extra in members)
+    real, dry = _cli_both(
+        _tar(members), held, ["-d", ".", "--overwrite", overwrite], tmp_path
+    )
+    assert dry == real
+
+
+@pytest.mark.parametrize("overwrite", ["error", "rename"])
+def test_cli_dry_run_names_where_a_root_lands_past_a_file(
+    overwrite: str, tmp_path: Path
+) -> None:
+    # A root "foo/" stored as a directory member, with the operator's file "foo".
+    # The dry run does not list the hoist's own rename (the cli spec), so only the
+    # exit code and where the summary says the content lands are compared.
+    blob = _tar([("foo", "dir", None), ("foo/x.txt", "file", b"x")])
+    real, dry = _cli_both(blob, {"foo": b"mine"}, ["--overwrite", overwrite], tmp_path)
+    assert dry[0] == real[0]
+    assert (
+        dry[1].splitlines()[-1].split(" → ")[1]
+        == (real[1].splitlines()[-1].split(" → ")[1])
+    )
 
 
 def test_destination_that_is_a_file_is_refused(tmp_path: Path) -> None:
@@ -455,11 +1241,6 @@ def test_destination_under_a_file_is_refused(tmp_path: Path) -> None:
         assert type(dry) is type(real)
     assert "archivey-dry-run-" not in str(dry)
     assert list((tmp_path / "tmp").iterdir()) == []
-
-
-_NON_ROOT = pytest.mark.skipif(
-    hasattr(os, "geteuid") and os.geteuid() == 0, reason="root writes anywhere"
-)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX modes and symlinks")

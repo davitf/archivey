@@ -50,9 +50,11 @@ for the transition.
 from __future__ import annotations
 
 import enum
+import gc
 import threading
+import weakref
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 from archivey.exceptions import ArchiveyUsageError
 from archivey.types import MemberStreams
@@ -62,6 +64,51 @@ if TYPE_CHECKING:
 
     from archivey.internal.open_site import OpenSite
     from archivey.internal.streams.archive_stream import ArchiveStream
+
+
+T = TypeVar("T")
+
+# A dropped pass or member stream releases what it held here only when it is freed.
+# CPython usually frees it at once, when its last reference goes (the end of a ``for``
+# loop left with ``break``, ``reader.open(m).read()``), but not when it sits in a
+# reference cycle: then it waits for the cycle collector. PyPy frees every dropped
+# object only at a later collection. Until then the next call would be refused as
+# overlapping something nobody can reach, at a moment memory pressure decides.
+
+
+_OVERLAP_MARK = "_archivey_overlap_refusal"
+
+
+def _overlap_refused(message: str) -> ArchiveyUsageError:
+    """A refusal because other work holds the reader: one that a dropped pass or
+    stream can be behind, so a collection may clear it.
+
+    It is a plain :class:`ArchiveyUsageError`, as the docs promise for an overlap; a
+    private mark on the instance tells :func:`_retry_after_collecting` it may retry. A
+    closed reader or a callback re-entry raises an unmarked one, which no collection
+    clears."""
+    exc = ArchiveyUsageError(message)
+    setattr(exc, _OVERLAP_MARK, True)
+    return exc
+
+
+def _retry_after_collecting(attempt: Callable[[], T]) -> T:
+    """``attempt()``; refused for an overlap, ``attempt`` again after a collection has
+    run the cleanup of passes and streams already dropped.
+
+    This runs on every interpreter, so whether a call is refused depends only on
+    whether the earlier pass or stream is still reachable, never on when a collection
+    happened to run. The collection runs only on that refusal, outside the state lock
+    (the cleanup takes it). A refusal that still holds afterwards is a real overlap
+    and raises.
+    """
+    try:
+        return attempt()
+    except ArchiveyUsageError as exc:
+        if not getattr(exc, _OVERLAP_MARK, False):
+            raise
+    gc.collect()
+    return attempt()
 
 
 # Passes that may run beside workers and beside one another on a CONCURRENT reader.
@@ -86,7 +133,7 @@ class LiveStreamReservation:
     """Opaque live-stream slot reservation.
 
     Disjoint from ``id()`` values in ``_live_streams``. A reservation must never
-    be stored in that set: ``release_live_stream_id`` reasons about id reuse, and
+    be stored in that map: ``release_live_stream_id`` reasons about id reuse, and
     a synthetic int dropped in there would be mistakable for a stream.
     """
 
@@ -172,7 +219,12 @@ class ReaderState:
         self._side_passes: set[OperationToken] = set()
         self._children: set[OperationToken] = set()
         self._workers: set[OperationToken] = set()
-        self._live_streams: set[int] = set()
+        # Open public member streams: ``id(stream)`` to a weak reference, in the order
+        # they were registered. ``reader.close()`` closes them in that order
+        # (:meth:`live_streams`). Weak, so this map never keeps a dropped stream alive:
+        # a dropped stream's ``close()`` runs from ``IOBase.__del__`` and releases its
+        # entry (:meth:`release_live_stream_id`).
+        self._live_streams: dict[int, weakref.ref[ArchiveStream]] = {}
         self._reservations: set[LiveStreamReservation] = set()
         # Leases of live streams and reservations only.
         self._lease_count = 0
@@ -280,6 +332,9 @@ class ReaderState:
         return self._root
 
     def acquire_pass(self, name: str) -> OperationToken:
+        return _retry_after_collecting(lambda: self._acquire_pass_once(name))
+
+    def _acquire_pass_once(self, name: str) -> OperationToken:
         """Acquire a data-pass token: root when free, else a child under an internal owner."""
         with self._lock:
             self._require_admissible_locked(name)
@@ -295,12 +350,12 @@ class ReaderState:
             if self._root is not None and not (
                 overlap and self._pass_admits_overlap_locked(self._root.name)
             ):
-                raise ArchiveyUsageError(
+                raise _overlap_refused(
                     f"Cannot start {name!r}: another reader operation "
                     f"({self._root.name!r}) is already active."
                 )
             if self._workers and not overlap:
-                raise ArchiveyUsageError(
+                raise _overlap_refused(
                     f"Cannot start {name!r}: a concurrent open()/read() call is still "
                     "in progress."
                 )
@@ -404,6 +459,9 @@ class ReaderState:
             self._children.discard(child)
 
     def acquire_worker(self, name: str) -> OperationToken:
+        return _retry_after_collecting(lambda: self._acquire_worker_once(name))
+
+    def _acquire_worker_once(self, name: str) -> OperationToken:
         """Short-lived token for random ``open()`` / ``read()`` (D7).
 
         Rejected while a reader-wide root pass is active (unless under library-internal
@@ -424,7 +482,7 @@ class ReaderState:
             ):
                 # Side passes exist only beside a root that admits overlap, and they
                 # admit it too, so checking the root is enough.
-                raise ArchiveyUsageError(
+                raise _overlap_refused(
                     f"Cannot call {name!r}: another reader operation "
                     f"({self._root.name!r}) is already active."
                 )
@@ -449,7 +507,10 @@ class ReaderState:
                 self._children.discard(token)
                 return
             self._workers.discard(token)
-            if not self._workers:
+            # Only a draining close() waits on this condition, and it sets ``_closing``
+            # before it waits. Every open() releases a worker, so the notify is skipped
+            # when no close can be waiting.
+            if not self._workers and self._closing:
                 self._workers_cv.notify_all()
 
     def begin_materialization(self) -> bool:
@@ -513,6 +574,9 @@ class ReaderState:
                 self._materialization_cv.notify_all()
 
     def reserve_live_stream(self) -> LiveStreamReservation:
+        return _retry_after_collecting(self._reserve_live_stream_once)
+
+    def _reserve_live_stream_once(self) -> LiveStreamReservation:
         """Take a live-stream lease before the stream object exists.
 
         Raises :class:`~archivey.exceptions.ArchiveyUsageError` under the same
@@ -526,7 +590,7 @@ class ReaderState:
                 if self._live_streams or self._reservations:
                     site = self.open_site
                     loc = site.location if site is not None else "<unknown>"
-                    raise ArchiveyUsageError(
+                    raise _overlap_refused(
                         "A member stream is already open on this reader. Close it "
                         "before opening another, or reopen the archive with "
                         "concurrent_operations=True "
@@ -546,9 +610,10 @@ class ReaderState:
         reserve → open → bind, so ``close()`` cannot complete in between. Does not
         increment the lease — the reservation already holds it.
         """
+        ref = weakref.ref(stream)
         with self._lock:
             self._reservations.discard(token)
-            self._live_streams.add(id(stream))
+            self._live_streams[id(stream)] = ref
 
     def release_reservation(self, token: LiveStreamReservation) -> bool:
         """Drop an unbound reservation. True → the caller should run teardown.
@@ -577,17 +642,23 @@ class ReaderState:
     def release_live_stream_id(self, sid: int) -> bool:
         """Release a stream lease by identity token.
 
-        Separate from :meth:`release_live_stream` so a stream's own finalizer can hold
-        the token instead of the stream — holding the stream would keep it alive and
-        stop the finalizer from ever running. Safe against id reuse: the token is
-        removed when the stream closes, and a finalizer runs before its referent's
-        memory can be handed to another object.
+        Separate from :meth:`release_live_stream` so a stream's close hook can hold
+        the token instead of the stream: a hook that held the stream would keep a
+        dropped stream alive, and its ``close()`` would then never run. Safe against
+        id reuse: the token is removed when the stream closes, and the interpreter
+        runs ``close()`` on a dropped stream (``IOBase.__del__``) before its memory
+        can be handed to another object.
         """
         with self._lock:
-            if sid not in self._live_streams:
+            if self._live_streams.pop(sid, None) is None:
                 return False
-            self._live_streams.discard(sid)
             return self._release_lease_locked()
+
+    def live_streams(self) -> list[ArchiveStream]:
+        """The registered member streams not yet released, in registration order."""
+        with self._lock:
+            refs = list(self._live_streams.values())
+        return [stream for ref in refs if (stream := ref()) is not None]
 
     def mark_reader_closed(self) -> bool:
         """Mark reader closed and release the reader lease. True → run teardown now.

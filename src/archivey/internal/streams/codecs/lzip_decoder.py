@@ -50,6 +50,7 @@ from archivey.internal.config import (
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.hashing import crc32_combine
+from archivey.internal.streams.codecs.isolated import IN_PROCESS, Decompressor, Natives
 from archivey.internal.streams.codecs.xz_decoder import lzma_error_to_archivey
 from archivey.internal.streams.decompressor_stream import (
     TRAILING_DATA_CANDIDATES,
@@ -63,6 +64,7 @@ from archivey.internal.streams.decompressor_stream import (
     build_index_backwards,
     damaged_stream_error,
     near_stream_magic,
+    release_decoder,
 )
 
 _MAGIC = b"LZIP"
@@ -313,15 +315,20 @@ class _LzipState:
     _NEED_TRAILER = 2
 
     def __init__(
-        self, limits: DecoderLimits, offset: int, read_bound: int | None = None
+        self,
+        limits: DecoderLimits,
+        offset: int,
+        read_bound: int | None = None,
+        natives: Natives = IN_PROCESS,
     ) -> None:
         self._limits = limits
         self._read_bound = read_bound
+        self._natives = natives
         # Source offset of the current member's header, for error messages.
         self._comp_offset = offset
         self._state = self._NEED_HEADER
         self._buf = bytearray()
-        self._dec: lzma.LZMADecompressor | None = None
+        self._dec: Decompressor | None = None
         self._crc = 0
         self._member_size = 0
         # Compressed bytes of the current member consumed so far, header included; the
@@ -445,6 +452,7 @@ class _LzipState:
                 if self._dec.eof:
                     self._member_comp_size -= len(self._dec.unused_data)
                     self._buf[0:0] = self._dec.unused_data
+                    release_decoder(self._dec)
                     self._dec = None
                     self._state = self._NEED_TRAILER
                 elif not self._dec.needs_input:
@@ -490,7 +498,7 @@ class _LzipState:
         decode_dict = probe_lzma_dictionary(dict_size, self._read_bound)
         lzma_alone_header = _PROPS_BYTE + struct.pack("<I", decode_dict) + _UNKNOWN_SIZE
         try:
-            self._dec = lzma.LZMADecompressor(format=lzma.FORMAT_ALONE)
+            self._dec = self._natives.lzma_decompressor(format=lzma.FORMAT_ALONE)
             self._dec.decompress(lzma_alone_header)
         except lzma.LZMAError as e:
             # Only damage reaches here for a real member (see ``flush``).
@@ -534,10 +542,12 @@ class LzipDecoder(BaseDecoder):
         collector: DiagnosticCollector | None,
         limits: DecoderLimits,
         read_bound: int | None = None,
+        natives: Natives = IN_PROCESS,
     ) -> None:
         self._state = state
         self._limits = limits
         self._read_bound = read_bound
+        self._natives = natives
         self._comp_cursor = comp_cursor
         self._decomp_cursor = decomp_cursor
         self._collector = collector
@@ -545,12 +555,15 @@ class LzipDecoder(BaseDecoder):
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> LzipDecoder:
         del inner
         return LzipDecoder(
-            _LzipState(self._limits, point.compressed_offset, self._read_bound),
+            _LzipState(
+                self._limits, point.compressed_offset, self._read_bound, self._natives
+            ),
             comp_cursor=point.compressed_offset,
             decomp_cursor=point.decompressed_offset,
             collector=self._collector,
             limits=self._limits,
             read_bound=self._read_bound,
+            natives=self._natives,
         )
 
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
@@ -608,6 +621,7 @@ def LzipDecompressorStream(
     decoder_limits: DecoderLimits = DecoderLimits(),
     report_trailing_data: bool = False,
     probe_read_bound: int | None = None,
+    natives: Natives = IN_PROCESS,
 ) -> DecompressorStream:
     """Seekable lzip decompressor backed by stdlib ``lzma``.
 
@@ -620,12 +634,15 @@ def LzipDecompressorStream(
     def make_decoder(point: SeekPoint, inner: BinaryIO) -> LzipDecoder:
         del inner
         return LzipDecoder(
-            _LzipState(decoder_limits, point.compressed_offset, probe_read_bound),
+            _LzipState(
+                decoder_limits, point.compressed_offset, probe_read_bound, natives
+            ),
             comp_cursor=point.compressed_offset,
             decomp_cursor=point.decompressed_offset,
             collector=collector,
             limits=decoder_limits,
             read_bound=probe_read_bound,
+            natives=natives,
         )
 
     return DecompressorStream(

@@ -91,3 +91,11 @@ already reads through a buffered view.
 Separate from listing: opening and closing one member's stream costs about 25 µs
 (the source lease, the finalizer, the registration). It dominates reading many tiny
 members and is the same in every format.
+
+Since 2026-10-20 a member stream has no `weakref.finalize` of its own: a dropped stream
+is closed by `IOBase.__del__`, and its close releases the lease. The reader records open
+streams in its lease state (`ReaderState`), one lock and one weak reference per stream,
+not in a second weak registry. An unencrypted ZIP member opens its codec bare
+(`open_codec_raw`), so it builds one `ArchiveStream` rather than two, and its decoder
+config is copied once (none for a stored member). Lazy `ArchiveMember` derivation is
+still the open lever for listing itself.

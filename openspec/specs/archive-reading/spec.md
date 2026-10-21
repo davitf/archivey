@@ -979,7 +979,7 @@ Lease/token/teardown once-guards and dual-failure `ExceptionGroup` rules:
 | Several open streams + `reader.close()` | All are closed; teardown runs once, after the last |
 | `close()` raises (executing pass/worker) | Reader stays open; member streams untouched |
 | `close()` while a pass is suspended at a yield | Reader closed; yielded stream closed; resuming the pass → `ArchiveyUsageError` |
-| Stream dropped without close | Finalizer reclaims it; the stream must not be kept alive by its own finalizer |
+| Stream dropped without close | `IOBase.__del__` closes it, which releases its lease; nothing the reader or the stream holds may keep it alive |
 | Caller-supplied `BinaryIO`, all closed | Library does not call `close()` on that source |
 | `open_archive()` context exits | Reader closed; any member stream still open is closed with it, then the backend is released |
 | Op after reader close | `ArchiveyUsageError` |
@@ -1183,7 +1183,10 @@ pass keeping the sources of file copies) SHALL keep it in memory only up to a co
 the format spec states, and SHALL charge anything written to temporary storage to the
 same `spool_limits` budget. Such a keep is optional: when the budget has no room it SHALL
 be declined, the read SHALL fall back to decoding again, and nothing SHALL be refused.
-Caller's own buffering of a returned stream is unrestricted.
+Caller's own buffering of a returned stream is unrestricted. This requirement does not
+reach extraction output: the member data `extract_all` stages in the destination for a
+ZIP read from a non-seekable source (`safe-extraction`) is output of the extraction,
+bounded by `ExtractionLimits`, not by `spool_limits`.
 
 #### Scenario: bounded storage matrix
 
@@ -1226,10 +1229,16 @@ class SpoolLimits:
     max_bytes: int | None = 2**30
     UNLIMITED: ClassVar["SpoolLimits"]
 
+class ProcessIsolation(Enum):
+    KNOWN_CRASHES = "known_crashes"
+    NATIVE_DECODERS = "native_decoders"
+    NONE = "none"
+
 @dataclass(frozen=True)
 class ArchiveyConfig:
     use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO
     use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO
+    process_isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES
     zip_unflagged_fallback_encoding: str = "cp437"
     rar_allow_glob_member_concatenation: bool = False
     read_link_targets: bool = True
@@ -1262,17 +1271,23 @@ actually run: a key the reader already derived for the same password, salt and
 cost SHALL cost nothing, and every candidate password tried SHALL count. The
 check SHALL run before the derivation that would cross the cap, and SHALL raise
 `ResourceLimitError`, which SHALL NOT be treated as a wrong password by
-candidate iteration. `max_ppmd_in_process_input` SHALL bound the compressed bytes of
-one PPMd member the process holds to decode it in-process; a larger member SHALL decode
-in a child process, where a crash of the native decoder (a fault signal such as SIGSEGV,
-or the Windows status for the same fault) SHALL surface as `CorruptionError`. A child
-killed by SIGKILL, or one that dies allocating the member's model, SHALL raise
-`ResourceLimitError`, as SHALL a larger member where no child process can be started. A
-child that ends any other way (another signal, a plain exit status) SHALL raise
-`ReadError`, which is not a verdict on the data. `None` SHALL decode every member
-in-process, except one whose size is known only once it has been read (a ZIP member with
-bit 3 set, read from a non-seekable source): that one SHALL be fed to the decoder in
-pieces and only in a child process, so `None` SHALL refuse it with `ResourceLimitError`.
+candidate iteration. Under `process_isolation=KNOWN_CRASHES` (the default) and
+`NATIVE_DECODERS`, every PPMd member SHALL decode in a child process (`compressed-streams`,
+"Native decoders run where process_isolation puts them"), where a crash of the native
+decoder (a fault signal such as SIGSEGV, or the Windows status for the same fault) SHALL
+surface as `CorruptionError`. A child killed by SIGKILL, or one that dies allocating the
+member's model, SHALL raise `ResourceLimitError`, as SHALL a member where no child process
+can be started. A child that ends any other way (another signal, a plain exit status)
+SHALL raise `ReadError`, which is not a verdict on the data. `max_ppmd_in_process_input`
+SHALL bound the compressed bytes of one PPMd member the process holds to hand to pyppmd
+whole, in the child or, under `process_isolation=NONE`, in-process; a larger member, and
+one whose size is known only once it has been read (a ZIP member with bit 3 set, read from
+a non-seekable source), SHALL be fed to pyppmd in pieces. `None` SHALL hold every member
+whose size is known.
+`process_isolation` SHALL be converted from the member or its name at construction, as
+the accelerator fields are. `process_isolation=NONE` together with `use_rapidgzip=ON` or
+`use_indexed_bzip2=ON` SHALL raise `ArchiveyUsageError` at construction: rapidgzip runs
+only in a child process.
 Per-call `limits` still beat `config.extraction_limits`, then reader/library default.
 Other per-call operational args stay outside `ArchiveyConfig`.
 `detection_budget` SHALL bound what format detection spends, for `detect_format` and for
@@ -1322,8 +1337,12 @@ Callbacks hold no Archivey collector/reader/stream/backend/registry lock
 | `detect_format(BytesIO(zlib_bytes))`, then with `always_probe_content=True` | `FormatDetectionError`, then `ZLIB` / `content_probe` |
 | Reader opened with `read_link_targets=False` | No data-stored link target is read by listing or a pass for the reader lifetime |
 | Header-encrypted RAR5 set of four parts, one encryption record repeated, `max_key_derivation_rounds` one round short of key + PswCheck | `ResourceLimitError` at `open_archive`; at exactly key + PswCheck the set lists |
-| 7z PPMd member of 200 KB compressed, `max_ppmd_in_process_input=1024`, no child process possible | `ResourceLimitError` on the first read |
-| Same member on the child path; the child crashes / is killed by SIGKILL / by SIGTERM | `CorruptionError` / `ResourceLimitError` / `ReadError`, not `CorruptionError` |
+| 7z PPMd member of 200 KB compressed, no child process possible | `ResourceLimitError` on the first read, naming `process_isolation` |
+| Same member; the child crashes / is killed by SIGKILL / by SIGTERM | `CorruptionError` / `ResourceLimitError` / `ReadError`, not `CorruptionError` |
+| Same member, `process_isolation=NONE`, `max_ppmd_in_process_input=1024` / default | In-process, fed in pieces / held and decoded whole |
+| Valid 7z PPMd member of 8 MiB that pyppmd fed in pieces stops short of, default config | Held, decoded whole in a child, read in full |
+| `ArchiveyConfig(process_isolation="none")` | Holds `ProcessIsolation.NONE` |
+| `ArchiveyConfig(process_isolation=ProcessIsolation.NONE, use_rapidgzip=AcceleratorMode.ON)` | `ArchiveyUsageError` at construction |
 | Password list `["wrong", right]`, budget covering only the right candidate's derivations | `ResourceLimitError`, not `EncryptionError`; the list does not continue |
 
 ### Requirement: Reader-lifetime cumulative diagnostic snapshots
@@ -1375,10 +1394,12 @@ has been offered to the selector:
 - `stream_members()` reports at the end of a pass that reached the last member. A pass
   that the caller stops early SHALL NOT report, because a later member could match.
 - `extract_all()` reports before it writes any member when the member list is available
-  without a scan, and otherwise at the end of the pass. Under a `RAISE` disposition the
-  first case refuses the call before the destination is created. In the second case
-  the members already written stay on disk and `DiagnosticRaisedError` replaces the
-  report.
+  without a scan, and otherwise at the end of the pass. A ZIP read from a non-seekable
+  source has its member list once its central directory has been read, before any
+  member is placed (`safe-extraction`), so it reports then, as the first case does.
+  Under a `RAISE` disposition the first case refuses the call before the destination
+  is created. In the second case the members already written stay on disk and
+  `DiagnosticRaisedError` replaces the report.
 - When the member list ends in terminal damage, `extract_all()` SHALL NOT report: an
   entry could match a member past the damage that was never listed. The call raises
   the listing's own error after writing the prefix (`safe-extraction`), so under a
@@ -1392,13 +1413,14 @@ again at the end of the pass, on what each member became once the central direct
 was read (its name, where a DOS host makes `\` a separator, and its type). During the
 pass a `str` entry SHALL match every name a member can end with (with `\` as a
 separator or not, with or without a folder's trailing `/`), so the data of any member
-it may select is written while the stream holds it; at the end it selects for good,
-what it no longer takes is removed with no result, and no entry counts as matched
-before then. A member a predicate or the filter left out during the pass SHALL be
-asked about again at the end; taken then, it is written when it needs no bytes the
-stream has passed (a link, a folder, an empty file) and otherwise fails with
+it may select is staged while the stream holds it (`safe-extraction`); at the end it
+selects for good, what it no longer takes is not placed and gets no result, and no
+entry counts as matched before then. A member a predicate left out during the pass
+SHALL be asked about again at the end; taken then, it is placed when it needs no bytes
+the stream has passed (a link, a folder, an empty file) and otherwise fails with
 `ExtractionError`. A predicate is therefore called twice for every member, and reads
-`member_state_final` as `False` on the first call.
+`member_state_final` as `False` on the first call. The `filter` SHALL NOT run during
+the pass: it is called once per member, at placement, on the final member.
 
 #### Scenario: selector matrix
 
@@ -1413,8 +1435,9 @@ stream has passed (a link, a folder, an empty file) and otherwise fails with
 | `ArchiveMember` from another reader | Nothing selected; `MEMBER_SELECTOR_UNMATCHED` with `entry_kind="member"` |
 | `extract_all(members=["typo.txt"])` on ZIP with `MEMBER_SELECTOR_UNMATCHED` set to `RAISE` | `DiagnosticRaisedError` before any member is written |
 | `extract_all(members=["docs/r.txt"])` on a ZIP from a pipe whose DOS-host entry stores `docs\r.txt` | `docs/r.txt` extracted, as from a file; `members=["docs\\r.txt"]` selects nothing, as from a file |
-| `extract_all(filter=...)` taking only names under `docs/`, the same archive from a pipe, on POSIX | `docs/r.txt` `FAILED` with `ExtractionError`: the filter saw `docs\r.txt` during the pass, and its data has gone by at the end |
+| `extract_all(filter=...)` taking only names under `docs/`, the same archive from a pipe | `docs/r.txt` extracted, as from a file: the filter sees only the final name |
 | `extract_all(members=["a.txt", "typo.txt"])` on TAR with the code set to `RAISE` | `a.txt` written, then `DiagnosticRaisedError`; no report |
+| The same call on a ZIP from a pipe | `DiagnosticRaisedError` before any member is placed, as from a file; nothing of the run in the destination |
 | `extract_all(members=["typo.txt", "a.txt"])` on a listing that ends in damage after `a.txt`, code set to `RAISE` | `a.txt` written, then the listing's error; no `MEMBER_SELECTOR_UNMATCHED` |
 
 ### Requirement: Honour detection payload_offset at open

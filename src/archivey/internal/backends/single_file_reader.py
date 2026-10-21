@@ -554,7 +554,7 @@ class SingleFileReader(BaseArchiveReader):
         elif src.path is not None:
             codec_source = str(src.path)
         else:
-            codec_source = self._wrap_compressed_input(src)
+            codec_source = self._codec_input(src)
         config = self._codec_config
         if self._seek_index is not None:
             config = replace(config, seek_index=self._seek_index)

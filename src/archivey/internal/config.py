@@ -16,6 +16,7 @@ from archivey.config import (
     AcceleratorMode,
     ArchiveyConfig,
     DecoderLimits,
+    ProcessIsolation,
 )
 from archivey.exceptions import ResourceLimitError
 
@@ -31,6 +32,7 @@ __all__ = [
     "DEFAULT_STREAM_CONFIG",
     "DecoderLimits",
     "KeyDerivationBudget",
+    "ProcessIsolation",
     "StreamConfig",
     "check_decoder_memory",
     "probe_lzma_dictionary",
@@ -80,7 +82,10 @@ class StreamConfig:
     declares builds it no larger than that read needs (:func:`probe_lzma_dictionary`
     for the LZMA family; zstd, which cannot shrink a window, lowers
     ``window_log_max``). Past the bound the stream may end or fail, so the probe reads
-    no further. ``seek_index`` is an xz index scan the single-file reader already
+    no further. ``process_isolation`` is the caller's
+    :class:`~archivey.config.ProcessIsolation`: a codec builds its native decoder
+    through :func:`~archivey.internal.streams.codecs.isolated.natives_for` with it.
+    ``seek_index`` is an xz index scan the single-file reader already
     made over this same source; the xz stream uses it in place of its own scan. Like
     ``collector`` it is left out of equality.
     """
@@ -93,6 +98,7 @@ class StreamConfig:
     expected_decompressed_size: int | None = None
     gzip_isize_backstop: bool = False
     decoder_limits: DecoderLimits = DecoderLimits()
+    process_isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES
     collector: DiagnosticCollector | None = field(default=None, compare=False)
     report_trailing_data: bool = False
     probe_read_bound: int | None = None
@@ -115,6 +121,7 @@ def stream_config_from_archivey(
         use_rapidgzip=config.use_rapidgzip,
         use_indexed_bzip2=config.use_indexed_bzip2,
         decoder_limits=config.decoder_limits,
+        process_isolation=config.process_isolation,
     )
 
 

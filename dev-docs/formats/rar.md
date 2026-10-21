@@ -560,7 +560,25 @@ continuation that opens the volume after it is listed on its own with `split_bef
 as `lsar` lists it, and `unrar` warns "You need to start extraction from a previous
 volume" for it. Either flag left on after the merge refuses the read with
 `TruncatedError` (`_missing_data_error`), and in a solid archive so does every member
-past the gap: `unrar` gives checksum errors for them. A member past a gap is read by
+past the gap: `unrar` gives checksum errors for them.
+
+**A member whose packed data the file cuts is refused before `unrar` runs.** The listing
+already raises `TruncatedError` for such a file, but `members_report()` and a pass still
+list the member, so a read reaches it. `unrar` cannot say why it fails there: it exits 3,
+which for an encrypted member with no output is also the RAR4 wrong-password answer
+(§5), and the bytes it writes for the gap can fail the digest as corruption before
+the exit code is read, which depends on timing. So a member that a
+program would decode, and whose data ends past the end of the source, raises
+`TruncatedError` from the listing's numbers (`_cut_data_error`), as a missing volume
+does. A stored plaintext member archivey slices itself still reads up to the cut and
+then raises `TruncatedError`, as TAR, ZIP and ISO members do. A stored encrypted member
+reads differently in the two modes: `open()` decrypts it with `cryptography` and reads
+up to the cut, but a solid pass hands it to `unrar` and so refuses it before any byte,
+since what `unrar` writes for the gap cannot be verified (DR-1). Measured with
+`unrar 7.00` on `encryption__.rar` cut to 260 bytes, inside its second member: `unrar t`
+prints that member's checksum error and "Unexpected end of archive". Before, the same cut read as
+`EncryptionError` (wrong password) or as a digest `CorruptionError`, depending on the
+access mode and on timing. A member past a gap is read by
 pointing `unrar` at the first volume after the gap (`_unrar_path_for`), the way `unrar`
 reads such a set opened there; for that a gapped set is always staged, under names that
 keep each volume's number, and so is `unar`'s private directory. Opened from any volume,
@@ -1673,6 +1691,7 @@ python3 scripts/exploration/rar_decompressor_matrix.py      # §3 the decompress
 
 | Claim | Pinned by |
 | --- | --- |
+| A member whose packed data the file cuts is `TruncatedError` when `unrar` would decode it, encrypted or not, solid or not, in random access and in a pass; a cut stored plaintext one raises `TruncatedError` too (the bytes before the cut are not asserted) | `tests/test_cut_archive_cross_format.py::test_a_cut_rar_read_through_unrar_is_truncated`, `::test_a_cut_archive_raises_truncated_in_every_format` |
 | Cost receipt: `DIRECT` for a nonsolid archive, `SOLID` with `solid_block_count is None` for a solid one | `tests/test_cost_receipt.py::test_cost_receipt_per_format[rar]`, `tests/test_rar_reader.py::test_basic_solid_stream_and_random` |
 | Listing and stored reads with **no binary on `PATH` at all**, and a compressed read there naming RARLAB `unrar` | `tests/test_rar_reader.py::test_listing_and_stored_reads_need_no_unrar` |
 | A stored nonsolid archive is read end to end with zero subprocesses (the §2.3 measurement) | `::test_stored_nonsolid_archive_spawns_no_unrar_process` |

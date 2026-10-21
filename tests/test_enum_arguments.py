@@ -361,6 +361,11 @@ ALIASES_NOT_WANTED = {
         "attribute every consumer reads, obliging each of them to handle a string that "
         "cannot arrive. See the archived coerce-public-enum-arguments design note."
     ),
+    "ProcessIsolation": (
+        "ArchiveyConfig.process_isolation stays annotated ProcessIsolation, for the "
+        "same reason as AcceleratorMode: __post_init__ converts the name, so the field "
+        "always holds a member."
+    ),
     "RarDecompressor": (
         "ArchiveyConfig.rar_decompressor stays annotated RarDecompressor, for the same "
         "reason as AcceleratorMode: __post_init__ converts the name, so the field always "

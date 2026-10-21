@@ -3,22 +3,31 @@ the digest-verification stage."""
 
 from __future__ import annotations
 
+import ast
+import bz2
 import dataclasses
 import gzip
 import hashlib
+import importlib
+import importlib.machinery
 import importlib.util
 import io
+import logging
+import lzma
 import random
 import re
 import shutil
 import sys
 import sysconfig
+import types
 import zlib
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Literal
 
 import pytest
 
+from archivey import ArchiveFormat, format_availability, open_archive
 from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import (
     ArchiveyError,
@@ -54,7 +63,15 @@ from archivey.internal.streams.codecs.unix_compress_decoder import (
 )
 from archivey.internal.streams.verify import VerifyingStream
 from archivey.types import HashAlgorithm, StreamFormat
-from tests.conftest import requires, requires_binary, requires_zstd, zstd_backend
+from tests.conftest import (
+    CPYTHON,
+    UNUSED_UNDER_PYPY_NAMES,
+    has_package,
+    requires,
+    requires_binary,
+    requires_zstd,
+    zstd_backend,
+)
 from tests.corruption_util import (
     is_corruption_not_truncation,
     raises_corruption_not_truncation,
@@ -209,7 +226,7 @@ def test_resolve_backend_without_opening() -> None:
 
 
 @pytest.mark.skipif(
-    importlib.util.find_spec("pyppmd") is not None,
+    has_package("pyppmd"),
     reason="pyppmd is installed; the missing-backend path cannot be exercised",
 )
 def test_ppmd_without_pyppmd_raises() -> None:
@@ -909,7 +926,7 @@ def test_unix_compress_repeated_longest_code_decodes_exactly() -> None:
 
 def _lzw_table_bytes(state: LzwState) -> int:
     """Bytes held by an ``LzwState``'s dictionary, links included, each object once."""
-    if sys.implementation.name == "pypy":
+    if not CPYTHON:
         pytest.skip("sys.getsizeof has no answer on PyPy")
     seen: set[int] = set()
     total = 0
@@ -2851,6 +2868,9 @@ def test_absent_codec_backend_hint_is_installable(
     rot unnoticed, because ``format_availability`` reported the updated string while
     ``open()`` still advertised a deleted extra.
     """
+    requirement = codec_requirement(codec)
+    if requirement is not None and requirement.reason:
+        pytest.skip(f"no install hint here: {requirement.reason}")
     current = getattr(codecs_module.deps, absent_global)
     absent = (
         codecs_module.deps.LazyOptional(current.name, present=False)
@@ -2861,6 +2881,201 @@ def test_absent_codec_backend_hint_is_installable(
     with pytest.raises(PackageNotInstalledError) as ei:
         open_codec_stream(codec, io.BytesIO(b""))
     _assert_hint_is_installable(str(ei.value))
+
+
+@pytest.fixture
+def deps_built_under_pypy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[types.ModuleType]:
+    """``deps`` re-run as if the interpreter were PyPy, and rebuilt afterwards."""
+    deps = codecs_module.deps
+    monkeypatch.setattr(sys.implementation, "name", "pypy")
+    importlib.reload(deps)
+    try:
+        yield deps
+    finally:
+        monkeypatch.undo()
+        importlib.reload(deps)
+
+
+def _pretend_installed(monkeypatch: pytest.MonkeyPatch, *packages: str) -> None:
+    """Make the package lookup find ``packages``, which the test environment may lack."""
+    find_spec = importlib.util.find_spec
+
+    def found(
+        name: str, package: str | None = None
+    ) -> importlib.machinery.ModuleSpec | None:
+        if name in packages:
+            return importlib.machinery.ModuleSpec(name, None)
+        return find_spec(name, package)
+
+    monkeypatch.setattr(importlib.util, "find_spec", found)
+
+
+def _hooks_read_as_absent(deps: types.ModuleType, package: str) -> bool:
+    """Whether ``deps`` has a hook for ``package`` and every hook reads as absent: a
+    ``LazyOptional`` named ``package`` that is not available, or a module global named
+    ``package`` or ``package_*`` (an eager import such as ``lz4_frame``) that is None."""
+    hooks = [
+        value
+        for name, value in vars(deps).items()
+        if (isinstance(value, deps.LazyOptional) and value.name == package)
+        or name == package
+        or name.startswith(f"{package}_")
+    ]
+    return bool(hooks) and all(
+        value.available() is False
+        if isinstance(value, deps.LazyOptional)
+        else value is None
+        for value in hooks
+    )
+
+
+def test_packages_unused_under_pypy_count_as_absent(
+    deps_built_under_pypy: types.ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Under PyPy archivey treats lz4, pyppmd, rapidgzip and inflate64 as absent even
+    when they are installed, and has a reason for each."""
+    deps = deps_built_under_pypy
+    unused = set(deps._UNUSED_UNDER_PYPY)
+    assert unused >= {"lz4", "pyppmd", "rapidgzip", "inflate64"}
+    _pretend_installed(monkeypatch, *unused)
+    for package in unused:
+        assert _hooks_read_as_absent(deps, package), package
+        assert f"archivey does not use {package} under PyPy" in deps.unused_reason(
+            package
+        )
+    assert codecs_module.rapidgzip_child.rapidgzip_child_unavailable_reason() == (
+        deps.unused_reason("rapidgzip")
+    )
+    assert deps.unused_reason("brotli") == ""
+
+
+@pytest.mark.parametrize(
+    ("codec", "data", "setting"),
+    [
+        (Codec.GZIP, gzip.compress(b"x" * 1000), "use_rapidgzip"),
+        (Codec.BZIP2, bz2.compress(b"x" * 1000), "use_indexed_bzip2"),
+    ],
+    ids=["gzip", "bzip2"],
+)
+def test_installed_rapidgzip_under_pypy_reads_as_absent(
+    deps_built_under_pypy: types.ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    codec: Codec,
+    data: bytes,
+    setting: str,
+) -> None:
+    """Under PyPy an installed rapidgzip changes nothing: ON raises the same
+    PackageNotInstalledError as when it is absent, not ResourceLimitError, and AUTO
+    reads with the standard library without a warning."""
+    _pretend_installed(monkeypatch, "rapidgzip")
+    monkeypatch.setattr(codecs_module.rapidgzip_select, "_child_fallback_warned", set())
+    caplog.set_level(logging.WARNING, logger="archivey.streams")
+
+    on = StreamConfig(seekable=True, **{setting: AcceleratorMode.ON})
+    with pytest.raises(PackageNotInstalledError) as ei:
+        open_codec_stream(codec, io.BytesIO(data), config=on)
+    label = "bzip2" if codec is Codec.BZIP2 else "gzip"
+    reason = deps_built_under_pypy.unused_reason("rapidgzip")
+    assert str(ei.value) == (
+        f"The 'rapidgzip' package is required for {label} random access, but {reason}."
+    )
+    assert "pip install" not in str(ei.value)
+
+    auto = StreamConfig(
+        seekable=True,
+        compressed_input_size=1 << 40,
+        expected_decompressed_size=1000,
+    )
+    with open_codec_stream(codec, io.BytesIO(data), config=auto) as stream:
+        assert stream.read() == b"x" * 1000
+    assert [r.getMessage() for r in caplog.records] == []
+
+
+def test_an_unused_package_reports_its_reason_on_every_channel(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A package archivey does not use here is reported with the reason, not the
+    install advice: by the codec open, by ``format_availability()``, by the registry's
+    refusal. ``--version -v`` is pinned in tests/test_cli.py."""
+    reason = "archivey does not use lz4 under PyPy, where it crashes"
+    codec = stream_codec(Codec.LZ4)
+    requirement = dataclasses.replace(codec.requirement, reason=reason)
+    monkeypatch.setattr(codec, "requirement", requirement)
+    monkeypatch.setattr(codecs_module.deps, "lz4_frame", None)
+
+    with pytest.raises(PackageNotInstalledError) as ei:
+        open_codec_stream(Codec.LZ4, io.BytesIO(b""))
+    assert str(ei.value) == (
+        f"The 'lz4' package is required for lz4 streams, but {reason}."
+    )
+
+    availability = format_availability(ArchiveFormat.LZ4)
+    assert availability.missing == (requirement,)
+    assert availability.missing[0].advice == reason
+
+    path = tmp_path / "a.lz4"
+    path.write_bytes(b"\x04\x22\x4d\x18" + bytes(16))
+    with pytest.raises(PackageNotInstalledError) as ei:
+        open_archive(path)
+    assert reason in str(ei.value)
+    assert "pip install" not in str(ei.value)
+
+
+def _rapidgzip_rewind_messages(config: StreamConfig) -> list[str]:
+    """The rewind report for a seek back to 0 in gzip and bzip2, the two sites that
+    name rapidgzip."""
+    from archivey.internal.streams.archive_stream import ArchiveStream
+
+    warnings = [
+        codecs_module.rapidgzip_select._rapidgzip_rewind_warning("gzip", config),
+        stream_codec(Codec.BZIP2).rewind_warning(config),
+    ]
+    return [
+        ArchiveStream._rewind_message(w, 5_000_000, 0, 5_000_000)
+        for w in warnings
+        if w is not None
+    ]
+
+
+@pytest.mark.parametrize(
+    ("present", "expected"),
+    [
+        (False, "Install the 'seekable' extra (rapidgzip) for indexed random access."),
+        (True, "The 'rapidgzip' accelerator has no closer resume point in its index"),
+    ],
+    ids=["absent", "present"],
+)
+def test_rewind_report_names_rapidgzip_by_whether_it_is_installed(
+    monkeypatch: pytest.MonkeyPatch, present: bool, expected: str
+) -> None:
+    deps = codecs_module.deps
+    monkeypatch.setattr(deps, "UNDER_PYPY", False)
+    monkeypatch.setattr(
+        deps, "rapidgzip", deps.LazyOptional("rapidgzip", present=present)
+    )
+    messages = _rapidgzip_rewind_messages(
+        StreamConfig(use_rapidgzip=AcceleratorMode.OFF, seekable=True)
+    )
+    assert len(messages) == 2
+    for message in messages:
+        assert expected in message, message
+
+
+def test_rewind_report_gives_the_reason_rapidgzip_is_unused(
+    deps_built_under_pypy: types.ModuleType,
+) -> None:
+    """Under PyPy the report neither suggests installing rapidgzip nor blames its
+    index: it says why archivey does not use it."""
+    reason = deps_built_under_pypy.unused_reason("rapidgzip")
+    messages = _rapidgzip_rewind_messages(StreamConfig(seekable=True))
+    assert len(messages) == 2
+    for message in messages:
+        assert message.endswith(
+            f"The 'rapidgzip' accelerator is not available: {reason}."
+        ), message
 
 
 def test_absent_crypto_hint_is_installable(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2876,6 +3091,47 @@ def test_codec_requirement_hints_are_installable() -> None:
         requirement = codec_requirement(codec)
         if requirement is not None:
             _assert_hint_is_installable(requirement.install_hint)
+
+
+def test_conftest_names_the_same_unused_packages_as_deps() -> None:
+    """conftest keeps its own copy of ``deps._UNUSED_UNDER_PYPY`` (it must block imports
+    before archivey loads), so the two sets must name the same packages."""
+    assert set(UNUSED_UNDER_PYPY_NAMES) == set(codecs_module.deps._UNUSED_UNDER_PYPY)
+
+
+def test_every_requirement_on_an_unused_package_carries_its_reason() -> None:
+    """Each ``MissingComponent`` naming a package in ``deps._UNUSED_UNDER_PYPY`` passes
+    ``reason=deps.unused_reason(<name>)``, so a read under PyPy gives the reason and not
+    install advice.
+
+    Read from the source: the requirement is built when its module is imported, and on
+    CPython both the argument and its default are ``""``, so a live object cannot tell.
+    """
+    unused = set(codecs_module.deps._UNUSED_UNDER_PYPY)
+    src = Path(__file__).resolve().parent.parent / "src"
+    seen: set[str] = set()
+    offenders = []
+    for path in sorted(src.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "MissingComponent"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and node.args[0].value in unused
+            ):
+                continue
+            name = node.args[0].value
+            seen.add(name)
+            reason = next((k.value for k in node.keywords if k.arg == "reason"), None)
+            if reason is None or ast.unparse(reason) != f"deps.unused_reason({name!r})":
+                offenders.append(f"{path.relative_to(src)}:{node.lineno}: {name}")
+    assert not offenders, "requirement without its unused reason:\n" + "\n".join(
+        offenders
+    )
+    assert seen == unused, f"no requirement found for {sorted(unused - seen)}"
 
 
 def test_no_source_file_advertises_a_deleted_extra() -> None:
@@ -3072,3 +3328,74 @@ def test_zstd_frame_needing_a_dictionary_is_unsupported() -> None:
     with open_codec_stream(Codec.ZSTD, io.BytesIO(data)) as stream:
         with pytest.raises(UnsupportedFeatureError, match="dictionary"):
             stream.read()
+
+
+def _outcome(open_and_read: Callable[[], bytes]) -> tuple[str, str]:
+    """What a route did: the bytes it read, or the error type and message it raised."""
+    try:
+        return ("data", open_and_read().hex())
+    except Exception as exc:  # noqa: BLE001 - the outcome is compared, not handled
+        return (type(exc).__name__, str(exc))
+
+
+_GZIP_HELLO = gzip.compress(b"hello" * 50)
+
+
+@pytest.mark.parametrize(
+    ("codec", "data", "params"),
+    [
+        (Codec.GZIP, _GZIP_HELLO, None),
+        (Codec.GZIP, b"not a gzip stream at all", None),
+        (Codec.GZIP, _GZIP_HELLO[:-12], None),
+        (Codec.DEFLATE, zlib.compress(b"hello" * 50)[2:-4], None),
+        (Codec.DEFLATE, b"\xff\xff\xff\xff", None),
+        (Codec.BZIP2, b"BZh9" + b"\x00" * 20, None),
+        (Codec.XZ, b"\xfd7zXZ\x00" + b"\x00" * 20, None),
+        (Codec.STORED, b"stored bytes", None),
+        # An LZMA1 header ``lc`` out of range: the decoder refuses it at open.
+        (
+            Codec.LZMA,
+            bytes(20),
+            CodecParams(filters=[{"id": lzma.FILTER_LZMA1, "lc": 9}]),
+        ),
+    ],
+    ids=[
+        "gzip",
+        "gzip-garbage",
+        "gzip-cut",
+        "deflate",
+        "deflate-bad",
+        "bzip2",
+        "xz",
+        "stored",
+        "lzma-bad-header",
+    ],
+)
+def test_open_codec_raw_raises_what_open_codec_stream_raises(
+    codec: Codec, data: bytes, params: CodecParams | None
+) -> None:
+    """A member stream around ``open_codec_raw`` answers as the codec's own stream does.
+
+    ``open_codec_raw`` opens the codec bare, for a ZIP member stream that carries the
+    codec's translator itself. Every outcome, an open failure, a read failure or the
+    bytes, must match ``open_codec_stream``'s.
+    """
+    from archivey.internal.streams.archive_stream import ArchiveStream
+    from archivey.internal.streams.codecs import open_codec_raw
+
+    kwargs = {} if params is None else {"params": params}
+
+    def via_stream() -> bytes:
+        with open_codec_stream(codec, io.BytesIO(data), **kwargs) as stream:
+            return stream.read()
+
+    def via_raw() -> bytes:
+        opened = open_codec_raw(codec, io.BytesIO(data), **kwargs)
+        with ArchiveStream(
+            lambda: opened.stream,
+            translate=opened.translate,
+            rewind_warning=opened.rewind_warning,
+        ) as stream:
+            return stream.read()
+
+    assert _outcome(via_raw) == _outcome(via_stream)

@@ -105,12 +105,16 @@ no member replaces the destination itself.
 - Overwrites replace a symlink rather than follow it (`_prepare_destination`,
   `_place_link`), and file data is written to a `.archivey-tmp-<random>` sibling
   (`_temp_sibling`) and moved with `os.replace` (`_write_file_atomic`), so an
-  interrupted run never leaves a half-written file.
+  interrupted run never leaves a half-written file. A ZIP from a pipe writes its
+  members' data into one private `.archivey-tmp-<random>` directory under the
+  destination and moves each file from there once the central directory is read
+  (`_stage_then_place`); nothing else of the run is in the destination before then.
 - `_apply_metadata` strips setuid, setgid and sticky except under `TRUSTED`, and applies
   ownership only under `TRUSTED` as root.
 
 **Residual.** A local process racing the destination (out of scope, §1). A hard kill, or a removal the filesystem
-refuses (logged), can leave `.archivey-tmp-*` files, which are safe to delete.
+refuses (logged), can leave `.archivey-tmp-*` files, or a pipe ZIP's staging directory of them,
+which are safe to delete once no extraction is running.
 
 **Tests.** `tests/test_extraction.py`: `test_check_universal_rejects_traversal`,
 `test_check_universal_rejects_root_named_file`,
@@ -557,8 +561,8 @@ left to the source, because the source bounds them only by the image: a Rock Rid
 entry's area must end inside its logical block, as pycdlib itself requires after its
 read and the Linux kernel requires, so a `CE` declaring 512 MiB in a sparse 600 MiB
 image is refused without the read (545 MiB peak before), and so is each further link of
-a `CE` chain, which pycdlib follows from 1.21 (a 256 MiB second link peaked at 256 MiB
-under default limits before); and a path table must end inside the image
+a `CE` chain, which pycdlib follows (a 256 MiB second link peaked at 256 MiB under
+default limits before); and a path table must end inside the image
 ([Listing](#listing) weighs it against `max_metadata_bytes` too). This bounds one read;
 how many records and continuation areas `pycdlib` builds from those reads is the listing
 budget's ([Listing](#listing)).
@@ -856,9 +860,11 @@ that are not errors are `Diagnostic` values with stable codes and a per-code pol
 the zero-configuration projection. Native
 decoders known to crash on crafted input run in a child process: the rapidgzip
 accelerator for gzip, zlib, raw DEFLATE and bzip2 (`internal/streams/codecs/rapidgzip_child.py`), and
-PPMd members over `DecoderLimits.max_ppmd_in_process_input` (16 MiB,
-`internal/streams/codecs/ppmd_child.py`); a fault signal there becomes `CorruptionError` and
-costs only the member. A rapidgzip child stopped at its memory cap
+every PPMd member (`internal/streams/codecs/ppmd_child.py`), unless `process_isolation` is
+`NONE`; `NATIVE_DECODERS` moves every other native decoder there too
+(`internal/streams/codecs/decoder_child.py`). A fault signal there becomes
+`CorruptionError` and costs only the member; a crash in a reused child is re-run in a
+fresh one before it is charged. A rapidgzip child stopped at its memory cap
 ([Decoder memory](#decoder-memory)) raises no error to the caller: the standard library
 reads the rest of the stream.
 
@@ -899,13 +905,13 @@ writes itself) is exercised against mutated and coverage-guided input.
    `openspec/specs/testing-contract/spec.md`). `atheris` is in the `fuzz` dependency
    group only.
 
-pycdlib loops forever when corrupt directory records form a back-edge, in any namespace
-`open_fp` walks, UDF included, where it also allocates on every pass. A UDF File
-Identifier naming an ancestor's ICB grew memory by about 65 MB a second under default
-limits. `internal/backends/iso_reader.py`
-`_install_pycdlib_directory_cycle_guard` installs a queue, confined to `pycdlib`'s
-namespace, that drops a directory extent or UDF File Entry already scheduled; valid
-trees never revisit one.
+pycdlib before 1.22 looped forever when corrupt directory records formed a back-edge,
+in any namespace `open_fp` walks, UDF included, where it also allocated on every pass. A
+UDF File Identifier naming an ancestor's ICB grew memory by about 65 MB a second under
+default limits. From 1.22, the minimum archivey requires, pycdlib detects the loop and
+raises "ISO Directory Records form a loop" or "UDF File Entries form a loop", which
+archivey reports as `CorruptionError`. So a looping tree is refused at open, in any tree
+pycdlib walks.
 
 Disclosure goes through GitHub private vulnerability reporting ([`SECURITY.md`](../SECURITY.md)).
 OSS-Fuzz [waits until archivey has more users](#oss-fuzz).
@@ -1116,7 +1122,18 @@ nothing; the key-derivation budget allows about ten seconds; a late-CRC 7z folde
 folder size times candidates; a ZIP central directory whose comments are nothing but
 central header signatures lists at about 155 ns a byte (2.0 s for 13 MB, CPython 3.11),
 where an ordinary directory lists at about 5 ns, because each signature is checked for a
-swallowed entry ([ZIP §2.2](formats/zip.md#22-open-and-list)). A ZIP read from a pipe
+swallowed entry ([ZIP §2.2](formats/zip.md#22-open-and-list)). On declared seek demand,
+a forward seek past the known points, a `SEEK_END` or a size query reads a Seekable
+Zstandard seek table, and a forward seek past the known points or a `SEEK_END` walks a
+BGZF file's members. Both scans are linear but run one
+Python step per table entry or member, and the scan is paid before the table's final
+consistency check can raise. A table whose entries each name a one-byte frame, or a
+file of empty members, costs about 70-95 ns a byte, about 1.5 minutes a GB: a 4,000,000-entry table
+(36 MB) parses in 3.36 s, and 1,000,000 empty BGZF members (28 MB) walk in 1.95 s.
+Memory stays bounded, because the seek-point table is thinned at `MAX_SEEK_POINTS`
+([seekable-decompressor-streams](../openspec/specs/seekable-decompressor-streams/spec.md)
+§"zstd reads the Seekable Zstandard seek table", §"BGZF members are walked without
+decoding"). A ZIP read from a pipe
 consumes the stream once, and the entries its directory places in the bytes kept after
 its members consume those at most twice more, however many it names there
 ([Resource use is bounded](#resource-use-is-bounded)). A "work per output byte" limit
@@ -1127,14 +1144,13 @@ archivey in a worker they can kill. Public:
 
 ### A native decoder crash or MemoryError
 
-The stdlib `zlib`, `bz2` and `lzma` and pyppmd below 16 MiB (handed the member whole, which
-avoids the input pattern known to crash it) run in-process. A crash nobody has found yet
-would abort the process. For pyppmd the one call left after a short return is the
-single-byte decode that frees a waiting worker at teardown; it has not been seen to crash,
-but on a stream that has ended it is a decode after the end, so it stays a candidate
-([`known-issues.md`](known-issues.md) §Intermittent `pyppmd` native aborts). Both
-rapidgzip decoders run in a child process; `scripts/accelerator_crash_search.py` tells
-whether they still need to. `MemoryError` is not translated, so
+Under the default `process_isolation` the stdlib `zlib`, `bz2` and `lzma`, zstd, lz4,
+brotli and inflate64 run in-process (`NATIVE_DECODERS` isolates them too; under `NONE`
+pyppmd decodes in-process as well and rapidgzip is not used). A crash nobody has found yet
+would abort the process. pyppmd runs in a child by default because the single-byte decode
+that frees a waiting worker at teardown is a decode after the end on a stream that has
+ended ([`known-issues.md`](known-issues.md) §Intermittent `pyppmd` native aborts). Both rapidgzip decoders run in a child process;
+`scripts/accelerator_crash_search.py` tells whether they still need to. `MemoryError` is not translated, so
 running out of memory is never mistaken for a damaged archive; the limits above exist to
 keep a hostile archive from getting that far. Public:
 [where the guarantees stop](../docs/security.md#where-the-guarantees-stop).
@@ -1153,8 +1169,9 @@ with a hard latency budget set them to `OFF`. Public:
 
 ### A seek trusts the file's own index
 
-A cold seek into a `.xz` or `.lz` goes where the file's index says (XZ block records, or
-lzip member trailers), and both are attacker-controlled. An index consistent with itself
+A cold seek into a `.xz`, `.lz`, seekable `.zst` or BGZF `.gz` goes where the file's index
+says (XZ block records, lzip member trailers, the zstd seek table, or BGZF block sizes and
+ISIZEs), and all are attacker-controlled. An index consistent with itself
 but not with the data serves bytes from the wrong unit, and `try_get_size()` /
 `member.size` report the index's total, with no error. Accepted, ruled by davi on
 2026-09-23 (PR #407 review round 1): a unit's real end is known only by decompressing
@@ -1162,16 +1179,45 @@ it, and avoiding that is the index's purpose. Decoding from the start before the
 cold seek would remove fast random access for every honest file, and xz's and lzip's
 own tools trust their indexes the same way.
 
-What the design still catches: a seek landing inside the misdescribed region resumes
-from a checked point before it and raises when the decode reaches the end of the lying
-unit (the member's trailer for lzip, the stream end for xz); bytes returned before that
-are correct for their offsets. A seek past the lie followed by a read to the end is not
-caught, since every later unit is genuine. A diagnostic for an ambiguous trailer walk was
-considered and not taken: an attacker who controls the trailers can avoid it. Public:
+What the design still catches. For lzip, xz and a BGZF ISIZE that lies, a seek landing
+inside the misdescribed region resumes from a checked point before it and raises when
+the decode reaches the end of the lying unit (the member's trailer for lzip and BGZF, the
+stream end for xz); bytes returned before that are correct for their offsets. A zstd
+seek table, or a BGZF BSIZE, can misstate the output size of a unit whose data is
+genuine, so nothing raises there. Instead the stream compares each unit start a decode
+finds with the index. When the two put the same compressed offset (with the same resume
+state) at different output offsets, the index is wrong, and the stream drops every point
+the index gave and every point a decode counted from one, forgets a size the index gave,
+and emits `SEEK_INDEX_DEGRADED` (scan `decode_check`, type `SeekIndexContradicted`).
+A decode that reaches the end with another total than the index gave is the same
+contradiction; it catches a lie in the last unit, which no index point follows. Later
+seeks use only the points found by a decode from the start, and a size query decodes to
+the end. A decode in progress that began at an index point restarts from such a point,
+so the read, seek or size query that found the lie returns the right bytes and the right
+position. Ruled by davi on 2026-10-20: the index is only an accelerator, and a file that
+zstd or gzip decodes is not refused. A lie is caught once a decode passes the first unit
+start the index lists after it, or reaches the end. Not caught: a cold seek past the lie
+followed by a read to the end (every later unit is genuine, and the decode agrees with
+the index's shifted offsets); the bytes a decode returned, and a size the index gave,
+before the decode reached that unit start or the end; and, once a table over the cap
+has been thinned, a lie at a unit start the table no longer holds (the check compares
+only points the table holds, so it costs no more memory than the table), until the
+decode reaches a start the table kept or the end. A size asked only after a decode
+reached the end is the decoded one, and the index is then never read, so that order
+reports nothing. Where the index and a decode put two different compressed offsets at
+one output offset, nothing is proved (an empty lzip member makes that pair in an honest
+file): the decoded point is kept, and the check above catches the lie at the next unit
+start. A diagnostic for an ambiguous trailer walk was considered and not taken: an
+attacker who controls the trailers can avoid it. Public:
 [the integrity guarantee](../docs/errors-and-diagnostics.md#the-integrity-guarantee) and
 [where the guarantees stop](../docs/security.md#where-the-guarantees-stop). Tests:
 `tests/test_seekable_streams.py::test_lzip_cold_seek_trusts_a_self_consistent_trailer_chain`,
-`::test_xz_cold_seek_trusts_a_self_consistent_block_index`.
+`::test_xz_cold_seek_trusts_a_self_consistent_block_index`,
+`tests/test_zstd_seekable.py::test_cold_seek_trusts_a_self_consistent_table`,
+`::test_a_forward_read_that_contradicts_the_table_drops_it`,
+`::test_a_seek_into_a_misplaced_frame_drops_the_table_when_the_decode_reaches_it`,
+`tests/test_bgzf_seek.py::test_bgzf_cold_seek_trusts_the_block_sizes`,
+`::test_a_forward_read_that_contradicts_the_walk_drops_it`.
 
 ### Windows directory sources
 
@@ -1283,7 +1329,7 @@ writing lands (possibly after 1.0), and must be a day-one decision of the writin
 | O14 | 7z encoded-header nesting | [Listing](#listing) |
 | O15 | Tar extended header sized an allocation | [Allocations sized by a header field](#allocations-sized-by-a-header-field) |
 | O16 | ISO directory record sized an allocation | [Allocations sized by a header field](#allocations-sized-by-a-header-field) |
-| O17 | Seek trusts the xz/lzip index | [A seek trusts the file's own index](#a-seek-trusts-the-files-own-index) |
+| O17 | Seek trusts the xz/lzip/zstd/BGZF index | [A seek trusts the file's own index](#a-seek-trusts-the-files-own-index) |
 | O18 | Archive chooses the key-derivation cost | [Key derivation](#key-derivation) |
 | O19 | Data-stored symlink target sized an allocation | [Listing](#listing) |
 | O20 | 7z BCJ2 in pure Python | CPU: [No CPU or wall-clock bound](#no-cpu-or-wall-clock-bound); memory: [Decoder memory](#decoder-memory) |

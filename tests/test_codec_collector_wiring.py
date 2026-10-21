@@ -23,6 +23,7 @@ from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.streams.codecs.base import Codec, CodecParams
 from archivey.internal.streams.codecs.registry import open_codec_stream, stream_codec
 from archivey.internal.streams.decompressor_stream import DecompressorStream
+from tests.conftest import importorskip
 
 _CONTENT = b"the quick brown fox jumps over the lazy dog\n" * 40
 _ORDER = 6
@@ -36,20 +37,20 @@ def _raw_deflate() -> tuple[bytes, CodecParams]:
 
 
 def _deflate64() -> tuple[bytes, CodecParams]:
-    inflate64 = pytest.importorskip("inflate64")
+    inflate64 = importorskip("inflate64")
     deflater = inflate64.Deflater()
     return deflater.deflate(_CONTENT) + deflater.flush(), CodecParams()
 
 
 def _ppmd8_zip() -> tuple[bytes, CodecParams]:
-    pyppmd = pytest.importorskip("pyppmd")
+    pyppmd = importorskip("pyppmd")
     enc = pyppmd.Ppmd8Encoder(_ORDER, _MEM, 0)
     packed = enc.encode(_CONTENT) + enc.flush(True)
     return packed, CodecParams(ppmd_order=_ORDER, ppmd_mem_size=_MEM)
 
 
 def _ppmd7_7z() -> tuple[bytes, CodecParams]:
-    pyppmd = pytest.importorskip("pyppmd")
+    pyppmd = importorskip("pyppmd")
     enc = pyppmd.Ppmd7Encoder(_ORDER, _MEM)
     packed = enc.encode(_CONTENT) + enc.flush()
     # 7z var.H properties; PPMd7 has no end mark, so the 7z sizes bound it.

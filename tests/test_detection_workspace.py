@@ -20,9 +20,12 @@ handle (bounded by the Brotli chain-walk link cap); those restores are not
 from __future__ import annotations
 
 import bz2
+import contextlib
 import gzip
 import io
 import os
+import random
+import tarfile
 import zipfile
 from collections.abc import Callable
 from dataclasses import replace
@@ -57,6 +60,7 @@ from tests.detection_cost_util import trailer_allowance, within_budget
 from tests.streams_util import (
     MemberSeek,
     NonSeekableBytesIO,
+    QueuedChunks,
     assert_no_member_tail_seek,
     spy_member_seeks,
 )
@@ -96,10 +100,10 @@ class InstrumentedBytesIO(io.RawIOBase):
         return data
 
     def readinto(self, b) -> int:  # type: ignore[override]
-        mv = memoryview(b).cast("B")
-        data = self.read(len(mv))
-        mv[: len(data)] = data
-        return len(data)
+        with memoryview(b) as outer, outer.cast("B") as mv:
+            data = self.read(len(mv))
+            mv[: len(data)] = data
+            return len(data)
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         before = self._inner.tell()
@@ -984,3 +988,206 @@ def test_inner_tar_skip_reason_precedence(
     assert info.format == ArchiveFormat.GZ
     inner = [s for s in info.unavailable_tiers if s.tier == "inner_tar"]
     assert inner == [TierSkip("inner_tar", reason)]
+
+
+def _forward_sources(*chunks: bytes | None) -> list[tuple[str, Callable[[], Any]]]:
+    """The raw stream itself and the ``ArchiveSource`` over it: both forward paths."""
+    from archivey.internal.source import ArchiveSource
+
+    return [
+        ("raw", lambda: QueuedChunks(*chunks)),
+        ("archive-source", lambda: ArchiveSource.for_stream(QueuedChunks(*chunks))),  # type: ignore[arg-type]  # test double
+    ]
+
+
+@pytest.mark.parametrize("kind", ["raw", "archive-source"])
+def test_peek_prefix_until_stops_when_settled_accepts(kind: str) -> None:
+    make = dict(_forward_sources(b"abc", b"def", b"ghi"))[kind]
+    seen: list[bytes] = []
+
+    def settled(head: bytes) -> bool:
+        seen.append(head)
+        return len(head) >= 6
+
+    with PrefixWorkspace(make(), BALANCED_BUDGET) as ws:
+        assert ws.forward_only
+        assert ws.peek_prefix_until(4096, settled) == b"abcdef"
+        assert seen == [b"", b"abc", b"abcdef"]
+        assert ws.remaining_known() is None  # stopped early: the source has not ended
+        receipt = ws.receipt
+    assert receipt.prefix_bytes == 4096  # one request, as peek_prefix charges it
+    assert receipt.unique_bytes_read == 6
+
+
+@pytest.mark.parametrize("kind", ["raw", "archive-source"])
+def test_peek_prefix_until_reads_to_the_end_when_never_settled(kind: str) -> None:
+    make = dict(_forward_sources(b"abc", b"def"))[kind]
+    with PrefixWorkspace(make(), BALANCED_BUDGET) as ws:
+        assert ws.peek_prefix_until(4096, lambda head: False) == b"abcdef"
+        assert ws.remaining_known() == 6  # a read came back empty: the end
+
+
+def test_peek_prefix_until_reads_a_seekable_source_in_one_full_read() -> None:
+    calls: list[bytes] = []
+
+    def settled(head: bytes) -> bool:
+        calls.append(head)
+        return bool(head)
+
+    with PrefixWorkspace(io.BytesIO(b"x" * 5000), BALANCED_BUDGET) as ws:
+        assert not ws.forward_only
+        assert ws.peek_prefix_until(4096, settled) == b"x" * 4096
+    assert calls == [b""]
+
+
+def test_peek_prefix_until_refuses_a_stall() -> None:
+    make = dict(_forward_sources(b"abc", None))["raw"]
+    with PrefixWorkspace(make(), BALANCED_BUDGET) as ws:
+        with pytest.raises(BlockingIOError, match="non-blocking"):
+            ws.peek_prefix_until(4096, lambda head: False)
+
+
+def test_peek_prefix_until_refuses_a_negative_length() -> None:
+    with PrefixWorkspace(io.BytesIO(b"x"), BALANCED_BUDGET) as ws:
+        with pytest.raises(ValueError, match="non-negative"):
+            ws.peek_prefix_until(-1, lambda head: True)
+        assert ws.peek_prefix_until(0, lambda head: True) == b""
+
+
+@pytest.mark.parametrize("kind", ["raw", "archive-source"])
+def test_arrived_candidate_view_serves_the_buffer_before_reading(kind: str) -> None:
+    """A view call longer than its last result gets what is buffered, else one read."""
+    make = dict(_forward_sources(b"abcdef", b"gh", b"ij"))[kind]
+    with PrefixWorkspace(make(), BALANCED_BUDGET) as ws:
+        assert ws.peek_prefix_until(4096, lambda head: len(head) >= 3) == b"abcdef"
+        view = ws.candidate_view(1, arrived=True)
+        assert view(100) == b"bcdef"  # held past what the view returned: no read
+        assert ws.receipt.unique_bytes_read == 6
+        assert view(100) == b"bcdefgh"  # nothing new held: one read
+        assert view(3) == b"bcd"
+        assert view(100) == b"bcdefgh"  # more held than the last result: no read
+        assert view(100) == b"bcdefghij"
+        assert view(100) == b"bcdefghij"  # no growth: the end
+        assert ws.remaining_known() == 10
+
+
+def test_arrived_candidate_view_refuses_a_stall() -> None:
+    make = dict(_forward_sources(b"abc", None))["raw"]
+    with PrefixWorkspace(make(), BALANCED_BUDGET) as ws:
+        view = ws.candidate_view(0, arrived=True)
+        assert view(100) == b"abc"
+        with pytest.raises(BlockingIOError, match="non-blocking"):
+            view(100)
+
+
+def test_bounded_reader_over_an_arrived_view_peeks_again_only_when_it_must() -> None:
+    """A sized read takes one peek; a drain, or a read after a seek past the
+    buffer, peeks until it has a byte or the source ends."""
+    from archivey.internal.detection import _BoundedPeekReader
+
+    with contextlib.ExitStack() as workspaces:
+
+        def reader() -> tuple[_BoundedPeekReader, QueuedChunks]:
+            raw = QueuedChunks(b"ab", b"cd", b"ef")
+            ws = workspaces.enter_context(PrefixWorkspace(raw, BALANCED_BUDGET))
+            return _BoundedPeekReader(
+                ws.candidate_view(0, arrived=True), 100, arrived=True
+            ), raw
+
+        sized, raw = reader()
+        assert sized.read(10) == b"ab"
+        assert raw.calls == 1
+        assert sized.read(10) == b"cd"
+        assert raw.calls == 2
+
+        drain, _ = reader()
+        assert drain.read(-1) == b"abcdef"
+
+        seeking, raw = reader()
+        seeking.seek(3)
+        # The first peek holds only "ab", short of offset 3: one more peek reaches "d".
+        assert seeking.read(10) == b"d"
+        assert raw.calls == 2
+        assert seeking.read(10) == b"ef"
+        assert seeking.read(10) == b""
+
+
+def _trickled_tar_bz2(step: int) -> tuple[bytes, list[bytes]]:
+    """A ``.tar.bz2`` whose first decoded byte needs about 100 KB of input, in ``step``-byte reads.
+
+    bzip2 emits nothing until a whole block is in, so the inner-TAR probe reads the
+    whole first block before it sees the TAR header. Random member data keeps the
+    block from shrinking.
+    """
+    tar = io.BytesIO()
+    with tarfile.open(fileobj=tar, mode="w", format=tarfile.USTAR_FORMAT) as tf:
+        data = random.Random(0).randbytes(120_000)
+        info = tarfile.TarInfo("member")
+        info.size = len(data)
+        tf.addfile(info, io.BytesIO(data))
+    payload = bz2.compress(tar.getvalue(), compresslevel=1)
+    return payload, [payload[i : i + step] for i in range(0, len(payload), step)]
+
+
+def test_inner_tar_probe_over_small_reads_passes_each_byte_through_the_view_once() -> (
+    None
+):
+    """The probe's view gives the reader only the new bytes, not the prefix again.
+
+    A view that returned the whole prefix on every read would pass about
+    ``reads × prefix / 2`` bytes here (over 15 MB), and the probe time would grow
+    with the square of the read count.
+    """
+    from archivey.internal.detection import _probe_inner_tar
+    from archivey.types import StreamFormat
+
+    payload, chunks = _trickled_tar_bz2(step=256)
+    with PrefixWorkspace(QueuedChunks(*chunks), BALANCED_BUDGET) as ws:
+        assert ws.forward_only
+        view = ws.candidate_view(0, arrived=True)
+        passed = 0
+
+        def counting_view(*args: int) -> bytes:
+            nonlocal passed
+            data = view(*args)
+            passed += len(data)
+            return data
+
+        assert _probe_inner_tar(
+            StreamFormat.BZIP2, counting_view, ws, view_arrived=True
+        )
+    assert 0 < passed <= len(payload)
+
+
+@pytest.mark.parametrize("kind", ["raw", "archive-source"])
+def test_inner_tar_probe_over_small_reads_takes_each_byte_from_the_source_once(
+    kind: str,
+) -> None:
+    """The workspace takes only the new bytes from the source on each read.
+
+    Through an ``ArchiveSource``, a peek that returned the whole replay prefix on
+    every read would hand over about ``reads × prefix / 2`` bytes here (over 20 MB).
+    The count is what the source's read and peek calls return.
+    """
+    from archivey.internal.detection import _probe_inner_tar
+    from archivey.types import StreamFormat
+
+    payload, chunks = _trickled_tar_bz2(step=256)
+    source = dict(_forward_sources(*chunks))[kind]()
+    taken = 0
+    names = ("peek", "peek_arrived") if kind == "archive-source" else ("read",)
+    for name in names:
+        method = getattr(source, name)
+
+        def counting(*args: Any, _method: Any = method, **kwargs: Any) -> Any:
+            nonlocal taken
+            data = _method(*args, **kwargs)
+            taken += len(data or b"")
+            return data
+
+        setattr(source, name, counting)
+    with PrefixWorkspace(source, BALANCED_BUDGET) as ws:
+        assert ws.forward_only
+        view = ws.candidate_view(0, arrived=True)
+        assert _probe_inner_tar(StreamFormat.BZIP2, view, ws, view_arrived=True)
+    assert 0 < taken <= len(payload)

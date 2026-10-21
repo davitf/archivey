@@ -31,6 +31,12 @@ directly), and it carries every guarantee the raw source must give:
   files, ``size`` when it is a fact, ``size_hint``, ``name``, ``seek_is_expensive``,
   all settled at construction.
 
+Two reads are not full-count, on purpose, and both exist only on a non-seekable
+source. :meth:`ArchiveSource.read_arrived` (and the raw view over it,
+:meth:`ArchiveSource.arrived_view`) returns what has arrived, so a buffer that gathers
+its own full-count reads can fill without waiting for a writer that keeps a pipe open.
+:meth:`ArchiveSource.peek_arrived` does the same for the detection replay prefix.
+
 A non-seekable source also holds the **detection replay prefix**: :meth:`peek` fills it
 without consuming, and ``read`` drains it before reaching the source. Detection and the
 backend therefore see the same object, and nothing is swapped in between.
@@ -62,6 +68,7 @@ from __future__ import annotations
 import io
 import os
 import stat
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Protocol, cast
@@ -85,7 +92,12 @@ from archivey.internal.streams.streamtools import (
     source_size_fact,
     underlying_stream,
 )
-from archivey.internal.streams.streamtools.binaryio import read_blocking, try_readinto
+from archivey.internal.streams.streamtools.binaryio import (
+    read_arrived,
+    read_blocking,
+    readinto_via_read,
+    try_readinto,
+)
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
@@ -118,7 +130,9 @@ class _GatheringReader:
     ``BufferedReader`` would also be full-count, but it reads *ahead*, and from a pipe that
     over-read cannot be given back. This re-asks for the bytes still missing instead
     (:func:`read_exact`), so ``read(n)`` takes exactly ``n`` bytes from the source.
-    Every read of a non-seekable raw source goes through one. The other shapes use one
+    Every full-count read of a non-seekable raw source goes through one.
+    :meth:`ArchiveSource.read_arrived` and :meth:`ArchiveSource.peek_arrived` do not:
+    they read the caller's object directly, for what has arrived. The other shapes use one
     for every read off :meth:`ArchiveSource.read`'s fact-length fast path. A blocking
     buffered inner is already full-count, so a sized read costs one extra read at EOF
     there, and a drain costs one Python-level read per ``drain_chunk`` plus the join.
@@ -179,6 +193,64 @@ class _GatheringReader:
         return data + read_exact(self._inner, n - got)
 
 
+# See _readinto_or_stall: PyPy's BufferedRandom.readinto over-reports at the end. The
+# flag covers every stream, not a type: ``tempfile.NamedTemporaryFile`` and a spilled
+# ``SpooledTemporaryFile`` wrap the broken file without being ``io.BufferedRandom``.
+_UNDER_PYPY = sys.implementation.name == "pypy"
+
+
+def _readinto_or_stall(reader: object, view: memoryview) -> int | None:
+    """On CPython, :func:`try_readinto` with a 0 into a non-empty buffer confirmed by
+    ``read``; under PyPy, ``read`` alone.
+
+    A non-blocking stream with nothing ready answers ``readinto`` with ``None``, which
+    raises. A caller's own object can answer 0 instead, the same as at the end (PyPy's
+    buffered reader does, but under PyPy this path is not taken), so a 0 is asked again
+    with ``read``: ``b""`` is the end, ``None`` a stall (which raises), and bytes that
+    arrived in between are copied in. On CPython that is one more ``read`` each time
+    the inner answers 0 into a non-empty buffer: two at the end of a stream of unknown
+    length, none on the fact-length path, whose clamp answers the end without I/O.
+
+    The check sits at this boundary because :class:`ArchiveSource` is the only wrapper
+    placed directly over a caller's stream; every other ``try_readinto`` caller reads
+    a stream that has already come through here, where a 0 is already the end.
+
+    Under PyPy the caller's ``readinto`` is not called for a non-empty buffer. PyPy
+    3.11's ``io.BufferedRandom.readinto`` (a ``w+b`` or ``r+b`` file, also under
+    ``tempfile.NamedTemporaryFile`` and a spilled ``SpooledTemporaryFile``) returns
+    more than it filled on the last partial fill: 16 for the 8 bytes left. ``read`` is
+    right. Each call then costs a ``bytes`` and a copy, and a stall still raises, since
+    ``read`` answers it with ``None``. A caller whose ``read`` returns more than it was
+    asked for is refused with ``ValueError`` there, even when its ``readinto`` is right.
+    """
+    if _UNDER_PYPY and len(view):
+        return readinto_via_read(cast(BinaryIO, reader), view)
+    got = try_readinto(reader, view)
+    if got != 0 or not len(view):
+        return got
+    return readinto_via_read(cast(BinaryIO, reader), view)
+
+
+class _ArrivedView(ReadOnlyIOStream):
+    """:meth:`ArchiveSource.arrived_view`: reads are :meth:`ArchiveSource.read_arrived`.
+
+    Not seekable, like the source it reads. Closing it does not close the source,
+    but the view refuses reads after it is closed, as the other views do.
+    """
+
+    def __init__(self, source: ArchiveSource) -> None:
+        super().__init__()
+        self._source = source
+
+    def read(self, n: int = -1, /) -> bytes:
+        if self.closed:
+            raise ValueError("I/O operation on closed file.")
+        if n < 0:
+            # A drain has to reach the end; the source's own read does that.
+            return self._source.read(-1)
+        return self._source.read_arrived(n)
+
+
 class ArchiveSource(ReadOnlyIOStream):
     """A read-only stream over one archive source, carrying every source guarantee.
 
@@ -206,7 +278,8 @@ class ArchiveSource(ReadOnlyIOStream):
     a non-seekable one. ``__init__`` asserts both, and :meth:`read`'s inlined clamp
     relies on them: a fact length alone proves there is nothing to replay or gather.
     A new shape or strategy must keep that true, or change ``read``, ``readinto``,
-    ``_read_all``, :meth:`peek` and :meth:`close` together.
+    ``_read_all``, :meth:`peek`, :meth:`read_arrived`, :meth:`peek_arrived`,
+    :meth:`arrived_view` and :meth:`close` together.
     """
 
     # ``is_seekable`` takes :meth:`seekable` at its word for this class instead of also
@@ -277,8 +350,9 @@ class ArchiveSource(ReadOnlyIOStream):
         self._pos = position
         # Only a non-seekable source replays a prefix; a seekable one is rewound instead.
         self._replay = None if seekable else bytearray()
-        # Set for a non-seekable raw source, whose reads all go through it; ``_reader`` is
-        # then the caller's object, used for nothing but identity.
+        # Set for a non-seekable raw source, whose full-count reads all go through it.
+        # ``_reader`` is then the caller's object. Only ``read_arrived`` and
+        # ``peek_arrived`` read it directly, because a gatherer waits for a full count.
         self._gatherer = gatherer
         # The full-count reader every read off the fact-length fast path shares: the
         # gatherer itself for a non-seekable raw source, else built over ``_stream()`` on
@@ -561,15 +635,30 @@ class ArchiveSource(ReadOnlyIOStream):
             return data
         if n == 0:
             return b""
-        replay = self._replay
-        if replay:
-            head = bytes(replay[:n])
-            del replay[:n]
-            self._pos += len(head)
+        if self._replay:
+            head = self._take_replayed(n)
             if len(head) == n:
                 return head
             return head + self._read_source(n - len(head))
         return self._read_source(n)
+
+    def _take_replayed(self, n: int) -> bytes:
+        """Consume up to ``n`` bytes of the replay prefix; non-seekable only.
+
+        Every read that serves the prefix before the source goes through here, so the
+        prefix and ``_pos`` move together.
+        """
+        replay = self._replay
+        assert replay is not None
+        if n >= len(replay):
+            # The whole prefix: one copy, where a slice would copy it twice.
+            head = bytes(replay)
+            replay.clear()
+        else:
+            head = bytes(replay[:n])
+            del replay[:n]
+        self._pos += len(head)
+        return head
 
     def _full_count_reader(self) -> _GatheringReader:
         """The one full-count, ``None``-refusing reader off the fact-length fast path.
@@ -599,11 +688,7 @@ class ArchiveSource(ReadOnlyIOStream):
 
     def _read_all(self) -> bytes:
         replay = self._replay
-        head = b""
-        if replay:
-            head = bytes(replay)
-            replay.clear()
-            self._pos += len(head)
+        head = self._take_replayed(len(replay)) if replay else b""
         if self._length is not None:
             rest = self._read_source(max(self._length - self._pos, 0))
         else:
@@ -618,18 +703,23 @@ class ArchiveSource(ReadOnlyIOStream):
         # step. A replayed prefix or the gathering strategy goes through ``read``.
         if self._replay or self._gatherer is not None or self._reader is None:
             return super().readinto(b)
-        view = memoryview(b).cast("B")
-        if self._length is not None:
-            remaining = max(self._length - self._pos, 0)
-            if len(view) > remaining:
-                view = view[:remaining]
-        if not len(view):
-            # Nothing asked, or nothing left: answered without I/O, as ``read`` is.
-            return 0
+        # Views released on return: see try_readinto.
+        with memoryview(b) as outer, outer.cast("B") as whole:
+            limit = len(whole)
+            if self._length is not None:
+                limit = min(limit, max(self._length - self._pos, 0))
+            if not limit:
+                # Nothing asked, or nothing left: answered without I/O, as ``read`` is.
+                return 0
+            with whole[:limit] as view:
+                return self._fill(b, view)
+
+    def _fill(self, b: WriteableBuffer, view: memoryview) -> int:
+        """:meth:`readinto` of ``view``, the part of ``b`` the length leaves."""
         # ``None`` from ``readinto`` is a stall. A missing or refused
         # ``readinto`` falls back to ``read``, which refuses ``None`` too.
         reader = self._reader
-        got = try_readinto(reader, view)
+        got = _readinto_or_stall(reader, view)
         if got is None:
             return super().readinto(b)
         # Full-count, as ``read`` is: a short fill is asked again, so a non-blocking
@@ -648,7 +738,8 @@ class ArchiveSource(ReadOnlyIOStream):
         total = got
         while 0 < got and total < len(view):
             want = len(view) - total
-            got = try_readinto(reader, view[total:])
+            with view[total:] as rest:
+                got = _readinto_or_stall(reader, rest)
             assert got is not None, f"readinto refused after serving: {reader!r}"
             if got > want:
                 raise ValueError(
@@ -658,17 +749,18 @@ class ArchiveSource(ReadOnlyIOStream):
         self._pos += total
         return total
 
-    def peek(self, n: int) -> bytes:
+    def peek(self, n: int, start: int = 0) -> bytes:
         """The first ``n`` unconsumed bytes, without consuming them; non-seekable only.
 
         Fills the replay prefix detection reads from. Fewer than ``n`` bytes come back
-        only when the source ends first. ``None`` from the source raises
-        ``BlockingIOError`` rather than coming back as an empty prefix. A seekable
-        source is rewound instead of replayed, so this refuses there rather than
-        growing a buffer nobody drains.
+        only when the source ends first. With ``start``, only the bytes from ``start``
+        to ``n`` come back, so a caller that keeps what it peeked before does not copy
+        the whole prefix again; the prefix itself keeps every byte. ``None`` from the
+        source raises ``BlockingIOError`` rather than coming back as an empty prefix. A
+        seekable source is rewound instead of replayed, so this refuses there rather
+        than growing a buffer nobody drains.
         """
-        if n < 0:
-            raise ValueError("peek size must be non-negative")
+        _check_peek_range(n, start)
         replay = self._replay
         if replay is None:
             raise io.UnsupportedOperation("peek: the source is seekable; rewind it")
@@ -681,7 +773,68 @@ class ArchiveSource(ReadOnlyIOStream):
             chunk = self._full_count_reader().read(missing)
             if chunk:
                 replay.extend(chunk)
-        return bytes(replay[:n])
+        return bytes(replay[start:n])
+
+    def read_arrived(self, n: int) -> bytes:
+        """Up to ``n`` bytes of what has arrived; ``b""`` only at the end. Non-seekable only.
+
+        Not full-count, like :meth:`peek_arrived`. Bytes still in the replay prefix
+        come back without reading the source. Otherwise this makes one
+        :func:`read_arrived` of the source, which waits only while nothing has
+        arrived. A buffer whose own ``read`` gathers until it has what its caller
+        asked for can fill from this (:meth:`arrived_view`) and not wait for a
+        writer that keeps a pipe open. ``None`` from the source raises
+        ``BlockingIOError``, as :meth:`read` does.
+        """
+        if n < 0:
+            raise ValueError("read size must be non-negative")
+        replay = self._replay
+        if replay is None:
+            raise io.UnsupportedOperation(
+                "read_arrived: the source is seekable; read() is already complete"
+            )
+        if n == 0:
+            return b""
+        if replay:
+            return self._take_replayed(n)
+        data = read_arrived(self._stream(), n)
+        self._pos += len(data)
+        return data
+
+    def arrived_view(self) -> io.RawIOBase:
+        """A raw stream over :meth:`read_arrived`, for a ``BufferedReader`` to fill from.
+
+        Non-seekable only. The view does not own this source: closing it leaves
+        the source open. A ``BufferedReader`` over it keeps its full-count
+        ``read(n)``, because the buffer gathers until it has ``n`` bytes or reaches
+        the end. Only its fills stop waiting for bytes nobody asked for yet.
+        """
+        if self._replay is None:
+            raise io.UnsupportedOperation("arrived_view: the source is seekable")
+        return _ArrivedView(self)
+
+    def peek_arrived(self, n: int, start: int = 0) -> bytes:
+        """Like :meth:`peek`, but makes one read that returns what has arrived.
+
+        When the replay prefix holds fewer than ``n`` bytes, this makes one
+        :func:`read_arrived` of the bytes still missing. That read waits only
+        while nothing has arrived. So the result is longer than the prefix was
+        before the call, or no longer only at the end of the source. A pipe whose
+        writer sent less than ``n`` bytes and keeps the pipe open therefore
+        answers with what it sent, where :meth:`peek` would wait for the writer
+        to close. ``None`` from the source raises ``BlockingIOError``, as it does
+        for :meth:`peek`. ``start`` is :meth:`peek`'s, and must not run past the prefix
+        already held: past it the answer is empty, and a caller cannot tell that from
+        the end of the source.
+        """
+        _check_peek_range(n, start)
+        replay = self._replay
+        if replay is None:
+            raise io.UnsupportedOperation("peek: the source is seekable; rewind it")
+        missing = n - len(replay)
+        if missing > 0:
+            replay.extend(read_arrived(self._stream(), missing))
+        return bytes(replay[start:n])
 
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         if not self._seekable:
@@ -777,6 +930,13 @@ class ArchiveSource(ReadOnlyIOStream):
         if self._joined is not None:
             return f"ArchiveSource(volumes={self._volume_count})"
         return f"ArchiveSource({self._caller_stream!r})"
+
+
+def _check_peek_range(n: int, start: int) -> None:
+    if n < 0:
+        raise ValueError("peek size must be non-negative")
+    if start < 0:
+        raise ValueError("peek start must be non-negative")
 
 
 def seek_is_expensive(stream: BinaryIO) -> bool:

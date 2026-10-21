@@ -310,6 +310,7 @@ def check_universal(
     dest: Path,
     *,
     link_target_on_disk: Callable[[str], str] | None = None,
+    show_os_error: Callable[[OSError], None] | None = None,
 ) -> None:
     """Enforce the non-bypassable universal path-safety constraints on ``member``.
 
@@ -323,6 +324,12 @@ def check_universal(
     ``link_target_on_disk`` is given by a dry run only. It maps a link target to the
     one the link is created with in the scratch tree, so an absolute target is checked
     where it points there.
+
+    ``show_os_error``, when given, points an ``OSError``'s file names at the paths the
+    caller sees, in place, before the error's text goes into a message. It expects
+    the error's file names to be built from the ``dest`` given here, which the
+    coordinator has already resolved. The coordinator gives it: it removes the
+    long-path prefix, and under a dry run it names dest, not the scratch directory.
 
     Everything here meets one of two criteria. Either the *write itself* is dangerous
     or impossible — escaping the destination, a NUL the OS truncates on, a device
@@ -394,6 +401,8 @@ def check_universal(
         # A symlink loop the destination already had, in dest or below it. Links this
         # run creates never loop: one that would is removed as an escape. The member
         # cannot be placed, and that is the destination's state, not a policy decision.
+        if show_os_error is not None:
+            show_os_error(exc)
         raise ExtractionError(
             f"A path in the destination does not resolve (a symlink loop?): {exc}",
             member_name=name,

@@ -49,7 +49,9 @@ used up even if you leave the loop early. Inside a `stream_members` loop, `open`
 you leave with `break` ends at once on CPython. One kept in a variable, or one an exception left,
 holds the archive until you close it, so use it in a `with` block when the loop can stop early:
 `with archive.stream_members() as members:` ends the pass at the end of the block, and `with
-iter(archive) as members:` does the same for a loop over members. With
+iter(archive) as members:` does the same for a loop over members. A pass or member stream that
+nothing refers to any more never blocks the next call, on any Python: when a call finds the archive
+held, archivey runs a garbage collection and tries once more before it raises. With
 [`concurrent_operations=True`](#several-members-at-once) they work, from any thread, on every format,
 and so does `extract_all`.
 Streams from the pass never seek.
@@ -64,6 +66,11 @@ gives you the member with what that header says: no permissions, and a symlink l
 When the pass reaches the index, archivey fills in the rest on the members you already have.
 Until then `member.member_state_final` is `False`. From a pipe, the pass reaches a ZIP's index only
 when the sender closes the pipe, so the loop doesn't finish while the sender keeps it open.
+
+A compressed file or a compressed tar from a pipe that the sender keeps open is decompressed from
+what has arrived. A short one can still wait at open, and a read past its last byte waits for the
+sender to close the pipe ([Single-file compressors](formats.md#single-file-compressors) says
+where).
 
 ??? note "Why can't the others come from a pipe?"
     7z keeps its index at the end of the file, and reading an ISO means jumping between places in
@@ -83,14 +90,17 @@ mean decompressing the member again from its start. If you install the `seekable
 reads bzip2 data, and large DEFLATE data, through an
 [accelerator](security.md#where-the-guarantees-stop) that marks places it can restart from as it
 reads, and every seek resumes from the nearest marked place before its target. DEFLATE is the
-compression in gzip files and in most ZIP members. A forward seek keeps the checksum check when
-reaching the target means decoding the bytes in between, which is the usual case in compressed
-data. A seek that can jump over those bytes instead, as the accelerator can, gives the check up
-once you read on from there, until you seek back to a point you had already read up to. A seek to
-or past the member's end keeps it either way. [Damaged
-archives](errors-and-diagnostics.md#damaged-archives) lists the other seeks that jump, and what is
-still checked after one. If you'll seek a lot, extracting the member to a file first is often
-faster.
+compression in gzip files and in most ZIP members. Without the extra, a gzip file made of several
+members, such as one `bgzip` writes, resumes from the nearest member start. A zstd file made of
+several frames, such as one in the Seekable Zstandard format, always resumes from the nearest frame
+start. For a `bgzip` file or a Seekable Zstandard file, archivey finds those starts without
+decompressing anything. A forward seek keeps the checksum check when reaching the target means
+decoding the bytes in between, which is the usual case in compressed data. A seek that can jump
+over those bytes instead, as the accelerator can, gives the check up once you read on from there,
+until you seek back to a point you had already read up to. A seek to or past the member's end keeps
+it either way. [Damaged archives](errors-and-diagnostics.md#damaged-archives) lists the other seeks
+that jump, and what is still checked after one. If you'll seek a lot, extracting the member to a
+file first is often faster.
 
 ## Several members at once
 

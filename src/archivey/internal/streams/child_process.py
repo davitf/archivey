@@ -1,7 +1,7 @@
 """Start a child process, end it, and read how it ended from its return code.
 
-A native decoder that archivey runs in a child process (pyppmd, see ``ppmd_child``;
-rapidgzip, see ``rapidgzip_child``) can crash on hostile input. Only a crash is a
+A native decoder that archivey runs in a child process (see ``decoder_child`` and
+``rapidgzip_child``) can crash on hostile input. Only a crash is a
 verdict on the data. A child ended from outside (the out-of-memory killer, an
 operator, a supervisor) says nothing about the data, and the caller must not be told
 it does.

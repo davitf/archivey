@@ -15,6 +15,7 @@ import shutil
 import struct
 import subprocess
 import tarfile
+import tempfile
 import time
 import unicodedata
 import warnings
@@ -2920,6 +2921,209 @@ def test_orphan_link_failing_after_the_content_was_placed_fails_alone(
     assert by_name["L2.txt"].failure_group_id is None
 
 
+@pytest.mark.parametrize(
+    ("overwrite", "held", "message"),
+    [
+        (OverwritePolicy.ERROR, "file", "Destination already exists"),
+        (OverwritePolicy.REPLACE, "full-dir", "Destination is a directory"),
+    ],
+    ids=["error-over-file", "replace-over-full-dir"],
+)
+def test_orphan_link_refused_by_the_policy_fails_alone(
+    tmp_path: Path, overwrite: OverwritePolicy, held: str, message: str
+) -> None:
+    # The excluded source's content goes to the first link the OverwritePolicy lets
+    # it take. L1's destination is refused, so L1 fails on its own, nothing of the
+    # source has been read, and L2 gets the content: the source did not fail, so no
+    # failure group joins the two.
+    src = _orphan_tar(tmp_path, ["L1.txt", "L2.txt"])
+    dest = tmp_path / "out"
+    dest.mkdir()
+    if held == "file":
+        (dest / "L1.txt").write_bytes(b"pre-existing")
+    else:
+        (dest / "L1.txt").mkdir()
+        (dest / "L1.txt" / "keep").write_bytes(b"pre-existing")
+
+    with open_archive(src) as r:
+        results = r.extract_all(
+            dest,
+            members=["L1.txt", "L2.txt"],
+            overwrite=overwrite,
+            on_error=OnError.CONTINUE,
+        ).results
+
+    by_name = {res.member.name: res for res in results}
+    first = by_name["L1.txt"]
+    assert first.status is ExtractionStatus.FAILED
+    assert message in str(first.error)
+    assert first.failure_group_id is None
+    assert first.failure_group_size is None
+    assert first.requested_path == dest / "L1.txt"
+    assert by_name["L2.txt"].status is ExtractionStatus.EXTRACTED
+    assert by_name["L2.txt"].failure_group_id is None
+    assert (dest / "L2.txt").read_bytes() == b"hello world"
+    if held == "file":
+        assert (dest / "L1.txt").read_bytes() == b"pre-existing"
+    else:
+        assert (dest / "L1.txt" / "keep").read_bytes() == b"pre-existing"
+    assert not (dest / "A.txt").exists()
+
+
+def test_orphan_link_refused_by_the_policy_stops_under_stop(tmp_path: Path) -> None:
+    # Under OnError.STOP the first link's own failure ends the run, as any other
+    # link's would.
+    src = _orphan_tar(tmp_path, ["L1.txt", "L2.txt"])
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "L1.txt").write_bytes(b"pre-existing")
+
+    with (
+        open_archive(src) as r,
+        pytest.raises(ExtractionError, match="Destination already exists"),
+    ):
+        r.extract_all(
+            dest, members=["L1.txt", "L2.txt"], overwrite=OverwritePolicy.ERROR
+        )
+    assert not (dest / "L2.txt").exists()
+
+
+def test_orphan_source_failure_keeps_earlier_link_results(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # L1 is skipped, then reading the source fails while it is copied into L2's temp
+    # file. The source failed, so L2 and L3 fail as one group of two; L1's
+    # NOT_OVERWRITTEN stands.
+    src = _orphan_tar(tmp_path, ["L1.txt", "L2.txt", "L3.txt"])
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "L1.txt").write_bytes(b"pre-existing")
+
+    def boom(*args: object, **kwargs: object) -> None:
+        raise ExtractionError("forced second-pass failure")
+
+    monkeypatch.setattr(ExtractionCoordinator, "_copy_to_fileobj", staticmethod(boom))
+    with open_archive(src) as r:
+        results = r.extract_all(
+            dest,
+            members=["L1.txt", "L2.txt", "L3.txt"],
+            overwrite=OverwritePolicy.SKIP,
+            on_error=OnError.CONTINUE,
+        ).results
+
+    by_name = {res.member.name: res for res in results}
+    assert by_name["L1.txt"].status is ExtractionStatus.NOT_OVERWRITTEN
+    assert by_name["L1.txt"].failure_group_id is None
+    failed = [by_name["L2.txt"], by_name["L3.txt"]]
+    assert [r.status for r in failed] == [ExtractionStatus.FAILED] * 2
+    assert failed[0].failure_group_id is not None
+    assert failed[0].failure_group_id == failed[1].failure_group_id
+    assert [r.failure_group_size for r in failed] == [2, 2]
+    assert (dest / "L1.txt").read_bytes() == b"pre-existing"
+    assert not (dest / "L2.txt").exists()
+    assert not (dest / "L3.txt").exists()
+    assert sorted(p.name for p in dest.iterdir()) == ["L1.txt"]  # no temp left
+
+
+def test_orphan_source_refused_from_its_recorded_size_fails_as_a_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The recorded-size refusal is a property of the source, which every link would
+    # meet: it fails the links as one group, and no link is tried after it.
+    src = _orphan_tar(tmp_path, ["L1.txt", "L2.txt"])
+    dest = tmp_path / "out"
+
+    def refuse(self: BombTracker) -> None:
+        raise ResourceLimitError("forced recorded-size refusal")
+
+    monkeypatch.setattr(BombTracker, "check_recorded_size", refuse)
+    with open_archive(src) as r:
+        results = r.extract_all(
+            dest, members=["L1.txt", "L2.txt"], on_error=OnError.CONTINUE
+        ).results
+
+    assert [res.status for res in results] == [ExtractionStatus.FAILED] * 2
+    assert results[0].failure_group_id is not None
+    assert results[0].failure_group_id == results[1].failure_group_id
+    assert [res.failure_group_size for res in results] == [2, 2]
+    assert not (dest / "L1.txt").exists()
+    assert not (dest / "L2.txt").exists()
+
+
+def _orphan_tar_with_link_in_ro(tmp_path: Path) -> Path:
+    src = tmp_path / "a.tar"
+    src.write_bytes(
+        _tar_bytes(
+            [
+                ("file", "A.txt", b"hello world"),
+                ("hard", "ro/L1.txt", "A.txt"),
+                ("hard", "L2.txt", "A.txt"),
+            ]
+        )
+    )
+    return src
+
+
+def _assert_first_link_failed_alone(results, dest: Path) -> None:
+    by_name = {res.member.name: res for res in results}
+    first = by_name["ro/L1.txt"]
+    assert first.status is ExtractionStatus.FAILED
+    assert isinstance(first.error, PermissionError)
+    assert first.failure_group_id is None
+    assert first.failure_group_size is None
+    assert first.requested_path == dest / "ro" / "L1.txt"
+    assert by_name["L2.txt"].status is ExtractionStatus.EXTRACTED
+    assert (dest / "L2.txt").read_bytes() == b"hello world"
+    assert list((dest / "ro").iterdir()) == []
+
+
+def test_orphan_link_whose_temp_file_is_refused_fails_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Creating the temp file comes before the first read of the source, so a
+    # directory that refuses it fails that link alone and the next link gets the
+    # content. The refusal is injected, so this runs as root too; the test below
+    # makes the real one.
+    src = _orphan_tar_with_link_in_ro(tmp_path)
+    dest = tmp_path / "out"
+    mkstemp = tempfile.mkstemp
+
+    def refuse_in_ro(*args: object, **kwargs: object) -> tuple[int, str]:
+        if Path(str(kwargs["dir"])).name == "ro":
+            raise PermissionError(errno.EACCES, "Permission denied", kwargs["dir"])
+        return mkstemp(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(tempfile, "mkstemp", refuse_in_ro)
+    with open_archive(src) as r:
+        results = r.extract_all(
+            dest, members=["ro/L1.txt", "L2.txt"], on_error=OnError.CONTINUE
+        ).results
+    _assert_first_link_failed_alone(results, dest)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX directory permissions")
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0, reason="root writes anywhere"
+)
+def test_orphan_link_in_a_read_only_directory_fails_alone(tmp_path: Path) -> None:
+    # The same, with the caller's read-only directory refusing the temp file.
+    src = _orphan_tar_with_link_in_ro(tmp_path)
+    dest = tmp_path / "out"
+    (dest / "ro").mkdir(parents=True)
+    (dest / "ro").chmod(0o500)
+    try:
+        with open_archive(src) as r:
+            results = r.extract_all(
+                dest,
+                members=["ro/L1.txt", "L2.txt"],
+                overwrite=OverwritePolicy.ERROR,
+                on_error=OnError.CONTINUE,
+            ).results
+    finally:
+        (dest / "ro").chmod(0o700)
+    _assert_first_link_failed_alone(results, dest)
+
+
 def test_orphan_all_links_skipped_writes_nothing(tmp_path: Path) -> None:
     # Companion to the above: when EVERY selected link's destination already exists under
     # SKIP, all links are recorded NOT_OVERWRITTEN, existing files stay untouched, and no stray
@@ -2938,6 +3142,35 @@ def test_orphan_all_links_skipped_writes_nothing(tmp_path: Path) -> None:
         ).results
 
     assert [res.status for res in results] == [ExtractionStatus.NOT_OVERWRITTEN] * 2
+    assert (dest / "L1.txt").read_bytes() == b"keep-1"
+    assert (dest / "L2.txt").read_bytes() == b"keep-2"
+    assert sorted(p.name for p in dest.iterdir()) == ["L1.txt", "L2.txt"]  # no strays
+
+
+def test_orphan_all_links_refused_writes_nothing(tmp_path: Path) -> None:
+    # The ERROR sibling of the above: every link's destination is refused, so each
+    # link fails on its own (no failure group), the caller's files stay untouched,
+    # and nothing else is written.
+    src = _orphan_tar(tmp_path, ["L1.txt", "L2.txt"])
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "L1.txt").write_bytes(b"keep-1")
+    (dest / "L2.txt").write_bytes(b"keep-2")
+
+    with open_archive(src) as r:
+        results = r.extract_all(
+            dest,
+            members=["L1.txt", "L2.txt"],
+            overwrite=OverwritePolicy.ERROR,
+            on_error=OnError.CONTINUE,
+        ).results
+
+    assert [res.status for res in results] == [ExtractionStatus.FAILED] * 2
+    for res, name in zip(results, ["L1.txt", "L2.txt"], strict=True):
+        assert "Destination already exists" in str(res.error)
+        assert res.failure_group_id is None
+        assert res.failure_group_size is None
+        assert res.requested_path == dest / name
     assert (dest / "L1.txt").read_bytes() == b"keep-1"
     assert (dest / "L2.txt").read_bytes() == b"keep-2"
     assert sorted(p.name for p in dest.iterdir()) == ["L1.txt", "L2.txt"]  # no strays
@@ -4198,15 +4431,12 @@ def test_replace_file_over_an_empty_directory_this_run_wrote_revises_it(
 ) -> None:
     """REPLACE: a file member that removes an empty directory this run wrote revises
     that directory's result to OVERWRITTEN, instead of leaving it reporting EXTRACTED
-    at a path that now holds a file. Directories are not collision claims, so this is
-    not a collision event and ``collided_with`` stays ``None``."""
+    at a path that now holds a file. The file collided with that directory, so
+    ``collided_with`` names it, which joins to the directory's ``requested_path``."""
     archive = build([("dir", "x/", None), ("file", "x", b"file")])
     dest = tmp_path / "out"
     report = open_and_extract(
-        io.BytesIO(archive),
-        dest,
-        overwrite=OverwritePolicy.REPLACE,
-        abort_on={AbortOn.NAME_COLLISION},  # not a collision event: no abort
+        io.BytesIO(archive), dest, overwrite=OverwritePolicy.REPLACE
     )
 
     directory, member = report.results
@@ -4215,8 +4445,131 @@ def test_replace_file_over_an_empty_directory_this_run_wrote_revises_it(
     assert directory.requested_path == dest / "x"
     assert member.status is ExtractionStatus.EXTRACTED
     assert member.path == dest / "x"
-    assert member.collided_with is None
+    assert member.collided_with == dest / "x"
     assert (dest / "x").read_bytes() == b"file"
+
+
+_DIRECTORY_THEN_FILE = {
+    "explicit": [("dir", "x/", None), ("file", "x/f", b"in"), ("file", "x", b"file")],
+    "implicit": [("file", "x/f", b"in"), ("file", "x", b"file")],
+}
+
+
+@pytest.mark.parametrize("build", [_tar_bytes, _zip_bytes], ids=["tar", "zip"])
+@pytest.mark.parametrize("shape", list(_DIRECTORY_THEN_FILE))
+@pytest.mark.parametrize(
+    ("overwrite", "status"),
+    [
+        (OverwritePolicy.ERROR, ExtractionStatus.FAILED),
+        (OverwritePolicy.SKIP, ExtractionStatus.NOT_OVERWRITTEN),
+        # The directory holds ``x/f``, so REPLACE does not remove it.
+        (OverwritePolicy.REPLACE, ExtractionStatus.FAILED),
+        (OverwritePolicy.RENAME, ExtractionStatus.EXTRACTED),
+    ],
+)
+def test_file_over_a_directory_this_run_wrote_records_the_collision(
+    tmp_path: Path,
+    build,
+    shape: str,
+    overwrite: OverwritePolicy,
+    status: ExtractionStatus,
+) -> None:
+    """A file member landing on a directory this run made, from a directory entry or
+    as the parent of an earlier member, collided with it under every policy:
+    ``collided_with`` names the directory, as it names a file this run wrote. The
+    directory and what it holds are kept."""
+    dest = tmp_path / "out"
+    report = open_and_extract(
+        io.BytesIO(build(_DIRECTORY_THEN_FILE[shape])),
+        dest,
+        overwrite=overwrite,
+        on_error=OnError.CONTINUE,
+    )
+
+    member = report.results[-1]
+    assert member.member.name == "x"
+    assert member.status is status
+    assert member.requested_path == dest / "x"
+    assert member.collided_with == dest / "x"
+    if status is ExtractionStatus.EXTRACTED:
+        assert member.path == dest / "x (1)"
+    assert (dest / "x" / "f").read_bytes() == b"in"
+
+
+@pytest.mark.parametrize("shape", list(_DIRECTORY_THEN_FILE))
+def test_file_over_a_directory_this_run_wrote_is_no_collision_under_trusted(
+    tmp_path: Path, shape: str
+) -> None:
+    """TRUSTED reports no collision event, for a directory as for a file."""
+    report = open_and_extract(
+        io.BytesIO(_tar_bytes(_DIRECTORY_THEN_FILE[shape])),
+        tmp_path / "out",
+        policy=ExtractionPolicy.TRUSTED,
+        overwrite=OverwritePolicy.SKIP,
+    )
+    member = report.results[-1]
+    assert member.status is ExtractionStatus.NOT_OVERWRITTEN
+    assert member.collided_with is None
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink") or os.name == "nt", reason="POSIX")
+def test_file_over_a_run_directory_names_the_directory_as_its_member_spelled_it(
+    tmp_path: Path,
+) -> None:
+    """The only directory member reached ``d/x`` as ``s/x`` through the archive's own
+    ``s -> d``. ``collided_with`` is that member's ``path``, so it joins to its
+    result, not the spelling the file member used."""
+    archive = _tar_bytes(
+        [
+            ("dir", "d/", None),
+            ("sym", "s", "d"),
+            ("dir", "s/x/", None),
+            ("file", "d/x", b"file"),
+        ]
+    )
+    dest = tmp_path / "out"
+    report = open_and_extract(io.BytesIO(archive), dest, overwrite=OverwritePolicy.SKIP)
+    directory, member = report.results[2:]
+    assert directory.path == dest / "s" / "x"
+    assert member.status is ExtractionStatus.NOT_OVERWRITTEN
+    assert member.requested_path == dest / "d" / "x"
+    assert member.collided_with == directory.path
+
+
+def test_file_over_a_directory_already_there_is_no_collision(tmp_path: Path) -> None:
+    """A directory that was in ``dest`` before the run is not this run's: the file
+    meets it under SKIP with ``collided_with`` left ``None``."""
+    dest = tmp_path / "out"
+    (dest / "x").mkdir(parents=True)
+    report = open_and_extract(
+        io.BytesIO(_tar_bytes([("file", "x", b"file")])),
+        dest,
+        overwrite=OverwritePolicy.SKIP,
+    )
+    (member,) = report.results
+    assert member.status is ExtractionStatus.NOT_OVERWRITTEN
+    assert member.collided_with is None
+
+
+def test_file_over_a_directory_already_there_is_no_collision_after_a_merge(
+    tmp_path: Path,
+) -> None:
+    """A directory member that merges into a directory already in ``dest`` reports
+    it, but the directory is still the caller's: a file landing on it afterwards
+    gets ``collided_with`` ``None``, and ``NAME_COLLISION`` does not fire."""
+    dest = tmp_path / "out"
+    (dest / "x").mkdir(parents=True)
+    report = open_and_extract(
+        io.BytesIO(_tar_bytes([("dir", "x/", None), ("file", "x", b"file")])),
+        dest,
+        overwrite=OverwritePolicy.SKIP,
+        abort_on={AbortOn.NAME_COLLISION},
+    )
+    directory, member = report.results
+    assert directory.status is ExtractionStatus.EXTRACTED
+    assert directory.path == dest / "x"
+    assert member.status is ExtractionStatus.NOT_OVERWRITTEN
+    assert member.collided_with is None
 
 
 def test_replace_revises_a_directory_reached_through_the_archives_symlink(
@@ -4244,6 +4597,7 @@ def test_replace_revises_a_directory_reached_through_the_archives_symlink(
     assert top.status is ExtractionStatus.EXTRACTED
     assert link.status is ExtractionStatus.EXTRACTED
     assert member.status is ExtractionStatus.EXTRACTED
+    assert member.collided_with == direct.requested_path == dest / "d" / "sub"
     assert (dest / "d" / "sub").read_bytes() == b"file"
 
 
@@ -4268,6 +4622,7 @@ def test_replace_keeps_a_case_variant_directory_that_is_still_there(
     assert upper.status is ExtractionStatus.EXTRACTED
     assert (dest / "X").is_dir()
     assert member.status is ExtractionStatus.EXTRACTED
+    assert member.collided_with == lower.requested_path == dest / "x"
 
 
 @pytest.mark.parametrize("build", [_tar_bytes, _zip_bytes], ids=["tar", "zip"])
@@ -4738,6 +5093,41 @@ def test_abort_on_name_collision_fires_for_a_directory_member(
     assert (dest / "x").read_bytes() == b"A"
 
 
+@pytest.mark.parametrize(
+    "overwrite",
+    [
+        OverwritePolicy.REPLACE,
+        OverwritePolicy.SKIP,
+        OverwritePolicy.ERROR,
+        OverwritePolicy.RENAME,
+    ],
+)
+@pytest.mark.parametrize("parent", ["explicit", "implicit"])
+def test_abort_on_name_collision_fires_for_a_file_over_a_run_directory(
+    tmp_path: Path, overwrite: OverwritePolicy, parent: str
+) -> None:
+    """A file member landing on a directory this run wrote, or created as a parent,
+    is a collision too, under every resolution. The abort comes before the policy
+    touches the directory, so an empty one is not removed under REPLACE."""
+    entries = [("file", "x", b"B")]
+    if parent == "explicit":
+        entries.insert(0, ("dir", "x/", None))
+    else:
+        entries.insert(0, ("file", "x/f", b"A"))
+    dest = tmp_path / "out"
+    with pytest.raises(NameCollisionError) as excinfo:
+        open_and_extract(
+            io.BytesIO(_tar_bytes(entries)),
+            dest,
+            overwrite=overwrite,
+            on_error=OnError.CONTINUE,
+            abort_on={AbortOn.NAME_COLLISION},
+        )
+    assert excinfo.value.member_name == "x"
+    assert "with a directory this run created at" in str(excinfo.value)
+    assert (dest / "x").is_dir()
+
+
 def test_abort_on_name_collision_not_triggered_by_a_directory_under_trusted(
     tmp_path: Path,
 ) -> None:
@@ -4830,10 +5220,11 @@ def test_hardlink_failure_group_is_recorded_on_results(
     )
     dest = tmp_path / "out"
 
-    def boom(self, *args: object, **kwargs: object) -> None:
+    def boom(*args: object, **kwargs: object) -> None:
         raise ExtractionError("forced second-pass failure")
 
-    monkeypatch.setattr(ExtractionCoordinator, "_write_file_atomic", boom)
+    # Failing the copy, after the temp file exists: a failure of the source's data.
+    monkeypatch.setattr(ExtractionCoordinator, "_copy_to_fileobj", staticmethod(boom))
     with open_archive(io.BytesIO(archive)) as reader:
         report = reader.extract_all(
             dest,

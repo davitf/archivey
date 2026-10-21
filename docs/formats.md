@@ -40,7 +40,8 @@ images](https://github.com/davitf/archivey/blob/main/dev-docs/formats/dmg.md) an
   source required.
 - **`.zst` / `.tar.zst`:** in core on Python 3.14 and later; else `[recommended]`
   (`backports.zstd`). Listing: one member; the `.tar` form as `.tar.gz`. Random member access:
-  rewind seek unless indexed later.
+  seek by frame with `seekable_members=True`; a one-frame file rewinds. Reads the Seekable
+  Zstandard seek table.
 - **`.lz4` / `.tar.lz4`:** `[recommended]`. Listing: one member; the `.tar` form as `.tar.gz`.
   Random member access: rewind seek.
 - **`.br`:** `[recommended]`. Listing: one member. Random member access: rewind seek. No magic;
@@ -153,16 +154,16 @@ yielded.
   from its data descriptor once the pass gets past its data. Until the pass reaches the directory, a
   member's ``mode``, ``create_system``, ``comment``, ``uid`` and ``gid`` are ``None`` and a symlink
   is a ``FILE``; then every member is updated in place, and ``member_state_final`` turns ``True``.
-  Extraction writes each member as it arrives and, at the end of the pass, applies modes and owners,
-  makes the links (after running your ``filter`` again on them) and removes what a member the
-  directory types ``OTHER`` wrote, so the files on disk match a read from a file. A member the
-  directory does not list (an appended update, a planted entry) is still yielded by the pass when it
-  is met. When the pass reaches the directory, it is dropped from the listing and reported as
-  ``ARCHIVE_UNLISTED_DATA``, and extraction does not keep it.
+  Extraction keeps each member's data in a private ``.archivey-tmp-`` folder inside the
+  destination and puts the members in place only once the pass has read the directory, calling
+  your ``filter`` once on each member as the directory describes it, so the files on disk match a
+  read from a file. A member the directory does not list (an appended update, a planted entry) is
+  still yielded by the pass when it is met. When the pass reaches the directory, it is dropped from
+  the listing and reported as ``ARCHIVE_UNLISTED_DATA``, and extraction does not keep it.
 - What a pipe cannot read: a member whose sizes come after its data (bit 3) under LZMA
   without an end marker raises ``UnsupportedFeatureError``, as no end can be found; a
-  bit-3 PPMd member is decoded in a child process, so
-  ``DecoderLimits(max_ppmd_in_process_input=None)`` refuses it. With several candidate
+  bit-3 PPMd member is fed to the decoder in pieces, since its size isn't known in
+  advance. With several candidate
   passwords, a member is confirmed on its first 1 MiB, and when more than one candidate
   is still possible after that, the first one is used.
 - Where a pipe and a file differ, on archives no writer produces or damaged ones: a
@@ -171,10 +172,15 @@ yielded.
   reaches the directory, where a read from a file reads it. Two same-named members whose
   directory order reverses their file order list and stream from a pipe as from a file,
   but extraction from a pipe raises `CorruptionError` for that name, where extraction
-  from a file writes the copy the directory lists last.
+  from a file writes the copy the directory lists last. A member whose local header's
+  name the safety checks refuse fails extraction from a pipe even when the directory, or
+  your `filter`, gives it a safe name, since its data was not kept.
 - The pass reads the pipe to its end before it reads the directory, so it ends, and the
   members are final, only when the sender closes the pipe. A sender that keeps the pipe
-  open after the ZIP keeps the pass waiting after the last member.
+  open after the ZIP keeps the pass waiting after the last member, and, when the sizes
+  come after each member's data (bit 3), in the read that ends the last member's data.
+  A ZIP under 258 bytes also waits at `open_archive`: a tar header starts at offset 257,
+  and until that byte has arrived the file could still be a tar. Close the sending side when the ZIP is done.
 - **A member whose local header disagrees with the central directory on its name, or
   stores a real CRC-32 where the directory stores 0, is read**, from a file and a pipe
   alike, as `unzip` reads it. The directory's name is used, reported as
@@ -769,13 +775,12 @@ yielded.
 
 ## ISO 9660
 
-- Needs `[recommended]` (`pycdlib`) and a seekable source.
-- `import archivey` patches pycdlib for the whole process: the `collections` name inside
-  `pycdlib.pycdlib` becomes one whose `deque` skips a directory extent it has already
-  queued. That stops pycdlib looping forever on a directory tree that points back at an
-  ancestor. Other code using pycdlib in the same process gets the patch too. A valid tree
-  never revisits an extent, so its results do not change.
-- `import archivey` also wraps pycdlib's Rock Ridge parser, but the wrapper acts only
+- Needs `[recommended]` (`pycdlib` 1.22 or later) and a seekable source.
+- An image whose directory tree loops back on itself, in any of its trees (ISO 9660,
+  Joliet or UDF), is refused at open with `CorruptionError`, even when the tree archivey
+  lists from is intact. pycdlib finds the loop. No tool writes such an image; a damaged
+  or crafted one can.
+- `import archivey` wraps pycdlib's Rock Ridge parser, but the wrapper acts only
   while archivey itself opens an image, so other code using pycdlib sees no change. Inside
   archivey, a System Use entry of a type pycdlib does not know is skipped, as the SUSP
   specification says, instead of failing the whole image. A malformed entry ends that
@@ -949,10 +954,11 @@ yielded.
   reads as unknown, and the read or seek that reaches the damage raises
   `CorruptionError`. Brotli has no end marker the library reports, so archivey finds the
   end by decoding the source again, which needs a seekable source: from a pipe, bytes
-  after a Brotli stream raise `CorruptionError`. The check applies to a bare compressed
-  file and to a compressed tar; inside a ZIP or 7z member such bytes raise
-  `CorruptionError` (see [ZIP](#zip)). `.Z` is not covered: it has no end marker, so
-  appended bytes decode as more data.
+  after a Brotli stream raise `CorruptionError`, and how much data comes before that
+  error depends on how the bytes arrive. The check applies to a bare compressed file
+  and to a compressed tar; inside a ZIP or 7z member such bytes raise `CorruptionError`
+  (see [ZIP](#zip)). `.Z` is not covered: it has no end marker, so appended bytes decode
+  as more data.
 - `open_archive` decodes the first byte of a seekable source, so a file that is not
   the codec its name or detection claims (a `.gz` full of zeros, an empty `.bz2`) raises
   `CorruptionError` or `TruncatedError` from `open_archive` rather than from the first
@@ -961,6 +967,29 @@ yielded.
   noticeable only for `.bz2` (a block is up to 900 KB of output; about 30 ms on
   incompressible data). A pipe is not checked at open, because the check would consume
   bytes of its one pass; it fails on the first read as before.
+- **From a pipe that the sender keeps open**, a compressed file or a compressed tar can
+  wait for the sender to close the pipe. These are the places it waits:
+    - `open_archive` of a short file, because archivey reads a fixed amount from the
+      start before it decides:
+        - Under 258 bytes. A tar header starts at offset 257, and until that byte has
+          arrived the file could still be a tar, even a `.gz` whose first two bytes say
+          gzip. A few files up to 261 bytes wait too, when their bytes from offset 257
+          spell the start of a tar header.
+        - A `.gz` under 512 bytes, whose first 512 bytes are read for the stored name.
+        - A `.bz2` or `.xz` under 4 KiB, and a `.tar.bz2` or `.tar.xz` too. These are
+          checked for a disk image, which needs the length of the file.
+        - A file that decompresses to under 512 bytes, the size of a tar header.
+    - A read past the last byte of data, and the end of a compressed tar's listing.
+      Another stream or trailing bytes could still follow.
+
+  Everything else is decompressed from what has arrived: a compressed tar opens and
+  yields its members, and a read returns the data whose compressed bytes have arrived.
+  bzip2 is the exception: it decompresses nothing until a whole block has arrived (up to
+  900 KB of original data), at any file size. Its reads wait for the end of each block.
+  `open_archive` waits for the end of the first block of a `.tar.bz2`, which it decodes
+  for the first header, and of a `.bz2` when it detects the format, which decodes the
+  start of the file; with `format=`, a `.bz2` opens at once. Close the sending side when
+  the file is done.
 - The `[seekable]` accelerator's bzip2 decoder reads input that is not bzip2 as an empty
   stream. When it yields nothing, Archivey decodes the source again with the standard
   library, so a corrupt `.bz2` raises the same error whether or not

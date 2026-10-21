@@ -94,8 +94,8 @@ requires-dist = [
     { name = "inflate64", marker = "extra == 'recommended'", specifier = ">=1.0.0" },
     { name = "lz4", marker = "extra == 'free-threaded'", specifier = ">=4.4.5" },
     { name = "lz4", marker = "extra == 'recommended'", specifier = ">=4.4.5" },
-    { name = "pycdlib", marker = "extra == 'free-threaded'", specifier = ">=1.16.0" },
-    { name = "pycdlib", marker = "extra == 'recommended'", specifier = ">=1.16.0" },
+    { name = "pycdlib", marker = "extra == 'free-threaded'", specifier = ">=1.22.0" },
+    { name = "pycdlib", marker = "extra == 'recommended'", specifier = ">=1.22.0" },
     { name = "pyppmd", marker = "extra == 'recommended'", specifier = ">=1.3.1" },
     { name = "rapidgzip", marker = "extra == 'seekable'", specifier = ">=0.16.0" },
     { name = "tqdm", marker = "extra == 'free-threaded'", specifier = ">=4.67.0" },
@@ -116,7 +116,7 @@ dev = [
     { name = "ncompress", specifier = ">=1.0.0" },
     { name = "pre-commit", specifier = ">=4.0.0" },
     { name = "py7zr", specifier = ">=1.0.0" },
-    { name = "pycdlib", specifier = ">=1.16.0" },
+    { name = "pycdlib", specifier = ">=1.22.0" },
     { name = "pyrefly", specifier = "==1.1.1" },
     { name = "pytest", specifier = ">=8.3.0" },
     { name = "pytest-cov", specifier = ">=6.0.0" },
@@ -1434,11 +1434,11 @@ wheels = [
 
 [[package]]
 name = "pycdlib"
-version = "1.16.0"
+version = "1.22.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/10/38/9d1ab6815f97700cff7b6425675e993d2d7421c0af7f70478617e4bcab4a/pycdlib-1.16.0.tar.gz", hash = "sha256:da02ce3d3a7cc1f879cd84db7bb39427a082cee0dbf0730fec89604039344058", size = 305934, upload-time = "2026-04-29T01:42:54.018Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c3/4a/894c8cb0fbc8a7f3846a3ff1d24cd05d6acca962b9610d61a65c74398aea/pycdlib-1.22.0.tar.gz", hash = "sha256:00456c146e2834eac96ddf738b6b2cbe81564d9efe2022ae6a155fc6649870c6", size = 362477, upload-time = "2026-10-09T13:56:15.768Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/4d/21/434b2f36cdbeb209dd95866c002b26a467c21f9c0f428d1509b46df27781/pycdlib-1.16.0-py2.py3-none-any.whl", hash = "sha256:17843829c6bf2fd365d3d2e49a94f06da82c999efc313b9f26b0ce59c0070785", size = 214861, upload-time = "2026-04-29T01:42:52.399Z" },
+    { url = "https://files.pythonhosted.org/packages/7c/64/5a5912a3f3ba47dba3eb7f707e51f91926b26be4bde25fe2da483f3c4a9b/pycdlib-1.22.0-py3-none-any.whl", hash = "sha256:bfa0b3631345a14b2741fe088398b6b8dc2838442ea607fd07d027dcc67b9e94", size = 238118, upload-time = "2026-10-09T13:56:14.117Z" },
 ]
 
 [[package]]

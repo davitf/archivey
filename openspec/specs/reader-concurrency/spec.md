@@ -100,7 +100,12 @@ worker call is executing. Closure does not enable any new reader API.
 "Overlap" means concurrent method/I/O execution, not the lifetime of an idle
 open member stream: a non-concurrent `reader.close()` MAY run while member
 streams remain open, and their leases preserve resources for later stream I/O.
-This is not a blanket thread-safety guarantee for every reader method.
+This is not a blanket thread-safety guarantee for every reader method. Nor is a
+pass or member stream that nothing can reach any more an overlap, on any
+interpreter: a call refused for an overlap SHALL run a garbage collection and try
+once more, so whether it is refused depends only on whether the earlier pass or
+stream is still referenced, never on when the collector ran. A refusal that is not
+an overlap (a closed reader, a callback re-entry) SHALL NOT collect.
 
 **`stream_members()` is separate.** A `stream_members()` pass owns the reader's
 one-pass data path. It MUST NOT overlap any other forward/data pass, nor random
@@ -395,10 +400,12 @@ outside lifecycle locks.
 
 If explicit reader/member close triggers final teardown and teardown fails, the
 closer SHALL be irrevocably closed and the translated error SHALL propagate
-once; repeated closes SHALL not retry or re-raise it. A safety-net finalizer
-SHALL use the same once-guards, never raise, and MAY report through
-`sys.unraisablehook` only outside all Archivey locks. Native accelerator
-finalizers retain their close-before-free guarantee.
+once; repeated closes SHALL not retry or re-raise it. A member stream has no
+finalizer of its own: when it is dropped unclosed, `IOBase.__del__` calls its
+`close()`, which releases the lease in its `finally`. That close SHALL use the
+same once-guards, and an error from it MAY reach `sys.unraisablehook` only
+outside all Archivey locks. Native accelerator finalizers retain their
+close-before-free guarantee.
 
 Member close SHALL release its lease in `finally` even when inner close fails.
 If inner close and the resulting final backend teardown both fail, both

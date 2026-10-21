@@ -86,6 +86,7 @@ from archivey.internal.streams.codecs import (
 )
 from archivey.internal.streams.codecs.arm64_filter import FILTER_ARM64
 from archivey.internal.streams.codecs.bcj2_filter import Bcj2DecoderStream
+from archivey.internal.streams.codecs.isolated import IN_PROCESS, natives_for
 from archivey.internal.streams.codecs.lzma_filter_decoder import FilterStream
 from archivey.internal.streams.codecs.zstd_framing import (
     MAX_FRAME_HEADER_SIZE,
@@ -575,8 +576,10 @@ def _bcj_filter(coder: SevenZipCoder, filter_id: int) -> dict:
         return lzma_filter
     try:
         # liblzma rejects an offset the architecture's alignment forbids (ARM needs
-        # 4, IA64 16); find that at plan time, not on the first read.
-        lzma.LZMADecompressor(
+        # 4, IA64 16); find that at plan time, not on the first read. This only
+        # builds the filter and decodes nothing, so it stays in this process under
+        # every ``process_isolation``.
+        IN_PROCESS.lzma_decompressor(
             lzma.FORMAT_RAW, filters=[lzma_filter, {"id": lzma.FILTER_LZMA2}]
         )
     except lzma.LZMAError:
@@ -844,6 +847,7 @@ def _execute_stage(
         unpack_size=stage.unpack_size,
         seekable=seekable,
         owns_inner=owns_input,
+        natives=natives_for(stream_config.process_isolation),
     )
 
 
