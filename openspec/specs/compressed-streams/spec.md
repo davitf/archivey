@@ -546,7 +546,7 @@ codec SHALL add a `Decoder` and MUST NOT require a new stream subclass or a
 | Forward-only codec (zlib, brotli, ppmd, bcj, deflate64) | Implements `recreate`/`feed`/`flush`/`finished`; emits empty `points`; inherits no-op `build_index`; `pending_error` set only when the input ends incompletely |
 | Segmented boundary codec (lzip, xz stream start) | `feed` emits a `SeekPoint` at the boundary with the codec's own before/after placement; stream stores it |
 | Progressive enrichment (xz block index) | `feed` scans the completed stream's footer via retained `inner` and emits block `SeekPoint`s (carrying resume `state`); restores `inner` position |
-| One-shot / forward walk (xz, lzip backward scan; future BGZF forward walk) | `build_index` returns points + size; stream drives it demand-driven per `seekable-decompressor-streams` |
+| One-shot / forward walk (xz, lzip backward scan; BGZF forward walk) | `build_index` returns points + size; stream drives it demand-driven per `seekable-decompressor-streams`; a size query does not run a scan that reads the payload (the BGZF walk, `index_reads_whole_source`) |
 | Deferred truncation (unix-compress leftover bits; a DEFLATE-family or xz stream cut short) | `pending_error` set after `flush`; `read(n)` raises it on the next empty read, `read()` at once |
 | Stream that already raised its deferred error | Later reads with no buffered bytes, and `seek(0, SEEK_END)` without an index size, raise the same error; the decode publishes no size; a seek re-decodes from the nearest seek point |
 | A new codec is added | One `Decoder` added; no new stream subclass; no `SegmentedDecompressorStream` layer |
@@ -709,12 +709,12 @@ without the setting. Under `NATIVE_DECODERS` the caller's process MUST NOT impor
 A child MAY be kept and reused for a later decoder only after a clean finish: the
 decoder ended with no error from the child and was closed normally, so a run of small
 members does not start a process per member. A child MUST NOT be reused after it
-reported an error, died, or was interrupted part-way through a reply. A PPMd child MUST
-NOT be reused after a member that did not decode to its declared end, whose check value
-did not match, or that was refused, nor after the decoder sent the one-symbol decode that
-stops a worker waiting on input, since pyppmd can corrupt its memory there without
-crashing at once. A child SHALL serve at most a fixed number of decoders (64) before it
-is ended.
+reported an error, died, or was interrupted part-way through a request or its reply. A
+PPMd child MUST NOT be reused after a member that did not decode to its declared end,
+whose check value did not match, or that was refused, nor after the decoder sent the
+one-symbol decode that stops a worker waiting on input, since pyppmd can corrupt its
+memory there without crashing at once. A child SHALL serve at most a fixed number of
+decoders (64) before it is ended.
 
 A crash or an error in a child that served earlier decoders MUST NOT be charged to the
 decoder at once, since an earlier member may have left damage that surfaces only now:
@@ -736,6 +736,7 @@ inherited decoder leaves the parent's child alone, and a call on one SHALL raise
 | --- | --- |
 | Two members of one archive read on two threads under `NATIVE_DECODERS` | Two children, decoding at the same time |
 | A ZIP of 1,000 small deflate members read one after another under `NATIVE_DECODERS` | Children reused; far fewer than 1,000 started |
+| A two-stream `.xz`, two-member gzip or two-frame zstd or lz4 file read under `NATIVE_DECODERS`, every finished decoder kept referenced | The first stream's child is back in the pool before the next stream's decoder takes one; at most one child is leased at a time |
 | 1,000 small valid PPMd members read one after another under `KNOWN_CRASHES` | Each in a child process; children reused |
 | A PPMd member that ends early (corrupt or cut) | Child process; that child is not reused |
 | Member A leaves its reused child damaged without crashing; member B's decode then crashes in that child | B re-runs in a fresh child and reads correctly; nothing is charged to B |

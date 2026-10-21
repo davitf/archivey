@@ -14,7 +14,7 @@ from collections.abc import (
     Iterator,
     Mapping,
     Sequence,
-    Set,
+    Set as AbstractSet,
 )
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
@@ -27,6 +27,7 @@ from typing import (
     NamedTuple,
     NoReturn,
     Self,
+    cast,
 )
 
 if TYPE_CHECKING:
@@ -82,8 +83,7 @@ from archivey.internal.enum_args import coerce_enum, coerce_enum_collection
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
 from archivey.internal.format_provenance import FormatProvenance
 from archivey.internal.listing_limits import ListingLimitTracker
-from archivey.internal.logs import backends as logger
-from archivey.internal.logs import integrity as integrity_logger
+from archivey.internal.logs import backends as logger, integrity as integrity_logger
 from archivey.internal.measurement import (
     ByteCounter,
     IoStats,
@@ -123,6 +123,7 @@ from archivey.internal.streams.counting import (
     SeekCountingStream,
 )
 from archivey.internal.streams.streamtools import (
+    OneReadEachStream,
     ReadableStream,
     is_seekable,
     read_exact,
@@ -2635,7 +2636,7 @@ class BaseArchiveReader(ArchiveReader):
         else:
             index[member.name] = [held, member]
 
-    def _unindex_members(self, name: str, gone: Set[int]) -> None:
+    def _unindex_members(self, name: str, gone: AbstractSet[int]) -> None:
         """Take the members whose ``id()`` is in ``gone`` out of ``name``'s entry.
 
         By identity: a duplicate can compare equal to the member being removed. ``gone``
@@ -3001,6 +3002,29 @@ class BaseArchiveReader(ArchiveReader):
             return counter
         return source
 
+    def _codec_input(
+        self, source: ArchiveSource, *, track_seeks: bool = False
+    ) -> BinaryIO:
+        """What a codec decodes from the stream ``source``: :meth:`_wrap_compressed_input`
+        of it, with the seek counter (:meth:`_track_source_seeks`) when ``track_seeks``.
+
+        On a source that cannot seek, the codec reads what has arrived
+        (:meth:`ArchiveSource.arrived_view`), and each of its reads makes one read of
+        the source (:class:`OneReadEachStream`). A codec asks for a 64 KiB feed, and a
+        full-count read of it would wait for a writer that keeps a pipe open. Every
+        decoder reads until ``b""``, so a feed split at any byte gives the same output
+        and the same verdict.
+        """
+        if source.seekable():
+            counted = self._wrap_compressed_input(source)
+            return self._track_source_seeks(counted) if track_seeks else counted
+        counted = self._wrap_compressed_input(cast("BinaryIO", source.arrived_view()))
+        if track_seeks:
+            counted = self._track_source_seeks(counted)
+        # Outermost, so the codec's buffering takes it as it is and puts no
+        # full-count BufferedReader in front of it (ensure_bufferedio).
+        return OneReadEachStream(counted)
+
     def __iter__(self) -> MemberPass[ArchiveMember]:
         return MemberPass(self._iter_pass())
 
@@ -3257,7 +3281,7 @@ class BaseArchiveReader(ArchiveReader):
                     if stream is not None:
                         try:
                             stream.close()
-                        except Exception as close_exc:  # noqa: BLE001 - attach, don't replace
+                        except Exception as close_exc:
                             # Don't replace the in-flight open/register error.
                             if pending is not None:
                                 pending.add_note(
@@ -3409,11 +3433,13 @@ class BaseArchiveReader(ArchiveReader):
     ) -> Generator[tuple[ArchiveMember, ArchiveStream | None], None, None]:
         token = self._state.acquire_pass("stream_members")
         current: ArchiveStream | None = None
+        source_closer: Callable[[], None] | None = None
         try:
             if self._streaming:
                 self._enter_forward_pass("stream_members()")
             source = self._iter_with_data(copies)
-            self._state.set_pass_closer(token, _closer_of(source))
+            source_closer = _closer_of(source)
+            self._state.set_pass_closer(token, source_closer)
             for m, stream in source:
                 if current is not None:
                     current.close()
@@ -3458,7 +3484,15 @@ class BaseArchiveReader(ArchiveReader):
         finally:
             if current is not None:
                 current.close()
-            self._state.release_pass(token)
+            # The backend's pass is closed here, not left to be dropped: what it holds
+            # (an unrar process for a solid RAR) then ends now, and not only when an
+            # interpreter without reference counting (PyPy) collects it. Once close()
+            # has begun, its stream-shutdown step closes it instead (below).
+            try:
+                if source_closer is not None and self._state.lifecycle_is_open():
+                    source_closer()
+            finally:
+                self._state.release_pass(token)
             # A close() interrupted inside its stream-shutdown step handed the step
             # back with the pass wind-down lease still held. Finish it here, so
             # dropping this iterator still reaches teardown without another close().
@@ -3837,7 +3871,7 @@ class _TranslatedErrorBoundary:
     chained via ``from``.
     """
 
-    __slots__ = ("_reader", "_member_name", "_stamp_encryption")
+    __slots__ = ("_member_name", "_reader", "_stamp_encryption")
 
     def __init__(
         self,

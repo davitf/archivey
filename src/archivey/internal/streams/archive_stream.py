@@ -19,7 +19,7 @@ import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import TracebackType
-from typing import TYPE_CHECKING, BinaryIO, NoReturn
+from typing import TYPE_CHECKING, BinaryIO, NoReturn, cast
 
 from archivey.config import REWIND_REDECODE_WARN_BYTES
 from archivey.diagnostics import (
@@ -34,7 +34,10 @@ from archivey.exceptions import (
 )
 from archivey.internal.diagnostics_collector import leave_scope, resolve_collector
 from archivey.internal.logs import streams as logger
-from archivey.internal.streams.decompressor_stream import retire_decoder_children
+from archivey.internal.streams.decompressor_stream import (
+    DecompressorStream,
+    retire_decoder_children,
+)
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
@@ -291,7 +294,7 @@ class ArchiveStream(ReadOnlyIOStream):
             self._ensure_open()
 
     @property
-    def name(self) -> str:  # pyrefly: ignore[bad-override]  # base is Never; a member stream has a name
+    def name(self) -> str:  # pyrefly: ignore[bad-override]  # ty: ignore[invalid-property-type-override]  # base is Never; a member stream has a name
         """The member's name inside its archive, or raise ``AttributeError``.
 
         A member stream carries the name its archive gives it, as ``zipfile``'s
@@ -319,7 +322,12 @@ class ArchiveStream(ReadOnlyIOStream):
         The fsspec-style ``size`` convention (see ``source_byte_size``): the creator may
         supply it up front (a member stream knows ``member.size`` from the archive
         metadata), else an opened inner decompressor with a cheap ``try_get_size()``
-        (index/trailer scan, no decompression) is consulted. Lets a nested
+        (a size it already knows, or a scan that reads only the index/trailer) is
+        consulted. A BGZF stream reports ``None`` until a seek or a read finds its size:
+        its index scan reads the whole file. That scan reads payload, so the
+        ``safe-extraction`` rule for a static ratio denominator requires ``None`` here;
+        the live compressed-byte counter (``compressed_bytes_consumed``) or
+        ``max_extracted_bytes`` then guards extraction instead. Lets a nested
         ``open_archive(reader.open("inner.zip"))`` learn its source size — e.g. for the
         extraction bomb tracker — without an expensive end-seek. A lazy, still-unopened
         stream reports ``None`` rather than opening itself just to answer.
@@ -377,7 +385,7 @@ class ArchiveStream(ReadOnlyIOStream):
             if self.closed:
                 try:
                     opened.close()
-                except Exception:  # noqa: BLE001 - best-effort; stream already closing
+                except Exception:  # noqa: BLE001, S110 - best-effort; stream already closing
                     pass
                 raise ValueError("I/O operation on closed file.")
             self._inner = opened
@@ -592,6 +600,40 @@ class ArchiveStream(ReadOnlyIOStream):
             self._raise_verdict()
         return data
 
+    def read_ahead(self, need: int, n: int, /) -> bytes:
+        """At least ``need`` bytes, or fewer only at the end, and at most ``n``.
+
+        For a reader's own buffer over a codec stream (the TAR walk on a source that
+        cannot seek): the inner's ``read_ahead`` gives what the feed that completes
+        ``need`` decoded, so the buffer does not wait for bytes nobody asked for yet.
+        Errors are those of ``read(need)``. A stream that checks its bytes (a fused
+        verifier) or has a verdict to repeat answers with ``read(n)``.
+        """
+        scope = self._diagnostics_scope
+        if scope is None:
+            return self._read_ahead(need, n)
+        stack = scope._collector.scope_stack()
+        stack.append(scope)
+        try:
+            return self._read_ahead(need, n)
+        finally:
+            leave_scope(stack, scope)
+
+    def _read_ahead(self, need: int, n: int) -> bytes:
+        inner = self._ensure_open()
+        # A verdict raises again as ``read`` raises it. A verifier sees each byte in
+        # ``read``, and bytes that skipped it would go out unchecked. No codec stream
+        # under a reader's buffer has one, so this costs nothing; ``read(n)`` is still
+        # right, it only waits for the whole ``n``.
+        if self._verifier is not None or self._verdict is not None:
+            return self._read(n)
+        try:
+            # Only a reader's buffer over a codec stream on a source that cannot seek
+            # calls this, and that codec stream's inner is a ``DecompressorStream``.
+            return cast("DecompressorStream", inner).read_ahead(need, n)
+        except Exception as e:  # noqa: BLE001 - re-raised via the translator
+            self._fail_unless_closed(e)
+
     def readinto(self, b: WriteableBuffer, /) -> int:
         # Always route through read() so the one-read / stop-on-short policy above
         # (and fused verify) stay consistent — inner.readinto may be up-to-n.
@@ -655,7 +697,7 @@ class ArchiveStream(ReadOnlyIOStream):
         if before is not None:
             try:
                 self._maybe_warn_rewind(before, after)
-            except Exception:  # noqa: BLE001 - the seek's own error propagates instead
+            except Exception:  # noqa: BLE001, S110 - the seek's own error propagates instead
                 pass
 
     def _digest_intact(self) -> bool | None:

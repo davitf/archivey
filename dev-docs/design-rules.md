@@ -426,6 +426,13 @@ that is right on one format and wrong on another breaks callers silently.
   walk of the archive with the pass (2026-10-13; applied by PR 786). `extract_all` joined
   them on 2026-10-17: under the flag every operation works as if it ran on a reader of its
   own.
+- A pass or member stream that nothing can reach any more never blocks the next call, on
+  any interpreter: a call refused for an overlap runs `gc.collect()` and tries once more
+  (`reader_state._retry_after_collecting`). Without it, the refusal depended on when the
+  collector happened to run: on PyPy for every dropped object, on CPython for one caught
+  in a reference cycle. A pass or stream still referenced is refused either way. davi
+  kept the retry and asked for it on every interpreter (2026-10-20, PR 915). Reopen if
+  the collection on the refusal path has a measured cost that matters.
 
 **Reopen if** matching would require an OS feature that one platform lacks; then refuse
 on every platform rather than diverge.

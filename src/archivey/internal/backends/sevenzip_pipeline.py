@@ -86,7 +86,7 @@ from archivey.internal.streams.codecs import (
 )
 from archivey.internal.streams.codecs.arm64_filter import FILTER_ARM64
 from archivey.internal.streams.codecs.bcj2_filter import Bcj2DecoderStream
-from archivey.internal.streams.codecs.isolated import natives_for
+from archivey.internal.streams.codecs.isolated import IN_PROCESS, natives_for
 from archivey.internal.streams.codecs.lzma_filter_decoder import FilterStream
 from archivey.internal.streams.codecs.zstd_framing import (
     MAX_FRAME_HEADER_SIZE,
@@ -579,7 +579,7 @@ def _bcj_filter(coder: SevenZipCoder, filter_id: int) -> dict:
         # 4, IA64 16); find that at plan time, not on the first read. This only
         # builds the filter and decodes nothing, so it stays in this process under
         # every ``process_isolation``.
-        lzma.LZMADecompressor(
+        IN_PROCESS.lzma_decompressor(
             lzma.FORMAT_RAW, filters=[lzma_filter, {"id": lzma.FILTER_LZMA2}]
         )
     except lzma.LZMAError:
@@ -1041,9 +1041,12 @@ def decode_folder_to_bytes(
         decoded = read_exact(stream, uncompressed_size)
         if len(decoded) != uncompressed_size:
             raise TruncatedError("7z folder is truncated after decoding")
-        if folder.digest_defined and folder.crc is not None:
-            if zlib.crc32(decoded) & 0xFFFFFFFF != folder.crc & 0xFFFFFFFF:
-                raise CorruptionError("Decoded 7z folder CRC mismatch")
+        if (
+            folder.digest_defined
+            and folder.crc is not None
+            and zlib.crc32(decoded) & 0xFFFFFFFF != folder.crc & 0xFFFFFFFF
+        ):
+            raise CorruptionError("Decoded 7z folder CRC mismatch")
         return decoded
     finally:
         stream.close()

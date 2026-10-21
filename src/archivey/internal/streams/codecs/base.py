@@ -11,7 +11,7 @@ import lzma
 import os
 import re
 import zlib
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from enum import Enum
@@ -153,7 +153,7 @@ _DEFAULT_PARAMS = CodecParams()
 
 
 @contextmanager
-def _restoring_position(source: CodecSource) -> Iterator[None]:
+def _restoring_position(source: CodecSource) -> Generator[None, None, None]:
     """Put a stream source back at its position on exit. A path has no position."""
     if isinstance(source, (str, os.PathLike)):
         yield
@@ -166,7 +166,7 @@ def _restoring_position(source: CodecSource) -> Iterator[None]:
 
 
 @contextmanager
-def _peeking(source: CodecSource) -> Iterator[BinaryIO]:
+def _peeking(source: CodecSource) -> Generator[BinaryIO, None, None]:
     """Read ``source`` without moving it: a path is opened afresh, and a stream's position
     is put back on exit."""
     if isinstance(source, (str, os.PathLike)):
@@ -574,9 +574,9 @@ class StreamCodec:
                 return out_len > 0
             return True
         except TruncatedError:
-            if fully_visible:
-                return False  # whole file in hand; stream did not terminate
-            return True  # decoded fine, just ran out of the bounded prefix
+            # With the whole file in hand, the stream did not terminate; otherwise it
+            # decoded fine and just ran out of the bounded prefix.
+            return not fully_visible
         except ArchiveyError:
             return False
         except MemoryError:

@@ -9,7 +9,7 @@ import contextlib
 import io
 import os
 import struct
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from pathlib import Path
 from typing import IO, Any
 
@@ -219,11 +219,13 @@ def test_read_empty_member(rock_ridge_iso: Path) -> None:
 def test_seek_within_opened_member(rock_ridge_iso: Path) -> None:
     # The opened member stream is seekable (PyCdlibIO via _PyCdlibStream/DelegatingStream)
     # once SEEKABLE is declared.
-    with open_archive(rock_ridge_iso, seekable_members=True) as ar:
-        with ar.open("file.txt") as f:
-            assert f.read(5) == b"hello"
-            f.seek(0)
-            assert f.read() == b"hello world"
+    with (
+        open_archive(rock_ridge_iso, seekable_members=True) as ar,
+        ar.open("file.txt") as f,
+    ):
+        assert f.read(5) == b"hello"
+        f.seek(0)
+        assert f.read() == b"hello world"
 
 
 def test_streaming_over_seekable_iso(rock_ridge_iso: Path) -> None:
@@ -281,14 +283,14 @@ _PYCDLIB_CYCLE_ENTRIES: tuple[tuple[str, bytes, bool], ...] = (
     ("subdir/file2.txt", b"Hello, universe!", False),
     ("implicit_subdir/file3.txt", b"Hello there!", False),
 )
-# ``(rock_ridge, joliet) -> (image_len, bitflip_offset, byte_before_flip, namespace)``
-_PYCDLIB_CYCLE_CASES: tuple[tuple[bool, bool, int, int, int, str], ...] = (
+# ``(rock_ridge, joliet) -> (image_len, bitflip_offset, byte_before_flip)``
+_PYCDLIB_CYCLE_CASES: tuple[tuple[bool, bool, int, int, int], ...] = (
     # Plain ISO 9660 PVD walk: ``/SUBDIR`` extent 26, +66 closes a back-edge to root 23.
-    (False, False, 61440, 53314, 0x01, "iso9660"),
+    (False, False, 61440, 53314, 0x01),
     # Rock Ridge PVD walk: RR padding shifts the cycle byte to +32 on the same extent.
-    (True, False, 63488, 53280, 0x01, "rock_ridge"),
+    (True, False, 63488, 53280, 0x01),
     # Joliet SVD walk on the RR+Joliet image (found by the mutation harness).
-    (True, True, 81920, 71746, 0x01, "rock_ridge"),
+    (True, True, 81920, 71746, 0x01),
 )
 
 
@@ -385,9 +387,11 @@ def test_a_parser_error_is_named_without_its_repr() -> None:
     # Byte 140 of the primary descriptor is the low byte of the type L path table's
     # location.
     image[16 * 2048 + 140] = 0
-    with raises_corruption_not_truncation() as excinfo:
-        with open_archive(io.BytesIO(bytes(image)), format=ArchiveFormat.ISO):
-            pass
+    with (
+        raises_corruption_not_truncation() as excinfo,
+        open_archive(io.BytesIO(bytes(image)), format=ArchiveFormat.ISO),
+    ):
+        pass
     assert isinstance(excinfo.value.__cause__, struct.error)
     message = str(excinfo.value)
     cause = excinfo.value.__cause__
@@ -424,6 +428,11 @@ def test_a_cut_image_keeps_pycdlib_text_without_its_repr() -> None:
     assert f"{type(cause).__name__}(" not in message
 
 
+# What pycdlib raises for a directory tree that loops back on itself.
+_ISO_LOOP = r"ISO Directory Records form a loop"
+_UDF_LOOP = r"UDF File Entries form a loop"
+
+
 @pytest.mark.timeout(5)
 @pytest.mark.parametrize(
     (
@@ -432,7 +441,6 @@ def test_a_cut_image_keeps_pycdlib_text_without_its_repr() -> None:
         "expected_len",
         "bitflip_offset",
         "byte_before_flip",
-        "namespace",
     ),
     [
         pytest.param(*case, id=case_id)
@@ -449,16 +457,17 @@ def test_pycdlib_directory_cycle_does_not_hang(
     expected_len: int,
     bitflip_offset: int,
     byte_before_flip: int,
-    namespace: str,
 ) -> None:
     """Regression: corrupt ``/subdir`` must not hang pycdlib during ``open_fp``.
 
     ``pycdlib._walk_directories`` (used for the PVD / Rock Ridge tree *and* each
-    supplementary namespace such as Joliet) enqueues child directory extents with no visit
-    tracking. One flipped bit in a directory record can add a child that points back at an
-    ancestor extent; pycdlib then loops forever. ``open_fp`` walks every present namespace,
+    supplementary namespace such as Joliet) enqueued child directory extents with no visit
+    tracking before 1.22. One flipped bit in a directory record can add a child that points back at an
+    ancestor extent; such a pycdlib then looped forever. ``open_fp`` walks every present namespace,
     so a Joliet-only cycle still bites RR+Joliet images even when archivey reads Rock Ridge.
-    Without archivey's extent cycle guard these cases hang until pytest-timeout kills them.
+    pycdlib before 1.22 hung here until pytest-timeout killed the test. From 1.22 it
+    detects the loop and raises "ISO Directory Records form a loop", so the image is
+    refused at open.
     """
     image = _pycdlib_directory_cycle_image(
         rock_ridge=rock_ridge,
@@ -467,13 +476,8 @@ def test_pycdlib_directory_cycle_does_not_hang(
         bitflip_offset=bitflip_offset,
         byte_before_flip=byte_before_flip,
     )
-    with open_archive(io.BytesIO(image), format=ArchiveFormat.ISO) as ar:
-        assert ar.info.extra["iso.namespace"] == namespace
-        names = {m.name for m in ar.members()}
-    if namespace == "iso9660":
-        assert "F1.TXT" in names
-    else:
-        assert "file1.txt" in names
+    with pytest.raises(CorruptionError, match=_ISO_LOOP):
+        open_archive(io.BytesIO(image), format=ArchiveFormat.ISO)
 
 
 def _udf_file_identifiers(data: bytes | bytearray) -> list[int]:
@@ -534,14 +538,14 @@ def test_pycdlib_udf_directory_cycle_does_not_hang() -> None:
     """A UDF directory naming an ancestor must not hang pycdlib's walk in ``open_fp``.
 
     ``PyCdlib._walk_udf_directories`` enqueues each directory's File Entry with no
-    visit tracking, so this image made it parse the root's entries again and again,
-    with memory growing about 65 MB a second, under default limits. The listing comes
-    from the ISO 9660 tree, as ``7z l`` lists the same image.
+    visit tracking before 1.22, so this image made it parse the root's entries again and
+    again, with memory growing about 65 MB a second, under default limits. From 1.22 it
+    detects the loop and raises "UDF File Entries form a loop", so the image is refused
+    at open, although its ISO 9660 tree is intact.
     """
     image = _udf_directory_cycle_image()
-    with open_archive(io.BytesIO(image), format=ArchiveFormat.ISO) as ar:
-        names = sorted(m.name for m in ar.members())
-    assert names == ["D/", "D/F.TXT"]
+    with pytest.raises(CorruptionError, match=_UDF_LOOP):
+        open_archive(io.BytesIO(image), format=ArchiveFormat.ISO)
 
 
 def _udf_image_with_links(count: int) -> bytes:
@@ -806,7 +810,7 @@ def test_a_path_source_refuses_the_same_image(tmp_path: Path) -> None:
 @contextlib.contextmanager
 def _recording_opens(
     path: Path, monkeypatch: pytest.MonkeyPatch
-) -> Iterator[list[IO[bytes]]]:
+) -> Generator[list[IO[bytes]], None, None]:
     """Collect every file object opened for ``path`` while the block runs.
 
     A handle leak is asserted on the objects themselves rather than on
@@ -2089,11 +2093,13 @@ def test_a_zisofs_member_lists_its_decoded_size_and_reads_decoded(
 
 def test_a_zisofs_member_seeks_across_blocks() -> None:
     data = _zisofs_image(_ZISOFS_PLAIN)
-    with open_archive(io.BytesIO(data), seekable_members=True) as ar:
-        with ar.open("zzz") as stream:
-            for offset in (70_000, 5, 54_000, len(_ZISOFS_PLAIN) - 3):
-                stream.seek(offset)
-                assert stream.read(10) == _ZISOFS_PLAIN[offset : offset + 10]
+    with (
+        open_archive(io.BytesIO(data), seekable_members=True) as ar,
+        ar.open("zzz") as stream,
+    ):
+        for offset in (70_000, 5, 54_000, len(_ZISOFS_PLAIN) - 3):
+            stream.seek(offset)
+            assert stream.read(10) == _ZISOFS_PLAIN[offset : offset + 10]
 
 
 def test_a_zisofs_member_seeks_relative_and_clamps_underflow_to_zero() -> None:
@@ -2101,19 +2107,21 @@ def test_a_zisofs_member_seeks_relative_and_clamps_underflow_to_zero() -> None:
     before the start clamps to 0 as every member stream does; it is the caller's
     seek, not damage in the image."""
     data = _zisofs_image(_ZISOFS_PLAIN)
-    with open_archive(io.BytesIO(data), seekable_members=True) as ar:
-        with ar.open("zzz") as stream:
-            assert stream.seek(-4, io.SEEK_END) == len(_ZISOFS_PLAIN) - 4
-            assert stream.read() == b"tail"
-            stream.seek(70_000)
-            assert stream.seek(-60_000, io.SEEK_CUR) == 10_000
-            assert stream.read(10) == _ZISOFS_PLAIN[10_000:10_010]
-            assert stream.seek(-(10**7), io.SEEK_CUR) == 0
-            assert stream.read(10) == _ZISOFS_PLAIN[:10]
-            assert stream.seek(-(10**7), io.SEEK_END) == 0
-            assert stream.read(10) == _ZISOFS_PLAIN[:10]
-            stream.seek(0)
-            assert_seek_underflow_matches_bytesio(stream)
+    with (
+        open_archive(io.BytesIO(data), seekable_members=True) as ar,
+        ar.open("zzz") as stream,
+    ):
+        assert stream.seek(-4, io.SEEK_END) == len(_ZISOFS_PLAIN) - 4
+        assert stream.read() == b"tail"
+        stream.seek(70_000)
+        assert stream.seek(-60_000, io.SEEK_CUR) == 10_000
+        assert stream.read(10) == _ZISOFS_PLAIN[10_000:10_010]
+        assert stream.seek(-(10**7), io.SEEK_CUR) == 0
+        assert stream.read(10) == _ZISOFS_PLAIN[:10]
+        assert stream.seek(-(10**7), io.SEEK_END) == 0
+        assert stream.read(10) == _ZISOFS_PLAIN[:10]
+        stream.seek(0)
+        assert_seek_underflow_matches_bytesio(stream)
 
 
 def test_the_zisofs_stream_refuses_a_negative_absolute_seek_and_a_bad_whence() -> None:
@@ -2164,9 +2172,11 @@ def test_a_damaged_zisofs_block_is_corruption() -> None:
     at = data.index(stored)
     first_block = at + struct.unpack_from("<I", stored, 16)[0]  # pointer 0
     data[first_block : first_block + 8] = b"\xff" * 8
-    with open_archive(io.BytesIO(bytes(data))) as ar:
-        with raises_corruption_not_truncation():
-            ar.read("zzz")
+    with (
+        open_archive(io.BytesIO(bytes(data))) as ar,
+        raises_corruption_not_truncation(),
+    ):
+        ar.read("zzz")
 
 
 @pytest.mark.parametrize(
@@ -2231,9 +2241,11 @@ def test_a_zisofs_block_that_inflates_past_the_block_size_is_corruption() -> Non
         _build_rr_iso(populate), b"zzz", _zf_entry(32 * 1024) + _UNKNOWN_ENTRY
     )
     assert pointers == struct.pack("<II", 24, len(good))
-    with open_archive(io.BytesIO(data)) as ar:
-        with raises_corruption_not_truncation(match="block 0"):
-            ar.read("zzz")
+    with (
+        open_archive(io.BytesIO(data)) as ar,
+        raises_corruption_not_truncation(match="block 0"),
+    ):
+        ar.read("zzz")
 
 
 def test_pycdlib_used_directly_is_not_filtered() -> None:
@@ -2293,12 +2305,10 @@ def test_an_area_cut_before_its_nm_entry_lists_under_the_iso_name() -> None:
         ]
 
 
-def test_a_record_without_a_continuation_area_has_no_nm_name_on_any_pycdlib() -> None:
-    """From pycdlib 1.20, ``ce_entries`` stays ``None`` until a continuation area is
-    parsed; a record with neither an ``NM`` nor such an area has no ``NM`` name.
-
-    The locked pycdlib always allocates ``ce_entries``, so the 1.20 shape is set by
-    hand here; the end-to-end case is the cut-area test above, on pycdlib 1.20+.
+def test_a_record_without_a_continuation_area_has_no_nm_name() -> None:
+    """pycdlib leaves ``ce_entries`` as ``None`` until a continuation area is parsed; a
+    record with neither an ``NM`` nor such an area has no ``NM`` name. The end-to-end
+    case is the cut-area test above.
     """
     import pycdlib
 
@@ -2310,7 +2320,7 @@ def test_a_record_without_a_continuation_area_has_no_nm_name_on_any_pycdlib() ->
         record = iso.get_record(rr_path="/aaa")
         rr = record.rock_ridge
         assert rr is not None
-        rr.ce_entries = None
+        assert rr.ce_entries is None
         assert _rr_entry_groups(rr) == (rr.dr_entries,)
         rr.dr_entries.nm_records = []
         assert _nm_name(record) is None
@@ -2344,9 +2354,11 @@ def test_a_strict_policy_refuses_a_cut_rock_ridge_area() -> None:
 
     data = _cut_after(_build_rr_iso(_two_rr_files), b"aaa")
     strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
-    with pytest.raises(ArchiveyError):
-        with open_archive(io.BytesIO(data), config=strict) as ar:
-            ar.members()
+    with (
+        pytest.raises(ArchiveyError),
+        open_archive(io.BytesIO(data), config=strict) as ar,
+    ):
+        ar.members()
 
 
 # --- names that are not UTF-8 ----------------------------------------------------------

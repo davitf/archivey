@@ -17,13 +17,15 @@ import os
 import subprocess
 import sys
 import tarfile
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, BinaryIO, cast
 
 import pytest
 
 from archivey import detect_format, open_archive
+from archivey.internal import source as source_module
 from archivey.internal.detection_workspace import DETECTION_LIMIT
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.streamtools import (
@@ -212,8 +214,14 @@ class _OverCountingReadinto(io.BytesIO):
             return super().readinto(view) + self._extra
 
 
-def test_readinto_refuses_a_count_larger_than_the_buffer() -> None:
-    """The count is checked, not only the bytes: a lie would move the position past EOF."""
+def test_readinto_refuses_a_count_larger_than_the_buffer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The count is checked, not only the bytes: a lie would move the position past EOF.
+
+    The path that calls the caller's ``readinto``, which PyPy does not take, is forced so
+    the check is pinned on every interpreter."""
+    monkeypatch.setattr(source_module, "_UNDER_PYPY", False)
     wrapped = ArchiveSource.for_stream(_OverCountingReadinto(b"abcdefghij", extra=100))
     assert wrapped._length is not None
     with pytest.raises(
@@ -222,8 +230,11 @@ def test_readinto_refuses_a_count_larger_than_the_buffer() -> None:
         wrapped.readinto(bytearray(4))
 
 
-def test_readinto_refuses_an_over_count_on_the_follow_up_fill() -> None:
+def test_readinto_refuses_an_over_count_on_the_follow_up_fill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A short first fill, then an over-count on the re-ask, raises the same way."""
+    monkeypatch.setattr(source_module, "_UNDER_PYPY", False)
     inner = _OverCountingReadinto(b"abcdefghij", extra=100, short_first=True)
     wrapped = ArchiveSource.for_stream(inner)
     with pytest.raises(
@@ -1153,9 +1164,8 @@ def test_an_understating_size_hint_truncates_no_member(fmt: str, prefix: bytes) 
     payload = os.urandom(200_000)
     caller = _UnderstatingBytesIO(prefix + _hinted_archive(fmt, payload))
     caller.seek(len(prefix))
-    with open_archive(caller) as reader:
-        with reader.open("big.bin") as stream:
-            assert stream.read() == payload
+    with open_archive(caller) as reader, reader.open("big.bin") as stream:
+        assert stream.read() == payload
 
 
 # ---------------------------------------------------------------------------
@@ -1428,3 +1438,156 @@ def test_peek_arrived_refuses_a_seekable_source_and_a_negative_size() -> None:
     source = ArchiveSource.for_stream(QueuedChunks(b"abc"))  # type: ignore[arg-type]  # test double
     with pytest.raises(ValueError, match="non-negative"):
         source.peek_arrived(-1)
+
+
+def test_read_arrived_serves_the_replay_prefix_then_one_read_of_the_source() -> None:
+    """Replayed bytes come first and need no read; then one read's worth each call."""
+    inner = QueuedChunks(b"abcd", b"efg", b"hi")
+    source = ArchiveSource.for_stream(inner)  # type: ignore[arg-type]  # test double
+    assert source.peek(4) == b"abcd"
+    calls = inner.calls
+    assert source.read_arrived(3) == b"abc"
+    assert source.read_arrived(10) == b"d"  # the rest of the prefix, not the source
+    assert inner.calls == calls
+    assert source.read_arrived(10) == b"efg"
+    assert inner.calls == calls + 1
+    assert source.read_arrived(0) == b""
+    assert source.read(10) == b"hi"  # the full-count read goes on where it stopped
+    assert source.read_arrived(10) == b""
+
+
+def test_read_arrived_refuses_a_stall_a_seekable_source_and_a_negative_size() -> None:
+    stalled = ArchiveSource.for_stream(QueuedChunks(b"ab", None))  # type: ignore[arg-type]  # test double
+    assert stalled.read_arrived(10) == b"ab"
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        stalled.read_arrived(10)
+    with pytest.raises(io.UnsupportedOperation, match="seekable"):
+        ArchiveSource.for_stream(io.BytesIO(b"abc")).read_arrived(2)
+    with pytest.raises(ValueError, match="non-negative"):
+        stalled.read_arrived(-1)
+
+
+def test_read_arrived_refuses_a_read_after_close() -> None:
+    source = ArchiveSource.for_stream(QueuedChunks(b"abcd", b"ef"))  # type: ignore[arg-type]  # test double
+    assert source.peek(4) == b"abcd"
+    source.close()
+    with pytest.raises(ValueError, match="closed"):
+        source.read_arrived(2)
+
+
+def test_arrived_view_fills_a_buffer_with_what_has_arrived() -> None:
+    """A ``BufferedReader`` over the view gets what is there, not a full buffer."""
+    source = ArchiveSource.for_stream(QueuedChunks(b"abc", b"defg", None))  # type: ignore[arg-type]  # test double
+    assert source.peek(2) == b"ab"
+    view = source.arrived_view()
+    assert not view.seekable()
+    buffered = io.BufferedReader(view, buffer_size=64)
+    assert buffered.read1(64) == b"ab"  # the replay prefix first
+    assert buffered.read1(64) == b"c"
+    assert buffered.read1(64) == b"defg"
+    with pytest.raises(BlockingIOError, match="non-blocking"):
+        buffered.read1(64)
+    buffered.close()
+    assert not source.closed  # the view does not own the source
+    source.close()
+
+
+def test_arrived_view_drains_to_the_end_and_refuses_a_seekable_source() -> None:
+    source = ArchiveSource.for_stream(QueuedChunks(b"abc", b"def"))  # type: ignore[arg-type]  # test double
+    assert source.arrived_view().read(-1) == b"abcdef"
+    with pytest.raises(io.UnsupportedOperation, match="seekable"):
+        ArchiveSource.for_stream(io.BytesIO(b"abc")).arrived_view()
+
+
+def test_arrived_view_refuses_a_read_after_it_is_closed() -> None:
+    source = ArchiveSource.for_stream(QueuedChunks(b"abc", b"def"))  # type: ignore[arg-type]  # test double
+    view = source.arrived_view()
+    assert view.read(2) == b"ab"
+    view.close()
+    with pytest.raises(ValueError, match="closed"):
+        view.read(2)
+    assert source.read() == b"cdef"  # the source is still open, and nothing was taken
+
+
+def test_peek_with_a_start_returns_only_the_later_bytes_and_keeps_the_prefix() -> None:
+    source = ArchiveSource.for_stream(QueuedChunks(b"abc", b"defg"))  # type: ignore[arg-type]  # test double
+    assert source.peek_arrived(10, 1) == b"bc"
+    assert source.peek_arrived(10, 3) == b"defg"
+    assert source.peek(10, 5) == b"fg"
+    assert source.peek(4, 6) == b""  # a start past the end of the range
+    with pytest.raises(ValueError, match="start must be non-negative"):
+        source.peek(4, -1)
+    with pytest.raises(ValueError, match="start must be non-negative"):
+        source.peek_arrived(4, -1)
+    assert source.read() == b"abcdefg"  # every peeked byte is still replayed
+
+
+def _read_write_file(tmp_path: Path) -> BinaryIO:
+    return open(tmp_path / "rw.bin", "w+b")
+
+
+def _spilled_spooled_file(_tmp_path: Path) -> BinaryIO:
+    return cast(BinaryIO, tempfile.SpooledTemporaryFile(max_size=16))
+
+
+@pytest.mark.parametrize(
+    "make",
+    [
+        pytest.param(_read_write_file, id="w+b"),
+        pytest.param(lambda _: tempfile.NamedTemporaryFile(), id="named-temporary"),  # noqa: SIM115 - the handle outlives this statement; its owner closes it
+        pytest.param(_spilled_spooled_file, id="spooled-spilled"),
+    ],
+)
+def test_readinto_over_a_read_write_file_counts_only_what_it_filled(
+    make: Callable[[Path], BinaryIO], tmp_path: Path
+) -> None:
+    """PyPy 3.11's ``io.BufferedRandom.readinto`` returns more than it filled on the
+    last partial fill: 16 for the 8 bytes left. The boundary reads such a file right
+    on every interpreter (under PyPy it uses ``read``)."""
+    payload = bytes(range(256)) * 19 + bytes(range(136))  # 39 * 128 + 8 bytes
+    with make(tmp_path) as f:
+        f.write(payload)
+        f.seek(0)
+        wrapped = ArchiveSource.for_stream(f)
+        out = bytearray()
+        buf = bytearray(128)
+        while n := wrapped.readinto(buf):
+            out += buf[:n]
+    assert bytes(out) == payload
+
+
+class _OverReportsAShortFill(io.BufferedIOBase):
+    """PyPy's ``BufferedRandom.readinto`` at the end: fills what is left, then reports the
+    whole buffer. A ``BufferedIOBase``, so the source reads it directly, and not
+    seekable, so the source's length stays unknown and its clamp, which would hide the
+    lie, is off."""
+
+    def __init__(self, data: bytes) -> None:
+        self._inner = io.BytesIO(data)
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, b: WriteableBuffer, /) -> int:  # type: ignore[override]
+        with memoryview(b) as outer, outer.cast("B") as view:
+            got = self._inner.readinto(view)
+            return len(view) if got else 0
+
+    def read(self, n: int = -1, /) -> bytes:
+        return self._inner.read(n)
+
+
+def test_under_pypy_the_boundary_reads_and_never_trusts_a_readinto_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With the PyPy flag forced, a caller whose ``readinto`` over-reports its last short
+    fill still reads exactly its bytes, because the boundary calls ``read``."""
+    monkeypatch.setattr(source_module, "_UNDER_PYPY", True)
+    payload = bytes(range(256)) * 19 + bytes(range(136))  # 39 * 128 + 8 bytes
+    wrapped = ArchiveSource.for_stream(_OverReportsAShortFill(payload))  # type: ignore[arg-type]  # test double
+    assert wrapped._length is None
+    out = bytearray()
+    buf = bytearray(128)
+    while n := wrapped.readinto(buf):
+        out += buf[:n]
+    assert bytes(out) == payload
