@@ -17,12 +17,13 @@ those use the AI plan's quota.
 
 | Workflow | When it runs | Uses AI quota | What a red run means |
 | --- | --- | --- | --- |
-| `review-loop.yml` | each time the `review` label is added | **yes**, one Opus session per round (up to 5 rounds per PR) | the review itself failed to post; re-add the label once |
+| `review-loop.yml` | each time the `review` label is added | **yes**, one Opus session per round: up to 5 rounds an agent can ask for, 8 if a person keeps adding the label ([Review loop](review-loop.md)) | the review itself failed to post; re-add the label once |
 | `claude.yml` | an `@claude` mention by a person on an issue or PR | **yes**, one session per mention | nothing, unless you asked for something |
-| `ci.yml` | each PR push and each push to `main` | no | see [CI is red](#ci-is-red-on-main-or-on-a-pr) |
-| `docs-checks.yml`, `docs-deploy.yml` | each PR and each push to `main` | no | a docs build or OpenSpec gate broke |
-| `ppmd-native-stress.yml` | each PR and each push to `main` | no | not a required check; see [Known issues](known-issues.md), pyppmd sections |
-| `atheris-fuzz.yml` | each PR (short), nightly when `main` moved in the last 3 days | no | a fuzz target found an input; see [A fuzz job found a crash](#a-fuzz-job-found-a-crash) |
+| `ci.yml` | each PR push (except documentation-only PRs) and each push to `main` | no | see [CI is red](#ci-is-red-on-main-or-on-a-pr) |
+| `docs-checks.yml` | each PR and each push to `main` | no | a docs build or OpenSpec gate broke |
+| `docs-deploy.yml` | each push to `main` | no | the Pages deploy failed; the site keeps the previous version |
+| `ppmd-native-stress.yml` | each PR (except documentation-only PRs) and each push to `main` | no | not a required check; see [Known issues](known-issues.md), pyppmd sections |
+| `atheris-fuzz.yml` | each PR except documentation-only PRs (short), nightly when `main` moved in the last 3 days | no | a fuzz target found an input; see [A fuzz job found a crash](#a-fuzz-job-found-a-crash) |
 | `benchmark-wall.yml` | daily, with a change guard | no | a wall-time ratio moved; see [The benchmark went red](#the-benchmark-went-red) |
 | `accelerator-crash-search.yml` | weekly (Monday) | no | a new rapidgzip crash signature |
 | `accelerator-fuzz-soak.yml` | Tuesday and Friday | no | accelerated and plain decode disagree |
@@ -31,8 +32,10 @@ those use the AI plan's quota.
 | `rapidgzip-truncation-sweep.yml`, `writer-timestamps.yml` | only when their own files change, or on demand | no | investigation probes; ignore unless you are working on them |
 | `publish.yml` | a `v*` tag, or on demand | no | see [Release checklist](release-checklist.md) §6 |
 
-At the lower budget, add the `review` label only when a PR changes library behaviour.
-For a docs, test or CI change you can read the diff yourself.
+At the lower budget, review rounds are the cost to control. The implementing agent adds
+the `review` label when its PR is ready ([Review loop](review-loop.md)). To refuse a round
+on a docs, test or CI PR, add `no-review` to it: a PR with that label gets no round,
+whoever asks. Then read the diff yourself.
 
 ## CI is red on main or on a PR
 
@@ -40,8 +43,8 @@ For a docs, test or CI change you can read the diff yourself.
 2. Decide which of these it is:
    - **The PR's own change.** Fix it in the PR.
    - **A flaky test** (passes on re-run, fails in code the PR does not touch). Re-run the
-     job once. If it fails again on another PR in the same week, open a card for it and
-     let it wait for a batch. Do not skip or quarantine the test to get green.
+     job once. If it fails again on another PR in the same week, record it in the internal
+     tracker and let it wait for a batch. Do not skip or quarantine the test to get green.
    - **A dependency changed** (a new release of a library, a runner image, a Python
      build). Check whether `main` fails the same way. If it does, see
      [A dependency broke](#a-dependency-broke-or-stopped-shipping-wheels).
@@ -60,20 +63,26 @@ Atheris writes the crashing input as an artifact of the run.
    `ArchiveyError`, it is an archivey bug: add the input as a regression test and fix
    it. This is a normal small PR.
 3. If it is a native crash inside a dependency (rapidgzip, pyppmd, inflate64, brotli,
-   lz4), first check [Known issues](known-issues.md). A known signature needs nothing.
-   A new one in a codec that already runs in a child process needs nothing urgent
-   either: the caller only loses that stream. A new native crash in a codec that runs
-   in the caller's process is a security issue (denial of service by input); treat it
-   as in [A security report arrives](#a-security-report-arrives).
+   lz4, zstd), first check [Known issues](known-issues.md). A known signature needs
+   nothing. A new one is an archivey bug, not a vulnerability: [`SECURITY.md`](../SECURITY.md)
+   §Scope lists a crash inside an in-process native decoder as a documented limit. Record
+   the signature in Known issues and report it upstream. If the crash is in a decoder
+   that runs in the caller's process, the usual fix is to run that decoder in the child
+   process too (`ProcessIsolation.NATIVE_DECODERS`, `internal/streams/codecs/isolated.py`).
+   Use [A security report arrives](#a-security-report-arrives) only when the crash goes
+   further than `SECURITY.md` §Scope says, for example memory corruption that the input
+   can steer.
 
 ## The benchmark went red
 
 `benchmark-wall.yml` fails when a wall-time ratio drifts against the last measured
-night, or passes the 10x ceiling. Shared runners are noisy.
+night, or a case exceeds the 10x sanity ceiling. Shared runners are noisy.
 
 1. Compare the failing case against the merges since the last green run. If nothing in
-   that code path changed, wait for the next run: the failing night becomes the new
-   baseline, so noise clears by itself.
+   that code path changed, it is probably noise. The failing night becomes the new
+   baseline, but the job measures again only on a night after a push to `main` (or when
+   the last measurement is 30 days old). On a quiet week, run it by hand
+   (`workflow_dispatch`, with `skip_drift` to re-seed the baseline).
 2. If a merge did change it, decide whether the cost is worth what the merge bought.
    Most of the time it is; write one line in the next CHANGELOG entry.
 
@@ -81,15 +90,19 @@ night, or passes the 10x ceiling. Shared runners are noisy.
 
 The core has no dependencies. Every optional package is behind an extra, and archivey
 raises `PackageNotInstalledError` (naming what to install) when a member or format needs
-one that is absent. So the worst a missing package does at **run time** is make some
-members unreadable.
+one that is absent. So at **run time** a missing package makes some members unreadable,
+or, for a few formats, the whole archive (see the table).
 
 The serious case is at **install time**: if one package in `[recommended]` has no wheel
 for a new Python and its source build fails, then `pip install archivey[recommended]`
 fails for everyone on that Python. The fast fix for that case is an environment marker
 that leaves the package out on the Python that has no wheel, for example
 `"pyppmd>=1.3.1; python_version < '3.16'"`, in a patch release. The members it decodes
-then raise `PackageNotInstalledError` on that Python until the package catches up.
+then raise `PackageNotInstalledError` on that Python until the package catches up. The
+same PR updates the other places that list `[recommended]`: the table in
+`openspec/specs/packaging-and-extras/spec.md`, and `docs/formats.md` and
+`docs/install.md` where they say what `[recommended]` reads. The CHANGELOG entry gets a
+line for it.
 
 What to do per package if its upstream stops for good:
 
@@ -100,7 +113,7 @@ What to do per package if its upstream stops for good:
 | `backports.zstd` | recommended, Python < 3.14 | Zstandard on 3.11 to 3.13 | zstd members raise on those Pythons | Nothing: 3.14+ has `compression.zstd` in the stdlib, and 3.13 reaches end of life in 2029 |
 | `brotli` | recommended | Brotli single files and 7z Brotli | Brotli members raise | Marker fix; `brotlicffi` has the same API and could replace it |
 | `lz4` | recommended | LZ4 single files and 7z LZ4 | LZ4 members raise | Marker fix |
-| `cryptography` | recommended | AES for 7z, RAR and WinZip AES | encrypted members (AES) raise; ZipCrypto still works (pure Python) | Very unlikely to stop. If it did: `pycryptodome` covers AES-CBC and AES-CTR |
+| `cryptography` | recommended | AES for 7z, RAR and WinZip AES | AES-encrypted members raise; a header-encrypted RAR or 7z cannot be opened at all; ZipCrypto still works (pure Python) | Very unlikely to stop. If it did: `pycryptodome` covers AES-CBC and AES-CTR |
 | `pycdlib` | recommended | ISO 9660 / Joliet / Rock Ridge / UDF | opening an ISO raises `PackageNotInstalledError` | It is pure Python, so it cannot lose wheels. If it stops getting fixes, vendor the version we test against |
 | `tqdm` | recommended | CLI progress bars | no progress bars | Drop it; the CLI already works without it |
 | `rapidgzip` | seekable (not in recommended) | faster gzip, zlib, DEFLATE and bzip2 with random access; runs in a child process | nothing breaks: archivey uses the stdlib decoders and seeks get slower | Remove the accelerator, or leave the extra in place and let it go stale. Nothing depends on it for correctness |
@@ -115,12 +128,15 @@ When a new major version of one of these breaks a test, pin below it with a comm
   offers it, change the prerelease leg in `ci.yml` to the new version.
 - **A release candidate**: the prerelease leg should be on it already. Read the leg once.
   Failures there are usually a dependency without a wheel yet; see above.
-- **A final release**: in one small PR, drop `prerelease: true` from that leg, add the
-  `Programming Language :: Python :: 3.X` classifier to both `pyproject.toml` files, and
-  move the "max Python" legs (macOS, Windows, core-only, coverage) to the new version.
+- **A final release**: in one small PR, drop `prerelease: true` from both prerelease rows
+  in `ci.yml` (the test matrix leg and the `free-threaded-concurrency` `3.Xt` leg), add
+  the `Programming Language :: Python :: 3.X` classifier to the root `pyproject.toml`
+  (the `archivey-cli` package has no per-version classifiers), and move the "max Python"
+  legs (macOS, Windows, core-only, coverage) to the new version.
 - **A Python reaches end of life** (3.11 in October 2027): drop it in a minor release,
   not a patch release. Move the "min Python" legs and the `all-lowest` leg to the next
-  version and raise `requires-python`.
+  version, raise `requires-python` in both `pyproject.toml` files, and update
+  `.python-version`.
 
 ## unrar or unar changes
 
@@ -151,9 +167,10 @@ When a new major version of one of these breaks a test, pin below it with a comm
    request.
 4. Write one **Security** line in the CHANGELOG entry.
 
-A crash that only kills a child process (rapidgzip, pyppmd) is not a vulnerability in
-archivey: it is documented in [Known issues](known-issues.md). A report about one gets a
-link to that page.
+A native decoder crash is a documented limit, not a vulnerability (`SECURITY.md` §Scope,
+and [A fuzz job found a crash](#a-fuzz-job-found-a-crash) for what to do). A report about
+one gets a link to [Known issues](known-issues.md), unless it goes further than that
+limit.
 
 ## A stranger files an issue
 
@@ -172,9 +189,8 @@ link to that page.
 
 ## A patch release
 
-See [Release checklist](release-checklist.md). For a patch release (bug fixes only), the
-benchmark comparison and the docs pass can be skipped unless the fixes touch those
-areas.
+See [Release checklist](release-checklist.md). It says which steps a patch release can
+skip.
 
 ## Where the rest lives
 
