@@ -407,6 +407,27 @@ rapidgzip.
 **Evidence.** [`linux-heap-corruption-soak.md`](investigations/linux-heap-corruption-soak.md):
 the CI step split, the soak and A/B recipes, and the recorded red runs.
 
+## PyPy: a C `bool` member reads as an int (open, upstream)
+
+**Symptom.** Under PyPy 3.11.17, a C extension's `bool` struct member (`Py_T_BOOL`) can read
+as an int. backports.zstd's `ZstdDecompressor.eof` reads `False` before a frame ends and the
+int `1` after it, where CPython gives `True`; `needs_input` read `False` in the same run.
+A check that wants `isinstance(value, bool)` drops it, which is how every zstd read in a
+decoder child failed with `AttributeError: eof`.
+
+**What archivey does.** The decoder worker takes any int as a flag and sends `bool(value)`
+(`_state` in `internal/streams/codecs/decoder_worker.py`). Pinned by
+`test_a_flag_read_as_an_int_is_reported_as_a_bool` and
+`test_an_int_flag_reaches_the_parent_as_a_bool` in `tests/test_decoder_child.py`.
+
+**What remains.** Any other code that type-checks a flag read from a C extension for `bool`
+has the same gap. Truth tests (`if decoder.eof:`) are unaffected.
+
+**Upstream.** Not filed with PyPy.
+
+**Evidence.** A two-line check under PyPy 3.11.17:
+`d = ZstdDecompressor(); d.decompress(compress(b"abc")); type(d.eof)` is `int`.
+
 ## PyPy: buffer views and non-blocking `readinto` (open, by design upstream)
 
 **Symptom.** Two PyPy 3.11 behaviours that CPython does not share. A `memoryview` that
