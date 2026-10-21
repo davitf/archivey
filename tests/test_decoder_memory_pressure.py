@@ -9,6 +9,7 @@ with ``ENOMEM`` against the grown process heap.
 from __future__ import annotations
 
 import lzma
+import os
 import random
 import subprocess
 import sys
@@ -158,14 +159,20 @@ def test_closing_an_archive_member_ends_its_liblzma_decoder(
 
 # With the accounting, dropped decoders pile up only until PyPy's next major collection
 # frees them, and glibc reuses that memory for the next ones: growth levels off at however
-# much pressure PyPy lets build first, which is not small and varies from run to run. It
-# reached 3,725 MiB in an xdist worker (PR 901) and 2,120 MiB in a fresh interpreter (PR
-# 951), each time after 800 drops, and passed on re-runs. Without the accounting nothing
-# frees them and growth is linear: 8 MiB per drop, 6.4 GB for 800. So the test drops 1,600
-# and caps growth at 6 GiB, half of the 12.8 GB that no accounting would map, in a fresh
-# interpreter so earlier tests' heaps stay out of the number. The estimates themselves are
-# pinned exactly by the tests above. On a failure the message lists growth every 200
-# drops: a steady climb means accounting is missing, a high plateau means the cap is tight.
+# much pressure PyPy lets build first, which is large and varies from run to run. After
+# 800 drops it reached 3,725 MiB in an xdist worker (PR 901) and 2,120 MiB in a fresh
+# interpreter (PR 951), and both passed on re-runs. Without the accounting nothing frees
+# them and growth is linear, 8 MiB per drop (6.4 GB measured for 800 in PR 927).
+#
+# So the test asserts the shape, not a height: of 1,600 drops, the last 800 must add under
+# 2 GiB, where a linear climb adds about 6.4 GB. Checked against: dropping the
+# add_memory_pressure call makes the curve climb and fails it; a curve that is flat at any
+# height passes, short of the loose 10 GiB ceiling. The drops run in a fresh interpreter
+# because the worker reading was 1.76 times the fresh one, likely because PyPy's threshold
+# scales with the heap the last collection left (inferred, not reproduced). The estimates
+# themselves are pinned exactly by the tests above. The child prints each sample as it
+# takes it, so a killed child still shows its curve, and a CI run records the curve in
+# the job summary whether the test passes or not.
 _PILE_UP_CHILD = """
 import lzma
 from pathlib import Path
@@ -185,12 +192,10 @@ def private_writable_mib():
 
 data = lzma.compress(b"x" * 100)
 before = private_writable_mib()
-growth = []
 for i in range(1, 1601):
     IN_PROCESS.lzma_decompressor(format=lzma.FORMAT_XZ).decompress(data)
     if i % 200 == 0:
-        growth.append(private_writable_mib() - before)
-print(*growth)
+        print(private_writable_mib() - before, flush=True)
 """
 
 
@@ -200,7 +205,7 @@ print(*growth)
 )
 @pytest.mark.timeout(300, func_only=True)
 def test_dropped_xz_decoders_do_not_pile_up_on_pypy() -> None:
-    """1,600 default-preset decoders map 12.8 GB if nothing frees them between drops."""
+    """Dropped xz decoders level off; without the accounting they climb 8 MiB a drop."""
     done = subprocess.run(
         [sys.executable, "-c", _PILE_UP_CHILD],
         capture_output=True,
@@ -208,6 +213,12 @@ def test_dropped_xz_decoders_do_not_pile_up_on_pypy() -> None:
         timeout=240,
         check=False,
     )
-    assert done.returncode == 0, done.stderr
+    curve = f"MiB grown every 200 of 1,600 dropped xz decoders: {done.stdout.split()}"
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        with open(summary, "a") as out:
+            out.write(f"PyPy decoder pile-up: {curve}\n\n")
+    assert done.returncode == 0, f"{curve}\n{done.stderr}"
     growth = [int(mib) for mib in done.stdout.split()]
-    assert growth[-1] < 6144, f"MiB grown every 200 drops: {done.stdout}"
+    assert growth[-1] - growth[3] < 2048, curve
+    assert max(growth) < 10240, curve
