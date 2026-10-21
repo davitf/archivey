@@ -16,7 +16,9 @@ import sys
 from pathlib import Path
 
 import pytest
-from coverage.numbits import nums_to_numbits
+
+# A dev dependency; the pypy jobs install only the runtime extras and pytest.
+nums_to_numbits = pytest.importorskip("coverage.numbits").nums_to_numbits
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "compare_test_runs.py"
