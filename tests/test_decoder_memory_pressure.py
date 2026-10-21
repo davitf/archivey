@@ -156,14 +156,16 @@ def test_closing_an_archive_member_ends_its_liblzma_decoder(
     assert any(type(d) is lzma.LZMADecompressor for d in ended), kind
 
 
-# Run in a fresh interpreter. In an xdist worker the same 800 drops once grew 3,725 MiB
-# (PR 901, a docs-only change) and passed on a re-run. The likely reason, inferred from
-# how the failure varies between runs and not reproduced, is that PyPy's major-collection
-# threshold scales with the heap the last collection left, so a worker that earlier tests
-# grew lets more pressure build before collecting. A fresh process measures the
-# add_memory_pressure accounting itself, not what earlier tests left behind. The cap only
-# has to tell accounting from none (6.4 GB without it, dev-docs/known-issues.md); the
-# estimates themselves are pinned exactly by the tests above.
+# With the accounting, dropped decoders pile up only until PyPy's next major collection
+# frees them, and glibc reuses that memory for the next ones: growth levels off at however
+# much pressure PyPy lets build first, which is not small and varies from run to run. It
+# reached 3,725 MiB in an xdist worker (PR 901) and 2,120 MiB in a fresh interpreter (PR
+# 951), each time after 800 drops, and passed on re-runs. Without the accounting nothing
+# frees them and growth is linear: 8 MiB per drop, 6.4 GB for 800. So the test drops 1,600
+# and caps growth at 6 GiB, half of the 12.8 GB that no accounting would map, in a fresh
+# interpreter so earlier tests' heaps stay out of the number. The estimates themselves are
+# pinned exactly by the tests above. On a failure the message lists growth every 200
+# drops: a steady climb means accounting is missing, a high plateau means the cap is tight.
 _PILE_UP_CHILD = """
 import lzma
 from pathlib import Path
@@ -183,9 +185,12 @@ def private_writable_mib():
 
 data = lzma.compress(b"x" * 100)
 before = private_writable_mib()
-for _ in range(800):
+growth = []
+for i in range(1, 1601):
     IN_PROCESS.lzma_decompressor(format=lzma.FORMAT_XZ).decompress(data)
-print(private_writable_mib() - before)
+    if i % 200 == 0:
+        growth.append(private_writable_mib() - before)
+print(*growth)
 """
 
 
@@ -195,7 +200,7 @@ print(private_writable_mib() - before)
 )
 @pytest.mark.timeout(300, func_only=True)
 def test_dropped_xz_decoders_do_not_pile_up_on_pypy() -> None:
-    """800 default-preset decoders hold 6.4 GiB if nothing frees them between drops."""
+    """1,600 default-preset decoders map 12.8 GB if nothing frees them between drops."""
     done = subprocess.run(
         [sys.executable, "-c", _PILE_UP_CHILD],
         capture_output=True,
@@ -204,4 +209,5 @@ def test_dropped_xz_decoders_do_not_pile_up_on_pypy() -> None:
         check=False,
     )
     assert done.returncode == 0, done.stderr
-    assert int(done.stdout) < 2048, done.stdout
+    growth = [int(mib) for mib in done.stdout.split()]
+    assert growth[-1] < 6144, f"MiB grown every 200 drops: {done.stdout}"

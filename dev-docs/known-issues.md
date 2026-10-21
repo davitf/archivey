@@ -511,11 +511,12 @@ in-process reports its likely size with `__pypy__.add_memory_pressure`, as PyPy'
 
 A decoder's `close` also ends its liblzma decoders with `ffi.release` and cancels their
 pressure, because only the stream declares the real dictionary (up to 4 GiB uncapped).
-Pinned by `tests/test_decoder_memory_pressure.py`: each estimate exactly, and 800 dropped
-xz decoders in a fresh interpreter under 2 GiB through `/proc`. The drops run in a child
-process because in an xdist worker they once grew 3,725 MiB (PR #901, docs-only, passed on
-a re-run); the likely reason, inferred and not reproduced, is that PyPy's collection
-threshold scales with the heap the last collection left.
+Pinned by `tests/test_decoder_memory_pressure.py`: each estimate exactly, and 1,600 dropped
+xz decoders in a fresh interpreter under 6 GiB through `/proc`. With the accounting, the
+growth levels off at whatever pressure PyPy lets build before a major collection. That is
+large and varies: 800 drops reached 3,725 MiB in an xdist worker (PR #901) and 2,120 MiB
+in a fresh interpreter (PR #951), and both passed on a re-run. Without it, growth is
+linear, 8 MiB per drop, so 1,600 drops would map 12.8 GB.
 
 **What remains.** A zstd frame can reserve up to `window_log_max` (2 GiB under the default
 `max_decoder_memory`) and nothing frees it before a collection, nor a brotli window over
