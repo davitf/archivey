@@ -28,7 +28,11 @@ import pytest
 from archivey import ArchiveyConfig, open_archive
 from archivey.config import RarDecompressor
 from archivey.exceptions import TruncatedError, UnsupportedFeatureError
-from tests.conftest import binary_refusal, requires_binary, unrar_cli_refusal
+from tests.conftest import (
+    binary_refusal,
+    requires_unrar_cli,
+    unrar_cli_refusal,
+)
 from tests.test_rar_parser import _rar4_volume_renumbered
 from tests.test_volumes import _OLD_SCHEME_PAYLOAD, _write_old_scheme_rar4_set
 
@@ -191,7 +195,7 @@ def test_an_old_scheme_set_with_a_gap_is_one_set(tmp_path: Path, missing: int) -
                     archive.read(member)
 
 
-@requires_binary("unrar")
+@requires_unrar_cli()
 def test_unrar_reads_past_the_gap_from_the_volume_after_it(tmp_path: Path) -> None:
     """The oracle for reading past a gap: ``unrar t`` on the first volume after it
     tests every member that starts there, and skips the one continued from the gap."""

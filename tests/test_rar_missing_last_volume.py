@@ -25,7 +25,7 @@ import pytest
 from archivey import ArchiveyConfig, DiagnosticPolicy, open_archive
 from archivey.config import RarDecompressor
 from archivey.exceptions import TruncatedError
-from tests.conftest import binary_refusal
+from tests.conftest import binary_refusal, unrar_cli_refusal
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "rar"
 _NAMES = ["a.txt", "b.txt", "c.txt", "d.txt"]
@@ -165,7 +165,8 @@ def test_extract_all_writes_the_complete_members_then_raises(
 def test_unrar_tests_the_same_members(stem: str) -> None:
     """The oracle: ``unrar t`` passes the complete members and fails the last one
     on the missing volume."""
-    _needs("unrar")
+    if (refusal := unrar_cli_refusal()) is not None:
+        pytest.skip(refusal)
     result = subprocess.run(
         ["unrar", "t", "-p-", str(_volumes(stem)[0])],
         capture_output=True,

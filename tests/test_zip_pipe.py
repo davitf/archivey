@@ -1405,6 +1405,9 @@ def test_a_rejected_held_header_keeps_no_frames() -> None:
 
         return traced_peak(list_members)
 
+    # traced_peak leaves first-use costs (lazy imports, caches) to its caller; a warm-up
+    # pass keeps them off the first measurement, which is the larger side.
+    peak(_cheap_rejected_held_headers(1))
     rejected = peak(_cheap_rejected_held_headers(n))
     missing = peak(_cheap_rejected_held_headers(n, header=False))
     assert rejected - missing < n * 2048

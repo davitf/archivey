@@ -22,7 +22,7 @@ from archivey.exceptions import TruncatedError, UnsupportedFeatureError
 from archivey.internal.backends.rar_parser import load_vint, parse_rar_archive
 from archivey.internal.backends.rar_unar import UnarRarPolicy
 from tests.atheris_fuzz.crc_fixup import fixup_rar_header_crcs
-from tests.conftest import binary_refusal, requires_binary
+from tests.conftest import binary_refusal, requires_unrar_cli
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "rar"
 
@@ -206,7 +206,7 @@ def test_the_solid_unrar_pass_refuses_the_member_and_keeps_the_ones_before(
     assert outcomes["subdir/file2.txt"] is UnsupportedFeatureError
 
 
-@requires_binary("unrar")
+@requires_unrar_cli()
 @pytest.mark.parametrize(
     ("fixture", "mutate"),
     [

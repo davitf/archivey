@@ -37,7 +37,7 @@ from archivey.internal.backends.rar_parser import (
 from archivey.internal.streams import verify
 from archivey.types import HashAlgorithm, MemberType
 from tests.atheris_fuzz.crc_fixup import fixup_rar_header_crcs
-from tests.conftest import requires_binary
+from tests.conftest import requires_unrar_cli
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.test_rar_owner import OWNER_IDS_RAR5
 
@@ -227,7 +227,7 @@ def test_an_unimplemented_record_type_lists_silently(tmp_path: Path) -> None:
         assert archive.diagnostics.counts == {}
 
 
-@requires_binary("unrar")
+@requires_unrar_cli()
 def test_unrar_lists_the_short_checksum_archive_too(short_hash_archive: Path) -> None:
     """The oracle for why refusing it was wrong: RARLAB's own tool reads this file."""
     result = subprocess.run(
@@ -565,7 +565,7 @@ def test_a_zero_length_record_stops_the_walk(tmp_path: Path) -> None:
     assert any(d.context.list_truncated for d in member.diagnostics)
 
 
-@requires_binary("unrar")
+@requires_unrar_cli()
 def test_unrar_gets_the_zero_length_record_wrong(tmp_path: Path) -> None:
     """Why the ``unrar`` oracle does not extend to this case.
 
@@ -1415,7 +1415,7 @@ def test_the_extra_size_limit_is_the_whole_header(
         assert "overlaps" in diagnostic.context.reason
 
 
-@requires_binary("unrar")
+@requires_unrar_cli()
 @pytest.mark.parametrize(
     ("below", "corrupt"), [(1, False), (0, True)], ids=["whole-minus-1", "whole"]
 )
@@ -1465,7 +1465,7 @@ def test_an_extra_area_overlapping_the_fixed_fields_is_reported(
         assert "overlaps" in context.reason
 
 
-@requires_binary("unrar")
+@requires_unrar_cli()
 @pytest.mark.parametrize(
     ("gap", "extra", "declared", "expected_type", "corrupt"),
     [

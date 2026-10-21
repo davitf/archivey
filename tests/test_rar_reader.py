@@ -61,7 +61,11 @@ from archivey.types import (
     HashAlgorithm,
     MemberType,
 )
-from tests.conftest import requires, requires_binary, unrar_cli_refusal
+from tests.conftest import (
+    requires,
+    requires_binary,
+    requires_unrar_cli,
+)
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.streams_util import NonSeekableBytesIO, ShortReadNonSeekable
 
@@ -1139,12 +1143,8 @@ def test_blake2sp_corrupt_payload_raises(tmp_path: Path) -> None:
             archive.read(member)
 
 
-@requires_binary("unrar")
+@requires_unrar_cli()
 def test_blake2sp_unrar_oracle_crosscheck() -> None:
-    import subprocess
-
-    if (refusal := unrar_cli_refusal()) is not None:
-        pytest.skip(f"unrar unavailable: {refusal}")
     fixture = _fixture("blake2sp.rar")
     with open_archive(fixture) as archive:
         member = next(m for m in archive.members() if m.is_file)
@@ -1178,7 +1178,7 @@ def test_multi_volume_rnn_roundtrip() -> None:
         assert archive.read("payload.bin") == b"ABCDEFGH" * 200
 
 
-@requires_binary("unrar")
+@requires_unrar_cli()
 @pytest.mark.parametrize(
     ("name", "member_name"),
     [
@@ -1492,7 +1492,7 @@ def test_rar15_and_rar2_list_and_read(name: str, expected: dict[str, bytes]) -> 
 
 
 @requires("rarfile")
-@requires_binary("unrar")
+@requires_unrar_cli()
 @pytest.mark.parametrize("name", ["rar15-comment.rar", "rar202-comment-nopsw.rar"])
 def test_rar15_and_rar2_comments_match_rarfile(name: str) -> None:
     """Legacy embedded archive and member comments match the reference reader."""
@@ -3070,24 +3070,26 @@ def test_unrar_on_path_is_the_rarlab_build() -> None:
 
 
 @pytest.mark.parametrize(
-    ("unrar_banner", "rar_banner", "skips"),
+    ("unrar_banner", "rar_banner", "data_skips", "cli_skips"),
     [
-        ("unrar-free fake", None, True),
-        ("unrar-free fake", "7.00", True),
-        ("7.00", "7.00", False),
+        ("unrar-free fake", None, True, True),
+        ("unrar-free fake", "7.00", False, True),
+        ("7.00", "7.00", False, False),
     ],
     ids=["lookalike-unrar", "lookalike-unrar-beside-rar", "rarlab-unrar"],
 )
-def test_requires_binary_skips_unless_unrar_itself_is_accepted(
+def test_unrar_marks_follow_archiveys_rule(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     unrar_banner: str,
     rar_banner: str | None,
-    skips: bool,
+    data_skips: bool,
+    cli_skips: bool,
 ) -> None:
-    """A test marked ``requires_binary("unrar")`` may run the ``unrar`` command, so it
-    skips unless archivey accepts that command. A lookalike ``unrar`` beside a RARLAB
-    ``rar`` is the case where archivey's own check (``unrar_refusal``) passes."""
+    """``requires_binary("unrar")`` skips where archivey has no RARLAB program to read
+    RAR data with; ``requires_unrar_cli()``, for a test that runs the ``unrar`` command,
+    also skips where that command is not the one archivey accepts. A lookalike
+    ``unrar`` beside a RARLAB ``rar`` is the case where the two differ."""
     unrar = tmp_path / "unrar"
     unrar.write_bytes(b"u")
     programs = {"unrar": unrar}
@@ -3119,8 +3121,10 @@ def test_requires_binary_skips_unless_unrar_itself_is_accepted(
         )
 
     monkeypatch.setattr(rar_unrar.subprocess, "run", run)
-    mark = requires_binary("unrar")
-    assert mark.args == (skips,), mark.kwargs["reason"]
+    data_mark = requires_binary("unrar")
+    assert data_mark.args == (data_skips,), data_mark.kwargs["reason"]
+    cli_mark = requires_unrar_cli()
+    assert cli_mark.args == (cli_skips,), cli_mark.kwargs["reason"]
 
 
 def test_missing_unrar_raises(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -5756,7 +5760,7 @@ def _unrar_payload(path: Path, member: str) -> bytes:
     ).stdout
 
 
-@requires_binary("unrar")
+@requires_unrar_cli()
 @pytest.mark.parametrize("name", sorted(_RAR4_LARGE))
 @pytest.mark.parametrize(
     "passwords",
@@ -5838,7 +5842,7 @@ def test_rar4_damaged_member_is_not_reported_as_a_wrong_password(
     assert "may be damaged" in str(info.value)
 
 
-@requires_binary("unrar")
+@requires_unrar_cli()
 @requires("cryptography")
 def test_rar4_stored_password_list_is_judged_without_unrar(
     monkeypatch: pytest.MonkeyPatch,
@@ -5861,7 +5865,7 @@ def test_rar4_stored_password_list_is_judged_without_unrar(
     assert spawns == []
 
 
-@requires_binary("unrar")
+@requires_unrar_cli()
 def test_rar4_stored_password_list_without_cryptography_goes_through_unrar(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
