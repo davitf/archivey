@@ -812,12 +812,12 @@ def _lists_member_then_zip64_truncation(
 ) -> str:
     """Names listed before the ZIP64 size fault, and the fault's message."""
     names: list[str] = []
-    with pytest.raises(
-        TruncatedError, match="ZIP64 end of central directory"
-    ) as raised:
-        with open_archive(source, streaming=streaming) as reader:
-            for member in reader:
-                names.append(member.name)
+    with (
+        pytest.raises(TruncatedError, match="ZIP64 end of central directory") as raised,
+        open_archive(source, streaming=streaming) as reader,
+    ):
+        for member in reader:
+            names.append(member.name)
     assert names == ["a.txt"]
     text = str(raised.value)
     assert str((1 << 64) - 1) in text

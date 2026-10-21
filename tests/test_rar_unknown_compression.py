@@ -98,11 +98,13 @@ def test_an_unknown_rar5_version_is_unsupported_not_truncated(
     path = _write(tmp_path, "v2.rar", _set_rar5_version(data, 1, 2))
     with open_archive(path, config=_config(decompressor)) as archive:
         member = archive.members()[1]
-        with pytest.raises(
-            UnsupportedFeatureError, match="compression version 2"
-        ) as caught:
-            with archive.open(member) as stream:
-                stream.read()
+        with (
+            pytest.raises(
+                UnsupportedFeatureError, match="compression version 2"
+            ) as caught,
+            archive.open(member) as stream,
+        ):
+            stream.read()
     message = str(caught.value)
     assert "neither RAR decompressor" in message, message
     assert "switching decompressors does not help" in message, message

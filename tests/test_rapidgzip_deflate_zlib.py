@@ -91,7 +91,7 @@ def _assert_stdlib_zlib(stream: object) -> None:
 
 def _read_exact(stream: object, n: int) -> bytes:
     """Gather exactly ``n`` bytes (stdlib decompressor reads may return short)."""
-    read = getattr(stream, "read")
+    read = stream.read
     buf = bytearray()
     while len(buf) < n:
         chunk = read(n - len(buf))
@@ -357,7 +357,7 @@ def test_verifying_stream_close_after_inner_read_error_is_quiet() -> None:
             super().__init__(b"partial")
             self._blown = False
 
-        def read(self, n: int = -1) -> bytes:  # noqa: ARG002
+        def read(self, n: int = -1) -> bytes:
             if self._blown:
                 raise RuntimeError("std::exception")
             self._blown = True
@@ -443,7 +443,7 @@ def _body_flip_the_stdlib_rejects(good: bytes) -> bytes:
     raise AssertionError("no rejected body flip found")
 
 
-def _on_zlib(data: bytes):  # noqa: ANN202 - the codec's stream type
+def _on_zlib(data: bytes):
     pytest.importorskip("rapidgzip")
     on = StreamConfig(use_rapidgzip=AcceleratorMode.ON, seekable=True)
     return open_codec_stream(Codec.ZLIB, io.BytesIO(data), config=on)

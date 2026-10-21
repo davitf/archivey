@@ -514,16 +514,16 @@ def test_bounded_member_pipe_skips_prefix_and_translates_eof() -> None:
 @requires_binary("unrar")
 def test_seekable_unrar_emits_stream_rewind() -> None:
     """A small rewind of a later solid member is still loud: the prefix counts."""
-    with open_archive(
-        _fixture(_SEEK_RESPAWN_FIXTURE), seekable_members=True
-    ) as archive:
-        with archive.open("tail.txt") as stream:
-            stream.read(8)
-            stream.seek(0)
-            assert DiagnosticCode.STREAM_REWIND_REDECOMPRESSES in dict(
-                stream.diagnostics.counts
-            )
-            assert stream.read() == _SEEK_RESPAWN_TAIL
+    with (
+        open_archive(_fixture(_SEEK_RESPAWN_FIXTURE), seekable_members=True) as archive,
+        archive.open("tail.txt") as stream,
+    ):
+        stream.read(8)
+        stream.seek(0)
+        assert DiagnosticCode.STREAM_REWIND_REDECOMPRESSES in dict(
+            stream.diagnostics.counts
+        )
+        assert stream.read() == _SEEK_RESPAWN_TAIL
 
 
 def test_rewind_warning_min_redecode_bytes_is_a_cost_floor() -> None:
@@ -585,16 +585,16 @@ def test_seekable_unrar_respawns_while_process_still_running(
 
     monkeypatch.setattr(rar_reader, "open_unrar_p", spy)
 
-    with open_archive(
-        _fixture(_SEEK_RESPAWN_FIXTURE), seekable_members=True
-    ) as archive:
-        with archive.open("prefix.bin") as stream:
-            first = stream.read(1024)
-            assert first == _SEEK_RESPAWN_PAD[:1024]
-            assert len(spawns) == 1
-            stream.seek(0)
-            assert stream.read(1024) == first
-            assert len(spawns) == 2
+    with (
+        open_archive(_fixture(_SEEK_RESPAWN_FIXTURE), seekable_members=True) as archive,
+        archive.open("prefix.bin") as stream,
+    ):
+        first = stream.read(1024)
+        assert first == _SEEK_RESPAWN_PAD[:1024]
+        assert len(spawns) == 1
+        stream.seek(0)
+        assert stream.read(1024) == first
+        assert len(spawns) == 2
 
 
 @requires_binary("unrar")
@@ -614,14 +614,16 @@ def test_seekable_members_does_not_respawn_on_stored_direct_slice(
     monkeypatch.setattr(rar_reader, "open_unrar_p", spy)
 
     expected = _BASIC_CONTENTS["file1.txt"]
-    with open_archive(
-        _fixture("basic_nonsolid__.rar"), seekable_members=True
-    ) as archive:
-        with archive.open("file1.txt") as stream:
-            assert stream.seekable() is True
-            assert stream.read(5) == expected[:5]
-            stream.seek(0)
-            assert stream.read() == expected
+    with (
+        open_archive(
+            _fixture("basic_nonsolid__.rar"), seekable_members=True
+        ) as archive,
+        archive.open("file1.txt") as stream,
+    ):
+        assert stream.seekable() is True
+        assert stream.read(5) == expected[:5]
+        stream.seek(0)
+        assert stream.read() == expected
     assert spawns == []
 
 
@@ -809,7 +811,7 @@ def test_rar5_reader_derives_each_key_once(
     volume set re-derived the header keys per part. Each derivation costs up to
     ``2**24`` PBKDF2 rounds, at the archive's choosing.
     """
-    import archivey.internal.backends.rar_parser as rar_parser
+    from archivey.internal.backends import rar_parser
 
     derived: list[tuple[bytes, int]] = []
     real = rar_parser.pbkdf2_hmac
@@ -4514,11 +4516,13 @@ def test_glob_member_with_earlier_matches_is_refused(name: str) -> None:
     ``AccessCost.SOLID``. Maintainer (davitf, 2026-09-19): refuse, with the config
     flag as the escape hatch.
     """
-    with open_archive(_fixture(name), config=_UNRAR_ONLY) as archive:
-        with pytest.raises(
+    with (
+        open_archive(_fixture(name), config=_UNRAR_ONLY) as archive,
+        pytest.raises(
             UnsupportedFeatureError, match="rar_allow_glob_member_concatenation"
-        ):
-            archive.read("a*.txt")
+        ),
+    ):
+        archive.read("a*.txt")
 
 
 @requires_binary("unrar")
@@ -4597,11 +4601,13 @@ def test_auto_keeps_the_unrar_refusal_without_an_accepted_unar(
         raise PackageNotInstalledError(f"no unar {purpose}")
 
     monkeypatch.setattr(rar_reader, "find_unar", no_unar)
-    with open_archive(_fixture("wildcard_names__.rar")) as archive:
-        with pytest.raises(
+    with (
+        open_archive(_fixture("wildcard_names__.rar")) as archive,
+        pytest.raises(
             UnsupportedFeatureError, match="rar_allow_glob_member_concatenation"
-        ):
-            archive.read("a*.txt")
+        ),
+    ):
+        archive.read("a*.txt")
 
 
 @requires_binary("unrar", "unar")
@@ -4648,11 +4654,13 @@ def test_auto_keeps_the_unrar_refusal_when_unar_would_need_a_copy(
     path.write_bytes(
         b"MZ" + bytes(4094) + _fixture("wildcard_names__.rar").read_bytes()
     )
-    with open_archive(path) as archive:
-        with pytest.raises(
+    with (
+        open_archive(path) as archive,
+        pytest.raises(
             UnsupportedFeatureError, match="rar_allow_glob_member_concatenation"
-        ):
-            archive.read("a*.txt")
+        ),
+    ):
+        archive.read("a*.txt")
     assert created == []
 
 
@@ -4674,11 +4682,13 @@ def test_solid_glob_refusal_does_not_claim_an_avoidable_decode() -> None:
     The refusal still fires — the names are constructed — but the message must
     not describe those bytes as an avoidable extra decode.
     """
-    with open_archive(
-        _fixture("wildcard_names_solid__.rar"), config=_UNRAR_ONLY
-    ) as archive:
-        with pytest.raises(UnsupportedFeatureError) as excinfo:
-            archive.read("a*.txt")
+    with (
+        open_archive(
+            _fixture("wildcard_names_solid__.rar"), config=_UNRAR_ONLY
+        ) as archive,
+        pytest.raises(UnsupportedFeatureError) as excinfo,
+    ):
+        archive.read("a*.txt")
     message = str(excinfo.value)
     assert "rar_allow_glob_member_concatenation" in message
     assert "would decompress" not in message
@@ -4747,24 +4757,26 @@ def test_seekable_wildcard_respawn_still_skips_glob_prefix(
     monkeypatch.setattr(rar_reader, "open_unrar_p", spy)
 
     expected = _WILDCARD_CONTENTS["a*.txt"]
-    with open_archive(
-        _fixture("wildcard_names_solid__.rar"),
-        seekable_members=True,
-        config=_ALLOW_GLOB_CONCAT,
-    ) as archive:
-        with archive.open("a*.txt") as stream:
-            assert stream.seekable() is True
-            # Prefix skip is eager at pipe construction, which for a respawn is
-            # the following read — not seek(). A no-byte seek must not spawn.
-            stream.seek(0, io.SEEK_END)
-            stream.seek(0)
-            assert spawns == ["a*.txt"]
-            assert stream.read(6) == expected[:6]
-            assert spawns == ["a*.txt"]
-            stream.seek(0)
-            assert spawns == ["a*.txt"]
-            assert stream.read() == expected
-            assert spawns == ["a*.txt", "a*.txt"]
+    with (
+        open_archive(
+            _fixture("wildcard_names_solid__.rar"),
+            seekable_members=True,
+            config=_ALLOW_GLOB_CONCAT,
+        ) as archive,
+        archive.open("a*.txt") as stream,
+    ):
+        assert stream.seekable() is True
+        # Prefix skip is eager at pipe construction, which for a respawn is
+        # the following read — not seek(). A no-byte seek must not spawn.
+        stream.seek(0, io.SEEK_END)
+        stream.seek(0)
+        assert spawns == ["a*.txt"]
+        assert stream.read(6) == expected[:6]
+        assert spawns == ["a*.txt"]
+        stream.seek(0)
+        assert spawns == ["a*.txt"]
+        assert stream.read() == expected
+        assert spawns == ["a*.txt", "a*.txt"]
 
 
 _SEPARATOR_OR_DIR_GLOB = (

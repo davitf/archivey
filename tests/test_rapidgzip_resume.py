@@ -74,7 +74,7 @@ def _stdlib(codec: Codec, source: object) -> DecompressorStream:
 def _child(stream: object) -> RapidgzipChildStream:
     inner = stream
     while not isinstance(inner, RapidgzipChildStream):
-        inner = getattr(inner, "_inner")
+        inner = inner._inner
     return inner
 
 

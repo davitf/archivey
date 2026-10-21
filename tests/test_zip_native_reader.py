@@ -997,11 +997,13 @@ def test_a_classic_end_record_stands_in_for_a_damaged_zip64_record() -> None:
     assert diagnostic.context.observed_bytes == data.rindex(b"PK\x06\x07")
     assert "ZIP64 end of central directory record not found" in diagnostic.message
     config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
-    with pytest.raises(DiagnosticRaisedError) as raised:
-        with open_archive(
+    with (
+        pytest.raises(DiagnosticRaisedError) as raised,
+        open_archive(
             io.BytesIO(data), format=ArchiveFormat.ZIP, config=config
-        ) as reader:
-            reader.members()
+        ) as reader,
+    ):
+        reader.members()
     assert raised.value.diagnostic.code is DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING
 
 
@@ -1014,15 +1016,17 @@ def test_a_failure_met_walking_ahead_is_raised_where_the_pass_reaches_it() -> No
     eocd = data.rindex(b"PK\x05\x06")
     struct.pack_into("<HH", data, eocd + 8, 5, 5)
     read = []
-    with open_archive(
-        io.BytesIO(bytes(data)),
-        streaming=True,
-        config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT),
-    ) as reader:
-        with pytest.raises(DiagnosticRaisedError):
-            for member, stream in reader.stream_members():
-                assert stream is not None
-                read.append((member.name, stream.read()))
+    with (
+        open_archive(
+            io.BytesIO(bytes(data)),
+            streaming=True,
+            config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT),
+        ) as reader,
+        pytest.raises(DiagnosticRaisedError),
+    ):
+        for member, stream in reader.stream_members():
+            assert stream is not None
+            read.append((member.name, stream.read()))
     assert read == [(n, n.encode() * 3) for n in _NAMES]
 
 

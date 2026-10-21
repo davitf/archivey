@@ -204,7 +204,7 @@ def _print(rows: list[dict]) -> None:
         g = "—" if r["gold_len"] is None else str(r["gold_len"])
         print(
             f"{r['case']:36} {r['tool']:8} {r['rc_label']:10} "
-            f"{str(r['out_len']):6} {g:6} {ms:5} {r['note']}"
+            f"{r['out_len']!s:6} {g:6} {ms:5} {r['note']}"
         )
 
 

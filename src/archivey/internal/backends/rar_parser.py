@@ -1481,8 +1481,7 @@ def load_vint(buf: bytes | bytearray | memoryview, pos: int) -> tuple[int, int]:
     if b < 0x80:
         return b, pos + 1
     limit = pos + 11
-    if limit > length:
-        limit = length
+    limit = min(limit, length)
     res = b & 0x7F
     ofs = 7
     pos += 1

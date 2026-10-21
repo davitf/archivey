@@ -237,7 +237,7 @@ def _install_tracer() -> None:
     that effect. For the real thing, run a single scenario under ``coverage run`` (see --help).
     """
 
-    def _tracer(frame, event, arg):  # noqa: ANN001
+    def _tracer(frame, event, arg):
         return _tracer
 
     threading.settrace(_tracer)

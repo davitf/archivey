@@ -706,12 +706,10 @@ def test_zero_size_member_with_wrong_crc_raises_on_chunked_read() -> None:
     blob = _build_zip([_Entry(b"a", b"", crc=0x12345678)])
     with archivey.open_archive(io.BytesIO(blob)) as ar:
         (member,) = ar.members()
-        with ar.open(member) as stream:
-            with pytest.raises(CorruptionError):
-                stream.read()  # read(-1) does raise: fixture sanity
-        with ar.open(member) as stream:
-            with pytest.raises(CorruptionError):
-                stream.read(8192)
+        with ar.open(member) as stream, pytest.raises(CorruptionError):
+            stream.read()  # read(-1) does raise: fixture sanity
+        with ar.open(member) as stream, pytest.raises(CorruptionError):
+            stream.read(8192)
 
 
 def test_zero_size_member_with_wrong_crc_does_not_extract_clean(tmp_path: Path) -> None:

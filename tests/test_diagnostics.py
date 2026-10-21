@@ -762,13 +762,15 @@ def test_eof_marker_raise_yields_diagnostic_error() -> None:
 
     data = _tar_missing_eof_block()
     policy = DiagnosticPolicy(raise_on={DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING})
-    with pytest.raises(DiagnosticRaisedError) as ei:
-        with open_archive(
+    with (
+        pytest.raises(DiagnosticRaisedError) as ei,
+        open_archive(
             io.BytesIO(data),
             format=ArchiveFormat.TAR,
             config=ArchiveyConfig(diagnostic_policy=policy),
-        ) as ar:
-            ar.members()
+        ) as ar,
+    ):
+        ar.members()
     assert ei.value.diagnostic.code is DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING
 
 
@@ -981,13 +983,15 @@ def test_strict_preset_raises_on_archive_integrity() -> None:
     from archivey.types import ArchiveFormat
     from tests.test_tar import _tar_missing_eof_block
 
-    with pytest.raises(DiagnosticRaisedError) as ei:
-        with open_archive(
+    with (
+        pytest.raises(DiagnosticRaisedError) as ei,
+        open_archive(
             io.BytesIO(_tar_missing_eof_block()),
             format=ArchiveFormat.TAR,
             config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT),
-        ) as ar:
-            ar.members()
+        ) as ar,
+    ):
+        ar.members()
     assert ei.value.diagnostic.code is DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING
 
 
@@ -1013,14 +1017,16 @@ def test_strict_preset_does_not_raise_on_argument_hygiene(tmp_path: Path) -> Non
         ar.members()
         assert DiagnosticCode.PASSWORD_ARGUMENT_UNUSED in ar.diagnostics.counts
     # PEDANTIC is the preset that does raise on it.
-    with pytest.raises(DiagnosticRaisedError) as ei:
-        with open_archive(
+    with (
+        pytest.raises(DiagnosticRaisedError) as ei,
+        open_archive(
             io.BytesIO(data),
             format=ArchiveFormat.TAR,
             password="unused",
             config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.PEDANTIC),
-        ) as ar:
-            ar.members()
+        ) as ar,
+    ):
+        ar.members()
     assert ei.value.diagnostic.code is DiagnosticCode.PASSWORD_ARGUMENT_UNUSED
 
 

@@ -316,11 +316,7 @@ def inspect_7z(path: Path) -> dict[str, object]:
     import archivey
 
     with archivey.open_archive(path) as reader:
-        record = next(
-            r
-            for r in reader._archive.files
-            if r.filename.endswith("f.txt")  # noqa: SLF001
-        )
+        record = next(r for r in reader._archive.files if r.filename.endswith("f.txt"))
     attrs = record.attributes
     return {
         "member": record.filename,

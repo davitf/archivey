@@ -872,9 +872,8 @@ def test_unknown_member_name_still_raises_keyerror(archive: Path) -> None:
     The guard added for a wrong-typed member sits on the other branch; a string that
     names nothing must still behave like a mapping lookup (``archive-reading``).
     """
-    with open_archive(archive) as reader:
-        with pytest.raises(KeyError):
-            reader.open("nope.txt")
+    with open_archive(archive) as reader, pytest.raises(KeyError):
+        reader.open("nope.txt")
 
 
 def test_get_refuses_a_bytes_name_and_keeps_the_default_for_an_absent_one(
@@ -900,17 +899,15 @@ def test_extract_all_wrong_typed_members_does_not_create_dest(
 ) -> None:
     """A members= refusal must not have already created dest (K3)."""
     dest = tmp_path / "should_not_exist"
-    with open_archive(archive) as reader:
-        with pytest.raises(ArchiveyUsageError):
-            reader.extract_all(dest, members=0)
+    with open_archive(archive) as reader, pytest.raises(ArchiveyUsageError):
+        reader.extract_all(dest, members=0)
     assert not dest.exists()
 
 
 def test_stream_members_wrong_typed_members_raises_at_the_call(archive: Path) -> None:
     """stream_members(members=0) must refuse before returning a generator (K3)."""
-    with open_archive(archive) as reader:
-        with pytest.raises(ArchiveyUsageError):
-            reader.stream_members(members=0)
+    with open_archive(archive) as reader, pytest.raises(ArchiveyUsageError):
+        reader.stream_members(members=0)
 
 
 def test_members_bytes_message_does_not_advise_wrapping(

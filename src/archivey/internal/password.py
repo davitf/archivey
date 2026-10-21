@@ -148,9 +148,9 @@ class _PasswordCandidates:
         "_candidates",
         "_known_good",
         "_provider",
-        "_state_lock",
-        "_provider_turn",
         "_provider_owner",
+        "_provider_turn",
+        "_state_lock",
     )
 
     def __init__(

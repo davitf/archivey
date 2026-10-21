@@ -619,11 +619,13 @@ def test_auto_with_neither_names_unrar(
 
 @requires_binary("unar")
 def test_wrong_password_is_an_encryption_error() -> None:
-    with open_archive(
-        _RAR / "encryption__.rar", config=_UNAR, password="wrong"
-    ) as archive:
-        with pytest.raises(EncryptionError):
-            archive.read("secret.txt")
+    with (
+        open_archive(
+            _RAR / "encryption__.rar", config=_UNAR, password="wrong"
+        ) as archive,
+        pytest.raises(EncryptionError),
+    ):
+        archive.read("secret.txt")
 
 
 @requires_binary("unar")
@@ -636,11 +638,13 @@ def test_empty_pipe_for_encrypted_data_is_a_password_error(
     skipped here to let one reach unar.
     """
     monkeypatch.setattr(rar_reader, "_psw_check_usable", lambda _enc: False)
-    with open_archive(
-        _RAR / "encryption__.rar", config=_UNAR, password="wrong"
-    ) as archive:
-        with pytest.raises(EncryptionError, match="missing or wrong"):
-            archive.read("secret.txt")
+    with (
+        open_archive(
+            _RAR / "encryption__.rar", config=_UNAR, password="wrong"
+        ) as archive,
+        pytest.raises(EncryptionError, match="missing or wrong"),
+    ):
+        archive.read("secret.txt")
 
 
 @requires_binary("unar", "rar")
@@ -941,11 +945,13 @@ def test_digest_checked_pipe_ignores_the_exit_status() -> None:
 
 @requires_binary("unar")
 def test_refusal_names_the_way_out() -> None:
-    with open_archive(
-        _RAR / "encryption__rar4.rar", config=_UNAR, password="password"
-    ) as archive:
-        with pytest.raises(UnsupportedFeatureError) as info:
-            archive.read("secret.txt")
+    with (
+        open_archive(
+            _RAR / "encryption__rar4.rar", config=_UNAR, password="password"
+        ) as archive,
+        pytest.raises(UnsupportedFeatureError) as info,
+    ):
+        archive.read("secret.txt")
     assert "rar_decompressor to 'unrar'" in str(info.value)
 
 

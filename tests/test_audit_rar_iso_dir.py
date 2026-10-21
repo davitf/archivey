@@ -787,11 +787,13 @@ def test_unrar_refuses_a_nonsolid_member_declaring_4_gib_and_3_gib_by_default(
     path = _declaring_dictionary(
         tmp_path, "hostile_argv__.rar", 0, _RAR5_DICT_4GIB, unpacked=_3_GIB
     )
-    with open_archive(path, config=_UNRAR_ONLY) as archive:
-        with pytest.raises(
+    with (
+        open_archive(path, config=_UNRAR_ONLY) as archive,
+        pytest.raises(
             ResourceLimitError, match=f"max_decoder_memory={_DEFAULT_LIMIT}"
-        ) as excinfo:
-            archive.read("canary.txt")
+        ) as excinfo,
+    ):
+        archive.read("canary.txt")
     message = str(excinfo.value)
     assert (
         f"is {_3_GIB} bytes, counted from the {4 * 2**30}-byte dictionary its own "
@@ -807,11 +809,13 @@ def test_unrar_refuses_a_solid_member_behind_a_big_declared_prefix_by_default(
     path = _declaring_dictionary(
         tmp_path, "seek_respawn_solid__.rar", 0, _RAR5_DICT_4GIB, unpacked=_3_GIB
     )
-    with open_archive(path, config=_UNRAR_ONLY) as archive:
-        with pytest.raises(
+    with (
+        open_archive(path, config=_UNRAR_ONLY) as archive,
+        pytest.raises(
             ResourceLimitError, match=f"max_decoder_memory={_DEFAULT_LIMIT}"
-        ) as excinfo:
-            archive.read("tail.txt")
+        ) as excinfo,
+    ):
+        archive.read("tail.txt")
     # tail.txt's own header declares a different dictionary: the numbers are
     # prefix.bin's, and the message says so.
     assert (
@@ -1009,11 +1013,11 @@ def test_rar3_dictionary_counts_the_same_way(no_spawn: None) -> None:
     ``file1.txt`` is 13 bytes into the solid stream, ``subdir/file2.txt`` ends at 29.
     """
     path = _fixture("basic_solid__rar4.rar")
-    with open_archive(path, config=_config("unrar", 16)) as archive:
-        with pytest.raises(
-            ResourceLimitError, match="max_decoder_memory=16"
-        ) as excinfo:
-            archive.read("subdir/file2.txt")
+    with (
+        open_archive(path, config=_config("unrar", 16)) as archive,
+        pytest.raises(ResourceLimitError, match="max_decoder_memory=16") as excinfo,
+    ):
+        archive.read("subdir/file2.txt")
     # The count is 29 bytes. Every member declares 1 MiB, the one read included, so
     # the message points at its own header, not at the first member to declare it.
     assert (

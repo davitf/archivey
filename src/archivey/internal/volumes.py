@@ -869,7 +869,7 @@ class ConcatenatedFile(io.RawIOBase, BinaryIO):
                 n -= got
                 if self._pos >= vol_end:
                     self._advance_volume()
-        except BaseException:  # noqa: BLE001 - restore cursor; the original error re-raises
+        except BaseException:
             self._pos = start_pos
             self._recompute_cursor()
             raise

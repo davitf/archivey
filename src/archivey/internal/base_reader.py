@@ -3282,7 +3282,7 @@ class BaseArchiveReader(ArchiveReader):
                     if stream is not None:
                         try:
                             stream.close()
-                        except Exception as close_exc:  # noqa: BLE001 - attach, don't replace
+                        except Exception as close_exc:
                             # Don't replace the in-flight open/register error.
                             if pending is not None:
                                 pending.add_note(
@@ -3872,7 +3872,7 @@ class _TranslatedErrorBoundary:
     chained via ``from``.
     """
 
-    __slots__ = ("_reader", "_member_name", "_stamp_encryption")
+    __slots__ = ("_member_name", "_reader", "_stamp_encryption")
 
     def __init__(
         self,

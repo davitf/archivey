@@ -190,12 +190,11 @@ def _accel_skipped_case(case: str, fmt: str) -> CaseResult:
 
 
 def _op_open_list(path: Path) -> tuple[int, int]:
-    with enable_measurement():
-        with open_archive(path) as reader:
-            base = _as_base(reader)
-            _ = reader.info
-            list(reader.members())
-            return base.bytes_decompressed, base.source_seek_count
+    with enable_measurement(), open_archive(path) as reader:
+        base = _as_base(reader)
+        _ = reader.info
+        list(reader.members())
+        return base.bytes_decompressed, base.source_seek_count
 
 
 def _accel_config(*, enabled: bool) -> ArchiveyConfig:
@@ -216,17 +215,19 @@ def _op_read_all(
     seekable_members: bool = False,
     password: bytes | str | None = None,
 ) -> tuple[int, int, int]:
-    with enable_measurement():
-        with open_archive(
+    with (
+        enable_measurement(),
+        open_archive(
             path, config=config, seekable_members=seekable_members, password=password
-        ) as reader:
-            base = _as_base(reader)
-            unpacked = 0
-            for member, stream in reader.stream_members():
-                if stream is not None:
-                    data = stream.read()
-                    unpacked += len(data)
-            return base.bytes_decompressed, base.source_seek_count, unpacked
+        ) as reader,
+    ):
+        base = _as_base(reader)
+        unpacked = 0
+        for member, stream in reader.stream_members():
+            if stream is not None:
+                data = stream.read()
+                unpacked += len(data)
+        return base.bytes_decompressed, base.source_seek_count, unpacked
 
 
 _extract_n = 0
@@ -237,11 +238,10 @@ def _op_extract(path: Path, dest_root: Path) -> tuple[int, int]:
     _extract_n += 1
     dest = dest_root / f"run-{_extract_n}"
     dest.mkdir(parents=True, exist_ok=True)
-    with enable_measurement():
-        with open_archive(path) as reader:
-            base = _as_base(reader)
-            reader.extract_all(dest)
-            return base.bytes_decompressed, base.source_seek_count
+    with enable_measurement(), open_archive(path) as reader:
+        base = _as_base(reader)
+        reader.extract_all(dest)
+        return base.bytes_decompressed, base.source_seek_count
 
 
 def _op_read_all_unmeasured(
@@ -263,13 +263,12 @@ def _op_read_all_unmeasured(
 def _op_random_read_all(
     path: Path, *, password: bytes | str | None = None
 ) -> tuple[int, int]:
-    with enable_measurement():
-        with open_archive(path, password=password) as reader:
-            base = _as_base(reader)
-            names = [m.name for m in reader.members() if m.is_file]
-            for name in reversed(names):
-                reader.read(name)
-            return base.bytes_decompressed, base.source_seek_count
+    with enable_measurement(), open_archive(path, password=password) as reader:
+        base = _as_base(reader)
+        names = [m.name for m in reader.members() if m.is_file]
+        for name in reversed(names):
+            reader.read(name)
+        return base.bytes_decompressed, base.source_seek_count
 
 
 def _timed(fn: Callable[[], Any]) -> tuple[float, Any]:

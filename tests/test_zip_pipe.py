@@ -824,22 +824,24 @@ def test_a_name_that_differs_between_the_two_headers_is_refused_under_strict(
         for _ in range(2):
             with pytest.raises(DiagnosticRaisedError, match="local header stores"):
                 reader.read(member)
-    with archivey.open_archive(
-        _pipe(bytes(data)), streaming=True, config=config
-    ) as reader:
-        with pytest.raises(DiagnosticRaisedError, match="local header stores"):
-            reader.members_report()
+    with (
+        archivey.open_archive(
+            _pipe(bytes(data)), streaming=True, config=config
+        ) as reader,
+        pytest.raises(DiagnosticRaisedError, match="local header stores"),
+    ):
+        reader.members_report()
     # Extraction stops where each read finds it: a file read at the member, the pass
     # at the directory. The pass never learned which members are links, so it takes
     # back every file it wrote that could be one (all of them here).
     for piped, expected in ((False, ["a.txt"]), (True, [])):
         dest = tmp_path / ("pipe" if piped else "file")
         source = _pipe(bytes(data)) if piped else io.BytesIO(bytes(data))
-        with pytest.raises(DiagnosticRaisedError):
-            with archivey.open_archive(
-                source, streaming=piped, config=config
-            ) as reader:
-                reader.extract_all(dest)
+        with (
+            pytest.raises(DiagnosticRaisedError),
+            archivey.open_archive(source, streaming=piped, config=config) as reader,
+        ):
+            reader.extract_all(dest)
         assert sorted(p.name for p in dest.iterdir()) == expected
 
 
@@ -1241,12 +1243,14 @@ def test_a_member_past_the_bytes_the_pass_holds_is_a_resource_limit() -> None:
     config = archivey.ArchiveyConfig(
         listing_limits=ListingLimits(max_members=4, max_metadata_bytes=200)
     )
-    with archivey.open_archive(
-        _pipe(first + second), streaming=True, format="zip", config=config
-    ) as reader:
-        with pytest.raises(ResourceLimitError, match="past the members"):
-            for _ in reader.stream_members():
-                pass
+    with (
+        archivey.open_archive(
+            _pipe(first + second), streaming=True, format="zip", config=config
+        ) as reader,
+        pytest.raises(ResourceLimitError, match="past the members"),
+    ):
+        for _ in reader.stream_members():
+            pass
 
 
 def _overlapping_held_members(n: int) -> bytes:
@@ -1354,12 +1358,14 @@ def test_held_entries_read_the_kept_bytes_at_most_twice(
     data = build(1000)
     read = _count_held_reads(monkeypatch)
     config = archivey.ArchiveyConfig(listing_limits=limits)
-    with archivey.open_archive(
-        _pipe(data), streaming=True, format="zip", config=config
-    ) as reader:
-        with pytest.raises(CorruptionError, match="overlap"):
-            for _ in reader.stream_members():
-                pass
+    with (
+        archivey.open_archive(
+            _pipe(data), streaming=True, format="zip", config=config
+        ) as reader,
+        pytest.raises(CorruptionError, match="overlap"),
+    ):
+        for _ in reader.stream_members():
+            pass
     assert read[0] <= 2 * len(data)
 
 
@@ -1448,12 +1454,14 @@ def test_a_held_member_is_numbered_after_the_walked_ones() -> None:
     )
     # c.txt's local header claims more data than the stream holds.
     struct.pack_into("<II", second, 18, 1_000_000, 1_000_000)
-    with archivey.open_archive(
-        _pipe(first + bytes(second)), streaming=True, format="zip"
-    ) as reader:
-        with pytest.raises(CorruptionError, match=r"member #1\b"):
-            for _ in reader.stream_members():
-                pass
+    with (
+        archivey.open_archive(
+            _pipe(first + bytes(second)), streaming=True, format="zip"
+        ) as reader,
+        pytest.raises(CorruptionError, match=r"member #1\b"),
+    ):
+        for _ in reader.stream_members():
+            pass
 
 
 def test_a_stub_before_an_archive_with_no_local_header_opens_empty() -> None:

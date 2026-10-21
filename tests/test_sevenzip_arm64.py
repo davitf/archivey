@@ -208,10 +208,10 @@ def test_arm64_after_lzma2_is_its_own_stage() -> None:
     lzma2 = SevenZipCoder(_LZMA2, 1, 1, b"\x10")
     arm64 = SevenZipCoder(_ARM64, 1, 1, (0x2000).to_bytes(4, "little"))
     chain, stage = plan_folder(_folder([lzma2, arm64], 64)).stages
-    assert isinstance(chain, sevenzip_pipeline._LzmaChainStage)  # noqa: SLF001
+    assert isinstance(chain, sevenzip_pipeline._LzmaChainStage)
     assert [f["id"] for f in chain.filters] == [0x21]
     assert chain.end_check_size == 64
-    assert isinstance(stage, sevenzip_pipeline._FilterStage)  # noqa: SLF001
+    assert isinstance(stage, sevenzip_pipeline._FilterStage)
     assert stage.lzma_filter == {"id": FILTER_ARM64, "start_offset": 0x2000}
 
 

@@ -358,13 +358,15 @@ def test_stored_confirm_reads_through_the_validated_local_header(
         return original(*args, **kwargs)
 
     monkeypatch.setattr(zip_reader, "parallel_plaintext_crc32", counting)
-    with open_archive(
-        io.BytesIO(blob),
-        password=[b"also-wrong", RIGHT],
-        config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT),
-    ) as ar:
-        with pytest.raises(DiagnosticRaisedError, match="local header stores the name"):
-            ar.open(NAME)
+    with (
+        open_archive(
+            io.BytesIO(blob),
+            password=[b"also-wrong", RIGHT],
+            config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT),
+        ) as ar,
+        pytest.raises(DiagnosticRaisedError, match="local header stores the name"),
+    ):
+        ar.open(NAME)
     assert passes == []
 
 
@@ -874,16 +876,16 @@ def test_zipcrypto_member_seeks(compression: int, passwords: PasswordArg) -> Non
     payload = bytes(range(256)) * 300
     blob = build_zipcrypto_zip(RIGHT, NAME.encode(), payload, compression=compression)
 
-    with open_archive(
-        io.BytesIO(blob), password=passwords, seekable_members=True
-    ) as ar:
-        with ar.open(NAME) as stream:
-            stream.seek(40_000)
-            assert stream.read(100) == payload[40_000:40_100]
-            stream.seek(123)
-            assert stream.read(10) == payload[123:133]
-            stream.seek(-5, io.SEEK_END)
-            assert stream.read() == payload[-5:]
+    with (
+        open_archive(io.BytesIO(blob), password=passwords, seekable_members=True) as ar,
+        ar.open(NAME) as stream,
+    ):
+        stream.seek(40_000)
+        assert stream.read(100) == payload[40_000:40_100]
+        stream.seek(123)
+        assert stream.read(10) == payload[123:133]
+        stream.seek(-5, io.SEEK_END)
+        assert stream.read() == payload[-5:]
 
 
 def _seek_outcomes(stream: BinaryIO) -> list[object]:
@@ -915,11 +917,13 @@ def test_zipcrypto_stored_out_of_range_seeks_match_an_unencrypted_member() -> No
         zf.writestr(NAME, payload)
     results = []
     for blob, password in ((encrypted, RIGHT), (buf.getvalue(), None)):
-        with open_archive(
-            io.BytesIO(blob), password=password, seekable_members=True
-        ) as ar:
-            with ar.open(NAME) as stream:
-                results.append(_seek_outcomes(stream))
+        with (
+            open_archive(
+                io.BytesIO(blob), password=password, seekable_members=True
+            ) as ar,
+            ar.open(NAME) as stream,
+        ):
+            results.append(_seek_outcomes(stream))
     assert results[0] == results[1] == [0, 0, b"he", 0, 0, b"he", 1000, 1000, b""]
 
 

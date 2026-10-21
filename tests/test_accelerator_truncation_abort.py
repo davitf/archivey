@@ -434,7 +434,7 @@ def test_the_child_stream_reads_and_seeks_like_stdlib(
 def _child_stream(stream: object) -> RapidgzipChildStream:
     inner = stream
     while not isinstance(inner, RapidgzipChildStream):
-        inner = getattr(inner, "_inner")
+        inner = inner._inner
     return inner
 
 

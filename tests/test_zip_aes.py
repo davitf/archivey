@@ -257,19 +257,19 @@ def test_aes_hmac_mismatch_keeps_raising_after_a_seek_back(method: int) -> None:
         method=method,
         tamper_hmac=True,
     )
-    with open_archive(
-        io.BytesIO(data), password=_PASSWORD, seekable_members=True
-    ) as ar:
-        with ar.open(ar.members()[0]) as stream:
-            with raises_corruption_not_truncation(match="HMAC"):
-                stream.read()
-            stream.seek(0)
-            with raises_corruption_not_truncation(match="HMAC"):
-                stream.read()
-            # Asking for exactly the member returns in full, and still raises.
-            stream.seek(0)
-            with raises_corruption_not_truncation(match="HMAC"):
-                stream.read(len(_PAYLOAD))
+    with (
+        open_archive(io.BytesIO(data), password=_PASSWORD, seekable_members=True) as ar,
+        ar.open(ar.members()[0]) as stream,
+    ):
+        with raises_corruption_not_truncation(match="HMAC"):
+            stream.read()
+        stream.seek(0)
+        with raises_corruption_not_truncation(match="HMAC"):
+            stream.read()
+        # Asking for exactly the member returns in full, and still raises.
+        stream.seek(0)
+        with raises_corruption_not_truncation(match="HMAC"):
+            stream.read(len(_PAYLOAD))
 
 
 @requires("cryptography")
@@ -676,7 +676,7 @@ def _collide_pw_verify(monkeypatch: pytest.MonkeyPatch) -> None:
     A real collision takes ~65 000 PBKDF2 runs to find, so the test forges one: the
     reader's cheap check then admits a wrong password, as it does for 1 in 65 536.
     """
-    import archivey.internal.backends.zip_aes as zip_aes
+    from archivey.internal.backends import zip_aes
 
     original = zip_aes.derive_winzip_aes_keys
 
@@ -766,7 +766,7 @@ def test_aes_decrypt_stream_seeks_at_every_block_phase() -> None:
     # bytes; every phase of the first blocks, and backward after forward.
     payload = os.urandom(100)
     stream = _ctr_stream(payload)
-    for target in [*range(0, 50), 99, 100, 17, 0, 64, 3]:
+    for target in [*range(50), 99, 100, 17, 0, 64, 3]:
         assert stream.seek(target) == target
         assert stream.tell() == target
         assert stream.read(7) == payload[target : target + 7]
@@ -899,17 +899,17 @@ def test_aes_member_seeks(method: int) -> None:
         strength=3,
         method=method,
     )
-    with open_archive(
-        io.BytesIO(data), password=_PASSWORD, seekable_members=True
-    ) as ar:
-        with ar.open(ar.members()[0]) as stream:
-            assert stream.seekable()
-            stream.seek(4099)
-            assert stream.read(100) == payload[4099:4199]
-            stream.seek(17)
-            assert stream.read() == payload[17:]
-            stream.seek(0)
-            assert stream.read() == payload
+    with (
+        open_archive(io.BytesIO(data), password=_PASSWORD, seekable_members=True) as ar,
+        ar.open(ar.members()[0]) as stream,
+    ):
+        assert stream.seekable()
+        stream.seek(4099)
+        assert stream.read(100) == payload[4099:4199]
+        stream.seek(17)
+        assert stream.read() == payload[17:]
+        stream.seek(0)
+        assert stream.read() == payload
 
 
 @requires("cryptography")
@@ -926,18 +926,20 @@ def test_aes_stored_out_of_range_seeks_match_an_unencrypted_member() -> None:
         zf.writestr("x.txt", payload)
     results = []
     for blob in (encrypted, buf.getvalue()):
-        with open_archive(
-            io.BytesIO(blob), password=_PASSWORD, seekable_members=True
-        ) as ar:
-            with ar.open(ar.members()[0]) as stream:
-                out: list[object] = []
-                for offset, whence in (
-                    (-10, io.SEEK_END),
-                    (-100, io.SEEK_CUR),
-                    (1000, io.SEEK_SET),
-                ):
-                    out += [stream.seek(offset, whence), stream.tell(), stream.read(2)]
-                results.append(out)
+        with (
+            open_archive(
+                io.BytesIO(blob), password=_PASSWORD, seekable_members=True
+            ) as ar,
+            ar.open(ar.members()[0]) as stream,
+        ):
+            out: list[object] = []
+            for offset, whence in (
+                (-10, io.SEEK_END),
+                (-100, io.SEEK_CUR),
+                (1000, io.SEEK_SET),
+            ):
+                out += [stream.seek(offset, whence), stream.tell(), stream.read(2)]
+            results.append(out)
     assert results[0] == results[1] == [0, 0, b"he", 0, 0, b"he", 1000, 1000, b""]
 
 

@@ -421,7 +421,7 @@ def test_unencrypted_codec_indexerror_is_not_truncated(
     the codec opener (``open_codec_raw`` for an unencrypted member) still fails the
     Atheris zip target rather than being swallowed as TruncatedError.
     """
-    import archivey.internal.backends.zip_reader as zip_reader
+    from archivey.internal.backends import zip_reader
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
@@ -485,7 +485,7 @@ def test_unencrypted_member_read_indexerror_is_not_truncated(
     opaque-accelerator catch first. A short ZipCrypto header is checked by length in
     the decrypt stage, so no IndexError mapping exists anywhere.
     """
-    import archivey.internal.backends.zip_reader as zip_reader
+    from archivey.internal.backends import zip_reader
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
@@ -508,7 +508,7 @@ def test_member_read_unsupported_operation_other_than_seek_is_not_corruption(
     """``io.UnsupportedOperation`` is also a ``ValueError``. One that is not about
     seeking says nothing about the archive, so it propagates as itself instead of
     reaching the ValueError arm, which reports corruption."""
-    import archivey.internal.backends.zip_reader as zip_reader
+    from archivey.internal.backends import zip_reader
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
@@ -1380,9 +1380,8 @@ def test_plain_prefixed_and_empty_zip_still_open(tmp_path: Path) -> None:
 
 
 def test_open_returns_stream(simple_zip: Path) -> None:
-    with open_archive(simple_zip) as ar:
-        with ar.open("hello.txt") as f:
-            assert f.read() == b"hello world"
+    with open_archive(simple_zip) as ar, ar.open("hello.txt") as f:
+        assert f.read() == b"hello world"
 
 
 def test_stream_members(simple_zip: Path) -> None:
@@ -2561,11 +2560,11 @@ def test_encoding_inference_is_escalatable() -> None:
 
     policy = DiagnosticPolicy(raise_on={DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED})
     cfg = ArchiveyConfig(diagnostic_policy=policy)
-    with pytest.raises(DiagnosticRaisedError):
-        with open_archive(
-            _EXTERNAL_DIR / "encoding_infozip_jules.zip", config=cfg
-        ) as ar:
-            ar.members()
+    with (
+        pytest.raises(DiagnosticRaisedError),
+        open_archive(_EXTERNAL_DIR / "encoding_infozip_jules.zip", config=cfg) as ar,
+    ):
+        ar.members()
 
 
 # ---------------------------------------------------------------------------
@@ -3154,7 +3153,7 @@ def test_member_decoder_config_matches_the_codec_openers_own(
     reader's base member config itself, not a copy: the openers do no config work
     for a stored stream source.
     """
-    import archivey.internal.backends.zip_reader as zip_reader
+    from archivey.internal.backends import zip_reader
     from archivey.internal.streams.codecs import open_codec_raw
     from archivey.internal.streams.codecs.registry import _decoder_config
     from archivey.internal.streams.streamtools import fix_stream_start_position

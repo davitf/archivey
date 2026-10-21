@@ -176,10 +176,10 @@ def _cut_offsets(size: int, dense_limit: int) -> list[int]:
     the first/last dense_limit//4 offsets.
     """
     if size <= dense_limit:
-        return list(range(0, size + 1))
+        return list(range(size + 1))
     edge = max(8, dense_limit // 4)
     stride = max(1, size // dense_limit)
-    offsets = set(range(0, edge + 1))
+    offsets = set(range(edge + 1))
     offsets.update(range(max(0, size - edge), size + 1))
     offsets.update(range(0, size + 1, stride))
     # Around gzip header boundary (10) and trailer (last 8 bytes) when relevant.

@@ -211,9 +211,8 @@ def test_the_stored_scan_stops_at_a_planted_descriptor_for_a_prefix() -> None:
         + b"PK\x01\x02"
     )
     out = _Unseekable()
-    with zipfile.ZipFile(out, "w") as zf:
-        with zf.open("x", "w") as member:
-            member.write(prefix + planted + b"rest")
+    with zipfile.ZipFile(out, "w") as zf, zf.open("x", "w") as member:
+        member.write(prefix + planted + b"rest")
     walk = LocalHeaderWalk(_Unseekable(out.getvalue()))
     entry = walk.next_entry()
     assert entry is not None
@@ -894,9 +893,8 @@ def test_planted_descriptor_signatures_cost_one_pass(
     """
     payload = plant(1_200_000)
     out = _Unseekable()
-    with zipfile.ZipFile(out, "w") as zf:
-        with zf.open("x", "w") as member:
-            member.write(payload)
+    with zipfile.ZipFile(out, "w") as zf, zf.open("x", "w") as member:
+        member.write(payload)
     fed = 0
 
     class _CountingZlib:

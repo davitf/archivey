@@ -1007,12 +1007,14 @@ def test_lzip_seek_past_a_version_0_member_is_unsupported(case: str) -> None:
     from archivey.diagnostics import DiagnosticCode
 
     collector, seen = _collect_diagnostics()
-    with LzipDecompressorStream(
-        io.BytesIO(_V0_CASES[case]()), collector=collector
-    ) as stream:
-        with pytest.raises(UnsupportedFeatureError, match="lzip version 0 "):
-            stream.seek(0, io.SEEK_END)
-            stream.read()
+    with (
+        LzipDecompressorStream(
+            io.BytesIO(_V0_CASES[case]()), collector=collector
+        ) as stream,
+        pytest.raises(UnsupportedFeatureError, match="lzip version 0 "),
+    ):
+        stream.seek(0, io.SEEK_END)
+        stream.read()
     degraded = [d for d in seen if d.code is DiagnosticCode.SEEK_INDEX_DEGRADED]
     assert bool(degraded) == (case in _V0_UNREACHABLE)
 

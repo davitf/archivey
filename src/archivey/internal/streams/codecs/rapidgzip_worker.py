@@ -323,7 +323,7 @@ def _windows_memory_query() -> Callable[[], int | None] | None:
         from ctypes import wintypes
 
         class Counters(ctypes.Structure):
-            _fields_ = [  # noqa: RUF012 - the ctypes layout of PROCESS_MEMORY_COUNTERS
+            _fields_ = [
                 ("cb", wintypes.DWORD),
                 ("PageFaultCount", wintypes.DWORD),
                 ("PeakWorkingSetSize", ctypes.c_size_t),

@@ -219,12 +219,14 @@ def test_truncated_member_returns_its_prefix_then_raises(
     payload, packed, cut = _truncated_text_member()
     params = _params(7, len(packed), len(payload))
     got = bytearray()
-    with open_codec_stream(
-        Codec.PPMD, io.BytesIO(cut), params=params, config=ppmd_config
-    ) as stream:
-        with pytest.raises(TruncatedError):
-            while chunk := stream.read(4096):
-                got += chunk
+    with (
+        open_codec_stream(
+            Codec.PPMD, io.BytesIO(cut), params=params, config=ppmd_config
+        ) as stream,
+        pytest.raises(TruncatedError),
+    ):
+        while chunk := stream.read(4096):
+            got += chunk
     assert len(got) > 65536
     assert bytes(got) == payload[: len(got)]
 
@@ -370,11 +372,13 @@ def test_a_child_is_reused_after_a_clean_member_and_not_after_a_cut_one(
     assert POOL.idle_count() == 1
     payload, full, cut = _truncated_text_member()
     POOL.close_idle()
-    with open_codec_stream(
-        Codec.PPMD, io.BytesIO(cut), params=_params(7, len(full), len(payload))
-    ) as stream:
-        with pytest.raises(TruncatedError):
-            stream.read()
+    with (
+        open_codec_stream(
+            Codec.PPMD, io.BytesIO(cut), params=_params(7, len(full), len(payload))
+        ) as stream,
+        pytest.raises(TruncatedError),
+    ):
+        stream.read()
     assert POOL.idle_count() == 0
 
 

@@ -613,13 +613,13 @@ def test_start_offset_on_a_path_equals_an_offset_view_on_a_stream(
             m.name: by_offset.read(m) for m in by_offset.members() if m.is_file
         }
 
-    with path.open("rb") as handle:
-        with _open_with(
+    with (
+        path.open("rb") as handle,
+        _open_with(
             SlicingStream(handle, start=len(_STUB)), password=password
-        ) as by_view:
-            by_view_read = {
-                m.name: by_view.read(m) for m in by_view.members() if m.is_file
-            }
+        ) as by_view,
+    ):
+        by_view_read = {m.name: by_view.read(m) for m in by_view.members() if m.is_file}
 
     assert by_offset_read == by_view_read == _FILES
 

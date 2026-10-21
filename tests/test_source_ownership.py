@@ -121,9 +121,8 @@ def test_open_stream_never_closes_a_caller_stream(
 
     for shape, stream in _caller_streams(path):
         if measure:
-            with enable_measurement():
-                with open_stream(stream) as decompressed:
-                    decompressed.read()
+            with enable_measurement(), open_stream(stream) as decompressed:
+                decompressed.read()
         else:
             with open_stream(stream) as decompressed:
                 decompressed.read()
@@ -277,7 +276,6 @@ def test_a_failed_open_does_not_close_the_caller_s_stream(
     stream = _CallerBytesIO(truncated)
     # Around the open alone: a failure three members into a read would exercise a
     # different release path, and this test names the one in ``__init__``.
-    with enable_measurement():
-        with pytest.raises(ArchiveyError):
-            open_archive(stream)
+    with enable_measurement(), pytest.raises(ArchiveyError):
+        open_archive(stream)
     _assert_still_the_caller_s(stream, truncated[:16], key)

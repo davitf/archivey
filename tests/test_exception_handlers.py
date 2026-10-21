@@ -93,11 +93,13 @@ def test_overrun_probe_reads_a_closed_source_as_the_end(n: int) -> None:
     ) as stream:
         assert stream.read(n) == b"x" * 10
     bad = (zlib.crc32(b"x" * 10) ^ 1).to_bytes(4, "big")
-    with VerifyingStream(
-        _ExactThenFails(b"x" * 10, closed), {"crc32": bad}, expected_size=10
-    ) as stream:
-        with pytest.raises(CorruptionError):
-            stream.read(n)
+    with (
+        VerifyingStream(
+            _ExactThenFails(b"x" * 10, closed), {"crc32": bad}, expected_size=10
+        ) as stream,
+        pytest.raises(CorruptionError),
+    ):
+        stream.read(n)
 
 
 @pytest.mark.parametrize("n", [-1, 10])

@@ -1604,7 +1604,7 @@ def _record_detect(
     its first part.
     """
     calls: list[tuple[str, ArchiveyConfig | None]] = []
-    real = getattr(module, "detect_format")
+    real = module.detect_format
 
     def recording(source: object, *args: object, **kwargs: object) -> FormatInfo:
         config = kwargs.get("config")

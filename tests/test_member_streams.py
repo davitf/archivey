@@ -55,7 +55,7 @@ def test_refused_open_does_not_call_open_member(tmp_path: Path) -> None:
         opens = 0
         original = reader._open_member
 
-        def counting_open_member(member):  # noqa: ANN001
+        def counting_open_member(member):
             nonlocal opens
             opens += 1
             return original(member)
@@ -134,13 +134,12 @@ def test_concurrent_flag_allows_overlapping_opens(tmp_path: Path) -> None:
 
 def test_default_streams_are_not_seekable(tmp_path: Path) -> None:
     root = _two_file_dir(tmp_path)
-    with open_archive(root) as reader:
-        with reader.open("a.txt") as s:
-            assert s.seekable() is False
-            with pytest.raises(io.UnsupportedOperation):
-                s.seek(0)
-            assert s.tell() == 0
-            assert s.read() == b"aaa"
+    with open_archive(root) as reader, reader.open("a.txt") as s:
+        assert s.seekable() is False
+        with pytest.raises(io.UnsupportedOperation):
+            s.seek(0)
+        assert s.tell() == 0
+        assert s.read() == b"aaa"
 
 
 def test_seekable_flag_restores_positioning(tmp_path: Path) -> None:

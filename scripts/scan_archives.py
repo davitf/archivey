@@ -159,7 +159,7 @@ def _install_probes() -> list[str]:
             if not name.startswith("archivey"):
                 continue
             if getattr(module, "check_decoder_memory", None) is original_check:
-                setattr(module, "check_decoder_memory", check)
+                module.check_decoder_memory = check
 
         from archivey.internal import detection
 
@@ -173,7 +173,7 @@ def _install_probes() -> list[str]:
                 PROBE.detecting -= 1
 
         # Called through its module's global by both detection entry points.
-        setattr(detection, "_detect_format_body", detect)
+        detection._detect_format_body = detect
 
         budget_cls = internal_config.KeyDerivationBudget
         original_spend = budget_cls.spend
@@ -182,7 +182,7 @@ def _install_probes() -> list[str]:
             original_spend(self, rounds, what=what)
             PROBE.kdf_rounds += rounds
 
-        setattr(budget_cls, "spend", spend)
+        budget_cls.spend = spend
     except Exception:  # noqa: BLE001 - a probe that cannot install is only reported
         failed.append("decoder_memory/kdf_rounds")
     try:
@@ -196,7 +196,7 @@ def _install_probes() -> list[str]:
             finally:
                 PROBE.spool_bytes = max(PROBE.spool_bytes, self._written)
 
-        setattr(SpoolBudget, "copy", copy)
+        SpoolBudget.copy = copy
     except Exception:  # noqa: BLE001
         failed.append("spool_bytes")
     return failed
@@ -256,11 +256,31 @@ _ROUTINE_DIAGNOSTICS = frozenset(
 _SLOW_SECONDS = 60.0
 _LOGGED_MEMBER_ERRORS = 10
 
-COLUMNS = (
-    "path file_size format detected version solid encrypted open extract flags seconds "
-    "members entries_written bytes_written archive_ratio max_member_ratio "
-    "metadata_bytes decoder_memory kdf_rounds spool_bytes codecs diagnostics error"
-).split()
+COLUMNS = [
+    "path",
+    "file_size",
+    "format",
+    "detected",
+    "version",
+    "solid",
+    "encrypted",
+    "open",
+    "extract",
+    "flags",
+    "seconds",
+    "members",
+    "entries_written",
+    "bytes_written",
+    "archive_ratio",
+    "max_member_ratio",
+    "metadata_bytes",
+    "decoder_memory",
+    "kdf_rounds",
+    "spool_bytes",
+    "codecs",
+    "diagnostics",
+    "error",
+]
 _NUMERIC_COLUMNS = frozenset({"seconds", *(column for column, _, _ in _LIMITS)})
 
 

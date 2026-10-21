@@ -190,12 +190,14 @@ def test_a_short_checksum_record_still_refuses_the_archive_under_strict(
 ) -> None:
     """Leniency is the default, not the only option: the code is in
     ``ARCHIVE_INTEGRITY_CODES``, so a caller who wants the old refusal asks for it."""
-    with pytest.raises(DiagnosticRaisedError) as raised:
-        with open_archive(
+    with (
+        pytest.raises(DiagnosticRaisedError) as raised,
+        open_archive(
             short_hash_archive,
             config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT),
-        ) as archive:
-            archive.members()
+        ) as archive,
+    ):
+        archive.members()
     assert raised.value.diagnostic.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
 
 

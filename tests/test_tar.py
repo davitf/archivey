@@ -489,15 +489,17 @@ def test_streaming_tar_disables_random_access(plain_tar: Path) -> None:
 
 def test_streaming_tar_does_not_call_getmembers() -> None:
     data = _build_tar()
-    with open_archive(
-        NonSeekableBytesIO(data), format=ArchiveFormat.TAR, streaming=True
-    ) as ar:
-        with mock.patch.object(
+    with (
+        open_archive(
+            NonSeekableBytesIO(data), format=ArchiveFormat.TAR, streaming=True
+        ) as ar,
+        mock.patch.object(
             tarfile.TarFile,
             "getmembers",
             side_effect=AssertionError("getmembers called"),
-        ):
-            list(ar.stream_members())
+        ),
+    ):
+        list(ar.stream_members())
 
 
 def test_non_seekable_tar_gz_streaming(tmp_path: Path) -> None:
@@ -594,13 +596,15 @@ def test_missing_eof_blocks_warns_by_default(
 
 def test_missing_eof_blocks_raise_disposition_raises() -> None:
     data = _tar_missing_eof_block()
-    with pytest.raises(DiagnosticRaisedError):
-        with open_archive(
+    with (
+        pytest.raises(DiagnosticRaisedError),
+        open_archive(
             io.BytesIO(data),
             format=ArchiveFormat.TAR,
             config=_RAISE_ON_MISSING_EOF,
-        ) as ar:
-            ar.members()
+        ) as ar,
+    ):
+        ar.members()
 
 
 def test_members_report_recovers_prefix_on_corrupt_header() -> None:
@@ -668,35 +672,41 @@ def test_members_report_raises_a_raised_eof_diagnostic() -> None:
     # so members_report() raises it rather than folding it into report.error. This was
     # TruncatedError-as-report under the removed ``strict_archive_eof`` flag.
     data = _tar_missing_eof_block()
-    with open_archive(
-        io.BytesIO(data), format=ArchiveFormat.TAR, config=_RAISE_ON_MISSING_EOF
-    ) as ar:
-        with pytest.raises(DiagnosticRaisedError):
-            ar.members_report()
+    with (
+        open_archive(
+            io.BytesIO(data), format=ArchiveFormat.TAR, config=_RAISE_ON_MISSING_EOF
+        ) as ar,
+        pytest.raises(DiagnosticRaisedError),
+    ):
+        ar.members_report()
 
 
 def test_missing_eof_blocks_streaming_warns(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     data = _tar_missing_eof_block()
-    with caplog.at_level(logging.WARNING, logger="archivey.backends"):
-        with open_archive(
+    with (
+        caplog.at_level(logging.WARNING, logger="archivey.backends"),
+        open_archive(
             NonSeekableBytesIO(data), format=ArchiveFormat.TAR, streaming=True
-        ) as ar:
-            list(ar.stream_members())
+        ) as ar,
+    ):
+        list(ar.stream_members())
     assert len(_eof_warnings(caplog)) == 1
 
 
 def test_missing_eof_blocks_streaming_raise_disposition_raises() -> None:
     data = _tar_missing_eof_block()
-    with pytest.raises(DiagnosticRaisedError):
-        with open_archive(
+    with (
+        pytest.raises(DiagnosticRaisedError),
+        open_archive(
             NonSeekableBytesIO(data),
             format=ArchiveFormat.TAR,
             streaming=True,
             config=_RAISE_ON_MISSING_EOF,
-        ) as ar:
-            list(ar.stream_members())
+        ) as ar,
+    ):
+        list(ar.stream_members())
 
 
 def test_minimal_eof_trailer_silent(caplog: pytest.LogCaptureFixture) -> None:
@@ -715,11 +725,13 @@ def test_minimal_eof_trailer_streaming_silent(
 ) -> None:
     # Same minimal-but-valid trailer over the forward-only streaming path.
     data = _tar_minimal_eof()
-    with caplog.at_level(logging.WARNING, logger="archivey.backends"):
-        with open_archive(
+    with (
+        caplog.at_level(logging.WARNING, logger="archivey.backends"),
+        open_archive(
             NonSeekableBytesIO(data), format=ArchiveFormat.TAR, streaming=True
-        ) as ar:
-            list(ar.stream_members())
+        ) as ar,
+    ):
+        list(ar.stream_members())
     assert _eof_warnings(caplog) == []
 
 
@@ -766,11 +778,13 @@ def test_corrupt_mid_header_raises_corruption_by_default() -> None:
 def test_corrupt_mid_header_streaming_raises_corruption() -> None:
     # The same rejected mid-archive header over the forward-only path.
     data = _tar_corrupt_mid_header()
-    with raises_corruption_not_truncation():
-        with open_archive(
+    with (
+        raises_corruption_not_truncation(),
+        open_archive(
             NonSeekableBytesIO(data), format=ArchiveFormat.TAR, streaming=True
-        ) as ar:
-            list(ar.stream_members())
+        ) as ar,
+    ):
+        list(ar.stream_members())
 
 
 def test_corrupt_final_header_streaming_raises_corruption() -> None:
@@ -778,11 +792,13 @@ def test_corrupt_final_header_streaming_raises_corruption() -> None:
     # absent, so only the error tarfile's last header parse raised tells this from a
     # missing trailer. Streaming used to warn here; it now agrees with random access.
     data = _tar_corrupt_final_header()
-    with raises_corruption_not_truncation():
-        with open_archive(
+    with (
+        raises_corruption_not_truncation(),
+        open_archive(
             NonSeekableBytesIO(data), format=ArchiveFormat.TAR, streaming=True
-        ) as ar:
-            list(ar.stream_members())
+        ) as ar,
+    ):
+        list(ar.stream_members())
 
 
 def _tar_rejected_header_then_zero_block(tail: list[str]) -> bytes:
@@ -1153,22 +1169,23 @@ def test_corrupt_final_header_gzip_raises_corruption(tmp_path: Path) -> None:
 
     path = tmp_path / "bad.tar.gz"
     path.write_bytes(gzip.compress(_tar_corrupt_final_header()))
-    with raises_corruption_not_truncation():
-        with open_archive(path) as ar:
-            ar.members()
+    with raises_corruption_not_truncation(), open_archive(path) as ar:
+        ar.members()
 
 
 def test_corrupt_mid_header_raise_disposition_still_corruption() -> None:
     # A RAISE disposition does not change the type for a rejected header: the nonzero
     # case escalates as CorruptionError, which outranks DiagnosticRaisedError.
     data = _tar_corrupt_mid_header()
-    with raises_corruption_not_truncation():
-        with open_archive(
+    with (
+        raises_corruption_not_truncation(),
+        open_archive(
             io.BytesIO(data),
             format=ArchiveFormat.TAR,
             config=_RAISE_ON_MISSING_EOF,
-        ) as ar:
-            ar.members()
+        ) as ar,
+    ):
+        ar.members()
 
 
 def test_corrupt_final_header_ignore_disposition_still_raises() -> None:
@@ -1180,13 +1197,15 @@ def test_corrupt_final_header_ignore_disposition_still_raises() -> None:
 
     data = _tar_corrupt_final_header()
     policy = DiagnosticPolicy(ignore={DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING})
-    with raises_corruption_not_truncation():
-        with open_archive(
+    with (
+        raises_corruption_not_truncation(),
+        open_archive(
             io.BytesIO(data),
             format=ArchiveFormat.TAR,
             config=ArchiveyConfig(diagnostic_policy=policy),
-        ) as ar:
-            ar.members()
+        ) as ar,
+    ):
+        ar.members()
 
 
 def test_corrupt_mid_header_streaming_extract_writes_then_raises(
@@ -1195,11 +1214,13 @@ def test_corrupt_mid_header_streaming_extract_writes_then_raises(
     # Streaming extract writes salvageable members, then raises at end-of-pass.
     data = _tar_corrupt_mid_header()
     dest = tmp_path / "out"
-    with raises_corruption_not_truncation():
-        with open_archive(
+    with (
+        raises_corruption_not_truncation(),
+        open_archive(
             NonSeekableBytesIO(data), format=ArchiveFormat.TAR, streaming=True
-        ) as ar:
-            ar.extract_all(dest)
+        ) as ar,
+    ):
+        ar.extract_all(dest)
     assert (dest / "a.txt").exists()
     assert (dest / "a.txt").read_bytes() == b"aaa"
     assert not (dest / "b.txt").exists()
@@ -1329,11 +1350,13 @@ def test_damaged_second_eof_block_refused_under_strict(streaming: bool) -> None:
     data = _tar_damaged_second_eof_block(_DAMAGED_SECOND_BLOCKS["stray_byte"])
     source = NonSeekableBytesIO(data) if streaming else io.BytesIO(data)
     strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
-    with open_archive(
-        source, format=ArchiveFormat.TAR, streaming=streaming, config=strict
-    ) as ar:
-        with pytest.raises(DiagnosticRaisedError):
-            list(ar.stream_members())
+    with (
+        open_archive(
+            source, format=ArchiveFormat.TAR, streaming=streaming, config=strict
+        ) as ar,
+        pytest.raises(DiagnosticRaisedError),
+    ):
+        list(ar.stream_members())
 
 
 @pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
@@ -1639,14 +1662,16 @@ def test_old_style_directory_data_is_refused_by_strict_policy(
     typeflag: bytes, streaming: bool
 ) -> None:
     data = _tar_entry_with_data(typeflag)
-    with pytest.raises(DiagnosticRaisedError) as excinfo:
-        with open_archive(
+    with (
+        pytest.raises(DiagnosticRaisedError) as excinfo,
+        open_archive(
             NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
             format=ArchiveFormat.TAR,
             streaming=streaming,
             config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT),
-        ) as ar:
-            list(ar.stream_members())
+        ) as ar,
+    ):
+        list(ar.stream_members())
     assert excinfo.value.diagnostic.code is DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
 
 
@@ -1910,14 +1935,16 @@ def test_dirtype_zero_span_is_reported(payload: bytes, streaming: bool) -> None:
 @pytest.mark.parametrize("streaming", [False, True])
 def test_dirtype_zero_span_is_refused_by_strict_policy(streaming: bool) -> None:
     data = _tar_entry_with_data(tarfile.DIRTYPE, data=b"\0" * 1024)
-    with pytest.raises(DiagnosticRaisedError) as excinfo:
-        with open_archive(
+    with (
+        pytest.raises(DiagnosticRaisedError) as excinfo,
+        open_archive(
             NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
             format=ArchiveFormat.TAR,
             streaming=streaming,
             config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT),
-        ) as ar:
-            list(ar.stream_members())
+        ) as ar,
+    ):
+        list(ar.stream_members())
     assert excinfo.value.diagnostic.code is DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
 
 
@@ -2347,14 +2374,16 @@ def test_link_data_is_refused_by_strict_policy(
     typeflag: bytes, streaming: bool
 ) -> None:
     data = _tar_link_with_data(typeflag, b"\0" * 1024)
-    with pytest.raises(DiagnosticRaisedError) as excinfo:
-        with open_archive(
+    with (
+        pytest.raises(DiagnosticRaisedError) as excinfo,
+        open_archive(
             NonSeekableBytesIO(data) if streaming else io.BytesIO(data),
             format=ArchiveFormat.TAR,
             streaming=streaming,
             config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT),
-        ) as ar:
-            list(ar.stream_members())
+        ) as ar,
+    ):
+        list(ar.stream_members())
     assert excinfo.value.diagnostic.code is DiagnosticCode.MEMBER_LINK_DATA_IGNORED
 
 
@@ -2532,11 +2561,10 @@ def test_corrupt_compressed_tar_surfaces_codec_corruption(tmp_path: Path) -> Non
     raw = bytearray(_build_tar("w:gz"))
     raw[len(raw) // 2] ^= 0xFF  # flip a byte inside the deflate stream
     path.write_bytes(bytes(raw))
-    with raises_corruption_not_truncation():
-        with open_archive(path) as ar:
-            for _member, stream in ar.stream_members():
-                if stream is not None:
-                    stream.read()
+    with raises_corruption_not_truncation(), open_archive(path) as ar:
+        for _member, stream in ar.stream_members():
+            if stream is not None:
+                stream.read()
 
 
 # ---------------------------------------------------------------------------
@@ -2571,7 +2599,6 @@ def test_password_provider_ok_on_unencrypted_format() -> None:
 
     def provider(_request: object) -> None:
         called["n"] += 1
-        return
 
     with open_archive(
         io.BytesIO(_build_tar()), format=ArchiveFormat.TAR, password=provider

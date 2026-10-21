@@ -2055,9 +2055,8 @@ def test_extracting_under_a_symlink_loop_raises_eloop(
         src = tmp_path / "a.tar"
         src.write_bytes(_tar_bytes([("file", "f.txt", b"x")]))
     os.symlink("loop", tmp_path / "loop")
-    with open_archive(src) as reader:
-        with pytest.raises(OSError) as info:
-            reader.extract_all(tmp_path / "loop" / "out", dry_run=dry_run)
+    with open_archive(src) as reader, pytest.raises(OSError) as info:
+        reader.extract_all(tmp_path / "loop" / "out", dry_run=dry_run)
     assert info.value.errno == errno.ELOOP
     assert sorted(p.name for p in tmp_path.iterdir()) == sorted([src.name, "loop"])
 

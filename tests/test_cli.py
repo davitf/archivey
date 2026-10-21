@@ -1375,7 +1375,7 @@ def test_progress_callback_requires_tty(monkeypatch: pytest.MonkeyPatch) -> None
     from archivey.cli import progress as progress_mod
 
     class _NonTTY(io.StringIO):
-        def isatty(self) -> bool:  # noqa: A003 - match TextIO API
+        def isatty(self) -> bool:
             return False
 
     monkeypatch.setattr(progress_mod.sys, "__stderr__", _NonTTY())
@@ -3471,11 +3471,7 @@ def _report_lines(err: str, marker: str) -> list[str]:
     character absent" assertion would pass vacuously. A trailing ``\\r`` is stripped so a
     CRLF line ending does not read as an embedded CR.
     """
-    return [
-        ln[:-1] if ln.endswith("\r") else ln
-        for ln in err.split("\n")
-        if ln.startswith(marker)
-    ]
+    return [ln.removesuffix("\r") for ln in err.split("\n") if ln.startswith(marker)]
 
 
 # A member name carrying an ANSI erase-line plus a CR: printed raw, everything before

@@ -261,7 +261,7 @@ def test_a_fresh_corruption_error_from_the_pass_propagates_at_once(
     with open_archive(io.BytesIO(data)) as reader:
         real_pass = reader._stream_members
 
-        def wrapping_pass(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        def wrapping_pass(*args, **kwargs):
             try:
                 yield from real_pass(*args, **kwargs)
             except CorruptionError as exc:

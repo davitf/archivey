@@ -1164,9 +1164,8 @@ def test_an_understating_size_hint_truncates_no_member(fmt: str, prefix: bytes) 
     payload = os.urandom(200_000)
     caller = _UnderstatingBytesIO(prefix + _hinted_archive(fmt, payload))
     caller.seek(len(prefix))
-    with open_archive(caller) as reader:
-        with reader.open("big.bin") as stream:
-            assert stream.read() == payload
+    with open_archive(caller) as reader, reader.open("big.bin") as stream:
+        assert stream.read() == payload
 
 
 # ---------------------------------------------------------------------------

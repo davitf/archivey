@@ -571,17 +571,19 @@ def test_multi_member_lzip_exposes_combined_crc32(tmp_path: Path) -> None:
     path.write_bytes(make_multi_member_lzip(parts))
     full = b"".join(parts)
 
-    with patch.object(
-        lzip_mod, "_iter_trailers_backwards", wraps=lzip_mod._iter_trailers_backwards
-    ) as scanned:
-        with open_archive(path, seekable_members=True) as ar:
-            member = ar.members()[0]
-            assert scanned.call_count == 1, (
-                "size + CRC must share one backward index scan"
-            )
-            assert member.size == len(full)
-            assert member.hashes[HashAlgorithm.CRC32] == crc32_digest(zlib.crc32(full))
-            assert ar.read(member) == full
+    with (
+        patch.object(
+            lzip_mod,
+            "_iter_trailers_backwards",
+            wraps=lzip_mod._iter_trailers_backwards,
+        ) as scanned,
+        open_archive(path, seekable_members=True) as ar,
+    ):
+        member = ar.members()[0]
+        assert scanned.call_count == 1, "size + CRC must share one backward index scan"
+        assert member.size == len(full)
+        assert member.hashes[HashAlgorithm.CRC32] == crc32_digest(zlib.crc32(full))
+        assert ar.read(member) == full
 
 
 def test_other_single_file_codecs_omit_stored_digests(tmp_path: Path) -> None:
@@ -1145,11 +1147,15 @@ def test_open_time_failure_names_no_member(tmp_path: Path) -> None:
 def test_non_seekable_source_still_defers_validation_to_the_read() -> None:
     # A probe read would consume a byte the one-shot member stream needs, so a
     # non-seekable source keeps failing on the read, as documented.
-    with open_archive(
-        NonSeekableBytesIO(b"\x00" * 40_000), format=ArchiveFormat.GZ, streaming=True
-    ) as ar:
-        with raises_corruption_not_truncation():
-            _read_single_streamed_member(ar)
+    with (
+        open_archive(
+            NonSeekableBytesIO(b"\x00" * 40_000),
+            format=ArchiveFormat.GZ,
+            streaming=True,
+        ) as ar,
+        raises_corruption_not_truncation(),
+    ):
+        _read_single_streamed_member(ar)
 
 
 @pytest.mark.parametrize(

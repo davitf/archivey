@@ -97,9 +97,8 @@ def test_short_ciphertext_finalize_raises_truncated() -> None:
         # SEEK_END describes the recoverable payload; it does not itself raise.
         # The next read is empty because the cursor is already at that end.
         assert stream.read() == b""
-    with _open(cipher) as stream:
-        with pytest.raises(TruncatedError, match="mid-block"):
-            stream.read()
+    with _open(cipher) as stream, pytest.raises(TruncatedError, match="mid-block"):
+        stream.read()
     with _open(cipher) as stream:
         assert stream.read(48) == bytes(range(48))
         with pytest.raises(TruncatedError, match="mid-block"):

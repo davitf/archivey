@@ -427,11 +427,13 @@ def test_gzip_cut_member_with_a_forged_isize_raises(
         monkeypatch.setattr(RapidgzipChildStream, "compressed_position", lambda _: None)
     for mode in (AcceleratorMode.OFF, AcceleratorMode.ON):
         config = StreamConfig(use_rapidgzip=mode, seekable=True)
-        with open_codec_stream(
-            Codec.GZIP, io.BytesIO(forged_cut_gzip), config=config
-        ) as s:
-            with pytest.raises(TruncatedError):
-                action(s)
+        with (
+            open_codec_stream(
+                Codec.GZIP, io.BytesIO(forged_cut_gzip), config=config
+            ) as s,
+            pytest.raises(TruncatedError),
+        ):
+            action(s)
 
 
 # --- rapidgzip truncation backstop on non-path (caller-owned) seekable sources ---------

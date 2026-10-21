@@ -83,16 +83,18 @@ def test_members_decrypt_without_a_program(
 def test_decrypted_member_seeks(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
     _refuse_processes(monkeypatch)
     expected = _payload(3001)
-    with open_archive(
-        path, config=_NONE, password="password", seekable_members=True
-    ) as archive:
-        with archive.open("size_3001.bin") as stream:
-            assert stream.seekable()
-            assert stream.read(100) == expected[:100]
-            # Back, into the middle of a block, and past the last block boundary.
-            for offset in (37, 2999, 2992, 0, 3001):
-                stream.seek(offset)
-                assert stream.read() == expected[offset:]
+    with (
+        open_archive(
+            path, config=_NONE, password="password", seekable_members=True
+        ) as archive,
+        archive.open("size_3001.bin") as stream,
+    ):
+        assert stream.seekable()
+        assert stream.read(100) == expected[:100]
+        # Back, into the middle of a block, and past the last block boundary.
+        for offset in (37, 2999, 2992, 0, 3001):
+            stream.seek(offset)
+            assert stream.read() == expected[offset:]
 
 
 @requires("cryptography")
@@ -155,11 +157,13 @@ def test_damaged_ciphertext_fails_the_checksum(
         offset = raw.data_offset + 1000
     data = bytearray(path.read_bytes())
     data[offset] ^= 0xFF
-    with open_archive(
-        io.BytesIO(bytes(data)), config=_NONE, password="password"
-    ) as archive:
-        with pytest.raises(CorruptionError, match="Digest mismatch"):
-            archive.read("size_3000.bin")
+    with (
+        open_archive(
+            io.BytesIO(bytes(data)), config=_NONE, password="password"
+        ) as archive,
+        pytest.raises(CorruptionError, match="Digest mismatch"),
+    ):
+        archive.read("size_3000.bin")
 
 
 def test_without_cryptography_under_none_names_the_package(

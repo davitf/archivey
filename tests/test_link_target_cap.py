@@ -356,9 +356,8 @@ def test_extraction_fails_only_the_over_long_link(tmp_path: Path) -> None:
     assert isinstance(by_name["link1"].error, LinkTargetNotFoundError)
     assert not (dest / "link1").exists()
 
-    with open_archive(archive) as reader:
-        with pytest.raises(LinkTargetNotFoundError):
-            reader.extract_all(tmp_path / "stop")
+    with open_archive(archive) as reader, pytest.raises(LinkTargetNotFoundError):
+        reader.extract_all(tmp_path / "stop")
 
 
 # --------------------------------------------------------------------------------

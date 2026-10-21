@@ -181,9 +181,8 @@ def test_random_access_tar_huge_declared_size_is_typed(
     elif source_kind == "tar.xz":
         source = io.BytesIO(lzma.compress(data))
         fmt = ArchiveFormat.TAR_XZ
-    with pytest.raises(ArchiveyError):
-        with open_archive(source, format=fmt) as ar:
-            ar.members()
+    with pytest.raises(ArchiveyError), open_archive(source, format=fmt) as ar:
+        ar.members()
 
 
 # ---------------------------------------------------------------------------
@@ -276,10 +275,9 @@ def test_sparse_map_past_packed_data_is_not_served_silently() -> None:
         + _member("b", b"SECRET")
         + _TRAILER
     )
-    with open_archive(io.BytesIO(data)) as ar:
-        with pytest.raises(CorruptionError):
-            with ar.open("a") as stream:
-                stream.read()
+    with open_archive(io.BytesIO(data)) as ar, pytest.raises(CorruptionError):
+        with ar.open("a") as stream:
+            stream.read()
 
 
 def _pax_sparse(
@@ -455,9 +453,8 @@ def test_sparse_map_in_order_is_read_through_open(encoding: str) -> None:
         + _member("b", b"SECRET")
         + _TRAILER
     )
-    with open_archive(io.BytesIO(data)) as ar:
-        with ar.open("a") as stream:
-            assert stream.read() == _IN_ORDER_EXPECTED
+    with open_archive(io.BytesIO(data)) as ar, ar.open("a") as stream:
+        assert stream.read() == _IN_ORDER_EXPECTED
 
 
 def _sparse_1_0_tar(entries: int) -> bytes:
@@ -516,15 +513,17 @@ def test_bzip2_accelerator_header_errors_are_typed(prefix: bytes) -> None:
     # Either the block-size byte replaced, or five junk bytes before the magic.
     data = prefix + good[4:] if prefix.startswith(b"BZh") else prefix + good
     config = ArchiveyConfig(use_indexed_bzip2=AcceleratorMode.ON)
-    with pytest.raises(ArchiveyError):
-        with open_archive(
+    with (
+        pytest.raises(ArchiveyError),
+        open_archive(
             io.BytesIO(data),
             format=ArchiveFormat.BZ2,
             seekable_members=True,
             config=config,
-        ) as ar:
-            with ar.open(ar.members()[0]) as stream:
-                stream.read()
+        ) as ar,
+        ar.open(ar.members()[0]) as stream,
+    ):
+        stream.read()
 
 
 # ---------------------------------------------------------------------------
@@ -756,11 +755,13 @@ def test_compressed_tar_cut_after_trailer_is_unverifiable(
         assert set(ar.diagnostics.counts) == {DiagnosticCode.DIGEST_UNVERIFIABLE}
 
     strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
-    with pytest.raises(DiagnosticRaisedError):
-        with open_archive(
+    with (
+        pytest.raises(DiagnosticRaisedError),
+        open_archive(
             io.BytesIO(data), format=fmt, streaming=streaming, config=strict
-        ) as ar:
-            _drain(ar)
+        ) as ar,
+    ):
+        _drain(ar)
 
 
 @pytest.mark.parametrize("streaming", [False, True])

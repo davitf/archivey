@@ -909,8 +909,7 @@ class CentralDirectoryWalk:
                 member_end = (
                     entry.header_offset + LOCAL_HEADER_SIZE + entry.compressed_size
                 )
-                if member_end > previous_end:
-                    previous_end = member_end
+                previous_end = max(previous_end, member_end)
             wrapped_base = None
             if entry_end < cd_size:
                 ensure(pos, entry_end + 4)

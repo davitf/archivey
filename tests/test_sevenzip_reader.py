@@ -781,9 +781,8 @@ def test_encrypted_ppmd_chunked_reads_roundtrip(tmp_path: Path) -> None:
         password="secret",
     )
     # Guard the fixture: a non-encrypted archive would make this test vacuous.
-    with pytest.raises(EncryptionError):
-        with open_archive(archive) as unauth:
-            unauth.read(next(m for m in unauth.members() if m.is_file))
+    with pytest.raises(EncryptionError), open_archive(archive) as unauth:
+        unauth.read(next(m for m in unauth.members() if m.is_file))
     with open_archive(archive, password="secret") as reader:
         members = {m.name: m for m in reader.members() if m.is_file}
         assert set(members) == set(files)
@@ -1310,9 +1309,9 @@ def test_password_confirm_does_not_request_the_whole_folder(
 
 def _reader_for_unit_tests() -> SevenZipReader:
     reader = object.__new__(SevenZipReader)
-    reader._stream_config = DEFAULT_STREAM_CONFIG  # noqa: SLF001 - focused unit test
-    reader._diagnostics_collector = None  # noqa: SLF001 - focused unit test
-    reader._key_cache = sevenzip_aes.SevenZipKeyCache()  # noqa: SLF001 - focused unit test
+    reader._stream_config = DEFAULT_STREAM_CONFIG
+    reader._diagnostics_collector = None
+    reader._key_cache = sevenzip_aes.SevenZipKeyCache()
     return reader
 
 
@@ -1333,9 +1332,9 @@ def _open_pipeline(
         [source],
         folder,
         password=password,
-        key_cache=reader._key_cache,  # noqa: SLF001 - focused reader unit test
-        stream_config=reader._stream_config,  # noqa: SLF001 - focused reader unit test
-        collector=reader._diagnostics_collector,  # noqa: SLF001 - focused reader unit test
+        key_cache=reader._key_cache,
+        stream_config=reader._stream_config,
+        collector=reader._diagnostics_collector,
     )
 
 

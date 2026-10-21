@@ -92,7 +92,7 @@ def _params() -> list:
     ]
 
 
-def _reports(reader) -> list[ArchiveEofContext]:  # noqa: ANN001 - any reader
+def _reports(reader) -> list[ArchiveEofContext]:
     found = [
         d.context
         for d in reader.diagnostics.retained
@@ -1267,7 +1267,7 @@ def test_the_xz_forward_read_names_where_the_damaged_stream_starts(
                 stream.read()
 
 
-def _format(suffix: str):  # noqa: ANN202 - an ArchiveFormat
+def _format(suffix: str):
     data = _CODECS[suffix][1](b"probe")
     with open_archive(io.BytesIO(data), config=_ALWAYS_PROBE) as reader:
         return reader.format

@@ -647,9 +647,8 @@ def test_an_overlap_refusal_is_a_plain_usage_error(tmp_path: Path) -> None:
     # overlap; the mark that lets a collection retry it stays off the type.
     with open_archive(_zip_with_files(tmp_path)) as reader:
         first, second = reader.members()
-        with reader.open(first):
-            with pytest.raises(ArchiveyUsageError) as excinfo:
-                reader.open(second)
+        with reader.open(first), pytest.raises(ArchiveyUsageError) as excinfo:
+            reader.open(second)
     assert type(excinfo.value) is ArchiveyUsageError
 
 

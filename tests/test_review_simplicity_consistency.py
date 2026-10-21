@@ -342,7 +342,7 @@ def test_empty_listing_check_never_decides_whether_listing_succeeded(
     """
     import tarfile
 
-    import archivey.internal.detection as detection
+    from archivey.internal import detection
 
     path = tmp_path / "empty.tar"
     with tarfile.open(path, "w"):
@@ -1005,13 +1005,15 @@ def test_trailing_data_is_reported(tail: bytes, tail_id: str, tmp_path: Path) ->
             DiagnosticCode.ARCHIVE_TRAILING_DATA: 1
         }
 
-    with pytest.raises(DiagnosticRaisedError):
-        with open_archive(
+    with (
+        pytest.raises(DiagnosticRaisedError),
+        open_archive(
             path,
             format=ArchiveFormat.TAR,
             config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT),
-        ) as reader:
-            reader.members()
+        ) as reader,
+    ):
+        reader.members()
 
 
 def test_trailing_data_scan_is_bounded(tmp_path: Path) -> None:

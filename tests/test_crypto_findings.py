@@ -296,8 +296,8 @@ def test_f1_forward_transform_detects_corrupt_tweaked_blake2sp() -> None:
 def test_f2_no_anchor_encrypted_member_emits_diagnostic() -> None:
     collector = DiagnosticCollector()
     reader = object.__new__(SevenZipReader)
-    reader._archive_name = "no-anchor.7z"  # noqa: SLF001
-    reader._diagnostics_collector = collector  # noqa: SLF001
+    reader._archive_name = "no-anchor.7z"
+    reader._diagnostics_collector = collector
     folder = SevenZipFolder(
         coders=[
             SevenZipCoder(
@@ -313,7 +313,7 @@ def test_f2_no_anchor_encrypted_member_emits_diagnostic() -> None:
         crc=None,
         digest_defined=False,
     )
-    reader._archive = SevenZipArchive(  # noqa: SLF001
+    reader._archive = SevenZipArchive(
         major_version=0,
         minor_version=4,
         pack_pos=0,
@@ -330,7 +330,7 @@ def test_f2_no_anchor_encrypted_member_emits_diagnostic() -> None:
         has_encrypted_folders=True,
         end_offset=4,
     )
-    reader._init_folder_caches(reader._archive)  # noqa: SLF001
+    reader._init_folder_caches(reader._archive)
     record = SevenZipFileRecord(
         filename="store.txt",
         emptystream=False,
@@ -347,7 +347,7 @@ def test_f2_no_anchor_encrypted_member_emits_diagnostic() -> None:
         compressed_size=4,
         is_encrypted=True,
     )
-    member = reader._to_member(record, 0)  # noqa: SLF001
+    member = reader._to_member(record, 0)
     assert member.hashes == {}
     summary = collector.snapshot()
     assert summary.counts.get(DiagnosticCode.DIGEST_UNVERIFIABLE, 0) == 1
