@@ -115,7 +115,7 @@ dev = [
     { name = "lz4", specifier = ">=4.4.5" },
     { name = "ncompress", specifier = ">=1.0.0" },
     { name = "pre-commit", specifier = ">=4.0.0" },
-    { name = "py7zr", specifier = ">=1.0.0" },
+    { name = "py7zr", specifier = ">=1.1.0" },
     { name = "pycdlib", specifier = ">=1.22.0" },
     { name = "pyrefly", specifier = "==1.1.1" },
     { name = "pytest", specifier = ">=8.3.0" },

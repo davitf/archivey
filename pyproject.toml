@@ -142,7 +142,11 @@ dev = [
     "ruff==0.15.22",
     "pre-commit>=4.0.0",
     "coverage[toml]>=7.6.0",
-    "py7zr>=1.0.0",
+    # >=1.1: earlier releases pin pyppmd<1.3.0, the range the pyppmd>=1.3.1 floor
+    # above rules out (wrong bytes on chunked PPMd decodes). Needed by
+    # tests/test_sevenzip_reader.py::test_py7zr_codec_fixtures_roundtrip[ppmd] and
+    # ::test_encrypted_ppmd_chunked_reads_roundtrip.
+    "py7zr>=1.1.0",
     "rarfile>=4.2",
     # libarchive-c is a dev-only cross-validation oracle for optional corpus tests
     # (tests/test_libarchive_corpus.py); it is not a runtime backend.

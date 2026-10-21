@@ -69,11 +69,6 @@ def _py7zr():
     return pytest.importorskip("py7zr")
 
 
-def _py7zr_version() -> tuple[int, ...]:
-    raw = getattr(_py7zr(), "__version__", "0")
-    return tuple(int(part) for part in raw.split(".") if part.isdigit())
-
-
 def _filters(*names: str) -> list[dict[str, int]]:
     py7zr = _py7zr()
     return [{"id": getattr(py7zr, f"FILTER_{name}")} for name in names]
@@ -385,8 +380,6 @@ def _windows_isolated_codec_roundtrip(
 def test_py7zr_codec_fixtures_roundtrip(
     tmp_path: Path, label: str, filter_names: tuple[str, ...]
 ) -> None:
-    if label == "ppmd" and _py7zr_version() < (1, 1):
-        pytest.skip("py7zr < 1.1 cannot build reliable PPMd 7z fixtures")
     if sys.platform == "win32":
         _windows_isolated_codec_roundtrip(tmp_path, label, filter_names)
         return
@@ -760,8 +753,6 @@ def test_encrypted_ppmd_chunked_reads_roundtrip(tmp_path: Path) -> None:
     truncate them (or refuse to construct). Read via ``open(...).read(64)`` — ``read()``
     alone passes a large ``max_length`` and would hide the regression.
     """
-    if _py7zr_version() < (1, 1):
-        pytest.skip("py7zr < 1.1 cannot build reliable PPMd 7z fixtures")
     if sys.platform == "win32":
         # Valid decodes are bounded/safe, but win32 PPMd runs are isolated in the
         # non-required stress workflow; keep required CI off the native-abort surface.
