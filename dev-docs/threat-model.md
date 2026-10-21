@@ -134,7 +134,9 @@ which are safe to delete once no extraction is running.
 `test_error_when_dest_is_a_file_never_deletes_it`,
 `test_dest_symlink_to_dir_is_followed_into_target`, `test_strict_strips_setuid`,
 `test_resolve_or_raise_on_loop_raises_when_a_component_cannot_be_looked_up`.
-`tests/test_cve_regressions.py`: `test_cve_2025_4517_link_chain_past_path_max`.
+`tests/test_cve_regressions.py`: `test_cve_2025_4517_link_chain_past_path_max`,
+`test_name_that_leads_out`, `test_link_that_leads_out`, `test_tar_link_that_leads_out`,
+`test_link_planted_in_the_destination`.
 `tests/test_hardlink_target_rule.py`: `test_a_hardlink_to_a_refused_member_is_refused`,
 `test_a_hardlink_to_an_excluded_refused_member_is_refused`,
 `test_a_hardlink_to_a_selector_excluded_member_is_materialized`,
