@@ -560,6 +560,27 @@ def test_rar5_comment_never_reads_past_its_packed_span(tmp_path: Path) -> None:
     assert comment in (None, "This is a\nmulti-line comment")
 
 
+def test_rar5_comment_that_is_not_utf8_keeps_its_bytes(tmp_path: Path) -> None:
+    """A byte that is not valid UTF-8 survives as a lone surrogate, as in a RAR5 name.
+
+    RARLAB ``rar`` never stores one: it maps such a byte to U+FFFE plus a private-use
+    character, which is valid UTF-8. A crafted comment gets the name's reading, not
+    U+FFFD, which would lose the byte.
+    """
+    blocks = _rar5_parse(_fixture("comment__.rar").read_bytes())
+    cmt = next(block for block in blocks if block["type"] == 3)
+    data = b"caf\xe9 \xff ok"
+    cmt["data"] = data
+    cmt["unpacked"] = len(data)
+    if cmt["crc"] is not None:
+        cmt["crc"] = struct.pack("<I", zlib.crc32(data))
+    path = tmp_path / "cmt.rar"
+    path.write_bytes(_rar5_build(blocks))
+    # encoding= does not apply: a RAR5 comment is UTF-8 by the format.
+    with open_archive(path, encoding="cp1252") as archive:
+        assert archive.info.comment == "caf\udce9 \udcff ok"
+
+
 _OPEN_UNDER_RLIMIT = textwrap.dedent(
     """
     import resource, sys

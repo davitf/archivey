@@ -810,10 +810,14 @@ between to blame or to defer to.
 | `comment` | RAR3 CMT SERVICE when the solid flag is set (attaches to the preceding member) and RAR 1.5 / 2.x FILE COMMENT subblocks. Stored comments decode natively; compressed ones (old-style or `CMT`) decode through RARLAB `unrar` when available | No member comment block, a RAR5 `CMT` (archive-only, below), a compressed comment without `unrar` / with an invalid CRC, or an encrypted comment (known limitation, §5) |
 
 **Archive comments are `ArchiveInfo.comment`.** RAR5 `CMT` is archive-only — it never
-becomes a member comment. RAR3 `CMT` without the solid flag is the archive comment;
-with it, the preceding member (row above). RAR 1.5 / 2.x COMMENT subblocks on MAIN are
-the archive comment. Stored archive comments decode natively; a compressed one
-(old-style or `CMT`) without `unrar` stays `None` and listing still succeeds.
+becomes a member comment. It is UTF-8 by the format, so `encoding=` does not apply, and
+a byte that is not valid UTF-8 survives as a lone surrogate, as in a RAR5 name. `rar`
+7.00 never stores one: it writes a comment file's undecodable byte as U+FFFE followed by
+U+E000 plus the byte, which is valid UTF-8, and `unrar l` prints `??` for the pair. RAR3
+`CMT` without the solid flag is the archive comment; with it, the preceding member (row
+above). RAR 1.5 / 2.x COMMENT subblocks on MAIN are the archive comment. Stored archive
+comments decode natively; a compressed one (old-style or `CMT`) without `unrar` stays
+`None` and listing still succeeds.
 
 **A RAR5 file copy is a `FILE`.** `rar -oi` stores a second identical file as a
 redirect of type 5 (`FILE_COPY`; `unrar lt` says "File reference") naming an earlier
