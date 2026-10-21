@@ -241,7 +241,8 @@ bytes. The outcome is the same on every platform. ADR
 - `STRICT` strips a trailing dot or space (`_strip_trailing_dot_space`), because Win32
   trims it silently and the reported path would differ from the real one. The rewrite is
   recorded as `ExtractionResult.presented_name`, the only record that survives a caller
-  filter rename. An all-dots segment has no portable spelling and is rejected.
+  filter rename. An all-dots segment has no portable spelling and is rejected, under
+  `STANDARD` too, since Win32 would merge `a/.../b` into `a/b`.
   `STANDARD` and `TRUSTED` keep the name. Under `STRICT` and `STANDARD` the collision key
   drops a trailing dot or space too, so `notes.` and `notes` collide on every platform, as
   Win32 would merge them.

@@ -706,9 +706,13 @@ def apply_name_policy(member: ArchiveMember, policy: ExtractionPolicy) -> Archiv
     # A trailing dot/space is silently stripped by Win32 — a legitimate macOS/Linux name
     # (e.g. a folder ending in '.'), not an attack. STRICT rewrites it to the portable
     # spelling so extraction succeeds and is identical on every OS; STANDARD/TRUSTED keep it
-    # faithful. The O2 collision map catches any clash the rewrite creates.
+    # faithful. The O2 collision map catches any clash the rewrite creates. A segment of
+    # only dots and spaces has no spelling Win32 keeps (``a/.../b`` would merge into
+    # ``a/b``), so STANDARD refuses it as STRICT does.
     if policy is ExtractionPolicy.STRICT:
         name = _strip_trailing_dot_space(name)
+    elif policy is ExtractionPolicy.STANDARD:
+        _strip_trailing_dot_space(name)
     # A TAR name keeps ``\`` as a literal character, and Windows writes it as a
     # separator. Writing it as ``/`` everywhere gives the tree Windows would create, on
     # every OS. The collision key already treats the two separators as one.
@@ -869,16 +873,14 @@ def collision_key(name: str, policy: ExtractionPolicy) -> str:
     A trailing dot or space on a segment is dropped from the key too: Win32 trims it, so
     ``foo.`` and ``foo`` are one file on Windows. ``STRICT`` has already rewritten the name;
     ``STANDARD`` keeps it, and without this the second member would silently replace the
-    first on Windows and land beside it elsewhere. A segment of only dots and spaces keeps
-    its spelling, as it has no trimmed form.
+    first on Windows and land beside it elsewhere. ``apply_name_policy`` has refused a
+    segment of only dots and spaces under both policies; the path spellings ``.`` and
+    ``..`` keep theirs.
     """
     rel = name.replace("\\", "/").rstrip("/")
     if policy is ExtractionPolicy.TRUSTED:
         return rel
-    return _map_segments(unicodedata.normalize("NFC", rel).casefold(), _trim_for_key)
-
-
-def _trim_for_key(segment: str) -> str:
-    """``segment`` as Win32 names it: a trailing dot or space dropped, unless nothing
-    else is left (``.``, ``..``, ``...``)."""
-    return segment.rstrip(". ") or segment
+    folded = unicodedata.normalize("NFC", rel).casefold()
+    if not folded.endswith((".", " ")) and "./" not in folded and " /" not in folded:
+        return folded
+    return "/".join(segment.rstrip(". ") or segment for segment in folded.split("/"))

@@ -172,7 +172,7 @@ The rest depend on the policy:
   `what%3F.txt`. `"trusted"` writes it as is.
 - **`back\slash` in a TAR:** `"strict"` and `"standard"` write it as `slash` in a folder `back`.
   `"trusted"` writes it as is.
-- **`README`, then `readme`, `café` written two ways in Unicode, or `notes` then `notes.`:** under
+- **`README`, then `readme`; `café` written two ways in Unicode; or `notes`, then `notes.`:** under
   `"strict"` and `"standard"`, the second one counts as a file already there. `"trusted"` writes
   both, if the disk tells them apart.
 - **A file with mode `rwsr-xr-x`:** `"strict"` and `"standard"` write it as `rwxr-xr-x`. `"trusted"`

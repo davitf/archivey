@@ -1525,7 +1525,8 @@ legitimate archive, so under `STRICT` each path segment's trailing dot/space SHA
 every platform,
 collision-tracked as above, and recorded as `ExtractionResult.presented_name`; a
 segment that is entirely dots/spaces (e.g. `...`) has no portable spelling and SHALL be
-rejected. `STANDARD` and `TRUSTED` SHALL keep the trailing dot/space faithful (written if
+rejected under `STRICT` and `STANDARD` (Win32 would merge `a/.../b` into `a/b`).
+`STANDARD` and `TRUSTED` SHALL otherwise keep the trailing dot/space faithful (written if
 the OS allows).
 
 **Separators.** Under `STRICT` and `STANDARD`, a `\` that a member name keeps as a
