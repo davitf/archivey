@@ -2672,15 +2672,16 @@ class ExtractionCoordinator:
 
     def _physical_key(self, path: Path) -> str:
         """The key of the directory at ``path`` in ``run_dirs`` and ``pending_dirs``:
-        where it physically is, with case and Unicode normalization folded under every
-        policy.
+        where it physically is, with case and Unicode normalization folded and a trailing
+        dot or space trimmed under every policy.
 
         ``_collision_key`` folds only under ``STRICT`` and ``STANDARD``, because it
         decides which member's result a name reaches. These two maps ask whether a
         directory is one this run made, which does not depend on how the archive spelled
         it: on a case-insensitive filesystem ``D/`` and ``d/`` are one directory under
-        ``TRUSTED`` too. Where the folded key covers two directories (``X/`` beside
-        ``x/`` on a case-sensitive filesystem), the readers tell them apart on disk.
+        ``TRUSTED`` too, as ``d.`` and ``d`` are on Windows. Where the folded key covers
+        two directories (``X/`` beside ``x/`` on a case-sensitive filesystem), the readers
+        tell them apart on disk.
         """
         rel = self._physical_rel(path)
         if rel is None:
