@@ -429,12 +429,18 @@ class PpmdDecoder(BaseDecoder):
     def _inject_nul_once(self, max_length: int) -> bytes:
         """Documented single extra NUL (pyppmd / py7zr); never loop fabricated input.
 
-        The NUL resumes a worker parked for input, so on a pack known complete it goes
-        through :meth:`_native_decode` like any other new input, so a resumed
-        worker's miscount cannot make the payload look spent. On a pack known
-        short, or of unknown size, it stays one ``decode(b"\\0", budget)``: the split's
-        second half is an empty decode, and at compressed EOF this class drains with
-        empty decodes only when every compressed byte is in (``_finish_input``).
+        On a pack known short, or of unknown size, the NUL is one
+        ``decode(b"\\0", budget)``. Split, its second half would be an empty decode,
+        and if the 1-byte call lifted ``eof`` that is an empty decode past native
+        ``eof`` on such a pack: the shape ``feed``'s gate and ``_finish_input``
+        refuse (the near-EOF ``MemoryError``, the exit-after-green abort).
+
+        On a pack known complete the NUL goes through :meth:`_native_decode`, so a
+        resumed worker's miscount cannot make the payload look spent. That arm is
+        defence in depth for a corrupt pack that declares itself complete: on the
+        valid members measured, pyppmd was at ``eof`` by then and sent no NUL. No
+        test pins it, deliberately: the inputs found to reach it crash pyppmd
+        in-process.
         """
         if self._exhausted or self._nul_injected or self._native.eof:
             return b""
@@ -445,6 +451,8 @@ class PpmdDecoder(BaseDecoder):
         if self._pack_complete() is True:
             out = self._native_decode(b"\0", budget)
         else:
+            # A call with input: a worker may now exist (see ``_native_decode``).
+            self._native_called = True
             out = self._native.decode(b"\0", budget)
         return self._note_decoded(out, budget)
 
