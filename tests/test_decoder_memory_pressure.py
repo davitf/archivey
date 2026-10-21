@@ -156,11 +156,14 @@ def test_closing_an_archive_member_ends_its_liblzma_decoder(
     assert any(type(d) is lzma.LZMADecompressor for d in ended), kind
 
 
-# Run in a fresh interpreter: PyPy starts a major collection once the native memory it
-# was told about outgrows a threshold scaled from the heap left by the last one, so in a
-# test worker that has already built a large heap the same 800 drops can legitimately
-# grow past the cap before a collection comes. A fresh process measures the
-# add_memory_pressure accounting itself, not what earlier tests left behind.
+# Run in a fresh interpreter. In an xdist worker the same 800 drops once grew 3,725 MiB
+# (PR 901, a docs-only change) and passed on a re-run. The likely reason, inferred from
+# how the failure varies between runs and not reproduced, is that PyPy's major-collection
+# threshold scales with the heap the last collection left, so a worker that earlier tests
+# grew lets more pressure build before collecting. A fresh process measures the
+# add_memory_pressure accounting itself, not what earlier tests left behind. The cap only
+# has to tell accounting from none (6.4 GB without it, dev-docs/known-issues.md); the
+# estimates themselves are pinned exactly by the tests above.
 _PILE_UP_CHILD = """
 import lzma
 from pathlib import Path
@@ -190,6 +193,7 @@ print(private_writable_mib() - before)
     not native_memory.UNDER_PYPY or not sys.platform.startswith("linux"),
     reason="PyPy's deferred freeing of native buffers, measured through /proc",
 )
+@pytest.mark.timeout(300, func_only=True)
 def test_dropped_xz_decoders_do_not_pile_up_on_pypy() -> None:
     """800 default-preset decoders hold 6.4 GiB if nothing frees them between drops."""
     done = subprocess.run(
@@ -197,6 +201,7 @@ def test_dropped_xz_decoders_do_not_pile_up_on_pypy() -> None:
         capture_output=True,
         text=True,
         timeout=240,
-        check=True,
+        check=False,
     )
-    assert int(done.stdout) < 2048
+    assert done.returncode == 0, done.stderr
+    assert int(done.stdout) < 2048, done.stdout
