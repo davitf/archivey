@@ -1308,10 +1308,13 @@ def _encrypted_header_cut(start: int) -> str:
     ciphertext blocks, so a file that ends anywhere after its first byte and before
     its last cannot be a clean end: the writer never stops part-way.
     """
-    return (
-        f"RAR archive is truncated: the file ends inside the encrypted header "
-        f"that starts at byte {start}"
-    )
+    return f"RAR archive is truncated: {_ends_inside_encrypted_header(start)}"
+
+
+def _ends_inside_encrypted_header(start: int) -> str:
+    """The clause that places a cut in an encrypted header, shared by the proven cut
+    and the unproven wrong-password message so the two say it the same way."""
+    return f"the file ends inside the encrypted header that starts at byte {start}"
 
 
 class _RarHeaderCrcError(CorruptionError):
@@ -1423,8 +1426,9 @@ def _header_failure(
     proven (a matching CRC16 in RAR3, a check value in RAR5), a failure there is
     damage, and one that ran out of ciphertext is a cut. Unproven, a garbage size
     reads to the end of the file as well, so that stays a wrong password; when the
-    read did run out, the message names the cut too, because with the right
-    password the cut is the cause and nothing here can tell the two apart. A plain
+    read did run out, the message also names a cut or a damaged header, because
+    with the right password one of those is the cause (damage can garble the size
+    just as a wrong key does) and nothing here can tell them apart. A plain
     header the file holds only part of is a cut: unrar lists the members before it
     and reports an unexpected end of archive.
 
@@ -1436,10 +1440,12 @@ def _header_failure(
             message = f"Failed to decrypt {version} headers (wrong password?)"
             if header_fd.hit_eof:
                 # A wrong key's garbage size runs to the end of a small archive as
-                # well, so the cut is the second reading, not the first.
+                # well, so the cut is the second reading, not the first; a damaged
+                # header garbles the size the same way, so it is named too.
                 message += (
-                    "; if the password is right, the file ends inside the "
-                    f"encrypted header that starts at byte {start}"
+                    "; if the password is right, "
+                    f"{_ends_inside_encrypted_header(start)}, "
+                    "or that header is damaged"
                 )
             raise wrong_password_error(message) from exc
         if header_fd.hit_eof:

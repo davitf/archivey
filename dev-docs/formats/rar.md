@@ -190,9 +190,12 @@ or set) a wrong key decrypts a garbage size that also reads to the end of the fi
 fails the CRC16, so that stays `EncryptionError("…wrong password?")`, and a password
 list moves on to the next candidate. When the read ran out of ciphertext, the message
 adds the second reading: "if the password is right, the file ends inside the encrypted
-header that starts at byte N". The cut comes second because a wrong key on a small,
-whole archive also decrypts a size that runs to the end of the file and gets the same
-message; with the right password, the cut is the true cause. RAR5 does not take
+header that starts at byte N, or that header is damaged". It comes second because a
+wrong key on a small, whole archive also decrypts a size that runs to the end of the
+file and gets the same message. It names damage too because damage in a whole header
+garbles the size the same way. A header refused before its read ran out (a size under
+the minimum, a CRC16 mismatch) gets no such clause. The cut wording is one helper,
+shared with the proven cut's `TruncatedError`. RAR5 does not take
 a CRC32 match as proof the way RAR3 takes a CRC16 one: RARLAB's `rar` writes the check
 value with `-hp`, so an archive without one is crafted, and the walk keeps one proof per
 format rather than add a second that only crafted input reaches. Each RAR3 header has
