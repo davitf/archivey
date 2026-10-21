@@ -579,18 +579,7 @@ def test_a_real_further_gzip_member_needs_no_stdlib_handover(
     matches its trailer, and its decode reaches the end of the source. The last-member
     check still reads the last member back from rapidgzip; this pins only that the
     standard library does not take over."""
-    handovers: list[object] = []
-    original = codecs.stdlib_takeover._StdlibOnAcceleratorError.switch_to_stdlib
-
-    def spy(
-        self: codecs.stdlib_takeover._StdlibOnAcceleratorError, *args: object
-    ) -> None:
-        handovers.append(args)
-        original(self, *args)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(
-        codecs.stdlib_takeover._StdlibOnAcceleratorError, "switch_to_stdlib", spy
-    )
+    handovers = _handovers(monkeypatch)
     got, error = _outcome(Codec.GZIP, blob, _ON, _no_seek)
     assert error is None
     assert got == gzip.decompress(blob)
@@ -882,12 +871,13 @@ def test_a_last_member_past_the_read_back_ceiling_goes_to_the_stdlib(
 
 
 @requires("rapidgzip")
-def test_an_empty_last_member_with_a_long_name_reads_as_with_the_accelerator_off() -> (
-    None
-):
+def test_an_empty_last_member_with_a_long_name_reads_as_with_the_accelerator_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """An empty last member whose header starts further back than the check looks for it
     (``_EMPTY_MEMBER_REACH``: a long ``FNAME``) is not confirmed, so the read goes to the
     standard library, which reads it whole: the same bytes, and no error."""
+    _require_the_accelerator_in_use()
     from archivey.internal.streams.codecs.gzip_codec import _EMPTY_MEMBER_REACH
 
     name = b"n" * (_EMPTY_MEMBER_REACH + 100)
@@ -898,7 +888,9 @@ def test_an_empty_last_member_with_a_long_name_reads_as_with_the_accelerator_off
     )
     off = _outcome(Codec.GZIP, blob, _OFF, _no_seek)
     assert off[1] is None
+    handovers = _handovers(monkeypatch)
     _assert_same(_outcome(Codec.GZIP, blob, _ON, _no_seek), off)
+    assert handovers != []
 
 
 # --- a seek that meets a data error is handed over -------------------------------------

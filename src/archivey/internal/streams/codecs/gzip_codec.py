@@ -146,12 +146,15 @@ _TRAILER_LOOKBACK = 64
 # empty last member (``_GzipTruncationCheckStream._empty_member_ends_the_data``). bgzip's
 # end-of-file member is 28 bytes; an empty member whose header fields take more goes to
 # the standard library, which finds nothing wrong at the cost of a second decode.
+# ``dev-docs/formats/gzip.md`` §2.3 and the ``compressed-streams`` and
+# ``seekable-decompressor-streams`` specs state it; change them together.
 _EMPTY_MEMBER_REACH = 1 << 10
 # How much output in all the backstop reads back from rapidgzip to check the last
 # member's trailer in a file of several members
 # (``_GzipTruncationCheckStream._last_member_ends_the_file``). A candidate past it hands
-# the read to the standard library. ``dev-docs/formats/gzip.md`` §2.3 and §5 and the
-# ``compressed-streams`` spec state it.
+# the read to the standard library. ``dev-docs/formats/gzip.md`` §2.3 and §5,
+# ``docs/formats.md`` §"Limits and accelerators", and the ``compressed-streams`` and
+# ``seekable-decompressor-streams`` specs state it; change them together.
 _LAST_MEMBER_READ_BACK = 64 << 20
 
 
