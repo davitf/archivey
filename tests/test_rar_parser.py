@@ -235,7 +235,7 @@ def test_encrypted_header_plaintext_tell_breaks_the_walk(
     by its CRC16, and its size runs to the end of the file, so the walk lists
     file1.txt and reports a cut in the header that starts at byte 114.
     """
-    import archivey.internal.backends.rar_parser as rar_parser
+    from archivey.internal.backends import rar_parser
 
     orig_tell = rar_parser._HeaderDecryptStream.tell
 
@@ -313,7 +313,7 @@ _TINYVOL_HP = [f"tinyvol_hp.part{n}.rar" for n in range(1, 5)]
 
 def _count_rar5_derivations(monkeypatch: pytest.MonkeyPatch) -> list[int]:
     """Record the round count of every RAR5 PBKDF2 the parser runs."""
-    import archivey.internal.backends.rar_parser as rar_parser
+    from archivey.internal.backends import rar_parser
 
     rounds: list[int] = []
     real = rar_parser.pbkdf2_hmac
@@ -365,7 +365,7 @@ def test_kdf_cache_carries_header_keys_between_parses(
     The reader parses once per password candidate, and a caller that passes its
     own cache shares header keys with its member reads.
     """
-    import archivey.internal.backends.rar_parser as rar_parser
+    from archivey.internal.backends import rar_parser
 
     rounds = _count_rar5_derivations(monkeypatch)
     rar3_calls: list[bytes] = []

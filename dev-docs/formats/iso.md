@@ -267,9 +267,13 @@ What is ISO-specific in turning a record into a member:
   is the rule after PR #470; before it, `created` fell back to the attribute-change time.
 - **POSIX fields.** `mode` (permission bits only), `uid` and `gid` come from `PX`, and
   are `None` outside Rock Ridge. `link_target` is the `SL` path.
-- **Archive info.** `comment` is the volume identifier. `format_version` is `None`:
-  ISO 9660 stores no interchange level, and `pycdlib`'s inferred one read 3 on nearly
-  every image because it counts the `.`/`..` identifiers as non-d-characters.
+- **Archive info.** `comment` is the primary descriptor's volume identifier, decoded as
+  a plain ISO 9660 name is (UTF-8, else `encoding=`, else `surrogateescape`): the
+  standard allows only d-characters there, but xorriso 1.5.6 stores `-V` as UTF-8. The
+  Joliet descriptor's copy is not read, because xorriso writes each non-ASCII byte of it
+  as `_` and it holds 16 characters to the primary's 32 bytes. `format_version` is
+  `None`: ISO 9660 stores no interchange level, and `pycdlib`'s inferred one read 3 on
+  nearly every image because it counts the `.`/`..` identifiers as non-d-characters.
   `member_count` is `None`.
 
 A bootable image's **El Torito boot catalog** (`boot.catalog`, `BOOT.CAT`) is listed as
