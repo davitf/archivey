@@ -43,8 +43,10 @@ goes in it:
 Internal refactors, review docs and chore work stay out.
 
 Previous release tag: `PREV=$(git describe --tags --abbrev=0 2>/dev/null || true)`
-(0.2.0, the first release, has its entry written already: a feature summary rather
-than a change list. Only fill in the date, and re-read it against the current API.)
+(0.2.0, the first release, has its entry written already under
+`## [0.2.0] - Unreleased`: a feature summary rather than a change list. Re-read it
+against the current API and leave `[Unreleased]` empty; `release.py start 0.2.0` puts
+the date in that heading.)
 
 - [ ] List commits / merged PRs since `PREV`:
 
@@ -54,10 +56,8 @@ than a change list. Only fill in the date, and re-read it against the current AP
   gh pr list --state merged --base main --search "merged:>$(git log -1 --format=%cI "$PREV" 2>/dev/null || echo 2020-01-01)" --limit 100
   ```
 
-- [ ] Write the entry under a new `## [X.Y.Z] - YYYY-MM-DD` heading, below an empty
-  `[Unreleased]`.
-- [ ] Add / update the compare links at the bottom of `CHANGELOG.md` once the tag
-  name is known.
+- [ ] Write the entry under `## [Unreleased]`. `release.py start` (§6) moves it under
+  a dated `## [X.Y.Z]` heading and writes the compare links.
 
 ---
 
@@ -217,7 +217,9 @@ four commands.
    refuses tag pushes and has no tool that creates a release), so it is yours. The tag
    `gh release create` makes is lightweight; `publish.yml` and `git describe --tags`
    need only the ref, so an annotated tag is not required.
-4. Confirm both `archivey` and `archivey-cli` are on PyPI at `X.Y.Z`.
+4. Confirm both `archivey` and `archivey-cli` are on PyPI at `X.Y.Z`, and that each
+   file shows provenance (an attestation) on its PyPI page. The upload action skips the
+   attestation with only a warning when Trusted Publishing is not in use.
 
 ---
 

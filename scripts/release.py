@@ -98,16 +98,15 @@ def next_dev_version(version: str) -> str:
 def _link_section_start(text: str) -> int:
     """Where the trailing link definitions start.
 
-    That is just after the last HTML comment, or with no comment the first link
-    definition after the last ``## [`` heading, or the end of the file.
+    Everything is measured from the last ``## [`` heading: the link section starts after
+    an HTML comment that follows that heading (its example links stay inside it), else
+    at the first link definition after it, else at the end of the file.
     """
+    last = max((m.end() for m in _HEADING_RE.finditer(text)), default=0)
     end = text.rfind("-->")
-    if end >= 0:
+    if end > last:
         return end + 3
-    last_heading = None
-    for last_heading in _HEADING_RE.finditer(text):
-        pass
-    link = _LINK_RE.search(text, last_heading.end() if last_heading else 0)
+    link = _LINK_RE.search(text, last)
     return link.start() if link else len(text)
 
 

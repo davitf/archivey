@@ -179,13 +179,12 @@ def test_dry_run_changes_nothing(capsys: pytest.CaptureFixture[str]) -> None:
 
 
 def test_start_refuses_before_changing_anything(
-    capsys: pytest.CaptureFixture[str],
+    fake_root: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """An empty [Unreleased] is refused before the branch or any file is touched."""
-    text = release.CHANGELOG.read_text(encoding="utf-8")
-    body = text.split("## [Unreleased]", 1)[1].split("\n## [", 1)[0]
-    if body.strip():
-        pytest.skip("[Unreleased] has text")
+    release.CHANGELOG.write_text(
+        CHANGELOG.replace("### Fixed\n\n- Fixed 3 bugs in ZIP reading.\n\n", "")
+    )
     assert release.main(["--dry-run", "start", "0.9.9"]) == 1
     captured = capsys.readouterr()
     assert "nothing under" in captured.err
@@ -225,10 +224,15 @@ def _real_changelog_with_entry(with_comment: bool) -> tuple[str, str]:
     return head + "## [Unreleased]\n\n" + body + "\n" + rest.lstrip("\n"), body
 
 
-@pytest.mark.parametrize("with_comment", [True, False])
-def test_real_changelog_shape_survives_any_release(with_comment: bool) -> None:
+@pytest.mark.parametrize("comment", ["at the end", "none", "at the top"])
+def test_real_changelog_shape_survives_any_release(comment: str) -> None:
     """Holds for every future release, unlike the 0.2.0 test above."""
-    text, body = _real_changelog_with_entry(with_comment)
+    text, body = _real_changelog_with_entry(comment != "none")
+    if comment == "at the top":
+        start, end = text.rindex("<!--"), text.rindex("-->") + 3
+        block = text[start:end]
+        text = text[:start].rstrip("\n") + "\n" + text[end:].lstrip("\n")
+        text = text.replace("## [Unreleased]", block + "\n\n## [Unreleased]", 1)
     out = release.changelog_for_release(text, "9.9.9", "v9.9.8", "2030-01-01")
     head = text.split("## [Unreleased]", 1)[0]
     assert out.startswith(head)
@@ -236,13 +240,13 @@ def test_real_changelog_shape_survives_any_release(with_comment: bool) -> None:
     assert out.count("## [Unreleased]") == 1
     assert "\n\n\n" not in out
     assert release.changelog_section(out, "9.9.9") == body
+    assert out.count("\n\n") >= text.count("\n\n")  # no blank line lost
     links = (
         f"[Unreleased]: {URL}/compare/v9.9.9...HEAD\n"
         f"[9.9.9]: {URL}/compare/v9.9.8...v9.9.9\n"
     )
     assert links in out
-    if with_comment:
-        assert out.index(links) > out.rindex("-->")
+    assert out.index(links) > out.rindex("## [")
 
 
 def test_finish_refuses_a_release_version(capsys: pytest.CaptureFixture[str]) -> None:
