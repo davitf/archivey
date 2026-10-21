@@ -1122,7 +1122,17 @@ nothing; the key-derivation budget allows about ten seconds; a late-CRC 7z folde
 folder size times candidates; a ZIP central directory whose comments are nothing but
 central header signatures lists at about 155 ns a byte (2.0 s for 13 MB, CPython 3.11),
 where an ordinary directory lists at about 5 ns, because each signature is checked for a
-swallowed entry ([ZIP §2.2](formats/zip.md#22-open-and-list)). A ZIP read from a pipe
+swallowed entry ([ZIP §2.2](formats/zip.md#22-open-and-list)). On declared seek demand,
+a forward seek past the known points, a `SEEK_END` or a size query reads a Seekable
+Zstandard seek table or walks a BGZF file's members. Both scans are linear but run one
+Python step per table entry or member, and the scan is paid before the table's final
+consistency check can raise. A table whose entries each name a one-byte frame, or a
+file of empty members, costs about 70-95 ns a byte, about 1.5 minutes a GB: a 4,000,000-entry table
+(36 MB) parses in 3.36 s, and 1,000,000 empty BGZF members (28 MB) walk in 1.95 s.
+Memory stays bounded, because the seek-point table is thinned at `MAX_SEEK_POINTS`
+([seekable-decompressor-streams](../openspec/specs/seekable-decompressor-streams/spec.md)
+§"zstd reads the Seekable Zstandard seek table", §"BGZF members are walked without
+decoding"). A ZIP read from a pipe
 consumes the stream once, and the entries its directory places in the bytes kept after
 its members consume those at most twice more, however many it names there
 ([Resource use is bounded](#resource-use-is-bounded)). A "work per output byte" limit
