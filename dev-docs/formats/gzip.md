@@ -129,8 +129,8 @@ a member that did not reach its trailer arms a `TruncatedError` at the end of in
 `open_stream(seekable=True)`), `GzipDecoder` records every member after the first as a
 seek point once the member has output, so a backward seek after a forward read resumes at
 the member before the target. An empty member (BGZF's end marker) shares its offset with
-what follows and adds none. A forward seek past the known points, `SEEK_END` or a size
-query walks a BGZF file (`codecs/bgzf_index.py`): each member's `BC` extra subfield names
+what follows and adds none. A forward seek past the known points or `SEEK_END` walks a
+BGZF file (`codecs/bgzf_index.py`): each member's `BC` extra subfield names
 its size, and its ISIZE, exact since a member holds at most 64 KiB, its output. The walk
 reads the first header (one read buffer's worth) and stops there when the file is not
 BGZF; otherwise it reads the file once, front to back in 256 KiB pieces, and inflates
@@ -142,7 +142,10 @@ trailing data, padding) and keeps the points before it; the size is known only w
 reaches the end of the file, so a BGZF file with NUL padding after it seeks by its
 blocks and learns its size by decoding to the end. The sizes are trusted like the xz and lzip
 indexes (threat-model O17); a forward read still checks every member's CRC-32 and ISIZE.
-A `.gzi` index is a separate file, which a stream cannot find, so it is not read. Under
+A size query (`try_get_size()`, `ArchiveStream.size`) does not walk, because the walk reads
+the whole file and a size query must be cheap (`GzipDecoder.index_reads_whole_source`).
+The size is `None`, as for plain gzip, until a seek walks the file or a read reaches the
+end. A `.gzi` index is a separate file, which a stream cannot find, so it is not read. Under
 `rapidgzip` none of this applies: its own index serves the seeks.
 
 **When `rapidgzip` is used.** `use_rapidgzip` is an `AcceleratorMode`, `AUTO` by default:
@@ -579,7 +582,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Claim | Pinned by |
 | --- | --- |
 | Multi-member, NUL padding, trailing junk after the payload | `tests/test_codecs.py::test_gzip_multi_member_and_padding_parity`, `::test_gzip_trailing_junk_delivers_member_then_reports`, `::test_gzip_multi_member_cross_feed_edges`, `tests/test_stream_trailing_data.py::test_rapidgzip_reads_to_the_end_and_reports` |
-| Member starts and BGZF blocks are seek points; the walk stops at a plain member; the BGZF sizes are trusted | `tests/test_bgzf_seek.py` |
+| Member starts and BGZF blocks are seek points; the walk stops at a plain member; the BGZF sizes are trusted; a size query does not walk | `tests/test_bgzf_seek.py` |
 | A member after the first with a bad header CRC or a reserved flag raises the same error with `rapidgzip` as without it | `tests/test_audit2_tar_streams.py::test_gzip_accelerator_refuses_a_later_member_the_stdlib_refuses` |
 | A member after NULs is trailing data, and strict refuses it, with `rapidgzip` off, `AUTO` and on, for a read and a seek; NULs at the end and members with nothing between them stay silent | `tests/test_stream_trailing_data.py::test_a_stream_after_nul_padding_is_trailing_data`, `::test_a_seek_to_the_end_stops_at_nul_padding`, `::test_strict_refuses_a_stream_after_nul_padding`, `::test_nul_padding_at_the_end_and_direct_concatenation_stay_silent` |
 | A truncated stream gives its prefix to sized reads and raises | `::test_truncated_gzip_large_read_recovers_prefix_like_read1`, `::test_truncated_zlib_deflate_large_read_recovers_prefix`, `::test_truncated_gzip_readall_raises` |

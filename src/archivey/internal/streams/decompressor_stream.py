@@ -327,6 +327,16 @@ class Decoder(Protocol):
         self, inner: BinaryIO, last_known: SeekPoint
     ) -> tuple[list[SeekPoint], int | None]: ...
 
+    @property
+    def index_reads_whole_source(self) -> bool:
+        """True when :meth:`build_index` reads the whole compressed source.
+
+        A size query (:meth:`DecompressorStream.try_get_size`) must be cheap, so it does
+        not build such an index: the size stays unknown until a seek builds the index
+        or a read reaches the end. A seek still builds it.
+        """
+        ...
+
 
 class BaseDecoder:
     """Default decoder behavior: empty points, no pending error, no-op index build.
@@ -341,6 +351,9 @@ class BaseDecoder:
     _pending_error: BaseException | None = None
     _trailing_bytes: int | None = None
     _input_after_end = False
+    # See Decoder.index_reads_whole_source. The xz, lzip and zstd scans read only
+    # index structures.
+    index_reads_whole_source = False
 
     @property
     def pending_error(self) -> BaseException | None:
@@ -1339,10 +1352,19 @@ class DecompressorStream(ReadOnlyIOStream):
         return self._scan_index()
 
     def try_get_size(self) -> int | None:
-        """The total decompressed size if cheaply available (via the index), else ``None``."""
+        """The total decompressed size if cheaply available, else ``None``.
+
+        Cheap means no data is decoded: the size is known already (a read reached the
+        end, or an index scan gave it), or the decoder's index scan gives it. A scan
+        that reads the whole source (a BGZF walk,
+        :attr:`Decoder.index_reads_whole_source`) is not cheap, so it is not run here;
+        the size is then ``None`` until a seek or a read finds it.
+        """
         if self._size is not None:
             return self._size
         if not self._index_enabled or not self._inner.seekable():
+            return None
+        if self._decoder.index_reads_whole_source:
             return None
         with self._deferring_raises() as pending:
             self._ensure_index_built()

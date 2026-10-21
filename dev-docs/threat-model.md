@@ -1124,7 +1124,8 @@ central header signatures lists at about 155 ns a byte (2.0 s for 13 MB, CPython
 where an ordinary directory lists at about 5 ns, because each signature is checked for a
 swallowed entry ([ZIP §2.2](formats/zip.md#22-open-and-list)). On declared seek demand,
 a forward seek past the known points, a `SEEK_END` or a size query reads a Seekable
-Zstandard seek table or walks a BGZF file's members. Both scans are linear but run one
+Zstandard seek table, and a forward seek past the known points or a `SEEK_END` walks a
+BGZF file's members. Both scans are linear but run one
 Python step per table entry or member, and the scan is paid before the table's final
 consistency check can raise. A table whose entries each name a one-byte frame, or a
 file of empty members, costs about 70-95 ns a byte, about 1.5 minutes a GB: a 4,000,000-entry table

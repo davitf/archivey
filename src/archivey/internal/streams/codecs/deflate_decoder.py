@@ -122,6 +122,9 @@ class GzipDecoder(BaseDecoder):
     this decoder resumes from.
     """
 
+    # The BGZF walk reads the whole file, so a size query does not run it.
+    index_reads_whole_source = True
+
     def __init__(
         self,
         *,

@@ -589,19 +589,26 @@ points.
 
 ### Requirement: BGZF members are walked without decoding
 
-A forward seek past the known points, a `SEEK_END`, or a size query SHALL walk a BGZF
-file's members from the start, reading the file once front to back and inflating
-nothing: each member's `BC` extra subfield gives its size and its ISIZE its output. The
-walk SHALL stop quietly at the first member without one, keeping the points before it;
-the size is known only when it reaches the end of the file. The sizes are trusted like
-the xz and lzip indexes (threat-model O17). A file whose first member is not BGZF SHALL
-cost one read buffer's worth before the walk stops. A `.gzi` file is not read.
+A forward seek past the known points or a `SEEK_END` SHALL walk a BGZF file's members
+from the start, reading the file once front to back and inflating nothing: each member's
+`BC` extra subfield gives its size and its ISIZE its output. The walk SHALL stop quietly
+at the first member without one, keeping the points before it; the size is known only
+when it reaches the end of the file. The sizes are trusted like the xz and lzip indexes
+(threat-model O17). A file whose first member is not BGZF SHALL cost one read buffer's
+worth before the walk stops. A `.gzi` file is not read.
+
+A size query (`try_get_size()`, `ArchiveStream.size`) SHALL NOT walk the file, because
+the walk reads all of it and a size query must be cheap. Before a walk or a read to the
+end, the size SHALL be `None`, as for plain gzip. After a walk that reached the end of
+the file, or a read to the end, the size query SHALL return the size.
 
 #### Scenario: BGZF walk matrix
 
 | Case | Expected |
 | --- | --- |
 | `seek(0, SEEK_END)` | Total from the walk; the file read once in large pieces, nothing inflated |
+| Size query on a new stream | `None`; no walk, at most one read buffer's worth read |
+| Size query after `seek(0, SEEK_END)`, a forward seek that walked, or a read to the end | The total |
 | Gzip file that is not BGZF | One read buffer's worth read; no points, no size |
 | Seek into block N | Decoding resumes at block N's start |
 | BGZF blocks, then a plain member | Points for the blocks; size from decoding to the end |
