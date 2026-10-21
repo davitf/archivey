@@ -243,7 +243,7 @@ apply to a read, and [Hardening](security.md#hardening) lists every limit.
 ### Refuse an upload with a reason
 
 Every problem with the archive raises a subclass of `ArchiveyError`. A server can turn each one into
-a reason for the user. `CONFIG` is the one from the previous recipe:
+a reason for the user. `CONFIG` and the byte count are the ones from the previous recipe:
 
 ```python
 import zipfile
@@ -259,15 +259,25 @@ CONFIG = archivey.ArchiveyConfig(
     process_isolation=archivey.ProcessIsolation.NATIVE_DECODERS,
     diagnostic_policy=archivey.DiagnosticPolicy.STRICT,
 )
+MAX_TOTAL_BYTES = 1 * 2**30
+
+
+class UploadTooLarge(Exception):
+    pass
 
 
 def check_upload(path):
+    total = 0
     try:
         with archivey.open_archive(path, streaming=True, config=CONFIG) as archive:
             for member, stream in archive.stream_members():
                 if stream is not None:
-                    while stream.read(2**20):
-                        pass
+                    while chunk := stream.read(2**20):
+                        total += len(chunk)
+                        if total > MAX_TOTAL_BYTES:
+                            raise UploadTooLarge(path)
+    except UploadTooLarge:
+        return "the archive is too large"
     except archivey.FormatDetectionError:
         return "not an archive"
     except archivey.EncryptionError:
@@ -325,9 +335,19 @@ import zipfile
 
 import archivey
 
+CONFIG = archivey.ArchiveyConfig(
+    listing_limits=archivey.ListingLimits(
+        max_members=10_000,
+        max_metadata_bytes=4 * 2**20,
+    ),
+    decoder_limits=archivey.DecoderLimits(max_decoder_memory=256 * 2**20),
+    process_isolation=archivey.ProcessIsolation.NATIVE_DECODERS,
+    diagnostic_policy=archivey.DiagnosticPolicy.STRICT,
+)
+
 
 def list_upload(path):
-    with archivey.open_archive(path, streaming=True) as archive:
+    with archivey.open_archive(path, streaming=True, config=CONFIG) as archive:
         return [member.name for member in archive]
 
 
@@ -397,7 +417,8 @@ members](extracting.md#what-each-policy-does-with-unusual-members) lists the cas
 
 The limits apply to each archive separately. A small upload can hold archives that each expand up
 to the limit, and those can hold more. The simplest choice is to refuse an upload that contains an
-archive. `detect_format` tells whether a member is one, when it's given the whole member:
+archive. `detect_format` tells whether a member is one, when it's given the whole member, and
+`always_probe_content=True` in `CONFIG` makes it also try decoding the start of the member:
 
 ```python
 import io
@@ -414,6 +435,7 @@ CONFIG = archivey.ArchiveyConfig(
     decoder_limits=archivey.DecoderLimits(max_decoder_memory=256 * 2**20),
     process_isolation=archivey.ProcessIsolation.NATIVE_DECODERS,
     diagnostic_policy=archivey.DiagnosticPolicy.STRICT,
+    always_probe_content=True,
 )
 MAX_TOTAL_BYTES = 1 * 2**30
 
@@ -432,7 +454,7 @@ def contains_archive(path):
                     copy.write(chunk)
                 copy.seek(0)
                 try:
-                    archivey.detect_format(copy)
+                    archivey.detect_format(copy, config=CONFIG)
                 except archivey.FormatDetectionError:
                     continue
                 return True
@@ -451,13 +473,20 @@ print(contains_archive("upload.zip"))
 
 The member is copied to a temporary file because its first bytes aren't always enough. An ISO keeps
 its signature 32 KiB into the file, and a self-extracting archive starts with a program, so the
-archive may start far into the member. `detect_format` on the whole copy finds every archive that
-`open_archive` would open from it. Other tools can find more: `unzip` and 7-Zip also find a ZIP
-behind arbitrary leading bytes, which archivey doesn't recognize. A check of the first few KiB
-alone is only a fast first filter. A member it lets through still needs the full check.
+archive may start far into the member. A check of the first few KiB alone is only a fast first
+filter, and a member it lets through still needs the full check.
 
-A compressed file such as `notes.txt.gz` counts as an archive here, since it can expand as much as
-one. So do Office documents, JAR files and wheels, which are ZIP archives.
+zlib, Brotli and `.lzma` data start with nothing that identifies them, and the copy has no file name
+to go by. Without `always_probe_content=True`, `detect_format` misses them, though `open_archive`
+reads the same bytes saved under a name ending in `.zz`, `.br` or `.lzma`. With it, the occasional
+file that only happens to decode as one of them also counts as an archive, which errs on the side
+of refusing.
+
+Even so, the check finds only what archivey recognizes. Other tools can find more: `unzip` and
+7-Zip also find a ZIP behind arbitrary leading bytes, which archivey doesn't.
+
+A compressed file such as `notes.txt.gz` or `data.zz` counts as an archive here, since it can expand
+as much as one. So do Office documents, JAR files and wheels, which are ZIP archives.
 
 If you need to look inside, keep one budget for the bytes read at every level, and refuse the
 upload when archives are nested more deeply than you allow:
@@ -477,6 +506,7 @@ CONFIG = archivey.ArchiveyConfig(
     decoder_limits=archivey.DecoderLimits(max_decoder_memory=256 * 2**20),
     process_isolation=archivey.ProcessIsolation.NATIVE_DECODERS,
     diagnostic_policy=archivey.DiagnosticPolicy.STRICT,
+    always_probe_content=True,
 )
 # Archives up to 2 levels inside the upload are scanned. A third level is refused.
 MAX_DEPTH = 2
@@ -505,7 +535,7 @@ def scan(source, budget, depth=0):
                     copy.write(chunk)
                 copy.seek(0)
                 try:
-                    archivey.detect_format(copy)
+                    archivey.detect_format(copy, config=CONFIG)
                 except archivey.FormatDetectionError:
                     continue
                 if depth + 1 > MAX_DEPTH:
