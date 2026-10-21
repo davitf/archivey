@@ -836,7 +836,7 @@ zeros raised it on half its 64-byte feed boundaries), and one byte before the en
 there broke those valid files.
 
 The shipped fix hands pyppmd the whole member in its first `decode`, so any short return
-is the end; members past `DecoderLimits.max_ppmd_in_process_input` (16 MiB) decode in a
+is the end; members past `DecoderLimits.max_ppmd_held_input` (16 MiB) decode in a
 child process. Before it, 10 of 10 hostile runs crashed; after it, 0 crashes in 1200
 hostile members across both paths, and 111 valid 7-Zip-written members byte-exact on both
 paths (`tests/test_ppmd_crash_isolation.py`).

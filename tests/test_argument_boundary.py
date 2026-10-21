@@ -418,9 +418,9 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
             ),
             _case(
                 "DecoderLimits",
-                "max_ppmd_in_process_input",
+                "max_ppmd_held_input",
                 bad,
-                lambda b=bad: DecoderLimits(max_ppmd_in_process_input=b),
+                lambda b=bad: DecoderLimits(max_ppmd_held_input=b),
             ),
             _case(
                 "SpoolLimits",

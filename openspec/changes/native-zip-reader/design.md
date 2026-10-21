@@ -342,7 +342,7 @@ archive has that shape, so DR-5a lets the two reads differ.
 PPMd holds its input until the whole member is in, and hands it to pyppmd whole: fed in
 pieces, pyppmd can crash the process on corrupt input. A bit-3 PPMd member has no size
 to wait for, and holding until the source ends would hold the rest of the archive, so it
-is fed in pieces and always in a child process; `max_ppmd_in_process_input=None`, which
+is fed in pieces and always in a child process; `max_ppmd_held_input=None`, which
 rules children out, refuses it with `ResourceLimitError`. pyppmd stops at the end mark
 and reports what it did not use (measured, in-process and in the child).
 
