@@ -6,8 +6,8 @@ body:
     attributes:
       value: |
         Thanks for the report. Do not file a security problem here: an archive that
-        writes outside the destination, escapes through a link, runs a program or hangs
-        the caller. Report it privately, as
+        writes outside the destination, escapes through a link, runs a program, or hangs
+        in a way the caller cannot interrupt. Report it privately, as
         [SECURITY.md](https://github.com/davitf/archivey/blob/main/SECURITY.md) says.
   - type: textarea
     id: version
