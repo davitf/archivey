@@ -35,7 +35,7 @@ if TYPE_CHECKING:
     from archivey.internal.registry import ContentProbe
 
 from archivey.config import DEFAULT_ARCHIVEY_CONFIG, ArchiveyConfig, ExtractionLimits
-from archivey.cost import CostReceipt
+from archivey.cost import AccessCost, CostReceipt
 from archivey.detection import FormatInfo
 from archivey.diagnostics import (
     DiagnosticCode,
@@ -563,6 +563,11 @@ class BaseArchiveReader(ArchiveReader):
         # pass another reader's identity check; and not a plain counter, whose small
         # sequential values invite confusion with member_id or hardcoding).
         self._archive_id = uuid.uuid4().hex
+        # open() calls on a SOLID reader that returned a stream, up to the second: that
+        # one decodes again what the first decoded, and logs the advice once (an INFO
+        # record by ruling, not a diagnostic or a warnings.warn).
+        self._solid_opens = 0
+        self._solid_opens_lock = threading.Lock()
         # The archive's source, recorded by every backend's constructor. The reader owns
         # it: teardown closes it after ``_close_archive``. Also backs
         # ``compressed_source_size`` below.
@@ -3274,6 +3279,7 @@ class BaseArchiveReader(ArchiveReader):
                 stream = self._open_with_link_follow(member, visited=set())
                 registered = self._register_public_stream(stream, token=reservation)
                 bound = True
+                self._note_solid_open()
                 return registered
             finally:
                 if not bound:
@@ -3297,6 +3303,38 @@ class BaseArchiveReader(ArchiveReader):
                         self._maybe_teardown()
         finally:
             self._state.release_worker(token)
+
+    def _note_solid_open(self) -> None:
+        """Log once per reader when a second ``open()`` decodes a solid run again.
+
+        On a ``SOLID`` reader each ``open()`` decodes the member's compression run from
+        its start, so the second call is the first to decode bytes a call before it
+        already decoded, and a loop of them is quadratic. The record is INFO on
+        ``archivey.backends``: the caller may have chosen the pattern, and
+        ``reader.cost`` and the ``open()`` docstring already carry the cost.
+        """
+        if self._solid_opens >= 2:
+            return
+        with self._solid_opens_lock:
+            if self._solid_opens >= 2:
+                return
+            # The private receipt: ``cost`` refuses once a close has begun, and an
+            # open() that a close waits on may still finish here.
+            if (
+                self._solid_opens == 0
+                and self._cost_receipt().access_cost is not AccessCost.SOLID
+            ):
+                self._solid_opens = 2  # never solid: stop counting
+                return
+            self._solid_opens += 1
+            if self._solid_opens < 2:
+                return
+        logger.info(
+            "Archive %r is solid: each open() or read() decodes its compressed data "
+            "from the start of the member's block, so reading many members this way "
+            "is quadratic. stream_members() decodes it once. Logged once per reader.",
+            self._archive_name or "(unnamed source)",
+        )
 
     def _open_with_link_follow(
         self,

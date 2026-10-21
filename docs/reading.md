@@ -16,7 +16,9 @@ An archive whose members are compressed together like this is called *solid*. Ev
 compressed TAR is solid, and so are most 7z archives, since 7-Zip creates solid archives by
 default. RAR archives are solid only when created with that option. On a solid archive,
 reading members by name can decompress the same data again and again. `stream_members`
-decompresses it once.
+decompresses it once. The second time you open a member of a solid archive by name, archivey
+logs one INFO message on the `archivey.backends` logger saying so; it shows only if your
+application turns logging on.
 
 If your code needs to know whether an archive is solid, `archive.cost` tells you before you read
 anything. Its `access_cost` is `AccessCost.SOLID` when reaching a member means decompressing others

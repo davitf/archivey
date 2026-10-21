@@ -433,7 +433,8 @@ class ArchiveReader(ForwardArchiveReader):
         **Cost, when ``reader.cost.access_cost`` is ``SOLID``** (solid 7z/RAR, any
         compressed tar): members share one compression run, so opening one decodes
         every member before it. Doing that for each member in turn is quadratic in the
-        archive size. Nothing warns about it — prefer
+        archive size. The second such call logs one INFO record per reader on the
+        ``archivey.backends`` logger saying so, and nothing else warns: prefer
         :meth:`~ForwardArchiveReader.stream_members`, which decodes the run once."""
         ...
 

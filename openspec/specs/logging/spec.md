@@ -42,6 +42,7 @@ table is illustrative: a logger missing from it is not a contract violation.
 | Application configures no handlers on `archivey` or ancestors | No output by default; library installs no handler |
 | Magic bytes conflict with extension | `logging.WARNING` on `archivey.detection` |
 | Member-name normalization changes logical meaning relative to `raw_name` | Warning on `archivey.normalization` |
+| Second `open()` or `read()` that returns a stream on a reader whose `cost.access_cost` is `SOLID` | One `logging.INFO` record on `archivey.backends` per reader, saying the pattern is quadratic and naming `stream_members()`; not a diagnostic, no `warnings.warn` |
 
 ### Requirement: Warning logs are ordered projections of diagnostics
 
