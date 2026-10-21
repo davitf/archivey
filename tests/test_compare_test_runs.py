@@ -348,3 +348,53 @@ def test_a_small_loss_is_listed_and_does_not_fail(
         "  tests/test_a.py::test_x: 1 (src/archivey/a.py 1) no longer run (5%), 0 newly run\n"
     ) in capsys.readouterr().out
     assert _run("coverage", before, after, "--max-lost", "0.01") == 1
+
+
+def test_every_explained_loss_is_listed_however_many_there_are(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # 45 loser/taker pairs, each loser giving one of its two arcs to its partner, and
+    # one big test that lost 45 of its 100 arcs to a new end-to-end test.
+    before_arcs: dict[str, list[tuple[int, int]]] = {}
+    after_arcs: dict[str, list[tuple[int, int]]] = {}
+    for n in range(45):
+        loser, taker = (
+            f"tests/test_m.py::test_loser{n}",
+            f"tests/test_m.py::test_taker{n}",
+        )
+        given, kept = (2 * n, 2 * n + 1), (2 * n + 1, 2 * n + 2)
+        before_arcs |= {loser: [given, kept], taker: [(1000 + n, 1001 + n)]}
+        after_arcs |= {loser: [kept], taker: [(1000 + n, 1001 + n), given]}
+    big = [(5000 + n, 5001 + n) for n in range(100)]
+    before_arcs["tests/test_z.py::test_big"] = big
+    after_arcs["tests/test_z.py::test_big"] = big[45:]
+    after_arcs["tests/test_new.py::test_e2e"] = big[:45]
+    before = _coverage(tmp_path / "b.coverage", before_arcs)
+    after = _coverage(tmp_path / "a.coverage", after_arcs)
+    assert _run("coverage", before, after, "--allow-new") == 0
+    out = capsys.readouterr().out
+    assert (
+        "  tests/test_z.py::test_big: 0 no longer run (0%), 0 newly run; lost 45 in "
+        "all (45%), of which 45 now run by tests/test_new.py::test_e2e\n"
+    ) in out
+    assert "smaller changes, listed for a person to read: 46\n" in out
+    assert "more" not in out
+    # A taker has nothing of its own to report; its loser's line names it.
+    assert "  tests/test_m.py::test_taker0:" not in out
+
+
+def test_an_explanation_names_only_what_applies(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    before = _coverage(
+        tmp_path / "b.coverage",
+        {"tests/test_a.py::test_x": [(1, 2), (2, 3), (3, 4), (7, 8)]},
+    )
+    kept = [(1, 2), (2, 3), (3, 4)]
+    again = _coverage(tmp_path / "b2.coverage", {"tests/test_a.py::test_x": kept})
+    after = _coverage(tmp_path / "a.coverage", {"tests/test_a.py::test_x": kept})
+    assert _run("coverage", before, after, "--baseline", again) == 0
+    assert (
+        "  tests/test_a.py::test_x: 0 no longer run (0%), 0 newly run; lost 1 in all "
+        "(25%), of which 1 vary between the before runs\n"
+    ) in capsys.readouterr().out

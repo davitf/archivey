@@ -38,9 +38,11 @@ So a test fails the check when it lost more than ``--max-lost`` (a tenth) of wha
 after the explanations, or more than ``--max-hollow`` (a half) counting what moved or
 varies. The second rule is for a test that became a no-op while another test took up
 its lines, or with a baseline recorded from the wrong tree: no test in the unchanged
-runs lost more than 9% in all. Every other test whose coverage changed is listed with
-what it lost, where the lines went, and what varies, for a person to read; a ``same``
-says no test crossed either line, not that none changed.
+runs lost more than 9% in all. Every other test that lost lines or newly runs lines of
+its own is listed, uncut and largest loss first, with what it lost, which tests took
+the lines up, and what varies, for a person to read. A test that only took up lines
+another test gave up appears on that test's line. A ``same`` says no test crossed
+either line, not that none changed.
 
 A test whose file moved is matched through ``--moved OLD=NEW`` (repeatable, paths as
 pytest prints them, e.g. ``tests/test_zip_pipe.py=tests/zip/test_zip_pipe.py``). A test
@@ -129,14 +131,15 @@ def _match(
     return pairs, missing, new
 
 
-def _print_list(title: str, items: list[str]) -> None:
+def _print_list(title: str, items: list[str], *, show: int | None = _SHOW) -> None:
+    """``title``, then the first ``show`` items (``None``: all of them)."""
     if not items:
         return
     print(f"{title}: {len(items)}")
-    for item in items[:_SHOW]:
+    for item in items[:show]:
         print(f"  {item}")
-    if len(items) > _SHOW:
-        print(f"  ... and {len(items) - _SHOW} more")
+    if show is not None and len(items) > show:
+        print(f"  ... and {len(items) - show} more")
 
 
 def _refuse_empty(kind: str, before: Path, count: int) -> None:
@@ -341,12 +344,16 @@ def compare_coverage(
         if not lost[old] and not gained[old]:
             continue
         skip = unstable.get(old, {})
+        # Empty files left out, as _minus leaves them, so an empty dict means none.
         varying = {
-            path: items & skip.get(path, set()) for path, items in lost[old].items()
+            path: kept
+            for path, items in lost[old].items()
+            if (kept := items & skip.get(path, set()))
         }
         moved = {
-            path: {item for item in items if (path, item) in takers}
+            path: kept
             for path, items in _minus(lost[old], skip).items()
+            if (kept := {item for item in items if (path, item) in takers})
         }
         real_lost = _minus(_minus(lost[old], skip), moved)
         real_gained = _minus(
@@ -354,6 +361,9 @@ def compare_coverage(
             gave_up,
         )
         moved_total += _count(moved)
+        if not (real_lost or real_gained or moved or varying):
+            # It only took up lines another test gave up; that test's line names it.
+            continue
         ran = _count(before[old])
         share = _count(real_lost) / ran if ran else 0.0
         raw_share = _count(lost[old]) / ran if ran else 0.0
@@ -362,7 +372,8 @@ def compare_coverage(
             f"{old}: {_describe(real_lost)} no longer run ({share:.0%}), "
             f"{_describe(real_gained)} newly run"
         )
-        if _count(moved) or _count(varying):
+        explained = []
+        if moved:
             recipients = sorted(
                 {
                     taker
@@ -372,16 +383,17 @@ def compare_coverage(
                 }
             )
             named = ", ".join(recipients[:2]) + (", ..." if len(recipients) > 2 else "")
+            explained.append(f"{_count(moved)} now run by {named}")
+        if varying:
+            explained.append(f"{_count(varying)} vary between the before runs")
+        if explained:
             line += (
                 f"; lost {_count(lost[old])} in all ({raw_share:.0%}), of which "
-                f"{_count(moved)} now run by {named or 'no test'}"
-                + (
-                    f" and {_count(varying)} vary between the before runs"
-                    if skip
-                    else ""
-                )
+                + " and ".join(explained)
             )
-        changed.append((share, fails, line))
+        changed.append((max(share, raw_share), fails, line))
+    # Failing tests first, then by the larger of the two shares, so an explained loss
+    # ranks by what the test lost in all.
     changed.sort(key=lambda item: (not item[1], -item[0]))
     failing = [line for _, fails, line in changed if fails]
     listed = [line for _, fails, line in changed if not fails]
@@ -408,8 +420,10 @@ def compare_coverage(
         f"tests that lost over {max_lost:.0%} of their lines/arcs, or over "
         f"{max_hollow:.0%} counting what moved or varies",
         failing,
+        show=None,
     )
-    _print_list("smaller changes, listed for a person to read", listed)
+    # Every line, uncut: a pull request pastes this as its evidence.
+    _print_list("smaller changes, listed for a person to read", listed, show=None)
     return not missing and not failing and (allow_new or not new)
 
 
