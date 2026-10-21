@@ -68,6 +68,7 @@ from __future__ import annotations
 import io
 import os
 import stat
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Protocol, cast
@@ -190,6 +191,10 @@ class _GatheringReader:
         return data + read_exact(self._inner, n - got)
 
 
+# See _readinto_or_stall: PyPy's BufferedRandom.readinto over-reports at the end.
+_UNDER_PYPY = sys.implementation.name == "pypy"
+
+
 def _readinto_or_stall(reader: object, view: memoryview) -> int | None:
     """:func:`try_readinto`, with a 0 into a non-empty buffer confirmed by ``read``.
 
@@ -204,7 +209,14 @@ def _readinto_or_stall(reader: object, view: memoryview) -> int | None:
     The check sits at this boundary because :class:`ArchiveSource` is the only wrapper
     placed directly over a caller's stream; every other ``try_readinto`` caller reads
     a stream that has already come through here, where a 0 is already the end.
+
+    Under PyPy the caller's ``readinto`` is not called at all. PyPy 3.11's
+    ``io.BufferedRandom.readinto`` (a ``w+b`` or ``r+b`` file, also under
+    ``tempfile.NamedTemporaryFile`` and a spilled ``SpooledTemporaryFile``) returns more
+    than it filled on the last partial fill: 16 for the 8 bytes left. ``read`` is right.
     """
+    if _UNDER_PYPY:
+        return readinto_via_read(cast(BinaryIO, reader), view)
     got = try_readinto(reader, view)
     if got != 0 or not len(view):
         return got

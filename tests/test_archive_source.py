@@ -17,9 +17,10 @@ import os
 import subprocess
 import sys
 import tarfile
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, BinaryIO, cast
 
 import pytest
 
@@ -1428,3 +1429,37 @@ def test_peek_arrived_refuses_a_seekable_source_and_a_negative_size() -> None:
     source = ArchiveSource.for_stream(QueuedChunks(b"abc"))  # type: ignore[arg-type]  # test double
     with pytest.raises(ValueError, match="non-negative"):
         source.peek_arrived(-1)
+
+
+def _read_write_file(tmp_path: Path) -> BinaryIO:
+    return open(tmp_path / "rw.bin", "w+b")
+
+
+def _spilled_spooled_file(_tmp_path: Path) -> BinaryIO:
+    return cast(BinaryIO, tempfile.SpooledTemporaryFile(max_size=16))
+
+
+@pytest.mark.parametrize(
+    "make",
+    [
+        pytest.param(_read_write_file, id="w+b"),
+        pytest.param(lambda _: tempfile.NamedTemporaryFile(), id="named-temporary"),
+        pytest.param(_spilled_spooled_file, id="spooled-spilled"),
+    ],
+)
+def test_readinto_over_a_read_write_file_counts_only_what_it_filled(
+    make: Callable[[Path], BinaryIO], tmp_path: Path
+) -> None:
+    """PyPy 3.11's ``io.BufferedRandom.readinto`` returns more than it filled on the
+    last partial fill: 16 for the 8 bytes left. The boundary reads such a file right
+    on every interpreter (under PyPy it uses ``read``)."""
+    payload = bytes(range(256)) * 19 + bytes(range(136))  # 39 * 128 + 8 bytes
+    with make(tmp_path) as f:
+        f.write(payload)
+        f.seek(0)
+        wrapped = ArchiveSource.for_stream(f)
+        out = bytearray()
+        buf = bytearray(128)
+        while n := wrapped.readinto(buf):
+            out += buf[:n]
+    assert bytes(out) == payload

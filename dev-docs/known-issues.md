@@ -407,6 +407,31 @@ rapidgzip.
 **Evidence.** [`linux-heap-corruption-soak.md`](investigations/linux-heap-corruption-soak.md):
 the CI step split, the soak and A/B recipes, and the recorded red runs.
 
+## PyPy: `BufferedRandom.readinto` over-reports its last partial fill (open, upstream)
+
+**Symptom.** Under PyPy 3.11.17, `io.BufferedRandom.readinto` (a file opened `w+b` or
+`r+b`, also under `tempfile.NamedTemporaryFile` and a spilled `SpooledTemporaryFile`)
+returns more than it filled when fewer bytes are left than the buffer holds. For a
+5,000-byte file read into a 128-byte buffer, the last call returns 16 for the 8 bytes
+left, so a caller that trusts the count takes 8 stale bytes from the buffer; 300 bytes
+read 128 at a time give 344. `read` and a read-only `BufferedReader` are right, and a call
+whose buffer is no larger than what is left is right too.
+
+**What archivey does.** Under PyPy, `ArchiveSource`, the one wrapper over a caller's
+stream, fills its buffer with `read` instead of the caller's `readinto`
+(`_readinto_or_stall` in `internal/source.py`). Pinned by
+`test_readinto_over_a_read_write_file_counts_only_what_it_filled` in
+`tests/test_archive_source.py`, which fails under PyPy without it. The
+`spooled_tempfile` and `named_tempfile` cases of `test_readinto_yields_content` in
+`tests/test_stream_inputs.py` call the file's own `readinto`, so they skip under PyPy.
+
+**What remains.** Nothing gates this on PyPy: the PyPy CI job is allowed to fail.
+
+**Upstream.** Not filed with PyPy.
+
+**Evidence.** Write 5,000 bytes to `open(path, "w+b")`, `seek(0)`, then call
+`readinto(bytearray(128))` until it returns 0: the counts add up to 5,008.
+
 ## PyPy: buffer views and non-blocking `readinto` (open, by design upstream)
 
 **Symptom.** Two PyPy 3.11 behaviours that CPython does not share. A `memoryview` that

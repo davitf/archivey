@@ -442,7 +442,23 @@ def test_chunked_read_yields_content(case: Case, tmp_path: Path) -> None:
         _close(stream)
 
 
-def test_readinto_yields_content(case: Case, tmp_path: Path) -> None:
+# PyPy 3.11's ``io.BufferedRandom.readinto`` (a ``w+b`` file) over-reports the last
+# partial fill: 16 for the 8 bytes left. These cases pass the file through unwrapped, so
+# the test would measure PyPy alone. archivey's boundary does not call it under PyPy
+# (``_readinto_or_stall`` in internal/source.py); dev-docs/known-issues.md has the entry.
+_PYPY_READINTO_OVERCOUNTS = frozenset({"spooled_tempfile", "named_tempfile"})
+
+
+def test_readinto_yields_content(
+    case: Case, tmp_path: Path, request: pytest.FixtureRequest
+) -> None:
+    if (
+        sys.implementation.name == "pypy"
+        and request.node.callspec.params["case"] in _PYPY_READINTO_OVERCOUNTS
+    ):
+        pytest.skip(
+            "PyPy's BufferedRandom.readinto over-reports at the end of the file"
+        )
     stream = ensure_binaryio(case.build(tmp_path))
     try:
         out = bytearray()
