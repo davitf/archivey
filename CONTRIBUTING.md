@@ -388,6 +388,12 @@ maintainer.
   reach the path it named. For a test the PR says fails on `main`,
   `uv run python scripts/review_prep.py red-on-base <test ids>` runs it against the
   merge base's `src/` and prints a table for the PR body.
+- **A test you move or refactor still tests what it did.** When a change moves tests
+  between files or swaps their setup for a shared helper, run the suite before and after
+  it and compare the runs with `scripts/compare_test_runs.py` (its docstring has the
+  commands). It checks that every test still runs with the same outcome, and that each
+  test runs the same `src/` lines. A test that has stopped testing anything still passes,
+  so only the second check catches it. Paste both results into the PR.
 - **A parity promise gets its comparison test first.** When a feature promises to behave
   like another archivey path (a dry run like a real extraction), write the test that
   runs both and compares them first, before the feature itself. This generalises the
