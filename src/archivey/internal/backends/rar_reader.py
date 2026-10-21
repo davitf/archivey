@@ -123,6 +123,7 @@ from archivey.internal.base_reader import (
     MAX_LINK_TARGET_BYTES,
     BaseArchiveReader,
     ReadBackend,
+    SolidRun,
     pass_has_data,
 )
 from archivey.internal.config import KeyDerivationBudget, check_decoder_memory
@@ -4067,6 +4068,20 @@ class RarReader(BaseArchiveReader):
             member_name=member.name,
             source_format=ArchiveFormat.RAR,
         )
+
+    def _solid_run(self, member: ArchiveMember) -> SolidRun | None:
+        # A member read through unrar or unar in a solid archive is decoded from the
+        # archive's first payload member, by a fresh process on every open().
+        raw = member._raw
+        if (
+            not self._archive.is_solid
+            or not isinstance(raw, RarMemberInfo)
+            or not raw.is_payload_file()
+            or raw.is_file_copy()
+            or self._can_direct_read(raw)
+        ):
+            return None
+        return SolidRun(None, self._solid_prefix(member), _member_stream_size(member))
 
     def _solid_prefix(self, target: ArchiveMember) -> int:
         """Unpacked bytes of earlier payload members in a solid archive.

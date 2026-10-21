@@ -84,6 +84,7 @@ from archivey.internal.base_reader import (
     UNREADABLE_LINK_TARGET_ERRORS,
     BaseArchiveReader,
     ReadBackend,
+    SolidRun,
     pass_has_data,
 )
 from archivey.internal.config import (
@@ -1412,6 +1413,16 @@ class SevenZipReader(BaseArchiveReader):
             format_label="7z",
             digest="checksum",
             why="no checksum confirmed the password",
+        )
+
+    def _solid_run(self, member: ArchiveMember) -> SolidRun | None:
+        # Every open() builds its folder's decoder afresh and decodes up to the member.
+        raw = member._raw
+        assert isinstance(raw, _MemberRaw)
+        if raw.folder_index is None:
+            return None
+        return SolidRun(
+            raw.folder_index, raw.folder_prefix, _member_stream_size(member)
         )
 
     def _member_prefix(self, member: ArchiveMember) -> int:

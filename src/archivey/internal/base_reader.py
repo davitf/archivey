@@ -11,6 +11,7 @@ from collections.abc import (
     Callable,
     Collection,
     Generator,
+    Hashable,
     Iterator,
     Mapping,
     Sequence,
@@ -35,7 +36,7 @@ if TYPE_CHECKING:
     from archivey.internal.registry import ContentProbe
 
 from archivey.config import DEFAULT_ARCHIVEY_CONFIG, ArchiveyConfig, ExtractionLimits
-from archivey.cost import AccessCost, CostReceipt
+from archivey.cost import CostReceipt
 from archivey.detection import FormatInfo
 from archivey.diagnostics import (
     DiagnosticCode,
@@ -285,6 +286,19 @@ def _settle_listing(
             member._size_unread = False
 
 
+class SolidRun(NamedTuple):
+    """Where an ``open()`` starts decoding: :meth:`BaseArchiveReader._solid_run`.
+
+    ``key`` names the run (a 7z folder, a solid RAR archive), and every open of a member
+    in it decodes from the run's start: ``offset`` is the member's first byte in the
+    run's decoded output, ``size`` its length.
+    """
+
+    key: Hashable
+    offset: int
+    size: int
+
+
 @dataclass(frozen=True)
 class _Materialized:
     """The published member listing: the report, frozen when the walk is published.
@@ -510,6 +524,9 @@ class BaseArchiveReader(ArchiveReader):
 
     **MAY override**:
 
+    - ``_solid_run(member)`` — where ``open()`` starts decoding for ``member``, for a
+      backend whose every open decodes a shared run from its start. Feeds the
+      once-per-reader re-decode record; the default (``None``) never logs.
     - ``_iter_with_data()`` — see its own docstring. The default is correct for
       random-access / indexed backends only; **streaming / solid backends MUST override
       it** (correctness, not just efficiency). Streaming backends that override
@@ -563,11 +580,12 @@ class BaseArchiveReader(ArchiveReader):
         # pass another reader's identity check; and not a plain counter, whose small
         # sequential values invite confusion with member_id or hardcoding).
         self._archive_id = uuid.uuid4().hex
-        # open() calls on a SOLID reader that returned a stream, up to the second: that
-        # one decodes again what the first decoded, and logs the advice once (an INFO
-        # record by ruling, not a diagnostic or a warnings.warn).
-        self._solid_opens = 0
-        self._solid_opens_lock = threading.Lock()
+        # How far open() has decoded each solid run (``_solid_run``), until one open
+        # decodes again bytes an earlier one decoded: that logs the advice once (an
+        # INFO record by ruling, not a diagnostic or a warnings.warn), and counting
+        # stops (``None``).
+        self._solid_decoded: dict[Hashable, int] | None = {}
+        self._solid_decoded_lock = threading.Lock()
         # The archive's source, recorded by every backend's constructor. The reader owns
         # it: teardown closes it after ``_close_archive``. Also backs
         # ``compressed_source_size`` below.
@@ -3276,10 +3294,20 @@ class BaseArchiveReader(ArchiveReader):
             bound = False
             stream: ArchiveStream | None = None
             try:
-                stream = self._open_with_link_follow(member, visited=set())
+                opened: list[ArchiveMember] = []
+                stream = self._open_with_link_follow(
+                    member, visited=set(), opened=opened
+                )
+                # Asked before the bind: from here a raise still closes the stream.
+                run = (
+                    self._solid_run(opened[0])
+                    if self._solid_decoded is not None
+                    else None
+                )
                 registered = self._register_public_stream(stream, token=reservation)
                 bound = True
-                self._note_solid_open()
+                if run is not None:
+                    self._note_solid_open(opened[0], run)
                 return registered
             finally:
                 if not bound:
@@ -3304,44 +3332,59 @@ class BaseArchiveReader(ArchiveReader):
         finally:
             self._state.release_worker(token)
 
-    def _note_solid_open(self) -> None:
-        """Log once per reader when a second ``open()`` decodes a solid run again.
+    def _solid_run(self, member: ArchiveMember) -> SolidRun | None:
+        """Where ``open(member)`` starts decoding, when it decodes a shared run.
 
-        On a ``SOLID`` reader each ``open()`` decodes the member's compression run from
-        its start, so the second call is the first to decode bytes a call before it
-        already decoded, and a loop of them is quadratic. The record is INFO on
+        ``None`` (the default) when the open does not decode bytes of other members:
+        a member of its own, or a backend that keeps one decoder position across opens
+        (compressed TAR, whose backward seeks ``STREAM_REWIND_REDECOMPRESSES``
+        reports). A backend whose every open decodes the member's solid run from its
+        start (7z folders, solid RAR) returns that run. Must not raise or decode: it
+        reads the member's listed position only.
+        """
+        del member
+        return None
+
+    def _note_solid_open(self, member: ArchiveMember, run: SolidRun) -> None:
+        """Log once per reader when an ``open()`` decodes again what an earlier did.
+
+        ``run`` is ``member``'s :meth:`_solid_run`, and the open already succeeded, so
+        this only counts and logs: it must not raise. The open decoded the run from its
+        start through ``run.offset + run.size``; the bytes before ``run.offset`` were
+        decoded and discarded, and those an earlier open of the same run had already
+        decoded are decoded again. On the first such open the record is INFO on
         ``archivey.backends``: the caller may have chosen the pattern, and
         ``reader.cost`` and the ``open()`` docstring already carry the cost.
         """
-        if self._solid_opens >= 2:
-            return
-        with self._solid_opens_lock:
-            if self._solid_opens >= 2:
+        with self._solid_decoded_lock:
+            decoded = self._solid_decoded
+            if decoded is None:
                 return
-            # The private receipt: ``cost`` refuses once a close has begun, and an
-            # open() that a close waits on may still finish here.
-            if (
-                self._solid_opens == 0
-                and self._cost_receipt().access_cost is not AccessCost.SOLID
-            ):
-                self._solid_opens = 2  # never solid: stop counting
+            again = min(run.offset, decoded.get(run.key, 0))
+            if again <= 0:
+                decoded[run.key] = max(decoded.get(run.key, 0), run.offset + run.size)
                 return
-            self._solid_opens += 1
-            if self._solid_opens < 2:
-                return
+            self._solid_decoded = None
         logger.info(
-            "Archive %r is solid: each open() or read() decodes its compressed data "
-            "from the start of the member's block, so reading many members this way "
-            "is quadratic. stream_members() decodes it once. Logged once per reader.",
+            "Archive %r is solid: opening %r decoded again %d bytes an earlier open() "
+            "on this reader had decoded, because each open() or read() decodes its "
+            "member's solid block from the start. Reading many members this way is "
+            "quadratic in the block size; stream_members() decodes each block once. "
+            "Logged once per reader.",
             self._archive_name or "(unnamed source)",
+            member.name,
+            again,
         )
 
     def _open_with_link_follow(
         self,
         member: ArchiveMember,
         visited: set[int],
+        opened: list[ArchiveMember] | None = None,
     ) -> ArchiveStream:
         """Open ``member``, following links hop by hop until a non-link member.
+
+        ``opened``, when given, receives the member whose data the stream reads.
 
         A loop, not recursion: an archive's chain can be longer than the interpreter's
         recursion limit, and ``RecursionError`` is outside the library's error contract.
@@ -3410,6 +3453,8 @@ class BaseArchiveReader(ArchiveReader):
                 "declares no data (not a file)",
                 refused_member_type=current.type,
             )
+        if opened is not None:
+            opened.append(current)
         return self._open_member(current)
 
     def read(self, member: str | ArchiveMember) -> bytes:
