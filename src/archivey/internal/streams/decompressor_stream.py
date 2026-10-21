@@ -239,9 +239,12 @@ class SeekPoint:
     # drops every point that has this flag when the index and the decode disagree
     # (``DecompressorStream._drop_index``). One index source is left unmarked: xz's
     # per-stream scan during a forward read (``XzDecoder._progressive_stream_points``)
-    # reads block records but emits them as decoded points. That is safe because the
-    # check never fires for xz: a block point's state holds its own output offset, so
-    # two xz points with the same state are at the same offset.
+    # reads block records but emits them as decoded points. That is safe because
+    # neither check can find xz's index wrong. The offset check never fires for xz: a
+    # block point's state holds its own output offset, so two xz points with the same
+    # state are at the same offset. The end-total check cannot disagree either:
+    # liblzma verifies each stream's index against its block headers at the stream's
+    # end and raises when they differ, before a decode publishes a total.
     from_index: bool = field(default=False, compare=False)
 
 
@@ -1389,13 +1392,10 @@ class DecompressorStream(ReadOnlyIOStream):
                     chunks.append(chunk)
             held = pending()
             if held is not None:
-                # Put back what was decoded, unconsumed. When the decode finished
-                # clean, the EOF branch published a size from the emptied buffer; the
-                # true total is _pos plus everything in chunks.
-                joined = b"".join(chunks)
-                self._buffer[:0] = joined
-                if self._end_error() is None and self._decoder.finished:
-                    self._publish_size(self._pos + len(joined))
+                # Put back what was decoded, unconsumed. A decode that finished clean
+                # has already published the true total: the EOF branches publish
+                # _decoder_pos, which counts every byte the decoder produced.
+                self._buffer[:0] = b"".join(chunks)
                 raise held
         # A read(-1)/readall() caller expects the complete stream and will not call
         # again, so a deferred pending_error (e.g. truncated .Z) must raise here —

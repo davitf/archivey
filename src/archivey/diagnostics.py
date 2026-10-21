@@ -632,7 +632,8 @@ class SeekIndexContext(_JsonSafeContext):
     A failed or skipped build means the stream may redecompress on rewind. A thinned
     table (more entries than the seek-table cap) still works, with points further
     apart, so a seek may decode further than it would otherwise. An index that a decode
-    proved wrong is dropped, and seeks resume only from points found by decoding.
+    proved wrong is dropped: seeks resume only from points found by decoding, and the
+    size is the decoded one (a size query decodes to the end until a decode has).
     """
 
     kind: Literal["seek_index"] = "seek_index"
