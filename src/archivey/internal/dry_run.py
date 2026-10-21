@@ -399,15 +399,17 @@ class DryRun:
             if rel:
                 _with_ancestors(ours, rel)
         top: tuple[tuple[str, bool], ...] | None = None
-        with contextlib.suppress(OSError):
-            with os.scandir(long_path(self.scratch)) as entries:
-                top = tuple(
-                    sorted(
-                        (entry.name, entry.is_dir(follow_symlinks=False))
-                        for entry in entries
-                        if entry.name not in copied or entry.name in ours
-                    )
+        with (
+            contextlib.suppress(OSError),
+            os.scandir(long_path(self.scratch)) as entries,
+        ):
+            top = tuple(
+                sorted(
+                    (entry.name, entry.is_dir(follow_symlinks=False))
+                    for entry in entries
+                    if entry.name not in copied or entry.name in ours
                 )
+            )
         if top is None or len(top) != 1:
             return ScratchRecord(top, None, None)
         tree = scratch_tree(self.scratch)

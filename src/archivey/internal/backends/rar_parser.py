@@ -39,6 +39,7 @@ import functools
 import hashlib
 import hmac
 import io
+import itertools
 import struct
 import zlib
 from collections.abc import Sequence
@@ -745,8 +746,7 @@ def parse_rar_volumes(
     if (
         len(volume_numbers) != len(volumes)
         or any(
-            later <= earlier
-            for earlier, later in zip(volume_numbers, volume_numbers[1:])
+            later <= earlier for earlier, later in itertools.pairwise(volume_numbers)
         )
         or volume_numbers[0] < 1
     ):
@@ -1481,8 +1481,7 @@ def load_vint(buf: bytes | bytearray | memoryview, pos: int) -> tuple[int, int]:
     if b < 0x80:
         return b, pos + 1
     limit = pos + 11
-    if limit > length:
-        limit = length
+    limit = min(limit, length)
     res = b & 0x7F
     ofs = 7
     pos += 1
@@ -3493,11 +3492,12 @@ def _parse_rar5(
                         needs_next_volume = True
                     seen_file_offsets.add(member.header_offset)
             elif block_type == _RAR5_SERVICE:
-                if member.skipped_header_records or member.header_walk_stop_reason:
-                    if not _append_damaged_service_header(
-                        damaged_service_headers, member
-                    ):
-                        damaged_service_headers_omitted += 1
+                if (
+                    member.skipped_header_records or member.header_walk_stop_reason
+                ) and not _append_damaged_service_header(
+                    damaged_service_headers, member
+                ):
+                    damaged_service_headers_omitted += 1
                 if _is_stored_rar5_cmt(member):
                     source.seek(data_offset)
                     # The packed size, as for any stored payload: the unpacked one
@@ -3880,8 +3880,10 @@ def _parse_rar5_file_block(
             (
                 RAR5_UNPLACED_BYTES,
                 None,
-                f"{unplaced_bytes} bytes between its fixed fields and its "
-                "declared extra area",
+                (
+                    f"{unplaced_bytes} bytes between its fixed fields and its "
+                    "declared extra area"
+                ),
             ),
         )
 

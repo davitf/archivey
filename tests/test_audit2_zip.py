@@ -349,9 +349,11 @@ def test_malformed_unicode_path_field_is_dropped_with_a_diagnostic(
 def test_malformed_unicode_path_field_refuses_under_strict() -> None:
     blob, _ = _unicode_path_zip(extra=_short_unicode_path_field(2))
     strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
-    with pytest.raises(DiagnosticRaisedError) as raised:
-        with archivey.open_archive(io.BytesIO(blob), config=strict) as ar:
-            ar.members()
+    with (
+        pytest.raises(DiagnosticRaisedError) as raised,
+        archivey.open_archive(io.BytesIO(blob), config=strict) as ar,
+    ):
+        ar.members()
     assert raised.value.diagnostic.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
 
 
@@ -474,9 +476,11 @@ def test_malformed_unicode_comment_field_is_dropped_with_a_diagnostic(
         assert reason in diagnostic.context.reason
         assert ar.read(member) == b"hi"
     strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
-    with pytest.raises(DiagnosticRaisedError) as raised:
-        with archivey.open_archive(io.BytesIO(blob), config=strict) as ar:
-            ar.members()
+    with (
+        pytest.raises(DiagnosticRaisedError) as raised,
+        archivey.open_archive(io.BytesIO(blob), config=strict) as ar,
+    ):
+        ar.members()
     assert raised.value.diagnostic.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
 
 
@@ -848,12 +852,10 @@ def test_zero_size_member_with_wrong_crc_raises_on_chunked_read() -> None:
     blob = _build_zip([_Entry(b"a", b"", crc=0x12345678)])
     with archivey.open_archive(io.BytesIO(blob)) as ar:
         (member,) = ar.members()
-        with ar.open(member) as stream:
-            with pytest.raises(CorruptionError):
-                stream.read()  # read(-1) does raise: fixture sanity
-        with ar.open(member) as stream:
-            with pytest.raises(CorruptionError):
-                stream.read(8192)
+        with ar.open(member) as stream, pytest.raises(CorruptionError):
+            stream.read()  # read(-1) does raise: fixture sanity
+        with ar.open(member) as stream, pytest.raises(CorruptionError):
+            stream.read(8192)
 
 
 def test_zero_size_member_with_wrong_crc_does_not_extract_clean(tmp_path: Path) -> None:
@@ -873,11 +875,10 @@ def test_zero_declared_size_with_data_raises_rather_than_serving_it(
     with archivey.open_archive(io.BytesIO(blob)) as ar:
         (member,) = ar.members()
         assert member.size == 0
-        with ar.open(member) as stream:
-            # read(-1) raises "exceeds its declared size of 0 bytes"; a bounded read
-            # must reach the same verdict rather than b"" followed by b"hello".
-            with pytest.raises(CorruptionError):
-                stream.read(8192)
+        # read(-1) raises "exceeds its declared size of 0 bytes"; a bounded read
+        # must reach the same verdict rather than b"" followed by b"hello".
+        with ar.open(member) as stream, pytest.raises(CorruptionError):
+            stream.read(8192)
 
 
 def test_zero_declared_size_with_data_does_not_extract_clean(tmp_path: Path) -> None:
