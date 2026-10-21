@@ -23,6 +23,7 @@ from archivey.internal.streams.decompressor_stream import (
     SeekPoint,
     damaged_stream_error,
     near_stream_magic,
+    release_decoder,
 )
 
 if TYPE_CHECKING:
@@ -256,6 +257,7 @@ class FramedDecoder(BaseDecoder):
             self._need_more = True
             return b""
         if state:
+            release_decoder(self._decomp)
             self._decomp = self._new()
             self._between = False
             return rest

@@ -43,6 +43,7 @@ from archivey.internal.streams.codecs.stdlib_takeover import (
 from archivey.internal.streams.decompressor_stream import (
     _StreamChecksumError,
     input_after_end_error,
+    release_decoder,
     zlib_error,
 )
 from archivey.internal.streams.resume import ask_resume_offset
@@ -337,10 +338,9 @@ class _ZlibAdlerCheckStream(DelegatingStream):
                             raise _ZlibFirstStreamEnds(produced)
                         first = False
                         # The next of several zlib streams one after another.
-                        pending, decoder = (
-                            decoder.unused_data,
-                            self._natives.zlib_decompressobj(),
-                        )
+                        pending = decoder.unused_data
+                        release_decoder(decoder)
+                        decoder = self._natives.zlib_decompressobj()
                         continue
                     if not pending:
                         pending = f.read(1 << 16)
@@ -357,6 +357,8 @@ class _ZlibAdlerCheckStream(DelegatingStream):
             raise _StreamChecksumError(
                 f"Error reading zlib stream: {exception_detail(exc)}"
             ) from exc
+        finally:
+            release_decoder(decoder)
         if adler == self._sum.value and (
             stopped_short or produced > self._sum.frontier
         ):
