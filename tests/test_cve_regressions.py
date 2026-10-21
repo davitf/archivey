@@ -9,8 +9,10 @@ write-up of the attack.
 
 from __future__ import annotations
 
+import errno
 import io
 import os
+import stat
 import tarfile
 from pathlib import Path
 
@@ -67,21 +69,41 @@ def _assert_outside_untouched(tmp_path: Path, outside: Path) -> None:
 
 
 def _assert_no_link_leaves(dest: Path) -> None:
-    """Every symlink under ``dest`` stays inside it, following links the way the
-    kernel does: one at a time, from the link's own directory."""
-    for parent, dirnames, filenames in os.walk(dest):
-        for name in dirnames + filenames:
-            path = os.path.join(parent, name)
-            if not os.path.islink(path):
-                continue
-            fd = os.open(path, os.O_RDONLY)
+    """Every symlink under ``dest`` leads to something inside it. The kernel follows
+    each link (``os.stat``), one component at a time, and the inode it lands on must
+    be one the walk found under ``dest``; ``realpath`` would not do, since it has the
+    blind spot CVE-2025-4517 used. A dangling link must name a path inside."""
+    st = dest.stat()
+    inside = {(st.st_dev, st.st_ino)}
+    links: list[tuple[str, int, str]] = []
+    # By directory descriptor: the tree's real paths can be longer than PATH_MAX.
+    fds: list[int] = []
+    try:
+        for parent, dirnames, filenames, dir_fd in os.fwalk(dest):
+            fds.append(os.dup(dir_fd))
+            for name in dirnames + filenames:
+                st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+                if stat.S_ISLNK(st.st_mode):
+                    links.append((parent, fds[-1], name))
+                else:
+                    inside.add((st.st_dev, st.st_ino))
+        for parent, dir_fd, name in links:
             try:
-                os.fchdir(fd)
-                assert Path(os.getcwd()).is_relative_to(dest.resolve()), path
-            except NotADirectoryError:
-                pass
-            finally:
-                os.close(fd)
+                st = os.stat(name, dir_fd=dir_fd)
+            except FileNotFoundError:
+                rel = os.path.relpath(parent, dest)
+                target = os.path.join(rel, os.readlink(name, dir_fd=dir_fd))
+                assert not os.path.isabs(target), (parent, name)
+                first = os.path.normpath(target).split(os.sep)[0]
+                assert first != "..", (parent, name)
+                continue
+            except OSError as exc:  # a loop, or a path too long: it leads nowhere
+                assert exc.errno in (errno.ELOOP, errno.ENAMETOOLONG), (parent, name)
+                continue
+            assert (st.st_dev, st.st_ino) in inside, (parent, name)
+    finally:
+        for fd in fds:
+            os.close(fd)
 
 
 def _path_max_chain(dest: Path) -> list[tuple[str, str, str | bytes]]:
