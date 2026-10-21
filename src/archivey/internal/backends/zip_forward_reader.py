@@ -150,6 +150,9 @@ _MAX_KEPT_CIPHERTEXT = 2 * MAX_LINK_TARGET_BYTES
 #: Why a member's kept data was dropped (``ZipForwardReader._hold``): the pass held
 #: ``max_metadata_bytes`` of short members' data, and this member's was the longest.
 _DROPPED = "dropped"
+#: What a link's read is given for data the pass knows is no reparse buffer but did
+#: not keep (``ZipForwardReader._link_target_opener``).
+_NOT_A_REPARSE_BUFFER = b"\0"
 #: The data a member read with several possible passwords keeps to confirm one on
 #: (``_PassData._confirm_password``): the compressed input a bounded confirm may take
 #: (``PASSWORD_CONFIRM_MAX_INPUT_BYTES``), and room for the encryption header.
@@ -2388,6 +2391,17 @@ class ZipForwardReader(ZipReader):
         assert member_id is not None
         captured = self._captured.get(member_id)
         why = self._uncaptured.get(member_id)
+        if (
+            captured is None
+            and isinstance(why, int)
+            and member.size is not None
+            and member.size > why
+        ):
+            # The pass kept nothing of a buffer over its bound, but the member's data
+            # runs on past the buffer its header declares, so it is no link buffer
+            # (``parse_reparse_data``) and the file read makes it a file. One byte, too
+            # short for any buffer's header, gets the same answer from the same parse.
+            captured = _NOT_A_REPARSE_BUFFER
 
         def missing() -> ArchiveyError:
             if isinstance(why, ArchiveyError):

@@ -455,6 +455,17 @@ put back to the type it would otherwise have had and keeps that content, with
 reinterpretation. Presenting it the other way round would cost the caller a readable
 member on the strength of a bit, and `open()` on it would raise.
 
+**Data longer than the buffer is not the buffer** (maintainer decision, 2026-10-21).
+Windows returns exactly the 8-byte header and `ReparseDataLength` bytes, so a member whose
+data runs on past them is data that does not parse as a link buffer, and takes the
+re-type above. The read stops one byte past the buffer, as before. Reading such a
+member as a link used to leave the rest of its data and its CRC unread, so one changed
+byte in the target listed as a different target with no error. As a `FILE`, the member's
+CRC is checked when it is read. A read that meets a failed CRC at that one byte past the
+buffer is damage (`target_data_damaged`), not a re-type. The 7z backend shares this
+parse, and the pipe pass agrees: for a buffer over the bound it keeps, it uses the size
+from the directory (`ZipForwardReader._link_target_opener`).
+
 Two members are left a link with no target. One has *no* data, so there is nothing to
 reinterpret. The other is **directory-shaped** — stored with the trailing slash — where
 the re-type would buy nothing: `open()` refuses a directory, so the data the re-type

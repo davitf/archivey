@@ -145,7 +145,8 @@ def parse_reparse_data(data: bytes) -> ReparsePoint | None:
 
     ``None`` means "this is not a link buffer I understand": too short to hold the
     header and the name offsets, a declared payload length shorter than those offsets,
-    or a tag that is not a symlink or a junction. What a reader does with ``None`` is
+    data that runs on past the declared payload, or a tag that is not a symlink or a
+    junction. What a reader does with ``None`` is
     decided in :meth:`~archivey.internal.base_reader.BaseArchiveReader._apply_reparse_data`.
 
     A payload length that runs past the end of ``data`` is cut to the bytes present,
@@ -159,11 +160,14 @@ def parse_reparse_data(data: bytes) -> ReparsePoint | None:
         return None
 
     payload = data[_HEADER.size :]
+    if len(payload) > data_length:
+        # Data that runs on past the buffer the header declares is not that buffer:
+        # Windows returns exactly the header and ReparseDataLength bytes. Reading it as
+        # a link would leave the bytes after the buffer, and the member's checksum,
+        # unread, so a damaged target would list as if it were whole.
+        return None
     # Trust the declared length only as far as the bytes actually present: a truncated
-    # buffer should parse what is there rather than raise. (A `struct` "H" is never
-    # negative, so the only bound worth testing is the upper one.)
-    if data_length <= len(payload):
-        payload = payload[:data_length]
+    # buffer should parse what is there rather than raise.
     if len(payload) < _NAMES.size:
         return None
 
