@@ -172,6 +172,34 @@ def test_none_mode_when_external_attr_zero() -> None:
         assert ar.get("plain.txt").mode is None
 
 
+@pytest.mark.parametrize(
+    ("external_attr", "mode"),
+    [
+        # A Unix host with only DOS attribute bits (here ARCHIVE): no mode was stored.
+        # unzip 6.00 falls back to the DOS bits too, rather than chmod the file 000.
+        (0x20, None),
+        (0x10 | 0x01, None),
+        # Permission bits without a file type, as `ZipInfo.external_attr = 0o644 << 16`
+        # writes them, are a mode.
+        (0o644 << 16, 0o644),
+        ((0o100755 << 16) | 0x20, 0o755),
+    ],
+)
+def test_unix_mode_needs_a_non_zero_high_word(
+    external_attr: int, mode: int | None
+) -> None:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        info = zipfile.ZipInfo("a.txt")
+        info.create_system = 3
+        info.external_attr = external_attr
+        z.writestr(info, b"x")
+    with open_archive(io.BytesIO(buf.getvalue())) as ar:
+        member = ar.get("a.txt")
+        assert member.mode == mode
+        assert member.type is MemberType.FILE
+
+
 def test_directory_member_type(simple_zip: Path) -> None:
     with open_archive(simple_zip) as ar:
         by_name = {m.name: m for m in ar.members()}

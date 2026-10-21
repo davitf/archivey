@@ -2838,6 +2838,41 @@ def test_unix_special_file_is_other(attributes: int, expected: MemberType) -> No
     assert member.type is expected
 
 
+@pytest.mark.parametrize(
+    ("attributes", "mode", "expected"),
+    [
+        (0x8000 | 0x20 | (0o100644 << 16), 0o644, MemberType.FILE),  # 7-Zip on Linux
+        (0x8000 | 0x20 | (0o120777 << 16), 0o777, MemberType.SYMLINK),
+        (0x8000 | (0o040755 << 16), 0o755, MemberType.DIRECTORY),
+        # Windows words whose high half is not a Unix mode: no mode, and no type from it.
+        (0x80020, None, MemberType.FILE),  # ARCHIVE | PINNED (OneDrive)
+        (0x20000020, None, MemberType.FILE),  # ARCHIVE | STRICTLY_SEQUENTIAL
+        (0x8000 | 0x80020, None, MemberType.FILE),  # with INTEGRITY_STREAM (ReFS)
+        # A Unix file type without the bit is a mode, as 7-Zip 23.01 lists it, except a
+        # special type, which STRICTLY_SEQUENTIAL fakes.
+        (0o120777 << 16, 0o777, MemberType.SYMLINK),
+        (0o040755 << 16, 0o755, MemberType.DIRECTORY),
+        (0o010644 << 16, None, MemberType.FILE),
+        # The bit with permission bits only: no file type, so no mode (7-Zip agrees).
+        (0x8000 | (0o644 << 16), None, MemberType.FILE),
+    ],
+)
+def test_one_unix_mode_test_decides_mode_and_type(
+    attributes: int, mode: int | None, expected: MemberType
+) -> None:
+    """``mode`` and the type read the attribute word's high half by one test.
+
+    Before, ``mode`` took any non-zero high word (ARCHIVE | PINNED gave ``0o10``)
+    while the special-file test needed the ``0x8000`` bit, so one record could have a
+    Unix mode for one field and none for another.
+    """
+    with open_archive(io.BytesIO(_EMPTY_7Z)) as reader:
+        assert isinstance(reader, SevenZipReader)
+        member = reader._to_member(_created_slot_record(attributes), 0)
+    assert member.mode == mode
+    assert member.type is expected
+
+
 def _special_file_with_data_record(attributes: int) -> SevenZipFileRecord:
     from dataclasses import replace
 
@@ -3015,7 +3050,10 @@ def test_an_out_of_range_filetime_is_none_and_reported(
     [
         (0x8000 | 0x20 | (0o100644 << 16), True),  # 7-Zip on Linux, p7zip
         (0x8000 | (0o040755 << 16), True),  # a directory from the same writers
-        (0o100644 << 16, True),  # Unix mode, bit clear (nonstandard)
+        (0o100644 << 16, True),  # Unix mode, bit clear (nonstandard; 7-Zip reads it)
+        # ARCHIVE | STRICTLY_SEQUENTIAL: the high word 0x2000 reads as S_IFCHR, a
+        # special type, which counts only with the bit.
+        (0x20000020, False),
         (0x20, False),  # FILE_ATTRIBUTE_ARCHIVE: 7-Zip on Windows
         (0x8000 | 0x20, False),  # 0x8000 alone: also INTEGRITY_STREAM (ReFS)
         (0x80020, False),  # ARCHIVE | PINNED (OneDrive): high word, no file type
