@@ -2,8 +2,18 @@
 
 ## Supported Versions
 
-Security updates target the latest released version of `archivey` on PyPI (and
-the corresponding `main` tip while pre-release).
+Security fixes go into the latest minor release line of `archivey` on PyPI (0.2.x,
+from the 0.2.0 release) and into `main`. A fix ships as a new patch release of that line.
+
+| Version | Gets security fixes |
+| --- | --- |
+| Latest minor release (0.2.x) | Yes |
+| Older minor releases | No |
+| Pre-releases (`rc`, `a`, `b`) | No, after the final release is out |
+
+We do not backport fixes to older 0.x lines. Before 1.0, a minor release can change the
+API, so the fix for an older line is to update to the latest release. When 1.0 is out,
+this policy will be looked at again.
 
 If you are on an older release, please try to reproduce against the latest
 before reporting. Older-version reports are still useful for impact assessment;
@@ -86,14 +96,31 @@ qualifies:
 
 ## Response Process
 
-After a private report is received, the maintainer will try to:
+A private report on GitHub opens a draft security advisory that only you and the
+maintainer can see. The report then goes through these steps:
 
-1. Confirm receipt
-2. Reproduce and assess severity / affected versions
-3. Prepare a fix or mitigation
-4. Release an updated version when appropriate
-5. Publish a security advisory (or public summary) after users have had a
-   reasonable chance to update
+1. The maintainer confirms receipt in the advisory.
+2. The maintainer reproduces the problem and assesses the severity and the affected
+   versions with you. The draft advisory records them.
+3. If the problem is a vulnerability, the maintainer requests a CVE ID from the
+   draft advisory. GitHub is a CVE Numbering Authority and assigns the ID.
+4. The fix is prepared in a private fork of the advisory, so it stays hidden until
+   release. You can review it there.
+5. The fix ships as a new patch release on PyPI.
+6. The maintainer publishes the advisory, with the CVE ID and the fixed version. It
+   then appears in the GitHub Advisory Database, and Dependabot tells users of
+   affected versions. Reporters who agree to it get credit in the advisory.
 
-Response times vary with maintainer availability and issue complexity. This
-project is maintained on a reasonable-effort basis.
+A report by email goes through the same steps. The maintainer opens the draft advisory
+for it.
+
+archivey has one maintainer, who works on it in their free time. These times are aims,
+not guarantees:
+
+- **Acknowledge** a report within 7 days.
+- **Assess** it (accepted or not, and the severity) within 14 days.
+- **Fix** a high or critical severity problem within 30 days of the assessment. A lower
+  severity fix ships in a later regular release.
+
+If an aim slips, the advisory says so and gives a new date. Please do not publish
+details before the fix is released, or before a date we agree in the advisory.
