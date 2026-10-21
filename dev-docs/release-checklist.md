@@ -192,36 +192,36 @@ Also:
 
 ## 6. Version bump and tag
 
-- [ ] Set `[project].version` in `pyproject.toml` to `X.Y.Z` (**drop** any
-      `.devN` suffix), and the same version in `packages/archivey-cli/pyproject.toml`
-      (`version` and the `archivey[recommended]==` pin).
-- [ ] Commit on a release PR: `CHANGELOG.md`, version bump, doc/number updates;
-      merge to the default branch.
-- [ ] Tag and push (annotated preferred):
+`scripts/release.py` does the mechanical steps. Run each command from a clean,
+up-to-date `main`, with your own `gh` login; `--dry-run` before a command prints what it
+would do. A patch release (bug fixes only) can skip §2 and §3 unless its fixes touch
+performance or documented behaviour, so it is these four commands plus the CHANGELOG
+text.
 
-  ```bash
-  git checkout main && git pull
-  git tag -a "vX.Y.Z" -m "archivey X.Y.Z"
-  git push origin "vX.Y.Z"
-  ```
-
-- [ ] Before tagging, run the TestPyPI dry run: Actions → Publish → Run workflow,
-      `target=testpypi`. No tag is needed, and no PyPI version number is used up.
-- [ ] Confirm `publish.yml` built distributions and published the tag to PyPI (a
-      pushed `v*` tag always goes to PyPI). See the cutover runbook for Trusted
-      Publishing setup.
-- [ ] Create a GitHub Release for `vX.Y.Z` whose body **mirrors** the CHANGELOG
-      section (generated notes are optional; the committed file remains
-      authoritative).
+1. `uv run python scripts/release.py notes` lists the merged pull requests since the last
+   tag. Write the entry under `## [Unreleased]` from it (§1). This can be its own small
+   PR, or an agent can write it.
+2. `uv run python scripts/release.py start X.Y.Z` sets `X.Y.Z` in both pyproject files
+   (and the `archivey[recommended]==` pin), refreshes `uv.lock`, moves the `[Unreleased]`
+   text under a dated `## [X.Y.Z]` heading with its compare links, opens the release PR
+   from `release/vX.Y.Z`, and starts the TestPyPI dry run on that branch (Actions →
+   Publish). It refuses an empty `[Unreleased]`.
+3. When CI and the TestPyPI run are green, merge the release PR. Then
+   `uv run python scripts/release.py tag X.Y.Z` creates the GitHub Release `vX.Y.Z` on
+   `main`, with the CHANGELOG section as its body (marked as a pre-release for
+   `a`/`b`/`rc` versions). The tag starts `publish.yml`, which publishes to PyPI after the
+   `pypi` environment approval. A tag pushed from an agent session is refused, so this
+   step is yours.
+4. Confirm both `archivey` and `archivey-cli` are on PyPI at `X.Y.Z`.
 
 ---
 
 ## 7. Post-release
 
-- [ ] Bump `[project].version` to the next `X.Y.(Z+1).dev0` (or minor/major
-      `.dev0`) on `main`, in both pyproject files, so installs from the default
-      branch stay distinguishable from the tag.
-- [ ] Leave `[Unreleased]` ready for the next cycle.
+- [ ] `uv run python scripts/release.py finish` opens a PR that sets `main` to the next
+      `.dev0` (`X.Y.(Z+1).dev0`, or the next pre-release's `.dev0` after an `rc`), so
+      installs from `main` stay distinguishable from the tag. Pass a version to
+      choose another one (`finish 0.3.0.dev0`).
 - [ ] If docs site is Pages-published, confirm the workflow ran on the tag /
       default branch as configured.
 - [ ] Announce as you prefer (not required by the tooling).
@@ -237,4 +237,5 @@ Also:
 | Realistic wall + JSON | `uv run --no-sync python -m benchmarks.harness --mode full --scale realistic --warmup --json-out /tmp/wall.json --text-out /tmp/wall.md` |
 | Docs | `uv run --group docs mkdocs build --strict` |
 | Build only | `uv build` and `uv build packages/archivey-cli --out-dir dist` (both publish), then inspect `dist/` |
+| Release steps | `uv run python scripts/release.py --help` |
 | Version source | `pyproject.toml` → `[project].version` (copied in `packages/archivey-cli/pyproject.toml`) |
