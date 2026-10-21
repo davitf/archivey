@@ -114,15 +114,20 @@ AI lets the maintainer build a better library, faster. It changes what is practi
 
 ## Versioning and stability
 
-Archivey follows [semantic versioning](https://semver.org/). Before 1.0, this is what each kind
-of release may change:
+Archivey follows [semantic versioning](https://semver.org/). The promise below starts with
+0.2.0; a pre-release such as 0.2.0rc1 carries none. Before 1.0, this is what each kind of release
+may change:
 
 - **A patch release (0.2.1)** fixes bugs. It doesn't change the public API.
 - **A minor release (0.3.0)** may change it. A removed or renamed name keeps working for one more
-  minor release first and raises a `DeprecationWarning` that names its replacement. A change that
+  minor release first and emits a `DeprecationWarning` that names its replacement. A change that
   can't be phased in that way, such as a different result for the same call, is listed under
   "Breaking changes" at the top of that release's entry in the
   [changelog](https://github.com/davitf/archivey/blob/main/CHANGELOG.md).
+
+Python hides a `DeprecationWarning` raised outside `__main__` by default, so the changelog's
+"Deprecated" section is the place to look before upgrading. To find deprecated calls in your own
+code, run your tests with `python -W error::DeprecationWarning`.
 
 The public API is what `archivey` and its public submodules export, as listed on the
 [API page](api.md). Anything under `archivey.internal` can change in any release.

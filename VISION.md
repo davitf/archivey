@@ -169,7 +169,7 @@ has no third-party runtime dependency, ADR 0011), heavy investment in
 self-checking scaffolding (specs, corpus sweep, fuzzing, CI matrix) over manual
 vigilance, a conservative public-API surface (easy to keep stable), and no promised
 support matrix beyond what CI actually exercises. The API is not frozen until 1.0, but
-no major changes are expected, and each change is listed in `CHANGELOG.md`. Before 1.0 a
+no large changes are expected, and each change is listed in `CHANGELOG.md`. Before 1.0 a
 minor release may break the API, but a removed or renamed name keeps working for one more
 minor release with a `DeprecationWarning`
 ([versioning and stability](docs/how-it-is-built.md#versioning-and-stability)). 1.0 is

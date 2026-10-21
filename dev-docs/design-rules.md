@@ -743,16 +743,20 @@ removal.
 
 **Reopen if** a removed name is needed by a real caller; add it back then.
 
+Once 0.2.0 ships, DR-12a replaces this rule.
+
 ### DR-12a. After the first release, deprecate before removing
 
 **Rule.** Once 0.2.0 ships and until 1.0:
 - A patch release changes no public name or signature.
 - A minor release may remove or rename a public name, but the old spelling keeps working
-  for one minor release first and raises a `DeprecationWarning` naming the replacement.
-  The release after that removes it.
+  for one minor release first and emits a `DeprecationWarning` naming the replacement.
+  The release after that removes it. This warning is about the caller's code, not about
+  an archive, so the diagnostics-as-data rule (VISION, "queryable as data") does not
+  govern it: there is no `Diagnostic` for a deprecated call.
 - A break that can't be phased in that way (the same call gives a different result, an
   exception changes type) goes in a minor release and is listed under **Breaking
-  changes** in the changelog and the release notes.
+  changes** in the changelog, which the GitHub release mirrors.
 - `archivey.internal` is not public and changes freely.
 
 Public docs: `docs/how-it-is-built.md` §Versioning and stability.
