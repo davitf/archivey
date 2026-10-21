@@ -191,11 +191,11 @@ class _BoundedPeekReader(ReadOnlyIOStream):
     ``peek_more(end, start)`` returns the candidate's bytes ``[start, end)`` without
     consuming them (a workspace :class:`CandidateView`). The reader keeps what it has
     peeked and asks only for the bytes past it, and the workspace takes only those
-    bytes from its source (``ArchiveSource.peek_arrived``'s ``start``). So each byte is
-    copied a fixed number of times even when each peek grows the prefix by a few
-    bytes; what is left per peek is a fixed cost per call. Reads walk an internal
-    offset over that buffer, letting a codec pull exactly as much compressed input as
-    it needs and never more than ``limit`` (one maximum compressor block).
+    bytes from its source (``ArchiveSource.peek_arrived``'s ``start``), so the cost
+    stays linear in the bytes read, plus a fixed cost per peek, even when each peek
+    grows the prefix by a few bytes. Reads walk an internal offset over that buffer,
+    letting a codec pull exactly as much compressed input as it needs and never more
+    than ``limit`` (one maximum compressor block).
 
     Seekable within the bound so codecs that use seek during a probe (or need a
     repositionable view of the peeked prefix) can still run; seeking never pulls

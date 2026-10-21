@@ -266,7 +266,7 @@ class PrefixWorkspace:
         limit: int | None = None,
         arrived: bool = False,
     ) -> CandidateView:
-        """A ``peek_more(n)``-shaped callable relative to ``candidate_origin``.
+        """A ``peek_more(end)``-shaped callable relative to ``candidate_origin``.
 
         ``peek_more(end)`` returns the first ``end`` bytes of the *candidate*, which are
         the absolute range ``[candidate_origin, candidate_origin + end)``. Served from

@@ -717,12 +717,12 @@ class ArchiveSource(ReadOnlyIOStream):
         """The first ``n`` unconsumed bytes, without consuming them; non-seekable only.
 
         Fills the replay prefix detection reads from. Fewer than ``n`` bytes come back
-        only when the source ends first. With ``start``, only the bytes from
-        ``start`` to ``n`` come back, so a caller that keeps what it peeked before
-        does not copy the whole prefix again. The prefix keeps every byte. ``None`` from the source raises
-        ``BlockingIOError`` rather than coming back as an empty prefix. A seekable
-        source is rewound instead of replayed, so this refuses there rather than
-        growing a buffer nobody drains.
+        only when the source ends first. With ``start``, only the bytes from ``start``
+        to ``n`` come back, so a caller that keeps what it peeked before does not copy
+        the whole prefix again; the prefix itself keeps every byte. ``None`` from the
+        source raises ``BlockingIOError`` rather than coming back as an empty prefix. A
+        seekable source is rewound instead of replayed, so this refuses there rather
+        than growing a buffer nobody drains.
         """
         _check_peek_range(n, start)
         replay = self._replay
@@ -789,7 +789,9 @@ class ArchiveSource(ReadOnlyIOStream):
         writer sent less than ``n`` bytes and keeps the pipe open therefore
         answers with what it sent, where :meth:`peek` would wait for the writer
         to close. ``None`` from the source raises ``BlockingIOError``, as it does
-        for :meth:`peek`. ``start`` is :meth:`peek`'s.
+        for :meth:`peek`. ``start`` is :meth:`peek`'s, and must not run past the prefix
+        already held: past it the answer is empty, and a caller cannot tell that from
+        the end of the source.
         """
         _check_peek_range(n, start)
         replay = self._replay
