@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, BinaryIO, cast
 import pytest
 
 from archivey import detect_format, open_archive
+from archivey.internal import source as source_module
 from archivey.internal.detection_workspace import DETECTION_LIMIT
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.streamtools import (
@@ -213,8 +214,14 @@ class _OverCountingReadinto(io.BytesIO):
             return super().readinto(view) + self._extra
 
 
-def test_readinto_refuses_a_count_larger_than_the_buffer() -> None:
-    """The count is checked, not only the bytes: a lie would move the position past EOF."""
+def test_readinto_refuses_a_count_larger_than_the_buffer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The count is checked, not only the bytes: a lie would move the position past EOF.
+
+    The path that calls the caller's ``readinto``, which PyPy does not take, is forced so
+    the check is pinned on every interpreter."""
+    monkeypatch.setattr(source_module, "_UNDER_PYPY", False)
     wrapped = ArchiveSource.for_stream(_OverCountingReadinto(b"abcdefghij", extra=100))
     assert wrapped._length is not None
     with pytest.raises(
@@ -223,8 +230,11 @@ def test_readinto_refuses_a_count_larger_than_the_buffer() -> None:
         wrapped.readinto(bytearray(4))
 
 
-def test_readinto_refuses_an_over_count_on_the_follow_up_fill() -> None:
+def test_readinto_refuses_an_over_count_on_the_follow_up_fill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A short first fill, then an over-count on the re-ask, raises the same way."""
+    monkeypatch.setattr(source_module, "_UNDER_PYPY", False)
     inner = _OverCountingReadinto(b"abcdefghij", extra=100, short_first=True)
     wrapped = ArchiveSource.for_stream(inner)
     with pytest.raises(
@@ -1462,4 +1472,41 @@ def test_readinto_over_a_read_write_file_counts_only_what_it_filled(
         buf = bytearray(128)
         while n := wrapped.readinto(buf):
             out += buf[:n]
+    assert bytes(out) == payload
+
+
+class _OverReportsAShortFill(io.BufferedIOBase):
+    """PyPy's ``BufferedRandom.readinto`` at the end: fills what is left, then reports the
+    whole buffer. A ``BufferedIOBase``, so the source reads it directly, and not
+    seekable, so the source's length stays unknown and its clamp, which would hide the
+    lie, is off."""
+
+    def __init__(self, data: bytes) -> None:
+        self._inner = io.BytesIO(data)
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, b: WriteableBuffer, /) -> int:  # type: ignore[override]
+        with memoryview(b) as outer, outer.cast("B") as view:
+            got = self._inner.readinto(view)
+            return len(view) if got else 0
+
+    def read(self, n: int = -1, /) -> bytes:
+        return self._inner.read(n)
+
+
+def test_under_pypy_the_boundary_reads_and_never_trusts_a_readinto_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With the PyPy flag forced, a caller whose ``readinto`` over-reports its last short
+    fill still reads exactly its bytes, because the boundary calls ``read``."""
+    monkeypatch.setattr(source_module, "_UNDER_PYPY", True)
+    payload = bytes(range(256)) * 19 + bytes(range(136))  # 39 * 128 + 8 bytes
+    wrapped = ArchiveSource.for_stream(_OverReportsAShortFill(payload))  # type: ignore[arg-type]  # test double
+    assert wrapped._length is None
+    out = bytearray()
+    buf = bytearray(128)
+    while n := wrapped.readinto(buf):
+        out += buf[:n]
     assert bytes(out) == payload

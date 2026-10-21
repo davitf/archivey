@@ -421,11 +421,13 @@ whose buffer is no larger than what is left is right too.
 stream, fills its buffer with `read` instead of the caller's `readinto`
 (`_readinto_or_stall` in `internal/source.py`). Pinned by
 `test_readinto_over_a_read_write_file_counts_only_what_it_filled` in
-`tests/test_archive_source.py`, which fails under PyPy without it. The
-`spooled_tempfile` and `named_tempfile` cases of `test_readinto_yields_content` in
+`tests/test_archive_source.py`, which fails under PyPy without it, and on CPython by
+`test_under_pypy_the_boundary_reads_and_never_trusts_a_readinto_count`, which forces the
+PyPy flag over a double that over-reports the same way. The `spooled_tempfile` and `named_tempfile` cases of `test_readinto_yields_content` in
 `tests/test_stream_inputs.py` call the file's own `readinto`, so they skip under PyPy.
 
-**What remains.** Nothing gates this on PyPy: the PyPy CI job is allowed to fail.
+**What remains.** The PyPy CI job is allowed to fail, so only the CPython pin above
+gates the fix.
 
 **Upstream.** Not filed with PyPy.
 
@@ -444,7 +446,11 @@ answers `readinto` with 0, the same as at the end, where CPython answers `None`.
 `try_readinto`'s docstring and in CONTRIBUTING.md §Coding standards. `ArchiveSource`, the
 one wrapper over a caller's stream, asks a 0 again with `read` (`_readinto_or_stall` in
 `internal/source.py`), so a stall raises `BlockingIOError` instead of passing for the end.
-Pinned by the zero-answering doubles in `tests/test_archive_source.py`.
+That is the CPython path. Under PyPy the caller's `readinto` is not called at all (see the
+`BufferedRandom.readinto` entry above): `read` answers a stall with `None`, which raises
+the same way, so no 0 arrives to be asked again. The zero-answering doubles in
+`tests/test_archive_source.py` pin the 0-confirm on CPython only; under PyPy they reach
+`read` directly.
 
 **What remains.** Nothing gates either rule on PyPy: the PyPy CI job is allowed to fail.
 A new `readinto` that keeps a view passes every other check.
