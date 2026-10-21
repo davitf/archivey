@@ -355,7 +355,8 @@ def _mid_frame_point_file() -> bytes:
 
 
 def test_a_point_where_the_decode_fails_drops_the_table() -> None:
-    """A decode that fails at a table point contradicts the table (ARC-315 rule).
+    """A decode that fails at a table point contradicts the table, as two points that
+    disagree do (``seekable-decompressor-streams``: the index is only an accelerator).
 
     The stream drops the table with ``SEEK_INDEX_DEGRADED``, decodes from the start,
     and the seek gets the right bytes rather than a ``CorruptionError``.
@@ -364,7 +365,7 @@ def test_a_point_where_the_decode_fails_drops_the_table() -> None:
     with _open(io.BytesIO(_mid_frame_point_file()), collector=collector) as stream:
         assert stream.seek(STARTS[2] + 5) == STARTS[2] + 5
         assert stream.read(10) == FULL[STARTS[2] + 5 : STARTS[2] + 15]
-        assert _degraded(seen)
+        _contradicted(seen)
         assert stream.seek(STARTS[4] + 1) == STARTS[4] + 1
         assert stream.read() == FULL[STARTS[4] + 1 :]
         assert stream.seek(0, io.SEEK_END) == len(FULL)
@@ -375,4 +376,33 @@ def test_a_point_where_the_decode_fails_reads_whole_after_the_drop() -> None:
     with _open(io.BytesIO(_mid_frame_point_file()), collector=collector) as stream:
         stream.seek(STARTS[2])
         assert stream.read() == FULL[STARTS[2] :]
-        assert _degraded(seen)
+        _contradicted(seen)
+
+
+def test_an_error_that_is_no_verdict_on_the_data_keeps_the_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An ``OSError`` from the first decode after a resume at a table point says nothing
+    about the table: it propagates, and nothing is reported or dropped."""
+    collector, seen = _collector()
+    data = make_seekable_zstd(PARTS)
+    with _open(io.BytesIO(data), collector=collector) as stream:
+        stream.seek(0, io.SEEK_END)
+        engine = _engine(stream)
+        reset = engine._reset_to_seek_point
+
+        def reset_then_fail(point: Any) -> None:
+            reset(point)
+
+            def feed(*args: Any, **kwargs: Any) -> Any:
+                raise OSError("the source went away")
+
+            monkeypatch.setattr(engine._decoder, "feed", feed)
+
+        monkeypatch.setattr(engine, "_reset_to_seek_point", reset_then_fail)
+        with pytest.raises(OSError, match="the source went away"):
+            stream.seek(STARTS[3] + 5)
+            stream.read(10)
+        points = [p.decompressed_offset for p in engine._seek_points]
+    assert _degraded(seen) == []
+    assert points == STARTS

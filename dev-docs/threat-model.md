@@ -800,7 +800,7 @@ checksum or tag the archive stores, and raises if one does not match. A verdict 
 deferred to `close()` (ADR
 [0014](decisions/0014-integrity-verdicts-from-reads-not-close.md)). A wrong password is
 never reported as success. Public:
-[errors-and-diagnostics.md §The integrity guarantee](../docs/errors-and-diagnostics.md#the-integrity-guarantee).
+[errors-and-diagnostics.md §Damaged archives](../docs/errors-and-diagnostics.md#damaged-archives).
 
 **Mechanism.**
 - `internal/streams/verify.py` `MemberVerifier`, fused into `ArchiveStream`, hashes
@@ -1192,7 +1192,12 @@ and emits `SEEK_INDEX_DEGRADED` (scan `decode_check`, type `SeekIndexContradicte
 A decode that reaches the end with another total than the index gave is the same
 contradiction; it catches a lie in the last unit, which no index point follows. So is a
 decoder that resumed at an index point and fails there before any output: a table whose
-sizes add up but put a frame start inside a frame. Later
+sizes add up but put a frame start inside a frame. Only a verdict on the data counts
+there; an `OSError`, a `MemoryError` or a child decoder killed from outside propagates
+as it would anywhere. The stream cannot tell that failure from damaged data at an honest
+point, so damage there is reported as `SEEK_INDEX_DEGRADED` too and costs a decode of
+the prefix before the `CorruptionError`. That is the cost side of treating the index as
+an accelerator: the error is the same, only later. Later
 seeks use only the points found by a decode from the start, and a size query decodes to
 the end. A decode in progress that began at an index point restarts from such a point,
 so the read, seek or size query that found the lie returns the right bytes and the right
@@ -1211,7 +1216,7 @@ one output offset, nothing is proved (an empty lzip member makes that pair in an
 file): the decoded point is kept, and the check above catches the lie at the next unit
 start. A diagnostic for an ambiguous trailer walk was considered and not taken: an
 attacker who controls the trailers can avoid it. Public:
-[the integrity guarantee](../docs/errors-and-diagnostics.md#the-integrity-guarantee) and
+[the integrity guarantee](../docs/errors-and-diagnostics.md#damaged-archives) and
 [where the guarantees stop](../docs/security.md#where-the-guarantees-stop). Tests:
 `tests/test_seekable_streams.py::test_lzip_cold_seek_trusts_a_self_consistent_trailer_chain`,
 `::test_xz_cold_seek_trusts_a_self_consistent_block_index`,
@@ -1219,8 +1224,10 @@ attacker who controls the trailers can avoid it. Public:
 `::test_a_forward_read_that_contradicts_the_table_drops_it`,
 `::test_a_seek_into_a_misplaced_frame_drops_the_table_when_the_decode_reaches_it`,
 `::test_a_point_where_the_decode_fails_drops_the_table`,
+`::test_an_error_that_is_no_verdict_on_the_data_keeps_the_table`,
 `tests/test_bgzf_seek.py::test_bgzf_cold_seek_trusts_the_block_sizes`,
-`::test_a_forward_read_that_contradicts_the_walk_drops_it`.
+`::test_a_forward_read_that_contradicts_the_walk_drops_it`,
+`::test_damage_at_an_honest_block_raises_after_the_walk_is_dropped`.
 
 ### Windows directory sources
 

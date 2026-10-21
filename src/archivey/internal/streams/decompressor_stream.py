@@ -43,6 +43,8 @@ from archivey.diagnostics import (
 )
 from archivey.exceptions import (
     CorruptionError,
+    ReadError,
+    ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
     exception_detail,
@@ -239,13 +241,29 @@ class SeekPoint:
     # drops every point that has this flag when the index and the decode disagree
     # (``DecompressorStream._drop_index``). One index source is left unmarked: xz's
     # per-stream scan during a forward read (``XzDecoder._progressive_stream_points``)
-    # reads block records but emits them as decoded points. That is safe because
-    # neither check can find xz's index wrong. The offset check never fires for xz: a
+    # reads block records but emits them as decoded points. That is safe because no
+    # check could find those points wrong. The offset check never fires for xz: a
     # block point's state holds its own output offset, so two xz points with the same
     # state are at the same offset. The end-total check cannot disagree either:
     # liblzma verifies each stream's index against its block headers at the stream's
-    # end and raises when they differ, before a decode publishes a total.
+    # end and raises when they differ, before a decode publishes a total. And the
+    # scan runs only once the decode has crossed that stream and liblzma has checked
+    # its index, so a resume at one of its points that fails before any output
+    # (``DecompressorStream._drop_index_at_failed_point``) is damage the decode would
+    # meet too, and raising it is right.
     from_index: bool = field(default=False, compare=False)
+
+
+def _is_data_verdict(exc: Exception) -> bool:
+    """Whether a decoder's exception is about the bytes it was fed.
+
+    The exception here is mostly the backend's own (``zstd.ZstdError``,
+    ``zlib.error``), not yet translated, so this names what is not a verdict rather than
+    what is.
+    """
+    if isinstance(exc, (OSError, MemoryError, ResourceLimitError)):
+        return False
+    return not isinstance(exc, ReadError) or isinstance(exc, CorruptionError)
 
 
 def _same_state(a: object, b: object) -> bool:
@@ -818,11 +836,8 @@ class DecompressorStream(ReadOnlyIOStream):
         self._decode_from_index = False
         self._size_from_index = False
         # The index point the decoder resumed at, while it has given no output from it:
-        # a decode that fails there contradicts the index (_index_point_failed).
+        # a decode that fails there drops the index (_drop_index_at_failed_point).
         self._fresh_index_point: SeekPoint | None = None
-        # Set by _index_point_failed for _read_decompressed_chunk, which then hands
-        # back nothing from the failed decoder (_failed_at_index_point).
-        self._index_point_dropped = False
         # The index was dropped while the decoder counted from it: the operation
         # restarts it from a decoded point before it returns (_restart_at_position).
         self._restart_pending = False
@@ -1253,11 +1268,10 @@ class DecompressorStream(ReadOnlyIOStream):
 
     def _read_decompressed_chunk(self, max_length: int = -1) -> bytes:
         if not self._decoder.needs_input:
-            drained = self._ingest_decode(
-                self._decoding(lambda: self._decoder.feed(b"", max_length))
-            )
-            if self._failed_at_index_point():
+            out = self._decoding(lambda: self._decoder.feed(b"", max_length))
+            if out is None:
                 return b""
+            drained = self._ingest_decode(out)
             if self._ended():
                 return self._end_at_trailing_data(drained)
             if drained:
@@ -1268,9 +1282,10 @@ class DecompressorStream(ReadOnlyIOStream):
         chunk = self._inner.read(_compressed_feed_size(max_length))
         self._compressed_read += len(chunk)
         if not chunk:
-            leftover = self._ingest_decode(self._decoding(self._decoder.flush))
-            if self._failed_at_index_point():
+            out = self._decoding(self._decoder.flush)
+            if out is None:
                 return b""
+            leftover = self._ingest_decode(out)
             if self._ended():
                 return self._end_at_trailing_data(leftover)
             if leftover and self._decoder.drains_after_flush:
@@ -1288,16 +1303,15 @@ class DecompressorStream(ReadOnlyIOStream):
                 self._publish_size(self._decoder_pos)
                 self._index_built = True  # a forward scan to EOF is a complete index
             return leftover
-        data = self._ingest_decode(
-            self._decoding(lambda: self._decoder.feed(chunk, max_length))
-        )
-        if self._failed_at_index_point():
+        out = self._decoding(lambda: self._decoder.feed(chunk, max_length))
+        if out is None:
             return b""
+        data = self._ingest_decode(out)
         if self._ended():
             return self._end_at_trailing_data(data)
         return data
 
-    def _decoding(self, call: Callable[[], DecodeOut]) -> DecodeOut:
+    def _decoding(self, call: Callable[[], DecodeOut]) -> DecodeOut | None:
         """Make one decoder call, keeping an error it raises as this stream's verdict.
 
         A decoder that raised is left in a state nothing defines, and restarting it from
@@ -1317,44 +1331,48 @@ class DecompressorStream(ReadOnlyIOStream):
         or a bug in the decoder leaves its state just as undefined, so it sticks until a
         seek too. ``ResumeReachedStreamEnd`` is not an error, and its caller replaces
         this stream.
+
+        The one exception is a verdict on the data from a decoder that resumed at an
+        index point and has given no output from it: that drops the index instead
+        (:meth:`_drop_index_at_failed_point`), and the call returns ``None``, which
+        hands back no output.
         """
         try:
             return call()
         except ResumeReachedStreamEnd:
             raise
         except Exception as exc:
-            if self._index_point_failed(exc):
-                return DecodeOut(b"")
+            if self._drop_index_at_failed_point(exc):
+                return None
             self._spent = exc
             raise
 
-    def _failed_at_index_point(self) -> bool:
-        """Whether the decode call just made failed at an index point (and so gave no
-        output); clears the flag."""
-        failed = self._index_point_dropped
-        self._index_point_dropped = False
-        return failed
-
-    def _index_point_failed(self, exc: Exception) -> bool:
+    def _drop_index_at_failed_point(self, exc: Exception) -> bool:
         """Drop the index when the decoder fails at an index point before any output.
 
         Bytes that start no unit at the offset the index gave contradict the index as
         two disagreeing points do (a zstd seek table whose sizes add up but put a frame
         start inside a frame). The index is only an accelerator: it is dropped with
         ``SEEK_INDEX_DEGRADED`` and the operation restarts the decoder from a decoded
-        point (``_restart_pending``), which reaches the same place by decoding, or the
-        same error if the data is damaged there. Returns whether it did so; the caller
-        then hands back no output from this call.
+        point (``_restart_pending``). That reaches the same place by decoding, or, when
+        the data is damaged there and the index was right, raises the same error after
+        decoding the prefix: this stream cannot tell the two apart.
+
+        Only a verdict on the data counts. An ``OSError`` from the source, a
+        ``MemoryError``, a ``ResourceLimitError`` (a child decoder killed from outside,
+        most often by the out-of-memory killer) and a ``ReadError`` that is not a
+        ``CorruptionError`` (a child that exited for another reason) say nothing about
+        the index, and keep the path every other error takes. Returns whether it
+        dropped the index.
         """
         point = self._fresh_index_point
-        if point is None or self._index_dropped:
+        if point is None or self._index_dropped or not _is_data_verdict(exc):
             return False
         self._fresh_index_point = None
-        self._index_point_dropped = True
         self._drop_index(
             f"Decoding from the index's point at compressed offset "
             f"{point.compressed_offset} (output offset {point.decompressed_offset}) "
-            f"failed: {exc}"
+            f"failed, so the index is wrong there or the data is damaged: {exc}"
         )
         return True
 
