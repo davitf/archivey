@@ -12,6 +12,7 @@ from __future__ import annotations
 import io
 import shutil
 import subprocess
+import zlib
 from collections.abc import Callable
 from functools import partial
 from pathlib import Path
@@ -20,7 +21,11 @@ import pytest
 
 from archivey import ArchiveyConfig, open_archive
 from archivey.config import RarDecompressor
-from archivey.exceptions import TruncatedError, UnsupportedFeatureError
+from archivey.exceptions import (
+    PackageNotInstalledError,
+    TruncatedError,
+    UnsupportedFeatureError,
+)
 from archivey.internal.backends.rar_parser import load_vint, parse_rar_archive
 from archivey.internal.backends.rar_unar import UnarRarPolicy
 from archivey.reader import ArchiveReader
@@ -283,7 +288,7 @@ def test_a_solid_member_after_an_unknown_version_is_unsupported_on_open(
                 stream.read()
     message = str(caught.value)
     assert repr(blocker) in message, message
-    assert "in this solid archive" in message, message
+    assert "in its solid stream" in message, message
     assert "switching decompressors does not help" in message, message
 
 
@@ -328,12 +333,17 @@ def _read_outcomes(
 
 
 @pytest.mark.parametrize("in_pass", [False, True], ids=["open", "pass"])
-def test_a_later_solid_group_is_unsupported_too(tmp_path: Path, in_pass: bool) -> None:
+def test_unrar_refuses_a_later_solid_group_for_its_include_mask(
+    tmp_path: Path, in_pass: bool
+) -> None:
     """``c.txt`` starts a new solid group (solid flag clear), but archivey asks
     ``unrar`` for a member through an include mask, and with a mask ``unrar``
     decodes a solid archive from its start, so it stops at ``a.txt`` for every
-    member after it (oracle below). Every one of them is unsupported, in random
-    access and in a pass, refused before ``unrar`` runs."""
+    member after it (oracle below). Every one of them is unsupported under
+    ``unrar``, in random access and in a pass, refused before ``unrar`` runs. The
+    message tells the two causes apart: ``b.txt`` needs ``a.txt`` decoded, while
+    ``d.txt`` is blocked only by how archivey runs ``unrar``, and ``unar`` reads
+    it."""
     outcomes, messages = _read_outcomes(
         _solid_groups_first_member_v2(tmp_path), _config("unrar"), in_pass=in_pass
     )
@@ -343,7 +353,67 @@ def test_a_later_solid_group_is_unsupported_too(tmp_path: Path, in_pass: bool) -
         "c.txt": UnsupportedFeatureError,
         "d.txt": UnsupportedFeatureError,
     }
-    assert "'a.txt'" in messages["d.txt"], messages
+    same, later = messages["b.txt"], messages["d.txt"]
+    assert "'a.txt' in its solid stream" in same, same
+    assert "switching decompressors does not help" in same, same
+    assert "'a.txt'" in later, later
+    assert "include mask" in later, later
+    assert "rar_decompressor to 'unar'" in later, later
+    assert "switching decompressors does not help" not in later, later
+
+
+@pytest.mark.parametrize("in_pass", [False, True], ids=["open", "pass"])
+def test_unar_reads_a_later_solid_group(tmp_path: Path, in_pass: bool) -> None:
+    """``unar`` addresses an entry by index and does not decode the stream ahead of
+    one that starts a new stream (oracle below), so only ``b.txt``, which shares
+    ``a.txt``'s stream, is refused."""
+    refusal = binary_refusal("unar")
+    if refusal is not None:
+        pytest.skip(refusal)
+    outcomes, messages = _read_outcomes(
+        _solid_groups_first_member_v2(tmp_path), _config("unar"), in_pass=in_pass
+    )
+    assert outcomes == {
+        "a.txt": UnsupportedFeatureError,
+        "b.txt": UnsupportedFeatureError,
+        "c.txt": 840,
+        "d.txt": 840,
+    }
+    assert "'a.txt' in its solid stream" in messages["b.txt"], messages
+
+
+def _main_solid_bit_cleared(data: bytes) -> bytes:
+    """A RAR5 archive with the main header's solid bit cleared and every member's
+    solid flag left as it was."""
+    buf = bytearray(data)
+    size, body = load_vint(data, 8 + 4)
+    block_type, p = load_vint(data, body)
+    assert block_type == 1  # precondition: the main header comes first
+    flags, p = load_vint(data, p)
+    if flags & 0x0001:
+        _, p = load_vint(data, p)  # extra area size
+    assert buf[p] & 0x04  # precondition: one-byte archive flags, solid set
+    buf[p] &= ~0x04
+    return fixup_rar_header_crcs(bytes(buf), broken=False)
+
+
+def test_a_solid_flag_without_the_archive_bit_still_blocks_its_stream(
+    tmp_path: Path,
+) -> None:
+    """The streams follow each member's solid flag, not the archive's solid bit, so
+    ``b.txt`` is still refused as unsupported when the bit is clear. Members of
+    later streams are left alone: ``unrar`` keys its decode-from-the-start on the
+    archive bit (oracle below), so ``c.txt`` reads."""
+    refusal = binary_refusal("unrar")
+    if refusal is not None:
+        pytest.skip(refusal)
+    path = _solid_groups_first_member_v2(tmp_path)
+    path.write_bytes(_main_solid_bit_cleared(path.read_bytes()))
+    with open_archive(path, config=_config("unrar")) as archive:
+        members = {m.name: m for m in archive.members()}
+        with pytest.raises(UnsupportedFeatureError, match="in its solid stream"):
+            _open_and_read(archive, members["b.txt"])
+        assert len(_open_and_read(archive, members["c.txt"])) == 840
 
 
 @pytest.mark.parametrize("in_pass", [False, True], ids=["open", "pass"])
@@ -359,18 +429,21 @@ def test_a_stored_member_after_an_unknown_version_still_reads(
     assert outcomes == {"first.txt": UnsupportedFeatureError, "second.bin": 2048}
 
 
-def test_unar_refuses_a_solid_member_after_an_unknown_version() -> None:
-    """The ``unar`` policy refuses the same members with the same words, and leaves
-    them out of its solid pass's run."""
+def test_unar_refuses_only_the_unknown_members_solid_stream() -> None:
+    """The ``unar`` policy refuses ``b.txt``, in ``a.txt``'s stream, with the
+    reader's words, and leaves it out of its solid pass's run. ``c.txt`` and
+    ``d.txt`` form a later stream, which ``unar`` reads."""
     data = (_FIXTURES / "solid_groups__.rar").read_bytes()
     archive = parse_rar_archive(io.BytesIO(_set_rar5_version(data, 0, 2)))
     policy = UnarRarPolicy(archive)
-    for info in archive.members[1:]:
-        refusal = policy.member_refusal(info)
-        assert refusal is not None
-        assert "'a.txt'" in refusal, refusal
-        assert "in this solid archive" in refusal, refusal
-        assert policy.solid_pass_refusal(info) == refusal
+    _, b, c, d = archive.members
+    refusal = policy.member_refusal(b)
+    assert refusal is not None
+    assert "'a.txt' in its solid stream" in refusal, refusal
+    assert policy.solid_pass_refusal(b) == refusal
+    for info in (c, d):
+        assert policy.member_refusal(info) is None, info.filename
+        assert policy.solid_pass_refusal(info) is None, info.filename
 
 
 @pytest.mark.skipif(shutil.which("unrar") is None, reason="needs the unrar CLI")
@@ -392,3 +465,51 @@ def test_unrar_stops_at_an_unknown_version_for_a_masked_read(tmp_path: Path) -> 
     assert unrar_p("-n./d.txt", "--", str(path)) == b""
     assert unrar_p("--", str(path)) == b""
     assert len(unrar_p("--", str(path), "d.txt")) == 840
+    # With the archive's solid bit cleared, the masked read no longer decodes from
+    # the start: ``c.txt``, which starts its own stream, reads.
+    path.write_bytes(_main_solid_bit_cleared(path.read_bytes()))
+    assert len(unrar_p("-n./c.txt", "--", str(path))) == 840
+
+
+@pytest.mark.skipif(shutil.which("unar") is None, reason="needs the unar CLI")
+def test_unar_does_not_decode_the_stream_ahead_of_a_new_one(tmp_path: Path) -> None:
+    """The oracle for ``unar``. With ``a.txt``'s packed data garbled, so nothing
+    decodes it, ``unar -i`` still writes ``c.txt`` and ``d.txt`` whole and nothing
+    for ``b.txt``, which shares ``a.txt``'s stream. A version change alone would not
+    show this: ``unar`` ignores the version and decodes ``a.txt`` as it is."""
+    data = (_FIXTURES / "solid_groups__.rar").read_bytes()
+    a = parse_rar_archive(io.BytesIO(data)).members[0]
+    garbled = bytearray(data)
+    for at in range(a.data_offset, a.data_offset + a.compress_size):
+        garbled[at] ^= 0x5A
+    path = _write(tmp_path, "garbled.rar", bytes(garbled))
+    expected = {
+        info.filename: info.crc32
+        for info in parse_rar_archive(io.BytesIO(data)).members
+    }
+
+    def unar_entry(index: int) -> bytes:
+        return subprocess.run(
+            ["unar", "-q", "-o", "-", "-i", str(path), str(index)],
+            capture_output=True,
+            check=False,
+        ).stdout
+
+    assert unar_entry(1) == b""
+    for index, name in ((2, "c.txt"), (3, "d.txt")):
+        assert zlib.crc32(unar_entry(index)) == expected[name], name
+
+
+def test_the_reader_leaves_a_later_solid_group_to_unar(tmp_path: Path) -> None:
+    """With ``unar`` chosen, the reader does not refuse ``d.txt`` itself: the read
+    goes on to ``unar``. Where no accepted ``unar`` is installed, that shows as the
+    missing-program error rather than the unsupported refusal;
+    :func:`test_unar_reads_a_later_solid_group` reads it where one is."""
+    if binary_refusal("unar") is None:
+        pytest.skip("an accepted unar is installed; the read test covers it")
+    with open_archive(
+        _solid_groups_first_member_v2(tmp_path), config=_config("unar")
+    ) as archive:
+        member = next(m for m in archive.members() if m.name == "d.txt")
+        with pytest.raises(PackageNotInstalledError):
+            _open_and_read(archive, member)

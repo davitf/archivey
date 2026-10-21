@@ -1349,8 +1349,9 @@ class RarReader(BaseArchiveReader):
             if self._decompressor is RarDecompressor.UNAR
             else None
         )
-        # Members that no decoder reaches, because an unknown-version member comes
-        # before them in their solid stream; keyed by ``id`` of the parsed member.
+        # Members an unknown-version member ahead of them keeps from being decoded:
+        # by any program in its solid stream, by ``unrar`` in the rest of a solid
+        # archive. Keyed by ``id`` of the parsed member.
         self._solid_after_unknown = solid_after_unknown_compression(self._archive)
         if (
             self._unar_policy is not None
@@ -3297,12 +3298,15 @@ class RarReader(BaseArchiveReader):
         the output does not hold). A plain ``int | Callable | None`` is enough for
         that answer; no slot type is needed.
 
-        ``plan`` may keep a running cursor (the ``unrar`` pass does). So this driver
-        calls it exactly once per member the shared output carries, in listing
-        order. It never calls it for a file copy, a non-payload member, or a member
-        that runs into a missing volume (only the last member present can, so
-        skipping it shifts no later offset). Calling it for any member the output
-        does not carry would shift every later offset.
+        ``plan`` may keep a running cursor (the ``unrar`` pass does). This driver
+        calls it once for every payload member that gets past the earlier branches,
+        in listing order. It never calls it for a file copy, a non-payload member,
+        or a member that runs into a missing volume (only the last member present
+        can, so skipping it shifts no later offset). The rule a cursor-keeping
+        ``plan`` must keep is that it advances the cursor only for a member the
+        output carries, and answers ``None`` (or an ``open_fn``) without advancing
+        it for one the output does not; advancing it for such a member would shift
+        every later offset.
         """
         solid: SolidBlockReader | None = None
         sources = self._file_copy_sources(copies)
@@ -3373,11 +3377,12 @@ class RarReader(BaseArchiveReader):
                     return self._lazy_member_stream(member)
                 slot = planned
                 # The pass has no native-decrypt or unsettled-plaintext branch: every
-                # member it does not slice directly is served from the program's
-                # output, stored encrypted ones included. So this one test is the
-                # whole of "a member a program would decode". ``plan`` still runs
-                # for a cut member, so the offsets of any member listed after it
-                # do not move.
+                # member it does not slice directly and ``plan`` does not hand back
+                # to ``open()`` (above) is served from the program's output, stored
+                # encrypted ones included. So for the members that reach here this
+                # one test is the whole of "a member a program would decode".
+                # ``plan`` still runs for a cut member, so the offsets of any member
+                # listed after it do not move.
                 if (
                     not self._can_direct_read(raw)
                     and self._cut_data_error(member, raw) is not None
@@ -4129,22 +4134,26 @@ class RarReader(BaseArchiveReader):
         )
 
     def _solid_after_unknown_error(
-        self, member: ArchiveMember, raw: RarMemberInfo
+        self, member: ArchiveMember, raw: RarMemberInfo, *, masked_unrar: bool
     ) -> UnsupportedFeatureError | None:
-        """The refusal for a member whose solid stream holds an unknown-version member
-        before it, or ``None``.
+        """The refusal for a member that an unknown-version member ahead of it keeps
+        from being decoded, or ``None``.
 
-        Decoding it means decoding that member first, and ``unrar`` stops there and
-        writes nothing more, which used to surface as a truncation. Like
-        :meth:`_unknown_compression_error`, this is ``UnsupportedFeatureError``,
-        raised before any process is spawned.
+        When that member is in its solid stream, no program decodes it: decoding it
+        means decoding that member first. With ``masked_unrar``, the read is the
+        ``unrar`` one, addressed through an include mask, and a member in a later
+        solid stream is refused too: with a mask, ``unrar`` decodes a solid archive
+        from its start, stops at that member and writes nothing more
+        (:func:`solid_after_unknown_compression`). Either used to surface as a
+        truncation. Like :meth:`_unknown_compression_error`, this is
+        ``UnsupportedFeatureError``, raised before any process is spawned.
         """
-        blocker = self._solid_after_unknown.get(id(raw))
-        if blocker is None:
+        block = self._solid_after_unknown.get(id(raw))
+        if block is None or not (block.same_stream or masked_unrar):
             return None
         return UnsupportedFeatureError(
             f"RAR member {quoted(member.name)} cannot be decoded: "
-            + solid_after_unknown_compression_reason(blocker),
+            + solid_after_unknown_compression_reason(block),
             archive_name=self._archive_name,
             member_name=member.name,
             source_format=ArchiveFormat.RAR,
@@ -4281,8 +4290,10 @@ class RarReader(BaseArchiveReader):
             raise cut
 
         # Only here, on the way to a program: archivey's own reads above do not
-        # decode the members before this one.
-        after_unknown = self._solid_after_unknown_error(member, raw)
+        # decode the members before this one. A member of a later solid stream is
+        # refused only once the read is known to be ``unrar``'s
+        # (:meth:`_open_member_with_program`).
+        after_unknown = self._solid_after_unknown_error(member, raw, masked_unrar=False)
         if after_unknown is not None:
             raise after_unknown
 
@@ -4400,6 +4411,10 @@ class RarReader(BaseArchiveReader):
             return self._open_member_with_unar(
                 member, raw, policy, dictionary_cost=cost
             )
+        # ``unrar`` it is, through an include mask; nothing has been spawned yet.
+        after_unknown = self._solid_after_unknown_error(member, raw, masked_unrar=True)
+        if after_unknown is not None:
+            raise after_unknown
         # Picked before anything is copied for ``unrar``: a RAR5 PswCheck rejects a
         # wrong candidate without spooling a stream source to disk. A RAR3/4 candidate
         # list is judged by running ``unrar``, so that one does copy.
@@ -4836,9 +4851,11 @@ class RarReader(BaseArchiveReader):
         def _plan(
             member: ArchiveMember, raw: RarMemberInfo, size: int, has_digest: bool
         ) -> int | Callable[[], BinaryIO] | None:
-            if id(raw) in self._solid_after_unknown:
+            block = self._solid_after_unknown.get(id(raw))
+            if block is not None and block.same_stream:
                 # Left out of the run (``member_refusal``) and served as ``open()``
-                # serves it, as in the ``unrar`` pass.
+                # serves it, as in the ``unrar`` pass. A member of a later stream
+                # is in the run: ``unar`` reads it.
                 return None
             refusal = policy.solid_pass_refusal(raw)
             if refusal is not None:
