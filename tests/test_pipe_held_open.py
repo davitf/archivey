@@ -648,8 +648,9 @@ def _staged_pipe(
     """A pipe whose writer sends ``first``, then ``rest`` when ``send_rest_in(delay)``
     fires, then holds the pipe open until the test ends.
 
-    Also yields a flag set once ``rest`` is written and one set when the writer
-    closes.
+    Also yields a flag set just before ``rest`` is written and one set when the
+    writer closes. The first is set before the write so that a read woken by
+    ``rest`` can never find it still unset.
     """
     read_fd, write_fd = os.pipe()
     send_rest = threading.Event()
@@ -666,8 +667,8 @@ def _staged_pipe(
         try:
             write_all(first)
             if send_rest.wait(_HOLD_SECONDS):
-                write_all(rest)
                 sent.set()
+                write_all(rest)
                 release.wait(_HOLD_SECONDS)
         except OSError:
             # The reader closed its end first: the test failed early.
