@@ -46,36 +46,35 @@ uv run --extra all python -m benchmarks.harness --mode structural --scale ci
 uv run --extra all python -m benchmarks.harness --mode full --scale realistic
 ```
 
-## 0.2.0 release figures (2026-10-20)
+## 0.2.0 release figures (2026-10-21)
 
 The figures quoted in the 0.2.0 CHANGELOG entry. Source: `benchmark-wall.yml` run
-39380611718 (`workflow_dispatch`, `skip_drift=true` to re-seed after the one-pass peer
-change), `measured_at` 2026-10-20T07:04:29Z, `source_sha` `b72df0b7b231`, GitHub
-`ubuntu-latest` (4 vCPUs), Python 3.11, `--mode full --scale realistic --warmup`.
-Corpus: 64 × 256 KiB members, 32 MiB gzip; 7z listing 10 000 solid tiny / 1 000
-non-solid members; RAR listing 1 000 / 256 members, the committed ci-scale fixtures,
-because the nightly has no `rar` writer. The `tarfile` peers for `.tar.gz` and
+39544292797 (`workflow_dispatch`), `measured_at` 2026-10-21T04:30:48Z, `source_sha`
+`de8a65654e35`, GitHub `ubuntu-latest` (4 vCPUs), Python 3.11, `--mode full --scale
+realistic --warmup`. Corpus: 64 × 256 KiB members, 32 MiB gzip; 7z listing 10 000 solid
+tiny / 1 000 non-solid members; RAR listing 1 000 / 256 members, the committed ci-scale
+fixtures, because the nightly has no `rar` writer. The `tarfile` peers for `.tar.gz` and
 `.tar.bz2` read in one forward pass. The band column is the report's own label against
 `VISION.md`.
 
 | Case | archivey | peer | ratio | band |
 | --- | ---: | ---: | ---: | --- |
-| `zip_open_list` | 1.9 ms | 0.2 ms | 8.57× | above listing 3.0× |
-| `zip_read_all` | 22.7 ms | 11.5 ms | 1.97× | above 1.3×, under 2.0× |
-| `zip_extract` | 55.4 ms | 21.3 ms | 2.59× | above 2.0× safety |
-| `tar_open_list` | 3.5 ms | 1.5 ms | 2.34× | within listing ≤3.0× |
-| `tar_read_all` | 9.0 ms | 3.2 ms | 2.85× | above 2.0× safety |
-| `gzip_read_all` | 31.9 ms | 36.9 ms | 0.86× | within ≤1.3× |
-| `targz_read_all_accel_off` | 22.9 ms | 13.5 ms | 1.69× | above 1.3×, under 2.0× |
-| `targz_read_all_accel_on` | 73.8 ms | 13.7 ms | 5.38× | above 2.0× safety |
-| `tarbz2_read_all_accel_off` | 134.0 ms | 121.6 ms | 1.10× | within ≤1.3× |
-| `tarbz2_read_all_accel_on` | 112.2 ms | 113.5 ms | 0.99× | within ≤1.3× |
-| `sevenzip_open_list` | 1.8 ms | 0.8 ms | 2.33× | above native parity (~1.25×) |
-| `sevenzip_many_open_list` | 157.5 ms | 103.0 ms | 1.53× | above native parity (~1.25×) |
-| `sevenzip_nonsolid_open_list` | 22.4 ms | 14.3 ms | 1.56× | above native parity (~1.25×) |
-| `rar_open_list` | 1.0 ms | 0.2 ms | 5.57× | above native parity (~1.25×) |
-| `rar_many_open_list` | 27.7 ms | 14.1 ms | 1.96× | above native parity (~1.25×) |
-| `rar_nonsolid_open_list` | 7.9 ms | 3.7 ms | 2.16× | above native parity (~1.25×) |
+| `zip_open_list` | 1.9 ms | 0.2 ms | 8.50× | above listing 3.0× |
+| `zip_read_all` | 21.6 ms | 11.4 ms | 1.90× | above 1.3×, under 2.0× |
+| `zip_extract` | 54.2 ms | 21.4 ms | 2.54× | above 2.0× safety |
+| `tar_open_list` | 3.4 ms | 1.5 ms | 2.28× | within listing ≤3.0× |
+| `tar_read_all` | 7.7 ms | 2.8 ms | 2.74× | above 2.0× safety |
+| `gzip_read_all` | 56.7 ms | 52.1 ms | 1.09× | within ≤1.3× |
+| `targz_read_all_accel_off` | 21.8 ms | 13.2 ms | 1.65× | above 1.3×, under 2.0× |
+| `targz_read_all_accel_on` | 77.0 ms | 13.6 ms | 5.68× | above 2.0× safety |
+| `tarbz2_read_all_accel_off` | 139.6 ms | 119.6 ms | 1.17× | within ≤1.3× |
+| `tarbz2_read_all_accel_on` | 118.6 ms | 120.2 ms | 0.99× | within ≤1.3× |
+| `sevenzip_open_list` | 1.9 ms | 0.8 ms | 2.32× | above native parity (~1.25×) |
+| `sevenzip_many_open_list` | 150.5 ms | 103.0 ms | 1.46× | above native parity (~1.25×) |
+| `sevenzip_nonsolid_open_list` | 22.1 ms | 14.0 ms | 1.58× | above native parity (~1.25×) |
+| `rar_open_list` | 1.0 ms | 0.2 ms | 5.46× | above native parity (~1.25×) |
+| `rar_many_open_list` | 27.1 ms | 14.4 ms | 1.89× | above native parity (~1.25×) |
+| `rar_nonsolid_open_list` | 7.6 ms | 3.7 ms | 2.02× | above native parity (~1.25×) |
 
 Cost model from the same run, as the report prints it: fitted from 2048 × 8 KiB and 64 ×
 256 KiB, checked against 512 × 16 KiB, 16 × 1 MiB and 4 × 4 MiB
@@ -84,24 +83,21 @@ pass, listing included, with the byte cost taken out; it is the per-member term,
 is why it shows a larger gap than `zip_read_all` above. Throughput is the data rate once
 per-member costs are taken out, on data that compresses about 4:1. Uncompressed TAR
 shows no throughput (no codec): its byte cost is a small remainder of the fit, and its
-large check rungs are expected to miss. "Not resolved" means the `tarfile` open-cost fit
-came out at zero. Both sides read the same files, so the comparison between them holds
-even where the absolute numbers move between hosts. A row marked \* has a check rung
-more than 25% and at least 0.5 ms off its fit. Not a gate.
+large check rungs are expected to miss. Both sides read the same files, so the
+comparison between them holds even where the absolute numbers move between hosts. A row
+marked \* has a check rung more than 25% and at least 0.5 ms off its fit. Not a gate.
 
 | format | side | open | reading | throughput |
 | --- | --- | ---: | ---: | ---: |
-| zip | archivey | 0.32 ms | 5k members/s | 367 MiB/s |
-| zip | zipfile | 0.06 ms | 50k members/s | 378 MiB/s |
-| tar | archivey \* | 0.39 ms | 11k members/s | no codec |
-| tar | tarfile \* | not resolved | 37k members/s | no codec |
+| zip | archivey | 0.39 ms | 6k members/s | 370 MiB/s |
+| zip | zipfile | 0.03 ms | 51k members/s | 380 MiB/s |
+| tar | archivey \* | 0.45 ms | 12k members/s | no codec |
+| tar | tarfile | 0.05 ms | 38k members/s | no codec |
 
-Check rungs off the fit (the starred rows; expected for uncompressed TAR at multi-MiB
+Check rung off the fit (the starred row; expected for uncompressed TAR at multi-MiB
 members, so the TAR member rates describe small members):
 
-- tar archivey read 16 × 1 MiB: measured 3.31 ms, predicted 4.21 ms (−27%)
-- tar archivey read 4 × 4 MiB: measured 1.87 ms, predicted 3.09 ms (−65%)
-- tar `tarfile` read 4 × 4 MiB: measured 1.06 ms, predicted 1.57 ms (−48%)
+- tar archivey read 4 × 4 MiB: measured 1.79 ms, predicted 2.68 ms (−49%)
 
 `tar_open_list` and `tar_read_all` vary between runs. The nightlies of 2026-10-15,
 -16 and -18 gave 2.3–2.6× and 2.7–3.0×, so the figures above are typical; the 1.49× and

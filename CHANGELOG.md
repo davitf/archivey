@@ -12,7 +12,7 @@ one line. How to write the entry: see
 
 ## [Unreleased]
 
-## [0.2.0] - 2026-10-20
+## [0.2.0] - 2026-10-21
 
 First public release. This repository is a rewrite: the earlier v1 / alpha line
 (previously published from what is now
@@ -93,14 +93,14 @@ and each change will be listed here. No major changes are expected.
 ### Performance
 
 archivey's time over the standard library's or reference reader's time (lower is
-better), from one benchmark run on 2026-10-20 at commit `b72df0b7`. Details, method and
+better), from one benchmark run on 2026-10-21 at commit `de8a6565`. Details, method and
 the full table are in [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md).
 
-- Reading: a gzip file 0.9×; every member of a `.tar.bz2` 1.1×, `.tar.gz` 1.7×, ZIP 2×,
-  plain TAR 2.9×. Extracting a ZIP: 2.6×.
-- Listing: TAR 2.3×, ZIP 8.6×, 7z 1.5–2.3×, RAR 2–5.6×.
-- ZIP data reads at the same rate as `zipfile` (about 370 MiB/s); the gap is per member,
-  about 5 000 members a second against `zipfile`'s 50 000.
+- Reading: a gzip file 1.1×; every member of a `.tar.bz2` 1.2×, `.tar.gz` 1.7×, ZIP
+  1.9×, plain TAR 2.7×. Extracting a ZIP: 2.5×.
+- Listing: TAR 2.3×, ZIP 8.5×, 7z 1.5–2.3×, RAR 1.9–5.5×.
+- ZIP data reads at about the same rate as `zipfile` (about 370 MiB/s); the gap is per
+  member, about 6 000 members a second against `zipfile`'s 51 000.
 
 ### Security
 
