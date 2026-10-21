@@ -255,11 +255,11 @@ refuses it or keeps it inside the destination. The tests are in
 [`tests/test_cve_parsing.py`](https://github.com/davitf/archivey/blob/main/tests/test_cve_parsing.py),
 and each names the advisory it replays.
 
-One dependency has a known bug that archivey contains rather than avoids: pyppmd, which decodes
-PPMd data in 7z archives, still carries
-[CVE-2023-31102](https://nvd.nist.gov/vuln/detail/CVE-2023-31102). With the default
-`process_isolation`, PPMd data is decoded in a separate process, so the bug can only fail that
-member. With `ProcessIsolation.NONE` it runs in your process.
+One dependency may still have a known bug, which archivey contains rather than avoids: pyppmd,
+which decodes PPMd data in 7z and ZIP archives, bundles a copy of 7-Zip's PPMd code from before
+the fix for [CVE-2023-31102](https://nvd.nist.gov/vuln/detail/CVE-2023-31102). By default
+archivey decodes every PPMd member in a child process, so the bug can only fail that member. With
+`ProcessIsolation.NONE` it runs in your process.
 
 ## Reporting a vulnerability
 
