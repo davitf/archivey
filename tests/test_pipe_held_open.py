@@ -113,23 +113,21 @@ def _brotli(data: bytes) -> bytes:
     return brotli.compress(data)
 
 
-# Every codec a single file or a TAR can be compressed with, opened with ``format=``:
-# zlib, LZMA Alone and Brotli have no magic for detection to find.
+# Every codec a single file or a TAR can be compressed with. The tests over it pass
+# ``format=`` for every codec, so the table has one shape; zlib, LZMA Alone and Brotli
+# have no magic for detection to find, so they could not be read without it.
 _ALL_CODECS = [
-    *_CODECS,
-    pytest.param(make_lzip_member, ArchiveFormat.LZIP, None, id="lz"),
+    *(pytest.param(*p.values[:2], id=p.id, marks=p.marks) for p in _CODECS),
+    pytest.param(make_lzip_member, ArchiveFormat.LZIP, id="lz"),
     pytest.param(
         lambda data: lzma.compress(data, format=lzma.FORMAT_ALONE),
         ArchiveFormat.LZMA_ALONE,
-        None,
         id="lzma",
     ),
-    pytest.param(zlib.compress, ArchiveFormat.ZLIB, None, id="zz"),
+    pytest.param(zlib.compress, ArchiveFormat.ZLIB, id="zz"),
+    pytest.param(_brotli, ArchiveFormat.BROTLI, id="br", marks=requires("brotli")),
     pytest.param(
-        _brotli, ArchiveFormat.BROTLI, None, id="br", marks=requires("brotli")
-    ),
-    pytest.param(
-        make_unix_compress, ArchiveFormat.Z, None, id="Z", marks=requires("ncompress")
+        make_unix_compress, ArchiveFormat.Z, id="Z", marks=requires("ncompress")
     ),
 ]
 
@@ -310,7 +308,10 @@ def _reads_to_the_last_byte_before_the_close(
                 assert not closed.is_set(), "the first read waited for the writer"
                 while len(head) < len(data):
                     # No further: a read past the last byte meets the end.
-                    head += member_stream.read(min(8192, len(data) - len(head)))
+                    block = member_stream.read(min(8192, len(data) - len(head)))
+                    if not block:
+                        break  # ended early: the assertion below reports it
+                    head += block
                 assert not closed.is_set(), "a read before the end waited"
                 release_in(_RELEASE_DELAY_SECONDS)
                 rest = member_stream.read()
@@ -319,11 +320,10 @@ def _reads_to_the_last_byte_before_the_close(
 
 
 @pytest.mark.parametrize("buffered", [False, True], ids=["raw", "buffered"])
-@pytest.mark.parametrize(("compress", "bare", "in_tar"), _ALL_CODECS)
+@pytest.mark.parametrize(("compress", "bare"), _ALL_CODECS)
 def test_a_compressed_file_reads_to_its_last_byte_before_the_writer_closes(
     compress: Callable[[bytes], bytes],
     bare: ArchiveFormat,
-    in_tar: ArchiveFormat | None,
     buffered: bool,
 ) -> None:
     """Shorter than the decoder's 64 KiB feed, and read at once all the same: each
@@ -334,11 +334,10 @@ def test_a_compressed_file_reads_to_its_last_byte_before_the_writer_closes(
     )
 
 
-@pytest.mark.parametrize(("compress", "bare", "in_tar"), _ALL_CODECS)
+@pytest.mark.parametrize(("compress", "bare"), _ALL_CODECS)
 def test_open_stream_reads_to_the_last_byte_before_the_writer_closes(
     compress: Callable[[bytes], bytes],
     bare: ArchiveFormat,
-    in_tar: ArchiveFormat | None,
 ) -> None:
     data = os.urandom(2000)
     with _releasable_pipe(compress(data), buffered=True) as (
@@ -626,11 +625,10 @@ def test_a_detected_compressed_tar_yields_its_first_member_at_once(
 
 
 @pytest.mark.parametrize("buffered", [False, True], ids=["raw", "buffered"])
-@pytest.mark.parametrize(("compress", "bare", "in_tar"), _ALL_CODECS)
+@pytest.mark.parametrize(("compress", "bare"), _ALL_CODECS)
 def test_a_short_compressed_tar_yields_its_first_member_at_once(
     compress: Callable[[bytes], bytes],
     bare: ArchiveFormat,
-    in_tar: ArchiveFormat | None,
     buffered: bool,
 ) -> None:
     """The TAR decodes to less than the backend's 8 KiB read-ahead: the buffer

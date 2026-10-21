@@ -1223,10 +1223,10 @@ class DecompressorStream(ReadOnlyIOStream):
         """
         if need <= 0 or n < need:
             raise ValueError(f"read_ahead needs 0 < need <= n, got {need}, {n}")
-        return self._read(n, need)
+        return self._read(need, n)
 
-    def _read(self, n: int, need: int) -> bytes:
-        """Up to ``n`` bytes: at least ``need`` of them, or fewer only at the end."""
+    def _read(self, need: int, n: int) -> bytes:
+        """At least ``need`` bytes, or fewer only at the end, and at most ``n``."""
         if self._spent is not None and not self._buffer:
             self._raise_spent()
         with self._deferring_raises() as pending:

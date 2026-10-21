@@ -19,7 +19,7 @@ import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import TracebackType
-from typing import TYPE_CHECKING, BinaryIO, NoReturn
+from typing import TYPE_CHECKING, BinaryIO, NoReturn, cast
 
 from archivey.config import REWIND_REDECODE_WARN_BYTES
 from archivey.diagnostics import (
@@ -34,7 +34,10 @@ from archivey.exceptions import (
 )
 from archivey.internal.diagnostics_collector import leave_scope, resolve_collector
 from archivey.internal.logs import streams as logger
-from archivey.internal.streams.decompressor_stream import retire_decoder_children
+from archivey.internal.streams.decompressor_stream import (
+    DecompressorStream,
+    retire_decoder_children,
+)
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import (
     ReadOnlyIOStream,
@@ -599,8 +602,7 @@ class ArchiveStream(ReadOnlyIOStream):
         cannot seek): the inner's ``read_ahead`` gives what the feed that completes
         ``need`` decoded, so the buffer does not wait for bytes nobody asked for yet.
         Errors are those of ``read(need)``. A stream that checks its bytes (a fused
-        verifier), has a verdict to repeat, or whose inner has no ``read_ahead``
-        answers with ``read(n)``.
+        verifier) or has a verdict to repeat answers with ``read(n)``.
         """
         scope = self._diagnostics_scope
         if scope is None:
@@ -614,15 +616,16 @@ class ArchiveStream(ReadOnlyIOStream):
 
     def _read_ahead(self, need: int, n: int) -> bytes:
         inner = self._ensure_open()
-        read_ahead = getattr(inner, "read_ahead", None)
-        if (
-            read_ahead is None
-            or self._verifier is not None
-            or self._verdict is not None
-        ):
+        # A verdict raises again as ``read`` raises it. A verifier sees each byte in
+        # ``read``, and bytes that skipped it would go out unchecked. No codec stream
+        # under a reader's buffer has one, so this costs nothing; ``read(n)`` is still
+        # right, it only waits for the whole ``n``.
+        if self._verifier is not None or self._verdict is not None:
             return self._read(n)
         try:
-            return read_ahead(need, n)
+            # Only a reader's buffer over a codec stream on a source that cannot seek
+            # calls this, and that codec stream's inner is a ``DecompressorStream``.
+            return cast("DecompressorStream", inner).read_ahead(need, n)
         except Exception as e:  # noqa: BLE001 - re-raised via the translator
             self._fail_unless_closed(e)
 

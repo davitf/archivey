@@ -406,3 +406,20 @@ def test_a_brotli_tar_with_bytes_after_its_end_gives_right_bytes_or_brotli_error
         if error is not None:
             assert error[0] == failed[0]
             assert error[1].startswith(failed[1])
+
+
+@requires("brotli")
+def test_the_brotli_probe_stream_is_complete_and_empty() -> None:
+    """``BrotliDecoder._bytes_after_end`` gets the combined call's error by decoding
+    ``_EMPTY_STREAM`` and one more byte. That is the error for the byte after the end
+    only while ``_EMPTY_STREAM`` is itself a whole stream that decodes cleanly."""
+    import brotli
+
+    from archivey.internal.streams.codecs.brotli_decoder import _EMPTY_STREAM
+
+    assert brotli.compress(b"") == _EMPTY_STREAM
+    decoder = brotli.Decompressor()
+    assert decoder.process(_EMPTY_STREAM) == b""
+    assert decoder.is_finished()
+    with pytest.raises(brotli.error):
+        brotli.Decompressor().process(_EMPTY_STREAM + b"\x00")
