@@ -5,6 +5,9 @@ simple API. Untrusted archives extract safely by default. Archive formats hide s
 error-prone ways of reading, and archivey's defaults steer around them whenever possible.
 The [cheat sheet](cheat-sheet.md) has the main calls on one page, with the zipfile and tarfile
 equivalents.
+Coding agents can read these docs as Markdown, starting from
+[llms.txt](https://davitf.github.io/archivey/llms.txt), or all in one file from
+[llms-full.txt](https://davitf.github.io/archivey/llms-full.txt).
 
 ## Install
 

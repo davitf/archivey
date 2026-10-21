@@ -60,6 +60,9 @@ with archivey.open_archive("photos.tar.gz") as reader:
 
 The [cheat sheet](https://davitf.github.io/archivey/cheat-sheet/) has the main calls, their errors
 and the zipfile and tarfile equivalents on one page.
+Coding agents can read the docs as Markdown, starting from
+[llms.txt](https://davitf.github.io/archivey/llms.txt), or all in one file from
+[llms-full.txt](https://davitf.github.io/archivey/llms-full.txt).
 
 [Install](https://davitf.github.io/archivey/install/) ·
 [Opening an archive](https://davitf.github.io/archivey/opening/) ·

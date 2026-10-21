@@ -49,6 +49,9 @@ plugins:
   # scripts/check_docs_nav.py fails on one that is not.
   - llmstxt:
       full_output: llms-full.txt
+      # Points `page/#anchor` links at the Markdown copy, as the plugin already does
+      # for `page/`.
+      preprocess: scripts/llmstxt_preprocess.py
       markdown_description: >-
         Archivey is a Python library (`pip install archivey`, `import archivey`) that
         reads ZIP, TAR, 7z, RAR, ISO and single compressed files through one API:

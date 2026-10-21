@@ -28,7 +28,7 @@ with archivey.open_archive("download.zip") as archive:
 
 # Decompress a single file, such as a .gz.
 with archivey.open_stream("notes.txt.gz") as stream:
-    text = stream.read()
+    data = stream.read()  # bytes
 
 # Identify the format without opening the archive.
 info = archivey.detect_format("backup.tar.gz")
@@ -48,14 +48,14 @@ What each call returns, and the errors you're most likely to meet. The
   [`ArchiveMember`][archivey.ArchiveMember] objects. A directory's name ends with `/` in every
   format.
 - **`archive.get(name)`** returns the member with that name, or `None`.
-- **`archive.read(name)`** returns the member's contents as `bytes`, and **`archive.open(name)`**
-  a file object to read them in pieces. Both take a name or an `ArchiveMember`. A name the
-  archive doesn't have raises `KeyError`, a directory raises `ArchiveyUsageError`, and a link
-  whose target isn't in the archive raises `LinkTargetNotFoundError`. Only one stream from
-  `open` can be open at a time, and it can't seek. [Choosing how to read](reading.md) has the
-  options that change both.
+- **`archive.read(name)`** returns the member's contents as `bytes`, and
+  **`archive.open(name)`** a file object to read them in pieces. Both take a name or an
+  `ArchiveMember`. A name the archive doesn't have raises `KeyError`, a directory raises
+  `ArchiveyUsageError` unless the archive stored data in it, and a link whose target isn't in
+  the archive raises `LinkTargetNotFoundError`. Only one stream from `open` can be open at a
+  time, and it can't seek. [Choosing how to read](reading.md) has the options that change both.
 - **`archive.stream_members()`** yields `(member, stream)` pairs in archive order. The stream is
-  `None` for directories and links, and works only until the loop moves on.
+  `None` for links and most directories, and works only until the loop moves on.
   [Read everything in one pass](index.md#read-everything-in-one-pass)
 - **`archive.extract_all(dest)`** returns an [`ExtractionReport`][archivey.ExtractionReport]
   with one result per member. A refused member, such as `../evil.txt`, is skipped and recorded
@@ -97,7 +97,8 @@ ArchiveyError                 problems with the archive or what reading it needs
 ArchiveyUsageError            a mistake in the calling code, not an ArchiveyError
 ```
 
-A bad argument raises `ArchiveyUsageError` that is also a `TypeError` or a `ValueError`. Errors
+An argument with a type or value the call can't use raises `ArchiveyUsageError` that is also a
+`TypeError` or a `ValueError`. Errors
 that aren't about the archive pass through as themselves: `FileNotFoundError`, `OSError` from the
 disk, and `KeyError` for a missing name. [Errors and diagnostics](errors-and-diagnostics.md)
 
@@ -139,23 +140,25 @@ and an archive can ask a decoder for at most 2 GiB of memory. [Hardening](securi
 
 ## From zipfile and tarfile
 
-| zipfile | tarfile | archivey |
-|---|---|---|
-| `ZipFile(p)` | `tarfile.open(p)` | `open_archive(p)` |
-| `zf.namelist()` | `tf.getnames()` | `[m.name for m in archive]` |
-| `zf.infolist()` | `tf.getmembers()` | `archive.members()` |
-| `zf.getinfo(n)` | `tf.getmember(n)` | `archive.get(n)`, `None` if missing |
-| `zf.read(n)` | `tf.extractfile(n).read()` | `archive.read(n)` |
-| `zf.open(n)` | `tf.extractfile(n)` | `archive.open(n)` |
-| loop with `zf.open(i)` | `for i in tf:` | `archive.stream_members()` |
-| `zf.extractall(d)` | `tf.extractall(d)` | `archive.extract_all(d)` |
-| `zf.setpassword(pw)` | | `open_archive(p, password=pw)` |
-| `is_zipfile(p)` | `is_tarfile(p)` | `detect_format(p)` |
-| `BadZipFile` | `ReadError` | `CorruptionError`, `FormatDetectionError` |
-| `info.filename` | `info.name` | `member.name` |
-| `info.file_size` | `info.size` | `member.size` |
-| `info.is_dir()` | `info.isdir()` | `member.is_dir` |
-| `info.date_time` | `info.mtime` | `member.modified`, a `datetime` |
+Each item gives the archivey call first, then the zipfile and tarfile calls it replaces.
+
+- `open_archive(p)`: `ZipFile(p)`, `tarfile.open(p)`.
+- `[m.name for m in archive]`: `zf.namelist()`, `tf.getnames()`.
+- `archive.members()`: `zf.infolist()`, `tf.getmembers()`.
+- `archive.get(n)`, which returns `None` for a missing name: `zf.getinfo(n)`,
+  `tf.getmember(n)`.
+- `archive.read(n)`: `zf.read(n)`, `tf.extractfile(n).read()`.
+- `archive.open(n)`: `zf.open(n)`, `tf.extractfile(n)`.
+- `archive.stream_members()`: a loop over `zf.open(info)`, or `for info in tf:` with
+  `tf.extractfile(info)`.
+- `archive.extract_all(d)`: `zf.extractall(d)`, `tf.extractall(d)`.
+- `open_archive(p, password=pw)`: `zf.setpassword(pw)`.
+- `detect_format(p)`: `is_zipfile(p)`, `is_tarfile(p)`.
+- `CorruptionError` or `FormatDetectionError`: `BadZipFile`, `tarfile.ReadError`.
+- `member.name`: `info.filename`, `info.name`.
+- `member.size`: `info.file_size`, `info.size`.
+- `member.is_dir`: `info.is_dir()`, `info.isdir()`.
+- `member.modified`, a `datetime`: `info.date_time`, `info.mtime`.
 
 For a single compressed file, `open_stream(p)` replaces `gzip.open(p)`, `bz2.open(p)` and
 `lzma.open(p)`. [Migrating from other libraries](migrating.md) covers py7zr and rarfile, and what

@@ -968,8 +968,10 @@ def detect_format(
     Raises:
         FormatDetectionError: No format matches the source's contents or name.
         TruncatedError: The path names part of a numbered split set with a gap.
-        ArchiveyUsageError: An argument has a type or value the call cannot use (also a
-            ``TypeError`` or ``ValueError``).
+        DiagnosticRaisedError: A diagnostic that the :class:`~archivey.DiagnosticPolicy`
+            in the config raises on, recorded during detection.
+        ArchiveyUsageError: One argument has a type or value the call cannot use (then
+            also a ``TypeError`` or ``ValueError``).
         FileNotFoundError: The path does not exist.
     """
     return detect_format_into(

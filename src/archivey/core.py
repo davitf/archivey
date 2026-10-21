@@ -398,19 +398,23 @@ def open_archive(
             format needs to seek in either access mode (every format except TAR, ZIP and
             the single-file compressed streams).
         CorruptionError: The archive's header is damaged or cut short. A numbered split
-            set with a missing part raises the subclass ``TruncatedError``.
+            set with a missing part raises the subclass
+            :class:`~archivey.TruncatedError`.
         EncryptionError: The member list is encrypted (7z, RAR) and no password given
             opens it.
         UnsupportedFeatureError: The format is recognized, but this archive uses a
             variant or feature archivey cannot read.
         PackageNotInstalledError: The format needs an optional package that is not
             installed, such as ``pycdlib`` for ISO.
-        ResourceLimitError: The archive exceeds a limit that is checked at open, such
-            as ``ListingLimits.max_members`` while a ZIP, 7z, RAR or ISO index is
-            parsed.
-        ArchiveyUsageError: An argument has a type or value the call cannot use (also a
-            ``TypeError`` or ``ValueError``), or ``streaming=True`` is combined with
-            ``concurrent_operations=True``.
+        ResourceLimitError: The archive exceeds a limit that is checked at open, such as
+            :class:`~archivey.ListingLimits` ``max_members`` while a ZIP, 7z, RAR or ISO
+            index is parsed, or :class:`~archivey.DecoderLimits` for data the open
+            decodes.
+        DiagnosticRaisedError: A diagnostic that the :class:`~archivey.DiagnosticPolicy`
+            in the config raises on, recorded while the archive is detected or opened.
+        ArchiveyUsageError: One argument has a type or value the call cannot use (then
+            also a ``TypeError`` or ``ValueError``), or ``streaming=True`` is combined
+            with ``concurrent_operations=True``.
         FileNotFoundError: The path does not exist. Other ``OSError`` from reading the
             source is not wrapped either.
     """
@@ -843,11 +847,17 @@ def open_stream(
     Raises:
         FormatDetectionError: No compression format matches the source, or the source is
             an archive container (ZIP, 7z, RAR, ISO, an uncompressed tar).
+        StreamNotSeekableError: ``seekable=True`` and the source cannot seek.
+        ResourceLimitError: The stream asks a decoder for more memory than
+            :class:`~archivey.DecoderLimits` allows, raised by the read of the returned
+            stream that starts the decoder.
         PackageNotInstalledError: The format needs an optional package that is not
             installed.
-        ArchiveyUsageError: An argument has a type or value the call cannot use (also a
-            ``TypeError`` or ``ValueError``): a directory path, or a container format
-            passed as ``format=``.
+        DiagnosticRaisedError: A diagnostic that the :class:`~archivey.DiagnosticPolicy`
+            in the config raises on, recorded while the stream is detected or opened.
+        ArchiveyUsageError: One argument has a type or value the call cannot use (then
+            also a ``TypeError`` or ``ValueError``): a directory path, or a container
+            format passed as ``format=``.
         FileNotFoundError: The path does not exist.
     """
     import archivey.internal.backends  # noqa: F401

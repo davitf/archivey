@@ -124,15 +124,29 @@ def load_mkdocs_config() -> dict[str, Any]:
         return yaml.load(fh, Loader=NavLoader)  # noqa: S506 — tags neutralised above
 
 
-def load_llmstxt_pages() -> set[str]:
-    """Return every page listed in the `llmstxt` plugin's `sections`."""
+def load_llmstxt_pages() -> tuple[set[str], list[str]]:
+    """Return the pages the `llmstxt` plugin will publish, and malformed entries.
+
+    A `sections` entry is a page or a one-key mapping of page to description. The
+    plugin reads only the first key of a mapping, so a mapping with two keys (an
+    indentation slip in mkdocs.yml) publishes its first page and drops the rest
+    without a warning. Only the first key counts as listed here, and every such
+    entry is returned as a problem of its own.
+    """
     found: set[str] = set()
+    malformed: list[str] = []
     for plugin in load_mkdocs_config().get("plugins") or []:
         if isinstance(plugin, dict) and "llmstxt" in plugin:
             for entries in (plugin["llmstxt"].get("sections") or {}).values():
                 for entry in entries:
-                    found.update([entry] if isinstance(entry, str) else entry)
-    return found
+                    if isinstance(entry, str):
+                        found.add(entry)
+                        continue
+                    keys = list(entry)
+                    found.add(keys[0])
+                    if len(keys) > 1:
+                        malformed.append(", ".join(keys))
+    return found, malformed
 
 
 def load_nav_files() -> list[str]:
@@ -172,7 +186,13 @@ def main() -> int:
     for page in sorted(nav_pages - on_disk):
         problems.append(f"mkdocs.yml nav lists docs/{page}, which does not exist.")
 
-    for page in sorted(nav_pages - load_llmstxt_pages()):
+    llmstxt_pages, malformed = load_llmstxt_pages()
+    for keys in malformed:
+        problems.append(
+            f"An llmstxt `sections` entry in mkdocs.yml maps several pages ({keys}); "
+            f"the plugin publishes only the first. Give each page its own list item."
+        )
+    for page in sorted(nav_pages - llmstxt_pages):
         problems.append(
             f"docs/{page} is in the nav but not in the llmstxt plugin's `sections` in "
             f"mkdocs.yml, so llms.txt leaves it out. Add it with a one-line description."
@@ -227,7 +247,7 @@ def main() -> int:
 
     print(
         f"docs/: {len(on_disk)} pages, all in nav; repo, site and anchor links "
-        f"all resolve."
+        f"all resolve; every nav page is in llms.txt."
     )
     return 0
 
