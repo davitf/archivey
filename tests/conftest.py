@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import importlib.metadata
 import importlib.util
 import os
 import re
@@ -65,6 +66,14 @@ for _blocked in UNUSED_UNDER_PYPY - {"pyppmd"}:
 def has_package(name: str) -> bool:
     """Whether optional package ``name`` is installed and archivey uses it here."""
     return name not in UNUSED_UNDER_PYPY and importlib.util.find_spec(name) is not None
+
+
+def pycdlib_at_least(major: int, minor: int) -> bool:
+    """Whether the installed pycdlib is ``major.minor`` or later. Only the leading digits
+    of each part count, so a ``1.22rc1`` reads as 1.22."""
+    parts = importlib.metadata.version("pycdlib").split(".")[:2]
+    found = tuple(int(re.match(r"\d*", part)[0] or 0) for part in parts)
+    return found >= (major, minor)
 
 
 def importorskip(name: str) -> types.ModuleType:
