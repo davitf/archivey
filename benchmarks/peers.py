@@ -148,8 +148,9 @@ def _peer_available(name: str) -> str | None:
     try:
         importlib.import_module("libarchive")
     # Without the system library, libarchive-c fails in ctypes: OSError when the
-    # library will not load, AttributeError when a symbol is missing.
-    except (ImportError, OSError, AttributeError) as exc:
+    # library will not load, AttributeError when a symbol is missing, TypeError on
+    # Windows when find_library finds nothing and LoadLibrary gets None.
+    except (ImportError, OSError, AttributeError, TypeError) as exc:
         return f"{name} not importable ({type(exc).__name__})"
     return None
 
