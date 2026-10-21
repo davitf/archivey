@@ -39,7 +39,7 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
   blocks (`7z -ms=off`). Needs a source that can seek.
 - **RAR:** listing and uncompressed members in core; compressed members need the `unrar`
   program ([below](#the-program-for-rar)); `[recommended]` adds encrypted headers and
-  uncompressed encrypted members. Listing: header by header. Members: solid when the archive is
+  uncompressed encrypted members in one part. Listing: header by header. Members: solid when the archive is
   solid, otherwise direct. Needs a source that can seek.
 - **ISO 9660:** `[recommended]` (`pycdlib`). Listing: from its index. Members: direct. Needs a
   source that can seek.
@@ -201,19 +201,20 @@ far to trust each.
 TAR, ZIP, 7z, RAR and ISO archives, and single compressed files, all check for bytes after the
 archive's end. A non-zero byte there is reported as `ARCHIVE_TRAILING_DATA`, with the format in
 `format`: a warning under the default policy, raised under `DiagnosticPolicy.STRICT`. Zero bytes
-are padding and pass. Read from a file, ZIP, TAR, 7z, RAR and ISO look at most 1 MiB past the end,
-so a byte further out goes unseen. Each format section says where its end is.
+are padding and pass. ZIP, TAR, 7z, RAR and ISO look at most 1 MiB past the end, so a byte
+further out goes unseen. Each format section says where its end is.
 
 Inside a ZIP or 7z member, bytes after the compressed stream are corruption, not trailing bytes
 ([ZIP](#zip)).
 
 ### Device files, FIFOs and sockets
 
-A ZIP, TAR, 7z, RAR or ISO entry whose mode is a device, FIFO or socket, and that stores no data,
-lists as `MemberType.OTHER`. Extraction does not create it: its result is `BLOCKED`, and the other
-members are extracted. `extra["special_file_type"]` names the kind. In ZIP, 7z, RAR and ISO, such
+A ZIP, 7z, RAR or ISO entry whose mode is a device, FIFO or socket, or a TAR entry whose typeflag
+is a device or FIFO (TAR has no socket type), lists as `MemberType.OTHER` when it stores no data. Extraction does not create it: its result is
+`BLOCKED`, and the other members are extracted. `extra["special_file_type"]` names the kind. In ZIP, 7z, RAR and ISO, such
 an entry that does store data is a `FILE`, with `MEMBER_SPECIAL_FILE_HAS_DATA` reported. Each
-format section says when its mode is trusted.
+section for ZIP, 7z, RAR and ISO says when its mode is trusted; TAR reads the typeflag instead
+([TAR](#tar-and-compressed-tar)).
 
 ### Names with an unpaired surrogate
 
@@ -672,7 +673,8 @@ On a compressed tar, the stream's own checksum adds three cases:
   System Settings. The "UnRAR for Mac OS X 64 bit" link on the RARLAB add-ons page is a 2018 Intel
   build someone else contributed.
 - `unrar` gets the password as a bare `-p`, with the secret on stdin, not in its arguments.
-  A password with a line break or a NUL character cannot reach `unrar` that way
+  `unrar` reads it as one line and would drop anything after a line break or a NUL character,
+  so a password containing either raises `UnsupportedFeatureError` instead of being cut short
   ([Passwords](opening.md#passwords)).
 - Archivey passes a password to `unrar` or `unar` only when the read needs it: the member is
   encrypted, the headers are, or an encrypted member comes before it in a solid archive.
