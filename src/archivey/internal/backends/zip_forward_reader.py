@@ -23,7 +23,7 @@ import io
 import sys
 import zlib
 from array import array
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import fields, replace
 from typing import BinaryIO, Literal, cast
@@ -2420,7 +2420,7 @@ class ZipForwardReader(ZipReader):
             )
 
         @contextmanager
-        def open_data() -> Iterator[ReadableStream]:
+        def open_data() -> Generator[ReadableStream, None, None]:
             if captured is not None:
                 yield io.BytesIO(captured)
             elif isinstance(why, _KeptCiphertext):

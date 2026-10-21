@@ -37,7 +37,7 @@ import subprocess
 import tempfile
 import threading
 import zlib
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -858,7 +858,7 @@ class _UnrarNames:
 
 
 @contextmanager
-def _close_on_error(owned: BinaryIO) -> Iterator[None]:
+def _close_on_error(owned: BinaryIO) -> Generator[None, None, None]:
     """Close ``owned`` if the block raises.
 
     ``owned`` is the stream built before the block; what the block builds on top of it

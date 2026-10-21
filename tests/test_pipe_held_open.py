@@ -28,7 +28,7 @@ import tarfile
 import threading
 import zipfile
 import zlib
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from typing import BinaryIO
 
@@ -135,7 +135,7 @@ _ALL_CODECS = [
 @contextmanager
 def _releasable_pipe(
     payload: bytes, *, buffered: bool
-) -> Iterator[tuple[BinaryIO, threading.Event, Callable[[float], None]]]:
+) -> Generator[tuple[BinaryIO, threading.Event, Callable[[float], None]], None, None]:
     """A pipe holding ``payload``, a flag set when the writer closes its end, and
     ``release_in(delay)``, which closes the writer ``delay`` seconds from now.
 
@@ -181,7 +181,7 @@ def _releasable_pipe(
 @contextmanager
 def _held_open_pipe(
     payload: bytes, *, buffered: bool
-) -> Iterator[tuple[BinaryIO, threading.Event]]:
+) -> Generator[tuple[BinaryIO, threading.Event], None, None]:
     """A pipe holding ``payload`` and a flag set when the writer closes its end.
 
     The writer holds the pipe open until the test ends, or ``_HOLD_SECONDS`` at most.
@@ -640,8 +640,10 @@ def test_a_short_compressed_tar_yields_its_first_member_at_once(
 @contextmanager
 def _staged_pipe(
     first: bytes, rest: bytes
-) -> Iterator[
-    tuple[BinaryIO, threading.Event, threading.Event, Callable[[float], None]]
+) -> Generator[
+    tuple[BinaryIO, threading.Event, threading.Event, Callable[[float], None]],
+    None,
+    None,
 ]:
     """A pipe whose writer sends ``first``, then ``rest`` when ``send_rest_in(delay)``
     fires, then holds the pipe open until the test ends.
