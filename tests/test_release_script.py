@@ -185,7 +185,8 @@ def test_start_refuses_before_changing_anything(
 ) -> None:
     """An empty [Unreleased] is refused before the branch or any file is touched."""
     release.CHANGELOG.write_text(
-        CHANGELOG.replace("### Fixed\n\n- Fixed 3 bugs in ZIP reading.\n\n", "")
+        CHANGELOG.replace("### Fixed\n\n- Fixed 3 bugs in ZIP reading.\n\n", ""),
+        encoding="utf-8",
     )
     assert release.main(["--dry-run", "start", "0.9.9"]) == 1
     captured = capsys.readouterr()
@@ -263,8 +264,10 @@ def fake_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A copy of the three files the script edits, outside git, so dry runs can succeed."""
     for name in ("pyproject.toml", "packages/archivey-cli/pyproject.toml"):
         (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
-        (tmp_path / name).write_text((ROOT / name).read_text(encoding="utf-8"))
-    (tmp_path / "CHANGELOG.md").write_text(CHANGELOG)
+        (tmp_path / name).write_text(
+            (ROOT / name).read_text(encoding="utf-8"), encoding="utf-8"
+        )
+    (tmp_path / "CHANGELOG.md").write_text(CHANGELOG, encoding="utf-8")
     monkeypatch.setattr(release, "ROOT", tmp_path)
     monkeypatch.setattr(release, "ROOT_PYPROJECT", tmp_path / "pyproject.toml")
     monkeypatch.setattr(
@@ -308,15 +311,22 @@ def test_dry_run_tag_checks_both_packages(
     fake_root: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     for path in (release.ROOT_PYPROJECT, release.CLI_PYPROJECT):
-        path.write_text(release.set_project_version(path.read_text(), "0.2.1"))
+        path.write_text(
+            release.set_project_version(path.read_text(encoding="utf-8"), "0.2.1"),
+            encoding="utf-8",
+        )
     release.CHANGELOG.write_text(
-        release.changelog_for_release(CHANGELOG, "0.2.1", "v0.2.0", "2026-11-20")
+        release.changelog_for_release(CHANGELOG, "0.2.1", "v0.2.0", "2026-11-20"),
+        encoding="utf-8",
     )
     assert release.main(["--dry-run", "tag", "0.2.1"]) == 0
     assert "+ gh release create v0.2.1 --target main" in capsys.readouterr().out
 
     cli = release.CLI_PYPROJECT
-    cli.write_text(release.set_project_version(cli.read_text(), "0.2.0"))
+    cli.write_text(
+        release.set_project_version(cli.read_text(encoding="utf-8"), "0.2.0"),
+        encoding="utf-8",
+    )
     assert release.main(["--dry-run", "tag", "0.2.1"]) == 1
     assert "archivey-cli/pyproject.toml is at version 0.2.0" in capsys.readouterr().err
 
