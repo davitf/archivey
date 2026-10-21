@@ -26,8 +26,7 @@ from pathlib import Path
 import pytest
 
 try:
-    from hypothesis import example, given
-    from hypothesis import strategies as st
+    from hypothesis import example, given, strategies as st
 except ImportError:  # pragma: no cover - [core-only] leg
     pytest.skip("hypothesis not installed (dev group)", allow_module_level=True)
 

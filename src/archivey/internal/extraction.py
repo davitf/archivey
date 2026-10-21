@@ -3595,8 +3595,10 @@ class ExtractionCoordinator:
         removed = [
             (
                 link,
-                f"{problems[link.path]}: a later member changed "
-                "a path it resolves through",
+                (
+                    f"{problems[link.path]}: a later member changed "
+                    "a path it resolves through"
+                ),
             )
             for link in outcome.escaped
         ] + [
@@ -4417,5 +4419,5 @@ class ExtractionCoordinator:
         if stream is not None:
             try:
                 stream.close()
-            except Exception:  # noqa: BLE001 - teardown hygiene; the result is recorded
+            except Exception:  # noqa: BLE001, S110 - teardown hygiene; the result is recorded
                 pass

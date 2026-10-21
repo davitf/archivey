@@ -422,8 +422,7 @@ class MemberVerifier:
             return
         start = self._pos
         self._pos = start + len(data)
-        if self._pos > self._furthest_read_pos:
-            self._furthest_read_pos = self._pos
+        self._furthest_read_pos = max(self._furthest_read_pos, self._pos)
         self._hash_span(start, data)
 
     def _hash_span(self, start: int, data: bytes) -> None:
@@ -643,7 +642,7 @@ class MemberVerifier:
                 return self._read_sized_all(inner)
             try:
                 data = inner.read(-1)
-            except Exception:  # noqa: BLE001 - abandon verify; re-raise decoder error
+            except Exception:  # abandon verify; re-raise decoder error
                 self._abandon()
                 raise
             if self._concluded and self._frontier_pending:
@@ -662,7 +661,7 @@ class MemberVerifier:
         if self._abandoned or self._concluded:
             try:
                 data = inner.read(n)
-            except Exception:  # noqa: BLE001 - abandon verify; re-raise decoder error
+            except Exception:  # abandon verify; re-raise decoder error
                 self._abandon()
                 raise
             if self._frontier_pending:
@@ -684,7 +683,7 @@ class MemberVerifier:
 
         try:
             data = inner.read(want)
-        except Exception:  # noqa: BLE001 - abandon verify; re-raise decoder error
+        except Exception:  # abandon verify; re-raise decoder error
             self._abandon()
             raise
 
@@ -965,7 +964,7 @@ class VerifyingStream(ReadOnlyIOStream):
             # has nothing left to do.
             try:
                 inner.close()
-            except Exception:  # noqa: BLE001 - the refusal below is the error to report
+            except Exception:  # noqa: BLE001, S110 - the refusal below is the error to report
                 pass
             finally:
                 super().close()

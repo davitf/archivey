@@ -323,7 +323,7 @@ def _windows_memory_query() -> Callable[[], int | None] | None:
         from ctypes import wintypes
 
         class Counters(ctypes.Structure):
-            _fields_ = [  # noqa: RUF012 - the ctypes layout of PROCESS_MEMORY_COUNTERS
+            _fields_ = [  # the ctypes layout of PROCESS_MEMORY_COUNTERS
                 ("cb", wintypes.DWORD),
                 ("PageFaultCount", wintypes.DWORD),
                 ("PeakWorkingSetSize", ctypes.c_size_t),
@@ -457,7 +457,7 @@ def _main(argv: list[str]) -> None:
         # when the interpreter finalizes aborts the process.
         try:
             stream.close()
-        except Exception:  # noqa: BLE001 - the process is ending either way
+        except Exception:  # noqa: BLE001, S110 - the process is ending either way
             pass
 
 
