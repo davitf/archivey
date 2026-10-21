@@ -28,7 +28,7 @@ def markdown_href(href: str) -> str:
     return f"{path}index.md#{fragment}"
 
 
-def preprocess(soup: Any, output: str) -> None:  # noqa: ARG001 — the plugin passes both
+def preprocess(soup: Any, output: str) -> None:
     """Rewrite every link in ``soup`` with :func:`markdown_href`."""
     for link in soup.find_all("a", href=True):
         href = link.get("href")

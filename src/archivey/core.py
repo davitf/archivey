@@ -106,16 +106,16 @@ if TYPE_CHECKING:
     from archivey.internal.diagnostics_collector import DiagnosticCollector
 
 __all__ = [
+    "DEFAULT_ARCHIVEY_CONFIG",
+    "AcceleratorMode",
+    "ArchiveyConfig",
     "DetectionConfidence",
+    "ExtractionLimits",
     "FormatAvailability",
     "FormatInfo",
     "FormatSupport",
-    "MissingComponent",
-    "ArchiveyConfig",
-    "ExtractionLimits",
     "ListingLimits",
-    "AcceleratorMode",
-    "DEFAULT_ARCHIVEY_CONFIG",
+    "MissingComponent",
     "detect_format",
     "format_availability",
     "list_known_formats",

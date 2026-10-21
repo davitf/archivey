@@ -869,12 +869,14 @@ def test_nested_archive_from_a_pass_handle_is_a_non_seekable_source(
             with pytest.raises(StreamNotSeekableError):
                 open_archive(stream, streaming=True)
 
-    with open_archive(outer_path, seekable_members=True) as outer:
-        with outer.open(inner_name) as f:
-            assert f.seekable() is True
-            with open_archive(f) as inner:
-                assert inner.cost.stream_capability is StreamCapability.SEEKABLE
-                assert sum(1 for m in inner.members() if m.is_file) == file_count
+    with (
+        open_archive(outer_path, seekable_members=True) as outer,
+        outer.open(inner_name) as f,
+    ):
+        assert f.seekable() is True
+        with open_archive(f) as inner:
+            assert inner.cost.stream_capability is StreamCapability.SEEKABLE
+            assert sum(1 for m in inner.members() if m.is_file) == file_count
 
 
 # Formats / mechanisms this contract should cover but cannot construct here.
