@@ -917,7 +917,10 @@ Disclosure goes through GitHub private vulnerability reporting ([`SECURITY.md`](
 OSS-Fuzz [waits until archivey has more users](#oss-fuzz).
 
 **Tests.** `tests/test_iso.py::test_pycdlib_directory_cycle_does_not_hang` (plain, Rock
-Ridge and Joliet), `::test_pycdlib_udf_directory_cycle_does_not_hang` (UDF).
+Ridge and Joliet), `::test_pycdlib_udf_directory_cycle_does_not_hang` (UDF). They pin the
+guard on `pycdlib` before 1.22, as locked; from 1.22 `pycdlib` refuses the loop itself and
+they pin that refusal instead, so run them with `uv run --with 'pycdlib==1.16.0'` after
+touching the guard.
 
 ### Directory sources changed concurrently
 
@@ -1178,19 +1181,45 @@ it, and avoiding that is the index's purpose. Decoding from the start before the
 cold seek would remove fast random access for every honest file, and xz's and lzip's
 own tools trust their indexes the same way.
 
-What the design still catches: a seek landing inside the misdescribed region resumes
-from a checked point before it and raises when the decode reaches the end of the lying
-unit (the member's trailer for lzip and BGZF, the stream end for xz, the start of the
-frame the table placed elsewhere for zstd); bytes returned before that are correct for their
-offsets. A seek past the lie followed by a read to the end is not
-caught, since every later unit is genuine. A diagnostic for an ambiguous trailer walk was
-considered and not taken: an attacker who controls the trailers can avoid it. Public:
+What the design still catches. For lzip, xz and a BGZF ISIZE that lies, a seek landing
+inside the misdescribed region resumes from a checked point before it and raises when
+the decode reaches the end of the lying unit (the member's trailer for lzip and BGZF, the
+stream end for xz); bytes returned before that are correct for their offsets. A zstd
+seek table, or a BGZF BSIZE, can misstate the output size of a unit whose data is
+genuine, so nothing raises there. Instead the stream compares each unit start a decode
+finds with the index. When the two put the same compressed offset (with the same resume
+state) at different output offsets, the index is wrong, and the stream drops every point
+the index gave and every point a decode counted from one, forgets a size the index gave,
+and emits `SEEK_INDEX_DEGRADED` (scan `decode_check`, type `SeekIndexContradicted`).
+A decode that reaches the end with another total than the index gave is the same
+contradiction; it catches a lie in the last unit, which no index point follows. Later
+seeks use only the points found by a decode from the start, and a size query decodes to
+the end. A decode in progress that began at an index point restarts from such a point,
+so the read, seek or size query that found the lie returns the right bytes and the right
+position. Ruled by davi on 2026-10-20: the index is only an accelerator, and a file that
+zstd or gzip decodes is not refused. A lie is caught once a decode passes the first unit
+start the index lists after it, or reaches the end. Not caught: a cold seek past the lie
+followed by a read to the end (every later unit is genuine, and the decode agrees with
+the index's shifted offsets); the bytes a decode returned, and a size the index gave,
+before the decode reached that unit start or the end; and, once a table over the cap
+has been thinned, a lie at a unit start the table no longer holds (the check compares
+only points the table holds, so it costs no more memory than the table), until the
+decode reaches a start the table kept or the end. A size asked only after a decode
+reached the end is the decoded one, and the index is then never read, so that order
+reports nothing. Where the index and a decode put two different compressed offsets at
+one output offset, nothing is proved (an empty lzip member makes that pair in an honest
+file): the decoded point is kept, and the check above catches the lie at the next unit
+start. A diagnostic for an ambiguous trailer walk was considered and not taken: an
+attacker who controls the trailers can avoid it. Public:
 [the integrity guarantee](../docs/errors-and-diagnostics.md#the-integrity-guarantee) and
 [where the guarantees stop](../docs/security.md#where-the-guarantees-stop). Tests:
 `tests/test_seekable_streams.py::test_lzip_cold_seek_trusts_a_self_consistent_trailer_chain`,
 `::test_xz_cold_seek_trusts_a_self_consistent_block_index`,
 `tests/test_zstd_seekable.py::test_cold_seek_trusts_a_self_consistent_table`,
-`tests/test_bgzf_seek.py::test_bgzf_cold_seek_trusts_the_block_sizes`.
+`::test_a_forward_read_that_contradicts_the_table_drops_it`,
+`::test_a_seek_into_a_misplaced_frame_drops_the_table_when_the_decode_reaches_it`,
+`tests/test_bgzf_seek.py::test_bgzf_cold_seek_trusts_the_block_sizes`,
+`::test_a_forward_read_that_contradicts_the_walk_drops_it`.
 
 ### Windows directory sources
 

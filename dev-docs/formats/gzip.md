@@ -145,7 +145,10 @@ stops quietly at the first member without a `BC` subfield (an ordinary gzip memb
 trailing data, padding) and keeps the points before it; the size is known only when it
 reaches the end of the file, so a BGZF file with NUL padding after it seeks by its
 blocks and learns its size by decoding to the end. The sizes are trusted like the xz and lzip
-indexes (threat-model O17); a forward read still checks every member's CRC-32 and ISIZE.
+indexes (threat-model O17); a forward read still checks every member's CRC-32 and ISIZE,
+and a decode that finds a member at another output offset than the walk gives it, or
+reaches the end with another total, drops the walk's points and size
+(`SEEK_INDEX_DEGRADED`, scan `decode_check`).
 A `.gzi` index is a separate file, which a stream cannot find, so it is not read. Under
 `rapidgzip` none of this applies: its own index serves the seeks.
 

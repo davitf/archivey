@@ -120,6 +120,7 @@ from archivey.internal.streams.codecs.isolated import (
     Natives,
     natives_for,
 )
+from archivey.internal.streams.decompressor_stream import release_decoder
 from archivey.internal.streams.streamtools import (
     DelegatingStream,
     LockedStream,
@@ -202,6 +203,11 @@ def _install_pycdlib_directory_cycle_guard() -> None:
     (``_walk_udf_directories``) uses the same ``deque`` for UDF File Entries, and a File
     Identifier naming an ancestor's ICB loops it the same way, allocating as it goes
     (``test_pycdlib_udf_directory_cycle_does_not_hang``).
+
+    pycdlib 1.22 checks for these loops itself and refuses the image ("ISO Directory
+    Records form a loop", "UDF File Entries form a loop"), which archivey reports as
+    ``CorruptionError``. The check runs before the ``deque`` append, so the guard never
+    sees a repeat there; it stays for the older releases ``pyproject.toml`` allows.
 
     The guard is a ``deque`` subclass that tracks the extents scheduled on *that instance*
     and skips re-enqueueing one already seen — valid trees never revisit an extent, so this
@@ -1492,15 +1498,18 @@ class _ZisofsStream(io.RawIOBase):
             decompressor = self._natives.zlib_decompressobj()
             try:
                 data = decompressor.decompress(packed, expected + 1)
+                ended = decompressor.eof and not decompressor.unused_data
             except zlib.error as exc:
                 raise CorruptionError(f"zisofs block {index}: {exc}") from exc
+            finally:
+                release_decoder(decompressor)
             if len(data) != expected:
                 raise CorruptionError(
                     f"zisofs block {index} holds {len(data)} bytes, not {expected}"
                 )
             # The stream has to end, checksum included, where the pointers say: a
             # block cut before its Adler-32 or followed by other bytes is not verified.
-            if not decompressor.eof or decompressor.unused_data:
+            if not ended:
                 raise CorruptionError(
                     f"zisofs block {index} does not end where its pointers say"
                 )

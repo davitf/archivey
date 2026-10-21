@@ -3,6 +3,7 @@ the digest-verification stage."""
 
 from __future__ import annotations
 
+import ast
 import bz2
 import dataclasses
 import gzip
@@ -64,6 +65,7 @@ from archivey.internal.streams.verify import VerifyingStream
 from archivey.types import HashAlgorithm, StreamFormat
 from tests.conftest import (
     CPYTHON,
+    UNUSED_UNDER_PYPY_NAMES,
     has_package,
     requires,
     requires_binary,
@@ -2932,11 +2934,11 @@ def _hooks_read_as_absent(deps: types.ModuleType, package: str) -> bool:
 def test_packages_unused_under_pypy_count_as_absent(
     deps_built_under_pypy: types.ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Under PyPy archivey treats lz4, pyppmd and rapidgzip as absent even when they are
-    installed, and has a reason for each."""
+    """Under PyPy archivey treats lz4, pyppmd, rapidgzip and inflate64 as absent even
+    when they are installed, and has a reason for each."""
     deps = deps_built_under_pypy
     unused = set(deps._UNUSED_UNDER_PYPY)
-    assert unused >= {"lz4", "pyppmd", "rapidgzip"}
+    assert unused >= {"lz4", "pyppmd", "rapidgzip", "inflate64"}
     _pretend_installed(monkeypatch, *unused)
     for package in unused:
         assert _hooks_read_as_absent(deps, package), package
@@ -3089,6 +3091,47 @@ def test_codec_requirement_hints_are_installable() -> None:
         requirement = codec_requirement(codec)
         if requirement is not None:
             _assert_hint_is_installable(requirement.install_hint)
+
+
+def test_conftest_names_the_same_unused_packages_as_deps() -> None:
+    """conftest keeps its own copy of ``deps._UNUSED_UNDER_PYPY`` (it must block imports
+    before archivey loads), so the two sets must name the same packages."""
+    assert set(UNUSED_UNDER_PYPY_NAMES) == set(codecs_module.deps._UNUSED_UNDER_PYPY)
+
+
+def test_every_requirement_on_an_unused_package_carries_its_reason() -> None:
+    """Each ``MissingComponent`` naming a package in ``deps._UNUSED_UNDER_PYPY`` passes
+    ``reason=deps.unused_reason(<name>)``, so a read under PyPy gives the reason and not
+    install advice.
+
+    Read from the source: the requirement is built when its module is imported, and on
+    CPython both the argument and its default are ``""``, so a live object cannot tell.
+    """
+    unused = set(codecs_module.deps._UNUSED_UNDER_PYPY)
+    src = Path(__file__).resolve().parent.parent / "src"
+    seen: set[str] = set()
+    offenders = []
+    for path in sorted(src.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "MissingComponent"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and node.args[0].value in unused
+            ):
+                continue
+            name = node.args[0].value
+            seen.add(name)
+            reason = next((k.value for k in node.keywords if k.arg == "reason"), None)
+            if reason is None or ast.unparse(reason) != f"deps.unused_reason({name!r})":
+                offenders.append(f"{path.relative_to(src)}:{node.lineno}: {name}")
+    assert not offenders, "requirement without its unused reason:\n" + "\n".join(
+        offenders
+    )
+    assert seen == unused, f"no requirement found for {sorted(unused - seen)}"
 
 
 def test_no_source_file_advertises_a_deleted_extra() -> None:

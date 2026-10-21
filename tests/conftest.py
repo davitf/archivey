@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import importlib.metadata
 import importlib.util
 import os
 import re
@@ -45,26 +46,34 @@ class _TracemallocUnavailable(types.ModuleType):
 if importlib.util.find_spec("_tracemalloc") is None:
     sys.modules["tracemalloc"] = _TracemallocUnavailable("tracemalloc")
 
-# archivey never uses rapidgzip, lz4 or pyppmd under PyPy, where they misread data or
-# crash the interpreter (deps.unused_reason), and the tests treat them as not installed
-# there. rapidgzip and lz4 get a ``None`` entry, which makes the import fail and
-# ``importlib.util.find_spec`` return ``None``, so no test loads them. pyppmd cannot:
-# py7zr, a test oracle, imports it. Tests that need it ask ``has_package`` (through
-# ``requires`` or ``importorskip``) instead. The source of truth is
-# ``deps._UNUSED_UNDER_PYPY``; this copy is kept by hand because it must be in place
+# archivey never uses rapidgzip, lz4, pyppmd or inflate64 under PyPy, where they misread
+# data or crash the interpreter (deps.unused_reason), and the tests treat them as not
+# installed there. rapidgzip and lz4 get a ``None`` entry, which makes the import fail and
+# ``importlib.util.find_spec`` return ``None``, so no test loads them. pyppmd and
+# inflate64 cannot: py7zr, a test oracle, imports both. Tests that need them ask
+# ``has_package`` (through ``requires`` or ``importorskip``) instead. The source of truth
+# is ``deps._UNUSED_UNDER_PYPY``; this copy is kept by hand because it must be in place
 # before anything imports archivey, and importing ``deps`` imports ``lz4.frame``.
+# ``tests/test_codecs.py`` checks that it matches.
+UNUSED_UNDER_PYPY_NAMES = frozenset({"rapidgzip", "lz4", "pyppmd", "inflate64"})
 UNUSED_UNDER_PYPY = (
-    frozenset({"rapidgzip", "lz4", "pyppmd"})
-    if sys.implementation.name == "pypy"
-    else frozenset()
+    UNUSED_UNDER_PYPY_NAMES if sys.implementation.name == "pypy" else frozenset()
 )
-for _blocked in UNUSED_UNDER_PYPY - {"pyppmd"}:
+for _blocked in UNUSED_UNDER_PYPY - {"pyppmd", "inflate64"}:
     sys.modules[_blocked] = None  # type: ignore[assignment]
 
 
 def has_package(name: str) -> bool:
     """Whether optional package ``name`` is installed and archivey uses it here."""
     return name not in UNUSED_UNDER_PYPY and importlib.util.find_spec(name) is not None
+
+
+def pycdlib_at_least(major: int, minor: int) -> bool:
+    """Whether the installed pycdlib is ``major.minor`` or later. Only the leading digits
+    of each part count, so a ``1.22rc1`` reads as 1.22."""
+    parts = importlib.metadata.version("pycdlib").split(".")[:2]
+    found = tuple(int(re.match(r"\d*", part)[0] or 0) for part in parts)
+    return found >= (major, minor)
 
 
 def importorskip(name: str) -> types.ModuleType:

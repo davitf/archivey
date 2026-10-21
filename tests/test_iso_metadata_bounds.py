@@ -8,7 +8,6 @@ length the ``CE`` entry declares. Every fixture is built in the test.
 
 from __future__ import annotations
 
-import importlib.metadata
 import io
 import struct
 from pathlib import Path
@@ -19,7 +18,7 @@ import pytest
 from archivey import open_archive
 from archivey.config import ArchiveyConfig, ListingLimits
 from archivey.exceptions import CorruptionError, ResourceLimitError
-from tests.conftest import requires
+from tests.conftest import pycdlib_at_least, requires
 from tests.memory_util import traced_peak
 
 pytestmark = requires("pycdlib")
@@ -232,8 +231,7 @@ def _pycdlib_follows_ce_chains() -> bool:
     the first area, and pass with archivey's check on continuation areas removed. The
     check itself is exercised only on 1.21+ (``uv run --with pycdlib==1.21.0``).
     """
-    version = importlib.metadata.version("pycdlib")
-    return tuple(int(part) for part in version.split(".")[:2]) >= (1, 21)
+    return pycdlib_at_least(1, 21)
 
 
 # What older pycdlib raises, in its own parse, for a CE inside a continuation area.
