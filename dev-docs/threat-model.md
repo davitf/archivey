@@ -561,8 +561,8 @@ left to the source, because the source bounds them only by the image: a Rock Rid
 entry's area must end inside its logical block, as pycdlib itself requires after its
 read and the Linux kernel requires, so a `CE` declaring 512 MiB in a sparse 600 MiB
 image is refused without the read (545 MiB peak before), and so is each further link of
-a `CE` chain, which pycdlib follows from 1.21 (a 256 MiB second link peaked at 256 MiB
-under default limits before); and a path table must end inside the image
+a `CE` chain, which pycdlib follows (a 256 MiB second link peaked at 256 MiB under
+default limits before); and a path table must end inside the image
 ([Listing](#listing) weighs it against `max_metadata_bytes` too). This bounds one read;
 how many records and continuation areas `pycdlib` builds from those reads is the listing
 budget's ([Listing](#listing)).
@@ -905,22 +905,19 @@ writes itself) is exercised against mutated and coverage-guided input.
    `openspec/specs/testing-contract/spec.md`). `atheris` is in the `fuzz` dependency
    group only.
 
-pycdlib loops forever when corrupt directory records form a back-edge, in any namespace
-`open_fp` walks, UDF included, where it also allocates on every pass. A UDF File
-Identifier naming an ancestor's ICB grew memory by about 65 MB a second under default
-limits. `internal/backends/iso_reader.py`
-`_install_pycdlib_directory_cycle_guard` installs a queue, confined to `pycdlib`'s
-namespace, that drops a directory extent or UDF File Entry already scheduled; valid
-trees never revisit one.
+pycdlib before 1.22 looped forever when corrupt directory records formed a back-edge,
+in any namespace `open_fp` walks, UDF included, where it also allocated on every pass. A
+UDF File Identifier naming an ancestor's ICB grew memory by about 65 MB a second under
+default limits. From 1.22, the minimum archivey requires, pycdlib detects the loop and
+raises "ISO Directory Records form a loop" or "UDF File Entries form a loop", which
+archivey reports as `CorruptionError`. So a looping tree is refused at open, in any tree
+pycdlib walks.
 
 Disclosure goes through GitHub private vulnerability reporting ([`SECURITY.md`](../SECURITY.md)).
 OSS-Fuzz [waits until archivey has more users](#oss-fuzz).
 
 **Tests.** `tests/test_iso.py::test_pycdlib_directory_cycle_does_not_hang` (plain, Rock
-Ridge and Joliet), `::test_pycdlib_udf_directory_cycle_does_not_hang` (UDF). They pin the
-guard on `pycdlib` before 1.22, as locked; from 1.22 `pycdlib` refuses the loop itself and
-they pin that refusal instead, so run them with `uv run --with 'pycdlib==1.16.0'` after
-touching the guard.
+Ridge and Joliet), `::test_pycdlib_udf_directory_cycle_does_not_hang` (UDF).
 
 ### Directory sources changed concurrently
 

@@ -37,7 +37,7 @@ from archivey.internal.backends.iso_reader import IsoReader, _strip_version
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.streamtools import DEFAULT_UNKNOWN_LENGTH_READ_STEP
 from archivey.types import FormatSupport
-from tests.conftest import pycdlib_at_least, requires
+from tests.conftest import requires
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.streams_util import (
     FactSizedReadRecorder,
@@ -281,14 +281,14 @@ _PYCDLIB_CYCLE_ENTRIES: tuple[tuple[str, bytes, bool], ...] = (
     ("subdir/file2.txt", b"Hello, universe!", False),
     ("implicit_subdir/file3.txt", b"Hello there!", False),
 )
-# ``(rock_ridge, joliet) -> (image_len, bitflip_offset, byte_before_flip, namespace)``
-_PYCDLIB_CYCLE_CASES: tuple[tuple[bool, bool, int, int, int, str], ...] = (
+# ``(rock_ridge, joliet) -> (image_len, bitflip_offset, byte_before_flip)``
+_PYCDLIB_CYCLE_CASES: tuple[tuple[bool, bool, int, int, int], ...] = (
     # Plain ISO 9660 PVD walk: ``/SUBDIR`` extent 26, +66 closes a back-edge to root 23.
-    (False, False, 61440, 53314, 0x01, "iso9660"),
+    (False, False, 61440, 53314, 0x01),
     # Rock Ridge PVD walk: RR padding shifts the cycle byte to +32 on the same extent.
-    (True, False, 63488, 53280, 0x01, "rock_ridge"),
+    (True, False, 63488, 53280, 0x01),
     # Joliet SVD walk on the RR+Joliet image (found by the mutation harness).
-    (True, True, 81920, 71746, 0x01, "rock_ridge"),
+    (True, True, 81920, 71746, 0x01),
 )
 
 
@@ -424,20 +424,9 @@ def test_a_cut_image_keeps_pycdlib_text_without_its_repr() -> None:
     assert f"{type(cause).__name__}(" not in message
 
 
-def _pycdlib_refuses_loops() -> bool:
-    """pycdlib refuses a directory tree that loops back on itself from 1.22, raising
-    "ISO Directory Records form a loop" or "UDF File Entries form a loop"; before, its
-    walk loops forever unless archivey's guard drops the repeated extent.
-
-    ``uv.lock`` pins an older pycdlib, so CI's CPython legs take the ``False`` branch,
-    where the guard is what these tests pin. The PyPy job installs the latest release.
-    Once the lock moves to 1.22 or later, the guard is exercised only by running them
-    with ``uv run --with 'pycdlib==1.16.0'``; do that after touching it.
-    """
-    return pycdlib_at_least(1, 22)
-
-
-_LOOP = r"form a loop"
+# What pycdlib raises for a directory tree that loops back on itself.
+_ISO_LOOP = r"ISO Directory Records form a loop"
+_UDF_LOOP = r"UDF File Entries form a loop"
 
 
 @pytest.mark.timeout(5)
@@ -448,7 +437,6 @@ _LOOP = r"form a loop"
         "expected_len",
         "bitflip_offset",
         "byte_before_flip",
-        "namespace",
     ),
     [
         pytest.param(*case, id=case_id)
@@ -465,17 +453,17 @@ def test_pycdlib_directory_cycle_does_not_hang(
     expected_len: int,
     bitflip_offset: int,
     byte_before_flip: int,
-    namespace: str,
 ) -> None:
     """Regression: corrupt ``/subdir`` must not hang pycdlib during ``open_fp``.
 
     ``pycdlib._walk_directories`` (used for the PVD / Rock Ridge tree *and* each
-    supplementary namespace such as Joliet) enqueues child directory extents with no visit
-    tracking. One flipped bit in a directory record can add a child that points back at an
-    ancestor extent; pycdlib then loops forever. ``open_fp`` walks every present namespace,
+    supplementary namespace such as Joliet) enqueued child directory extents with no visit
+    tracking before 1.22. One flipped bit in a directory record can add a child that points back at an
+    ancestor extent; such a pycdlib then looped forever. ``open_fp`` walks every present namespace,
     so a Joliet-only cycle still bites RR+Joliet images even when archivey reads Rock Ridge.
-    Without archivey's extent cycle guard these cases hang until pytest-timeout kills them.
-    pycdlib 1.22 and later refuses the image itself (:func:`_pycdlib_refuses_loops`).
+    pycdlib before 1.22 hung here until pytest-timeout killed the test. From 1.22 it
+    detects the loop and raises "ISO Directory Records form a loop", so the image is
+    refused at open.
     """
     image = _pycdlib_directory_cycle_image(
         rock_ridge=rock_ridge,
@@ -484,17 +472,8 @@ def test_pycdlib_directory_cycle_does_not_hang(
         bitflip_offset=bitflip_offset,
         byte_before_flip=byte_before_flip,
     )
-    if _pycdlib_refuses_loops():
-        with pytest.raises(CorruptionError, match=_LOOP):
-            open_archive(io.BytesIO(image), format=ArchiveFormat.ISO)
-        return
-    with open_archive(io.BytesIO(image), format=ArchiveFormat.ISO) as ar:
-        assert ar.info.extra["iso.namespace"] == namespace
-        names = {m.name for m in ar.members()}
-    if namespace == "iso9660":
-        assert "F1.TXT" in names
-    else:
-        assert "file1.txt" in names
+    with pytest.raises(CorruptionError, match=_ISO_LOOP):
+        open_archive(io.BytesIO(image), format=ArchiveFormat.ISO)
 
 
 def _udf_file_identifiers(data: bytes | bytearray) -> list[int]:
@@ -555,19 +534,14 @@ def test_pycdlib_udf_directory_cycle_does_not_hang() -> None:
     """A UDF directory naming an ancestor must not hang pycdlib's walk in ``open_fp``.
 
     ``PyCdlib._walk_udf_directories`` enqueues each directory's File Entry with no
-    visit tracking, so this image made it parse the root's entries again and again,
-    with memory growing about 65 MB a second, under default limits. The listing comes
-    from the ISO 9660 tree, as ``7z l`` lists the same image. pycdlib 1.22 and later
-    refuses the image itself (:func:`_pycdlib_refuses_loops`).
+    visit tracking before 1.22, so this image made it parse the root's entries again and
+    again, with memory growing about 65 MB a second, under default limits. From 1.22 it
+    detects the loop and raises "UDF File Entries form a loop", so the image is refused
+    at open, although its ISO 9660 tree is intact.
     """
     image = _udf_directory_cycle_image()
-    if _pycdlib_refuses_loops():
-        with pytest.raises(CorruptionError, match=_LOOP):
-            open_archive(io.BytesIO(image), format=ArchiveFormat.ISO)
-        return
-    with open_archive(io.BytesIO(image), format=ArchiveFormat.ISO) as ar:
-        names = sorted(m.name for m in ar.members())
-    assert names == ["D/", "D/F.TXT"]
+    with pytest.raises(CorruptionError, match=_UDF_LOOP):
+        open_archive(io.BytesIO(image), format=ArchiveFormat.ISO)
 
 
 def _udf_image_with_links(count: int) -> bytes:
@@ -2319,12 +2293,10 @@ def test_an_area_cut_before_its_nm_entry_lists_under_the_iso_name() -> None:
         ]
 
 
-def test_a_record_without_a_continuation_area_has_no_nm_name_on_any_pycdlib() -> None:
-    """From pycdlib 1.20, ``ce_entries`` stays ``None`` until a continuation area is
-    parsed; a record with neither an ``NM`` nor such an area has no ``NM`` name.
-
-    The locked pycdlib always allocates ``ce_entries``, so the 1.20 shape is set by
-    hand here; the end-to-end case is the cut-area test above, on pycdlib 1.20+.
+def test_a_record_without_a_continuation_area_has_no_nm_name() -> None:
+    """pycdlib leaves ``ce_entries`` as ``None`` until a continuation area is parsed; a
+    record with neither an ``NM`` nor such an area has no ``NM`` name. The end-to-end
+    case is the cut-area test above.
     """
     import pycdlib
 
@@ -2336,7 +2308,7 @@ def test_a_record_without_a_continuation_area_has_no_nm_name_on_any_pycdlib() ->
         record = iso.get_record(rr_path="/aaa")
         rr = record.rock_ridge
         assert rr is not None
-        rr.ce_entries = None
+        assert rr.ce_entries is None
         assert _rr_entry_groups(rr) == (rr.dr_entries,)
         rr.dr_entries.nm_records = []
         assert _nm_name(record) is None
