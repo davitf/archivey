@@ -88,23 +88,26 @@ jobs:
       # PyPI *after* upload, when the filename can no longer be reused. Catch them here.
       - name: Check distribution metadata
         run: uvx twine check --strict dist/*/*
-      # Each sdist must hold only what a build needs. For archivey that is the
-      # [tool.hatch.build.targets.sdist] list in pyproject.toml: without it hatch packs
-      # every tracked file, and the 0.2.0rc1 sdist shipped openspec/, review/, dev-docs/
-      # and tests/ (about 7.5 MB). archivey-cli needs no list: its folder holds only the
-      # files below. hatch always adds .gitignore.
-      # A new top-level name here means the list changed: update the list below on purpose.
+      # Each sdist must hold only what a build needs (packaging-and-extras spec, "Source
+      # distributions"). For archivey that is the [tool.hatch.build.targets.sdist] list in
+      # pyproject.toml; tests/test_sdist_contents.py keeps that list and the expected names
+      # below in step. Without the list hatch packs every tracked file, and the 0.2.0rc1
+      # sdist shipped openspec/, review/, dev-docs/ and tests/ (about 7.5 MB).
+      # packages/archivey-cli/ holds only LICENSE, README.md and pyproject.toml, so it needs
+      # no list. In both, hatch generates PKG-INFO and copies the repo-root .gitignore.
+      # A new top-level name here means the list changed: update the names below on purpose.
       - name: Check sdist contents
         run: |
           check() {
-            got="$(tar tzf "$1" | cut -d/ -f2 | sed "/^$/d" | LC_ALL=C sort -u | tr '\n' ' ')"
-            if [ "$got" != "$2" ]; then
-              echo "::error::$1 holds top-level entries [$got], expected [$2]" >&2
+            got="$(tar tzf "$1" | cut -d/ -f2 | sed "/^$/d" | LC_ALL=C sort -u | paste -sd' ')"
+            want="$(printf '%s\n' $2 | LC_ALL=C sort -u | paste -sd' ')"
+            if [ "$got" != "$want" ]; then
+              echo "::error::$1 holds top-level entries [$got], expected [$want]" >&2
               exit 1
             fi
           }
-          check dist/archivey/archivey-*.tar.gz ".gitignore CHANGELOG.md LICENSE PKG-INFO README.md pyproject.toml src "
-          check dist/archivey-cli/archivey_cli-*.tar.gz ".gitignore LICENSE PKG-INFO README.md pyproject.toml "
+          check dist/archivey/archivey-*.tar.gz ".gitignore CHANGELOG.md LICENSE PKG-INFO README.md pyproject.toml src"
+          check dist/archivey-cli/archivey_cli-*.tar.gz ".gitignore LICENSE PKG-INFO README.md pyproject.toml"
       - name: Upload distributions
         uses: actions/upload-artifact@v4
         with:
@@ -133,9 +136,10 @@ jobs:
       # the missing one instead of failing on the files that are already up (a PyPI
       # filename can never be uploaded twice).
       # attestations: the action signs each file and uploads a PEP 740 attestation, which
-      # PyPI shows as provenance (the 0.2.0rc1 files of both projects have one). It is the
-      # default under Trusted Publishing; it is set here so a change of default, or a
-      # move off Trusted Publishing, cannot drop it without a visible diff.
+      # PyPI shows as provenance (the 0.2.0rc1 files of both projects have one). Setting it
+      # pins today's default. It still needs Trusted Publishing (no password:) and a
+      # pypi.org URL: without either the action only warns, skips the attestation and
+      # uploads anyway. The release checklist checks the provenance on PyPI.
       - name: Publish archivey
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
