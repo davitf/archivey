@@ -208,9 +208,15 @@ four commands.
    (and the `archivey[recommended]==` pin), refreshes `uv.lock`, moves the `[Unreleased]`
    text under a dated `## [X.Y.Z]` heading with its compare links, opens the release PR
    from `release/vX.Y.Z`, and starts the TestPyPI dry run on that branch (Actions →
-   Publish). It refuses an empty `[Unreleased]`.
-3. When CI and the TestPyPI run are green, merge the release PR. Then
-   `uv run python scripts/release.py tag X.Y.Z` creates the GitHub Release `vX.Y.Z` on
+   Publish). It also starts each release gate workflow on that branch. These jobs no
+   longer run on every change, so a regression that only they catch could otherwise
+   ship. `RELEASE_GATE_WORKFLOWS` in `scripts/release.py` is the one list of them.
+   `start` refuses an empty `[Unreleased]`.
+3. When CI, the TestPyPI run and the release gates are green, merge the release PR. Then
+   `uv run python scripts/release.py tag X.Y.Z` checks that each gate has a green run on
+   the release PR's last commit. If one is missing, still running or red, it refuses and
+   prints the command that starts it. A commit pushed to the release PR after `start`
+   needs new gate runs. Then it creates the GitHub Release `vX.Y.Z` on
    `main`, with the CHANGELOG section as its body (marked as a pre-release for
    `a`/`b`/`rc` versions). The tag starts `publish.yml`, which publishes to PyPI after the
    `pypi` environment approval. Agent sessions cannot do this step (their GitHub access
