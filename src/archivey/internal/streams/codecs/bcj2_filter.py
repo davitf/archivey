@@ -48,7 +48,11 @@ from collections.abc import Sequence
 from typing import BinaryIO
 
 from archivey.exceptions import CorruptionError, TruncatedError
-from archivey.internal.streams.streamtools import ReadOnlyIOStream, is_seekable
+from archivey.internal.streams.streamtools import (
+    ReadOnlyIOStream,
+    is_seekable,
+    resolve_seek,
+)
 
 # Every input is read in blocks of this size. Output is produced a main block at a
 # time, so a read never holds more than one block's expansion (at most 5x, when every
@@ -357,18 +361,7 @@ class Bcj2DecoderStream(ReadOnlyIOStream):
         here = self.tell()
         if not self._seekable:
             raise io.UnsupportedOperation("seek")
-        # The member-stream convention, as io.BytesIO: a negative absolute position is
-        # refused, and a relative seek that lands before the start goes to 0.
-        if whence == io.SEEK_SET:
-            if offset < 0:
-                raise ValueError(f"Invalid offset: {offset}")
-            target = offset
-        elif whence == io.SEEK_CUR:
-            target = max(0, here + offset)
-        elif whence == io.SEEK_END:
-            target = max(0, self._size + offset)
-        else:
-            raise ValueError(f"Invalid whence: {whence}")
+        target = resolve_seek(offset, whence, pos=here, end=lambda: self._size)
         if target >= self._size:
             self._past_end = target
             return target
