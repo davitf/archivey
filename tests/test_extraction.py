@@ -3390,8 +3390,8 @@ def test_streaming_duplicate_name_removes_the_copy_a_filter_drops(
         seen: list[str] = []
 
         def drop_second(member: ArchiveMember) -> ArchiveMember | None:
-            seen.append(member.name)
-            return member if len(seen) == 1 else None
+            seen.append(member.name)  # noqa: B023 - called within this iteration
+            return member if len(seen) == 1 else None  # noqa: B023 - called within this iteration
 
         with open_archive(io.BytesIO(archive), streaming=streaming) as reader:
             results = reader.extract_all(dest, filter=drop_second).results
@@ -3408,13 +3408,13 @@ def test_streaming_duplicate_name_removes_the_copy_when_the_later_one_fails(
         seen: list[str] = []
 
         def fail_second(member: ArchiveMember) -> ArchiveMember | None:
-            seen.append(member.name)
-            if len(seen) == 2:
+            seen.append(member.name)  # noqa: B023 - called within this iteration
+            if len(seen) == 2:  # noqa: B023 - called within this iteration
                 # A one-pass extraction keeps the earlier copy until the later one's
                 # outcome is known, so a later copy that lands replaces it atomically.
                 # TAR extracts in one pass in both modes: random access enforces the
                 # listing limits as members arrive rather than listing first.
-                assert (dest / "a.txt").exists()
+                assert (dest / "a.txt").exists()  # noqa: B023 - called within this iteration
                 raise ExtractionError("refused", member_name=member.name)
             return member
 
@@ -3707,8 +3707,8 @@ def test_streaming_duplicate_name_known_differences(tmp_path: Path) -> None:
         picked: list[str] = []
 
         def first_only(member: ArchiveMember) -> bool:
-            picked.append(member.name)
-            return len(picked) == 1
+            picked.append(member.name)  # noqa: B023 - called within this iteration
+            return len(picked) == 1  # noqa: B023 - called within this iteration
 
         dest = tmp_path / f"select-{streaming}"
         assert outcome(streaming, dest, members=first_only) == expected
@@ -3722,8 +3722,8 @@ def test_streaming_duplicate_name_known_differences(tmp_path: Path) -> None:
         seen: list[str] = []
 
         def drop_second(member: ArchiveMember) -> ArchiveMember | None:
-            seen.append(member.name)
-            return member if len(seen) == 1 else None
+            seen.append(member.name)  # noqa: B023 - called within this iteration
+            return member if len(seen) == 1 else None  # noqa: B023 - called within this iteration
 
         dest = tmp_path / f"replace-{streaming}"
         dest.mkdir()

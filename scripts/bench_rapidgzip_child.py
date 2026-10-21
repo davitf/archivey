@@ -298,8 +298,8 @@ def measure_seeks(path: str, data_len: int, repeats: int) -> None:
 
         def child() -> None:
             for t in targets:
-                c.call(2, t)
-                c.read(4096)
+                c.call(2, t)  # noqa: B023 - called within this iteration
+                c.read(4096)  # noqa: B023 - called within this iteration
 
         t_child = _best(child, repeats) / len(targets)
         c.close()

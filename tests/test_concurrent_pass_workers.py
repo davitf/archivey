@@ -544,7 +544,7 @@ def test_7z_link_opened_from_another_thread_leaves_the_pass_decoder_alone() -> N
                 used: list[str] = []
 
                 def counted(opener=pass_link[1]):
-                    used.append(threading.current_thread().name)
+                    used.append(threading.current_thread().name)  # noqa: B023 - called within this iteration
                     return opener()
 
                 reader._pass_link = (member, counted, *pass_link[2:])  # type: ignore[attr-defined]

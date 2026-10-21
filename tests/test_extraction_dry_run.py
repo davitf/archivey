@@ -463,7 +463,7 @@ def test_link_targets_that_name_dest_match(streaming: bool, tmp_path: Path) -> N
         }
         calls = iter((False, True))
         real, dry = _both(
-            lambda: io.BytesIO(blobs[next(calls)]),
+            lambda: io.BytesIO(blobs[next(calls)]),  # noqa: B023 - called within this iteration
             work,
             policy=policy,
             open_kwargs={"streaming": streaming},
@@ -494,7 +494,7 @@ def test_link_past_a_missing_name_meets_what_dest_holds(
         }
         calls = iter((False, True))
         real, dry = _both(
-            lambda: io.BytesIO(blobs[next(calls)]),
+            lambda: io.BytesIO(blobs[next(calls)]),  # noqa: B023 - called within this iteration
             work,
             policy=policy,
             populate=lambda dest: _put(

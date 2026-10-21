@@ -1344,12 +1344,12 @@ def _apply_zip64_extra(
 
         def take(width: int, what: str) -> int:
             nonlocal cursor
-            if cursor + width > len(data):
+            if cursor + width > len(data):  # noqa: B023 - called within this iteration
                 raise CorruptionError(
                     f"Corrupt ZIP64 extra field in central directory entry "
                     f"#{index}: {what} not found"
                 )
-            value = int.from_bytes(data[cursor : cursor + width], "little")
+            value = int.from_bytes(data[cursor : cursor + width], "little")  # noqa: B023 - called within this iteration
             cursor += width
             return value
 
