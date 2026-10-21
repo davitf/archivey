@@ -99,9 +99,14 @@ members, so the TAR member rates describe small members):
 
 - tar archivey read 4 × 4 MiB: measured 1.79 ms, predicted 2.68 ms (−49%)
 
-`tar_open_list` and `tar_read_all` vary between runs. The nightlies of 2026-10-15,
--16 and -18 gave 2.3–2.6× and 2.7–3.0×, so the figures above are typical; the 1.49× and
-2.08× this file quoted from the 2026-10-19 run were one fast night.
+Three published cases do not reproduce between runs, so read them as ranges.
+`gzip_read_all` straddles parity: 0.86–0.89× in the nightlies of 2026-10-15, -16 and -18
+and in the 07:04 run of 2026-10-20, then 1.14× four hours later on the same commit
+(`b72df0b7`, run 39416281497) and 1.09× here. Both sides slowed in the slow runs, and
+`z_zeros_read_all`, which has no peer, went from 93 ms to 246 ms with them, so the move
+is the runner and not a 0.2.0 change to the gzip read path. `tar_open_list` gave
+2.28–2.6× and `tar_read_all` 2.7–3.0× over the same runs; the 1.49× and 2.08× this file
+once quoted from the 2026-10-19 run were one fast night.
 
 Against the older tables below: the native ZIP reader replaced `zipfile`, rapidgzip now
 runs in its own process (about 45 ms to start, `docs/security.md`), so forcing the gzip

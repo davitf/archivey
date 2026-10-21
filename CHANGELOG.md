@@ -46,6 +46,12 @@ and each change will be listed here. No major changes are expected.
   hardlink escapes, special files and deceptive names, and caps total size, compression
   ratio and entry count. Three policies (`STRICT`, `STANDARD`, `TRUSTED`) set how much
   to allow.
+- **Extraction controls.** `overwrite=` decides what happens to a file already in the
+  destination (refuse, skip, replace, or rename to `name (N)`), `on_error=` whether one
+  failing member stops the rest, and `on_progress=` reports each member. `dry_run=True`
+  (`archivey x --dry-run` from the shell) runs the whole extraction into a temporary
+  folder that is deleted before the call returns, to show what would be written or
+  refused.
 - **Resource limits beyond extraction:** caps on listing size, decoder memory,
   password key-derivation work and temporary spool files, all on `ArchiveyConfig`, and
   all raising `ResourceLimitError`.
@@ -73,8 +79,10 @@ and each change will be listed here. No major changes are expected.
 - **Zero-dependency core.** ZIP, TAR, directories and the standard-library codecs need
   no extra packages. `[recommended]` adds the other codecs, crypto and ISO;
   `[seekable]` adds the rapidgzip accelerator; `[free-threaded]` is the GIL-safe set.
+  `format_availability()` says what the current install can read and what to add.
 - **The `archivey` command:** list, test, extract (with the same safety defaults) and
-  inspect archives from the shell. `uvx archivey-cli` runs it with the recommended
+  inspect archives from the shell, and `cat` a member, or a whole decompressed stream,
+  to stdout. `uvx archivey-cli` runs it with the recommended
   extras, through the `archivey-cli` companion package.
 - **Path helpers in `archivey.paths`:** glob matchers to pass as `members=`,
   `match_glob()` (`*` stays inside one folder, `**` matches any depth) and
@@ -96,8 +104,8 @@ archivey's time over the standard library's or reference reader's time (lower is
 better), from one benchmark run on 2026-10-21 at commit `de8a6565`. Details, method and
 the full table are in [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md).
 
-- Reading: a gzip file 1.1×; every member of a `.tar.bz2` 1.2×, `.tar.gz` 1.7×, ZIP
-  1.9×, plain TAR 2.7×. Extracting a ZIP: 2.5×.
+- Reading: a gzip file 0.9–1.1× (it varies between runs); every member of a `.tar.bz2`
+  1.2×, `.tar.gz` 1.7×, ZIP 1.9×, plain TAR 2.7×. Extracting a ZIP: 2.5×.
 - Listing: TAR 2.3×, ZIP 8.5×, 7z 1.5–2.3×, RAR 1.9–5.5×.
 - ZIP data reads at about the same rate as `zipfile` (about 370 MiB/s); the gap is per
   member, about 6 000 members a second against `zipfile`'s 51 000.
