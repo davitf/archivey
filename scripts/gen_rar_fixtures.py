@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Regenerate ``tests/fixtures/rar/`` archives with the RARLAB ``rar`` CLI.
 
 Usage (from the repo root)::
@@ -317,7 +316,8 @@ def _fetch_rar623() -> Path:
 
     dest_dir.mkdir(parents=True, exist_ok=True)
     print(f"Downloading {_RAR623_DEB_URL}", file=sys.stderr)
-    with urllib.request.urlopen(_RAR623_DEB_URL) as response:  # noqa: S310 - pinned
+    # A fixed https URL naming one package version (_RAR623_DEB_URL above).
+    with urllib.request.urlopen(_RAR623_DEB_URL) as response:
         package = response.read()
     digest = hashlib.sha256(package).hexdigest()
     if digest != _RAR623_DEB_SHA256:

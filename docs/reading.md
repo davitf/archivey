@@ -123,6 +123,13 @@ to one thread. Opening the archive once per thread is also safe, as long as each
 from its own path or file: one file object belongs to one reader. Closing the reader closes the
 streams still open on it, so `close()` may wait for reads in other threads to finish.
 
+Without `concurrent_operations=True` the reader belongs to one thread. If another thread is inside
+a reader call, such as `members()`, `open()`, or a `stream_members()` or `extract_all()` pass,
+`close()` raises `ArchiveyUsageError` and the reader stays open. Otherwise the close goes ahead, and
+the next `read()` on a member stream it closed raises `ValueError`, as a closed file does. Once a
+`close()` has returned, calling it again does nothing; after one that raised, the reader is still
+open and you still have to close it.
+
 ## Why these aren't on by default
 
 Seeking and reading several members at once are off by default, and `streaming=True` turns off

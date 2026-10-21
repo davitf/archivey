@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import itertools
 import os
 import shutil
 import subprocess
@@ -138,8 +139,7 @@ from archivey.internal.external.unar import (
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
 from archivey.internal.hashing import crc32_digest
 from archivey.internal.listing_limits import check_metadata_budget
-from archivey.internal.logs import backends as logger
-from archivey.internal.logs import integrity as integrity_logger
+from archivey.internal.logs import backends as logger, integrity as integrity_logger
 from archivey.internal.naming import (
     emit_member_name_normalized,
     normalize_member_name,
@@ -298,7 +298,7 @@ def _gapped_volume_numbers(paths: list[Path]) -> list[int] | None:
     if any(number is None for number in numbers):
         return None
     known = [number for number in numbers if number is not None]
-    if any(later <= earlier for earlier, later in zip(known, known[1:])):
+    if any(later <= earlier for earlier, later in itertools.pairwise(known)):
         return None
     if known == list(range(1, len(known) + 1)):
         return None
@@ -468,8 +468,10 @@ def _bounded_copy_notes(
         )
         return (_stream_copy_refused_note(program, reason),)
     return (
-        f"{note} An archive over SpoolLimits.max_bytes={limit} is refused instead "
-        f"of copied.",
+        (
+            f"{note} An archive over SpoolLimits.max_bytes={limit} is refused instead "
+            f"of copied."
+        ),
     )
 
 
