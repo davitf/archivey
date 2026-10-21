@@ -28,9 +28,11 @@ and each change will be listed here. No major changes are expected.
   returns a reader that lists members, reads one member, or streams them all in one pass,
   the same way for every format.
 - **Formats:** ZIP, TAR (plain and compressed: gzip, bzip2, xz, zstd, lz4, Unix
-  compress), 7z, RAR (1.5 through RAR5), ISO 9660 (Joliet, Rock Ridge, zisofs), plain
-  directories, and single-file streams (gzip, bzip2, xz, lzip, LZMA, zstd, lz4, zlib,
-  Brotli, Unix compress). Self-extracting archives are read behind their stub.
+  compress), 7z, RAR (1.5 through RAR5), ISO 9660 (Joliet, Rock Ridge, zisofs; needs
+  `pycdlib` 1.22 or later), plain directories, and single-file streams (gzip, bzip2, xz,
+  lzip, LZMA, zstd, lz4, zlib, Brotli, Unix compress). Self-extracting archives are read
+  behind their stub. An ISO whose directory tree loops back on itself, in any of its
+  trees, is refused at open.
 - **Automatic format detection** from the file's content, with the extension as the last
   signal, so a misnamed file still opens.
 - **Native readers.** archivey parses ZIP, TAR, 7z and RAR headers itself, without
@@ -50,8 +52,16 @@ and each change will be listed here. No major changes are expected.
 - **Built for streaming.** `stream_members()` hands out each member as a stream, in
   archive order and in one pass, so a solid 7z or RAR is decoded once and a large member
   is read in chunks rather than held in memory. TAR, ZIP and the single-file formats
-  also read from a non-seekable source such as a pipe. The documented access costs say
-  which operations re-read or re-decompress.
+  also read from a non-seekable source such as a pipe, and a compressed file from a pipe
+  the sender keeps open is decompressed from what has arrived. The documented access
+  costs say which operations re-read or re-decompress.
+- **Seeking in compressed files.** With `seekable_members=True`, a `.zst` seeks by frame
+  (reading the Seekable Zstandard seek table when present) and a gzip file by member or
+  BGZF block, instead of decompressing from the start.
+- **Crash isolation.** The native decoders seen to crash on hostile input, rapidgzip and
+  pyppmd, run in a child process, so a crash costs the member being read instead of your
+  process. `ArchiveyConfig.process_isolation` can put every native decoder there, or
+  none.
 - **Overlapping operations on one reader.** With `concurrent_operations=True`, random
   reads, listing, `stream_members()` passes and `extract_all()` may overlap on one
   reader, from one thread or several, in every format.
@@ -72,7 +82,8 @@ and each change will be listed here. No major changes are expected.
   everything in it), and `numbered_name()`, the `name (N)` spelling that
   `OverwritePolicy.RENAME` writes.
 - Tested on Python 3.11 to 3.14 on Linux, macOS and Windows, plus free-threaded 3.13t on
-  Linux.
+  Linux. PyPy 3.11 also runs the test suite but isn't supported yet; the install page
+  says what works there.
 
 ### Removed
 
