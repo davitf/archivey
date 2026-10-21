@@ -273,18 +273,20 @@ def solid_after_unknown_compression(
     first: RarMemberInfo | None = None
     in_stream: RarMemberInfo | None = None
     for info in archive.members:
-        if not info.is_payload_file():
-            continue
-        # A stored member neither starts nor continues a stream, as in
-        # ``unar_dictionary_costs``; only ``unrar``'s masked read reaches it.
+        # Every member, as ``unar_dictionary_costs`` walks them: a compressed RAR
+        # 2.x-4.x symlink is no payload file but stores its target as compressed data,
+        # so it starts, continues or blocks a stream like any other. A stored member
+        # neither starts nor continues one; only ``unrar``'s masked read reaches it.
         decoded = not uses_no_dictionary(info)
         if decoded and not info.file_solid:
             in_stream = None
-        if decoded and in_stream is not None:
-            blocked[id(info)] = SolidAfterUnknown(in_stream, same_stream=True)
-        elif first is not None and archive.is_solid:
-            blocked[id(info)] = SolidAfterUnknown(first, same_stream=False)
-        if info.unknown_compression_version() is not None:
+        # Only payload members are read, so only they are recorded.
+        if info.is_payload_file():
+            if decoded and in_stream is not None:
+                blocked[id(info)] = SolidAfterUnknown(in_stream, same_stream=True)
+            elif first is not None and archive.is_solid:
+                blocked[id(info)] = SolidAfterUnknown(first, same_stream=False)
+        if decoded and info.unknown_compression_version() is not None:
             # Refused on its own first; recorded as the blocker of what follows.
             first = first or info
             in_stream = in_stream or info
@@ -313,8 +315,9 @@ def solid_after_unknown_compression_reason(block: SolidAfterUnknown) -> str:
         )
     return (
         f"it comes after {quoted(blocker.filename)} in this solid archive, which is "
-        f"compressed with {version}. This member starts a later solid stream and "
-        "does not need that one, but archivey asks unrar for one member through an "
+        f"compressed with {version}. This member is not in that member's solid "
+        "stream and does not need it decoded, but archivey asks unrar for one member "
+        "through an "
         "include mask, and unrar then decodes the solid archive from its start and "
         'stops at that member ("Unknown method"). unar reads it: set '
         "ArchiveyConfig.rar_decompressor to 'unar'."

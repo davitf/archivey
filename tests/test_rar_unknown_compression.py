@@ -26,8 +26,15 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
-from archivey.internal.backends.rar_parser import load_vint, parse_rar_archive
-from archivey.internal.backends.rar_unar import UnarRarPolicy
+from archivey.internal.backends.rar_parser import (
+    RarArchive,
+    load_vint,
+    parse_rar_archive,
+)
+from archivey.internal.backends.rar_unar import (
+    UnarRarPolicy,
+    solid_after_unknown_compression,
+)
 from archivey.reader import ArchiveReader
 from archivey.types import ArchiveMember
 from tests.atheris_fuzz.crc_fixup import fixup_rar_header_crcs
@@ -357,6 +364,7 @@ def test_unrar_refuses_a_later_solid_group_for_its_include_mask(
     assert "'a.txt' in its solid stream" in same, same
     assert "switching decompressors does not help" in same, same
     assert "'a.txt'" in later, later
+    assert "is not in that member's solid stream" in later, later
     assert "include mask" in later, later
     assert "rar_decompressor to 'unar'" in later, later
     assert "switching decompressors does not help" not in later, later
@@ -466,9 +474,14 @@ def test_unrar_stops_at_an_unknown_version_for_a_masked_read(tmp_path: Path) -> 
     assert unrar_p("--", str(path)) == b""
     assert len(unrar_p("--", str(path), "d.txt")) == 840
     # With the archive's solid bit cleared, the masked read no longer decodes from
-    # the start: ``c.txt``, which starts its own stream, reads.
+    # the start: ``c.txt``, which starts its own stream, reads. Nor does it decode a
+    # skipped member, so ``d.txt``, which continues ``c.txt``'s stream by its own
+    # solid flag, gets nothing. That archive is crafted (rar sets the bit with the
+    # flags); archivey's length check reports the read as ``TruncatedError``, as on
+    # this change's base, so no wrong bytes reach the caller.
     path.write_bytes(_main_solid_bit_cleared(path.read_bytes()))
     assert len(unrar_p("-n./c.txt", "--", str(path))) == 840
+    assert unrar_p("-n./d.txt", "--", str(path)) == b""
 
 
 @pytest.mark.skipif(shutil.which("unar") is None, reason="needs the unar CLI")
@@ -513,3 +526,45 @@ def test_the_reader_leaves_a_later_solid_group_to_unar(tmp_path: Path) -> None:
         member = next(m for m in archive.members() if m.name == "d.txt")
         with pytest.raises(PackageNotInstalledError):
             _open_and_read(archive, member)
+
+
+def _basic_solid_rar4() -> RarArchive:
+    """``basic_solid__rar4.rar``: ``empty_file.txt`` starts the solid stream, and
+    ``file1.txt``, ``subdir/file2.txt`` and ``implicit_subdir/file3.txt`` continue
+    it, all compressed. The tests edit its members in memory: no RAR 1.5-4 solid
+    fixture has a compressed symlink, and ``rar`` 7 cannot write one."""
+    archive = parse_rar_archive(
+        io.BytesIO((_FIXTURES / "basic_solid__rar4.rar").read_bytes())
+    )
+    assert archive.is_solid
+    return archive
+
+
+def test_a_compressed_rar4_symlink_with_an_unknown_version_blocks_its_stream() -> None:
+    """A RAR 2.x-4.x symlink stores its target as compressed data in the solid
+    stream, so one with an unknown version blocks the members after it, as
+    ``unar_dictionary_costs`` counts it in the stream. The symlink is no payload file,
+    so it is not recorded itself."""
+    archive = _basic_solid_rar4()
+    link = archive.members[1]
+    link.is_symlink = True
+    link.extract_version = 36
+    blocked = solid_after_unknown_compression(archive)
+    assert id(link) not in blocked
+    for info in archive.members[2:4]:
+        block = blocked[id(info)]
+        assert block.blocker is link and block.same_stream, info.filename
+
+
+def test_a_compressed_rar4_symlink_without_the_solid_flag_starts_a_stream() -> None:
+    """A compressed symlink with its solid flag clear starts a new stream, so the
+    member after it is not in the unknown member's stream, and ``unar`` is not
+    refused it."""
+    archive = _basic_solid_rar4()
+    blocker, link, after = archive.members[1:4]
+    blocker.extract_version = 36
+    link.is_symlink = True
+    link.file_solid = False
+    block = solid_after_unknown_compression(archive)[id(after)]
+    assert block.blocker is blocker
+    assert not block.same_stream
