@@ -109,6 +109,9 @@ _MAX_SKIPPED_HEADER_RECORDS = 16
 # header's fixed fields and its declared extra area. They are not a record, so the
 # reader words that diagnostic on its own.
 RAR5_UNPLACED_BYTES = "unplaced bytes"
+# The ``record`` of the entry on the ``QO`` service header for its FILE copies whose
+# ``header_offset`` a clean walk never reached (:func:`_qo_unmatched_copies`).
+RAR5_QO_UNMATCHED_COPIES = "unmatched copies"
 # RAR 1.5-4 service header holding the preceding file's Unix owner (``rar -ow``),
 # and the ``reason`` of the ``skipped_header_records`` entry for one whose data holds
 # no NUL, which ``unrar`` applies no owner from.
@@ -3262,6 +3265,37 @@ def _emit_and_skip_qo_run(
     return needs_next
 
 
+def _qo_unmatched_copies(
+    qo_by_off: dict[int, RarMemberInfo], seen_file_offsets: set[int]
+) -> DamagedServiceHeader | None:
+    """The ``QO`` header's report of copies a clean walk never reached, or ``None``.
+
+    Listing follows the walk: a copy is used only when the walk lands on its
+    ``header_offset``, as ``unrar`` substitutes a copy only for a FILE header it
+    reaches, so an unmatched copy is not a member and the listing is unchanged.
+    ``rar`` writes one copy per FILE header it caches, so a copy that matches none is
+    a damaged or crafted record, which a strict policy should be able to refuse. It
+    rides on the ``MEMBER_HEADER_RECORD_SKIPPED`` channel of a damaged service header.
+    The caller asks only after a clean end: a walk that stopped early or was cut
+    leaves copies unreached for that reason alone.
+    """
+    count = sum(1 for offset in qo_by_off if offset not in seen_file_offsets)
+    if not count:
+        return None
+    noun = "copy" if count == 1 else "copies"
+    return DamagedServiceHeader(
+        name=_RAR5_QO_NAME,
+        skipped_header_records=(
+            (
+                RAR5_QO_UNMATCHED_COPIES,
+                None,
+                f"{count} FILE header {noun} that matched no header the walk reached",
+            ),
+        ),
+        header_walk_stop_reason=None,
+    )
+
+
 def _parse_rar5(
     source: BinaryIO,
     *,
@@ -3505,6 +3539,20 @@ def _parse_rar5(
 
         # Unknown block — skip data area.
         _seek_after_packed(source, data_offset, add_size)
+
+    # Only a walk that read the end block whole has seen every header it would list,
+    # so only then does a copy it never reached say something about the QO record.
+    if (
+        end_block_seen
+        and end_block_damaged_at is None
+        and truncated is None
+        and damaged is None
+    ):
+        unmatched = _qo_unmatched_copies(qo_by_off, seen_file_offsets)
+        if unmatched is not None and not _append_damaged_service_header(
+            damaged_service_headers, unmatched
+        ):
+            damaged_service_headers_omitted += 1
 
     return RarArchive(
         version=5,

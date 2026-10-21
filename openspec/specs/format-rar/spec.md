@@ -61,8 +61,13 @@ points at a stored, unencrypted `QO` SERVICE, the parser SHALL parse those
 FILE copies, seek back to after MAIN, and walk. FILE headers whose offsets
 appear in `QO` SHALL be emitted from the copies and skipped; FILE headers
 `QO` omitted SHALL still be parsed. `CMT` after MAIN SHALL be consumed as a
-normal SERVICE on that walk. Extract SHALL use the same table. Otherwise the
-parser SHALL walk FILE headers. A `QO` that is missing, packed, split,
+normal SERVICE on that walk. A copy whose offset the walk never lands on SHALL NOT
+be listed. When the walk ends cleanly, at an end block read whole, and copies are
+left unmatched, the `QO` header SHALL report `MEMBER_HEADER_RECORD_SKIPPED` saying
+how many, with the listing unchanged; a walk that was cut or stopped at a damaged
+header, or one that did not use `QO`, SHALL NOT report it. Extract SHALL use the
+same table. Otherwise the parser SHALL walk FILE headers. A `QO` that is missing,
+packed, split,
 encrypted, CRC-invalid, or behind header encryption SHALL fall back to the
 walk. Only the first MAIN header of a volume SHALL have its locator followed: a
 repeated MAIN SHALL still be parsed for its flags, but SHALL NOT read the `QO`
@@ -80,6 +85,8 @@ its PACK_SIZE (with HIGH_PACK_SIZE when set) whether or not LONG_BLOCK is set, a
 | Open RAR4 archive | Members and metadata come from native headers |
 | Open RAR5 archive | Members, flags, hashes, and redirect metadata come from native headers |
 | Open RAR5 with a stored unencrypted `QO` reachable from MAIN's locator | FILE headers in `QO` are emitted from the copies and skipped on the walk; omitted FILE headers and `CMT` after MAIN are parsed |
+| Open RAR5 whose `QO` holds a copy no FILE header the walk reaches matches, walk ending at a whole end block | Members listed as the walk finds them; one `MEMBER_HEADER_RECORD_SKIPPED` on the `QO` header with the count |
+| Same, but the walk is cut | Members before the cut listed; no unmatched-copy report |
 | Open RAR5 with no `QO`, locator offset 0, packed/encrypted/`QO` CRC failure, or header encryption | Member table is filled by the FILE-header walk |
 | Open RAR5 whose MAIN header is repeated, each copy's locator pointing at one `QO` | The `QO` payload is read once; later MAIN headers are parsed for their flags only |
 | Open RAR4 whose FILE header has LONG_BLOCK clear and whose data holds another FILE header | Only the outer member is listed, as `unrar lb` lists it |

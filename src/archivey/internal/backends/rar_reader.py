@@ -75,6 +75,7 @@ from archivey.internal.backends.rar_parser import (
     _RAR5_XREDIR_REPARSE_POINTS,
     RAR3_UOW_NAME,
     RAR5_ID,
+    RAR5_QO_UNMATCHED_COPIES,
     RAR5_UNPLACED_BYTES,
     RAR_ID,
     DamagedServiceHeader,
@@ -3531,6 +3532,13 @@ class RarReader(BaseArchiveReader):
                     if member is not None
                     else f"This archive's {name} service header has {reason}, "
                     "which no writer leaves; they were not read."
+                )
+            elif record == RAR5_QO_UNMATCHED_COPIES:
+                message = (
+                    f"This archive's {name} quick-open service header holds "
+                    f"{reason}, which rar does not write; they were not listed, "
+                    "as unrar does not list them, and the listing comes from the "
+                    "headers the walk read."
                 )
             elif record == RAR3_UOW_NAME:
                 message = (
