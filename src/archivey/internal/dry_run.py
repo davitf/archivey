@@ -111,7 +111,8 @@ def scratch_tree(
     return tuple(sorted(found)), tuple(sorted(links))
 
 
-#: Whether ``remove_scratch`` can walk by directory descriptor (POSIX).
+#: Whether ``remove_scratch`` can walk by directory descriptor (POSIX). ``fwalk``
+#: exists only where ``stat`` takes ``dir_fd``; ``chmod`` is the one it does not imply.
 _FD_WALK = hasattr(os, "fwalk") and os.chmod in os.supports_dir_fd
 
 
@@ -130,18 +131,21 @@ def remove_scratch(root: Path) -> None:
         if _FD_WALK:
             # Relative to each directory's descriptor: links in the archive can build
             # a tree whose full paths pass PATH_MAX, which no path-based call reaches.
+            # (``scratch_tree`` keeps the path form; a tree it cannot list is
+            # reported as ``None``.)
             for _, dirnames, filenames, dir_fd in os.fwalk(top):
-                for name in (*dirnames, *filenames):
-                    st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
-                    if not stat.S_ISLNK(st.st_mode):
-                        mode = 0o700 if name in dirnames else 0o600
-                        os.chmod(name, mode, dir_fd=dir_fd)
+                for names, mode in ((dirnames, 0o700), (filenames, 0o600)):
+                    for name in names:
+                        st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+                        if not stat.S_ISLNK(st.st_mode):
+                            os.chmod(name, mode, dir_fd=dir_fd)
         else:
             for parent, dirnames, filenames in os.walk(top):
-                for name in (*dirnames, *filenames):
-                    path = os.path.join(parent, name)
-                    if not os.path.islink(path):
-                        os.chmod(path, 0o700 if name in dirnames else 0o600)
+                for names, mode in ((dirnames, 0o700), (filenames, 0o600)):
+                    for name in names:
+                        path = os.path.join(parent, name)
+                        if not os.path.islink(path):
+                            os.chmod(path, mode)
         # rmtree removes by descriptor wherever ``rmtree.avoids_symlink_attacks``.
         shutil.rmtree(top)
     except OSError as exc:

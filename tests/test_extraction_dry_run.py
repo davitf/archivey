@@ -1343,11 +1343,17 @@ def test_errors_and_warnings_name_dest(
     _assert_nothing_left(tmp_path, dest)
 
 
+@pytest.mark.parametrize(
+    "fd_walk",
+    [False, *([True] if dry_run_module._FD_WALK else [])],
+    ids=lambda v: "fd-walk" if v else "path-walk",
+)
 def test_scratch_is_removed_when_the_archive_locks_its_own_directories(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fd_walk: bool
 ) -> None:
     # The directories get their modes when the run ends; the scratch directory is
-    # removed after that.
+    # removed after that, by either walk.
+    monkeypatch.setattr(dry_run_module, "_FD_WALK", fd_walk)
     blob = _tar([("ro/f", "file", 0), ("ro", "dir", 0o555), ("zero", "dir", 0)])
     dest = tmp_path / "out"
     with open_archive(io.BytesIO(blob)) as reader:
@@ -1363,11 +1369,13 @@ def test_scratch_is_removed_when_its_tree_is_deeper_than_path_max(
     # Each directory is reached through a short symlink to it, so every member name
     # is short while the real paths in the scratch tree are longer than PATH_MAX.
     # Removing that tree by full path failed with ENAMETOOLONG, and the scratch
-    # directory stayed in the temp directory. The locked directory at the bottom
-    # needs its mode opened up before it can be removed.
+    # directory stayed in the temp directory. The deep part covers the descriptor
+    # walk; a directory down there keeps no mode (its path is too long to set one,
+    # as in a real run). The locked ``ro`` up front covers the chmod: its file
+    # cannot be removed until ``ro`` is opened up.
     component = "d" * 250
     depth = os.pathconf(tmp_path, "PC_PATH_MAX") // len(component) + 2
-    entries: list[tuple[str, str, object]] = []
+    entries: list[tuple[str, str, object]] = [("ro/f", "file", 0), ("ro", "dir", 0o555)]
     path = ""
     for _ in range(depth):
         entries.append((f"{path}{component}", "dir", None))
