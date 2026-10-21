@@ -28,6 +28,7 @@ from archivey.internal.streams.decompressor_stream import (
     _inflate,
     _inflate_rest,
     gzip_error,
+    release_decoder,
     truncated_message,
     zlib_error,
 )
@@ -199,6 +200,7 @@ class GzipDecoder(BaseDecoder):
             self._arm_trailing_junk(data)
             return b""
         if data.startswith(GZIP_MAGIC):
+            release_decoder(self._decomp)
             self._decomp = self._natives.zlib_decompressobj(GZIP_WBITS)
             self._between_members = False
             self._retained = b""

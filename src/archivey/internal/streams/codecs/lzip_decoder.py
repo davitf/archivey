@@ -64,6 +64,7 @@ from archivey.internal.streams.decompressor_stream import (
     build_index_backwards,
     damaged_stream_error,
     near_stream_magic,
+    release_decoder,
 )
 
 _MAGIC = b"LZIP"
@@ -451,6 +452,7 @@ class _LzipState:
                 if self._dec.eof:
                     self._member_comp_size -= len(self._dec.unused_data)
                     self._buf[0:0] = self._dec.unused_data
+                    release_decoder(self._dec)
                     self._dec = None
                     self._state = self._NEED_TRAILER
                 elif not self._dec.needs_input:

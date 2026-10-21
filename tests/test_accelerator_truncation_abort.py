@@ -1094,7 +1094,9 @@ def test_under_pypy_on_is_refused_with_the_reason(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """rapidgzip misreads valid streams under PyPy, so no child runs it there and ON
-    says why."""
+    says why. Under PyPy ``deps.rapidgzip`` already reads as absent, so ON raises
+    PackageNotInstalledError first (tests/test_codecs.py); this pins the backstop for a
+    rapidgzip that reads as present."""
     monkeypatch.setattr(codecs_module.deps, "UNDER_PYPY", True)
     assert rapidgzip_child.rapidgzip_child_unavailable_reason() == (
         "archivey does not use rapidgzip under PyPy, where it misreads valid streams"

@@ -3479,8 +3479,8 @@ class RarReader(BaseArchiveReader):
         transforms: dict[HashAlgorithm, Callable[[bytes], bytes]] = {}
         if info.crc32 is not None:
             expected[HashAlgorithm.CRC32] = crc32_digest(info.crc32)
-            transforms[HashAlgorithm.CRC32] = lambda digest, hk=hash_key: (
-                convert_crc_to_mac(int.from_bytes(digest, "big"), hk).to_bytes(4, "big")
+            transforms[HashAlgorithm.CRC32] = lambda digest, hk=hash_key: crc32_digest(
+                convert_crc_to_mac(int.from_bytes(digest, "big"), hk)
             )
         if info.blake2sp_hash is not None:
             expected[HashAlgorithm.BLAKE2SP] = info.blake2sp_hash

@@ -22,7 +22,7 @@ from archivey.exceptions import (
     ReadError,
     ResourceLimitError,
 )
-from archivey.internal.streams.codecs import decoder_child
+from archivey.internal.streams.codecs import decoder_child, decoder_worker
 from archivey.internal.streams.codecs.decoder_child import POOL, DecoderChild
 from archivey.internal.streams.codecs.isolated import ISOLATED
 
@@ -37,7 +37,9 @@ pytestmark = pytest.mark.skipif(
 # - "liar": returns its input, except that in a damaged process its first call returns
 #   it reversed and its second crashes;
 # - "die": a decoder whose ``decompress`` ends the process with the signal its argument
-#   names.
+#   names;
+# - "intflags": a decoder whose ``eof`` and ``needs_input`` are the ints 1 and 0, as
+#   PyPy reads a C ``bool`` member.
 _STAND_IN = textwrap.dedent(
     """
     import importlib.util, os, signal, sys
@@ -86,9 +88,16 @@ _STAND_IN = textwrap.dedent(
             return Crashing()
         return make
 
+    class IntFlags:
+        eof = 1
+        needs_input = 0
+        def decompress(self, data, max_length=-1):
+            return b""
+
     worker.LOADERS["poison"] = lambda: Poison
     worker.LOADERS["die"] = lambda: Die
     worker.LOADERS["liar"] = lambda: Liar
+    worker.LOADERS["intflags"] = lambda: IntFlags
     worker.LOADERS["zlib"] = load_zlib
     worker.main()
     """
@@ -500,5 +509,29 @@ def test_a_forked_process_cannot_move_its_parents_decoder_to_a_child_of_its_own(
         assert os.read(read_fd, 100) == b"ArchiveyUsageError"
         os.close(read_fd)
         assert first + child.call("decompress", packed[500:]) == data
+    finally:
+        child.close()
+
+
+def test_a_flag_read_as_an_int_is_reported_as_a_bool() -> None:
+    """Under PyPy, backports.zstd's ``eof`` (a C ``bool`` member) reads as the int 1
+    once a frame ends. The state carries an int flag as a bool, 0 as ``False``."""
+
+    class _IntFlags:
+        eof = 1
+        needs_input = 0
+
+    state = decoder_worker._state("zstd", _IntFlags(), None)
+    assert state["eof"] is True
+    assert state["needs_input"] is False
+
+
+def test_an_int_flag_reaches_the_parent_as_a_bool(stand_in: Path) -> None:
+    """The same, end to end: the child sends the state and ``flag`` reads it."""
+    child = DecoderChild("intflags")
+    try:
+        child.call("decompress", b"x")
+        assert child.flag("eof") is True
+        assert child.flag("needs_input") is False
     finally:
         child.close()
