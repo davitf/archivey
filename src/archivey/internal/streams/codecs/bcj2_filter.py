@@ -78,7 +78,7 @@ class _RangeCoderInput:
     hot path.
     """
 
-    __slots__ = ("_stream", "_buf", "_pos")
+    __slots__ = ("_buf", "_pos", "_stream")
 
     def __init__(self, stream: BinaryIO) -> None:
         self._stream = stream
@@ -103,7 +103,7 @@ class _Targets:
     iterator step. A read that ends mid-target carries its tail into the next block.
     """
 
-    __slots__ = ("_stream", "label", "_words", "_carry")
+    __slots__ = ("_carry", "_stream", "_words", "label")
 
     def __init__(self, stream: BinaryIO, label: str) -> None:
         self._stream = stream

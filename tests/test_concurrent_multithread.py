@@ -415,7 +415,7 @@ def test_close_drains_in_flight_workers_then_closes(tmp_path: Path) -> None:
     release = threading.Event()
     original_open_member = reader._open_member
 
-    def blocking_open_member(member):  # noqa: ANN001
+    def blocking_open_member(member):
         entered.set()
         assert release.wait(timeout=5)
         return original_open_member(member)
@@ -724,7 +724,7 @@ def test_members_report_shares_the_worker_slot_with_open(tmp_path: Path) -> None
         release = threading.Event()
         original_open_member = reader._open_member
 
-        def blocking_open_member(member):  # noqa: ANN001
+        def blocking_open_member(member):
             entered.set()
             assert release.wait(timeout=5)
             return original_open_member(member)
