@@ -521,7 +521,8 @@ _PLANTED_CASES: dict[str, tuple[dict[str, str], _Case]] = {
 }
 
 
-# What the members a filter does not refuse must end with, by case.
+# What the members a filter does not refuse must end with, for the cases that pin
+# them. Members neither refused nor listed here go unchecked.
 _OTHER_OUTCOMES: dict[str, dict[_Key, ExtractionStatus]] = {
     "hardlink-through-symlink": {"h": ExtractionStatus.FAILED},
     "hardlink-absolute-with-data": {"h": ExtractionStatus.FAILED},
@@ -551,10 +552,13 @@ def _expected(name: str, case: _Case, outside: Path) -> dict[_Key, ExtractionSta
         (key.format(outside=outside) if isinstance(key, str) else key)
         for key in case[1]
     )
-    return {
+    expected = {
         **dict.fromkeys(refused, ExtractionStatus.BLOCKED),
         **_OTHER_OUTCOMES.get(name, {}),
     }
+    # An empty expectation would assert nothing, so a renamed case must not lose it.
+    assert expected, f"case {name!r} has no expected outcome"
+    return expected
 
 
 @_POLICIES
