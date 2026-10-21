@@ -670,6 +670,54 @@ def test_corpus_non_integer_seek_is_type_error(
             assert_non_integer_seek_is_type_error(f, content)
 
 
+def _assert_closed_by_reader(f: ArchiveStream) -> None:
+    """``f`` was closed by ``reader.close()``: it reads as any closed stream does."""
+    assert f.closed
+    with pytest.raises(ValueError, match="closed file"):
+        f.read()
+    with pytest.raises(ValueError, match="closed file"):
+        f.read(1)
+    f.close()  # idempotent
+
+
+@pytest.mark.parametrize("seekable", [False, True], ids=["forward", "seekable"])
+@pytest.mark.parametrize(("spec", "member_name"), _seek_member_params())
+def test_corpus_reader_close_mid_read_closes_the_member_stream(
+    spec: _SeekSpec, member_name: str, seekable: bool, tmp_path: Path
+) -> None:
+    """``reader.close()`` while a member is part-read closes that stream, on every
+    enrolled backend and codec path.
+
+    The ``archive-reading`` lifecycle rule: a member stream does not outlive its
+    reader, and a read after the close raises as for any closed stream (``ValueError``,
+    as ``zipfile`` and ``tarfile`` give). With ``zipfile`` underneath, a stored ZIP
+    member had kept serving bytes from its own handle while a deflated one refused.
+    """
+    with _open_enrolled(spec, tmp_path, seekable_members=seekable) as ar:
+        member = _resolve_file_member(ar, member_name)
+        f = ar.open(member)
+        f.read(1)
+        ar.close()
+        _assert_closed_by_reader(f)
+
+
+def test_reader_close_mid_read_closes_a_pass_stream(member: tuple[Path, str]) -> None:
+    """The same rule for the stream a ``stream_members()`` pass yields."""
+    source, name = member
+    ar = open_archive(source)
+    try:
+        for entry, f in ar.stream_members():
+            if entry.is_file and f is not None:
+                assert f.read(1) == CONTENT[:1]
+                ar.close()
+                _assert_closed_by_reader(f)
+                break
+        else:
+            pytest.fail(f"the pass yielded no stream for {name!r}")
+    finally:
+        ar.close()
+
+
 @pytest.mark.parametrize(("spec", "member_name"), _seek_member_params())
 def test_corpus_non_integer_read_is_type_error(
     spec: _SeekSpec, member_name: str, tmp_path: Path
