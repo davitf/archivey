@@ -285,3 +285,19 @@ def test_probe_decoders_give_their_children_back(
     )
     assert len(made) == 4
     assert not _leased(made)
+
+
+def test_a_zisofs_block_decoder_gives_its_child_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each zisofs block gets a decoder of its own, used once and dropped; each gives
+    its child back when the block is read."""
+    pytest.importorskip("pycdlib")
+    from tests.test_iso import _ZISOFS_PLAIN, _zisofs_image
+
+    made = _keep_every_child(monkeypatch)
+    config = ArchiveyConfig(process_isolation=ProcessIsolation.NATIVE_DECODERS)
+    with open_archive(io.BytesIO(_zisofs_image(_ZISOFS_PLAIN)), config=config) as ar:
+        assert ar.read("zzz") == _ZISOFS_PLAIN
+        assert made
+        assert not _leased(made)

@@ -150,7 +150,7 @@ def _zstd_decoder_memory(options: Mapping[int, int] | None) -> int:
 class _ChildProxy:
     """The common part of every proxy: the child and its close."""
 
-    # What ``release_decoder_children`` (decompressor_stream.py) looks for.
+    # What ``release_decoder`` (decompressor_stream.py) looks for.
     holds_decoder_child = True
 
     def __init__(self, child: DecoderChild) -> None:
