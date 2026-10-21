@@ -106,7 +106,7 @@ The three legs, which `--all-configs` runs in order:
 uv sync --group dev --extra all && uv run --no-sync pytest -n auto
 
 # 2. Minimum supported versions — every declared dependency pinned to its floor
-#    (`pycdlib 1.16`, `backports.zstd 1.0`, …), so version-specific library bugs in the
+#    (`pycdlib 1.22`, `backports.zstd 1.0`, …), so version-specific library bugs in the
 #    supported range surface. --no-sync keeps the lowest resolution for the test run.
 uv sync --group dev --extra all --resolution lowest-direct && uv run --no-sync pytest -n auto
 

@@ -774,13 +774,12 @@ yielded.
 
 ## ISO 9660
 
-- Needs `[recommended]` (`pycdlib`) and a seekable source.
-- `import archivey` patches pycdlib for the whole process: the `collections` name inside
-  `pycdlib.pycdlib` becomes one whose `deque` skips a directory extent it has already
-  queued. That stops pycdlib looping forever on a directory tree that points back at an
-  ancestor. Other code using pycdlib in the same process gets the patch too. A valid tree
-  never revisits an extent, so its results do not change.
-- `import archivey` also wraps pycdlib's Rock Ridge parser, but the wrapper acts only
+- Needs `[recommended]` (`pycdlib` 1.22 or later) and a seekable source.
+- An image whose directory tree loops back on itself, in any of its trees (ISO 9660,
+  Joliet or UDF), is refused at open with `CorruptionError`, even when the tree archivey
+  lists from is intact. pycdlib finds the loop. No tool writes such an image; a damaged
+  or crafted one can.
+- `import archivey` wraps pycdlib's Rock Ridge parser, but the wrapper acts only
   while archivey itself opens an image, so other code using pycdlib sees no change. Inside
   archivey, a System Use entry of a type pycdlib does not know is skipped, as the SUSP
   specification says, instead of failing the whole image. A malformed entry ends that
