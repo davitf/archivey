@@ -1252,6 +1252,11 @@ def _report_extraction(
             " inside the destination",
             file=err,
         )
+    if dry_run:
+        # Before the summary, which stays the last line.
+        usage = _usage_line(report)
+        if usage is not None:
+            print(usage, file=err)
     if dest_label is None:
         dest_label = _summary_dest_label(target, report, dry_run=dry_run)
     print(
@@ -1263,6 +1268,36 @@ def _report_extraction(
         file=err,
     )
     return blocked, failed
+
+
+def _usage_line(report: ExtractionReport) -> str | None:
+    """A dry run's closing account of how close the archive came to the reader limits.
+
+    Read from the report's private resource-usage record, which exists to tune the
+    limits: the largest decoder allocation archivey checked (xz, LZMA Alone and zstd
+    leave theirs to their library), the key-derivation rounds, the spool peak and the
+    listing's metadata. Each part appears only when it is not zero; byte counts are
+    exact, to compare with the limit fields.
+    """
+    usage = report._resource_usage
+    if usage is None:
+        return None
+    parts: list[str] = []
+    if usage.decoder_memory:
+        what = escape_member_name(usage.decoder_memory_what)
+        parts.append(f"decoder memory {usage.decoder_memory} bytes ({what})")
+    if usage.key_derivation_rounds:
+        parts.append(f"{usage.key_derivation_rounds} key-derivation rounds")
+    if usage.spool_bytes:
+        parts.append(f"spool {usage.spool_bytes} bytes")
+    if usage.listing_metadata_bytes:
+        parts.append(
+            f"listing {usage.listed_members} members, "
+            f"{usage.listing_metadata_bytes} metadata bytes"
+        )
+    if not parts:
+        return None
+    return "peak use of the reader limits: " + "; ".join(parts)
 
 
 def _escaped_where(result: ExtractionResult, target: Path, moves: _Moves | None) -> str:

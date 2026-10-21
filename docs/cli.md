@@ -101,7 +101,13 @@ and `--abort-on name-sanitized` when a name had to be changed to be written. `--
 given more than once. Files written before the stop stay on disk.
 
 `--dry-run` runs every check and reads every member, but writes nothing. It prints the same report
-and exits with the same code as a real extraction into an empty folder.
+and exits with the same code as a real extraction into an empty folder. Before the summary it
+adds one line, `peak use of the reader limits:`. It gives the largest decoder allocation the
+archive asked for and what asked for it, the key-derivation rounds, the bytes spooled to a
+temporary file, and the listing's size. These are the numbers to compare with
+[`DecoderLimits`, `SpoolLimits` and `ListingLimits`](security.md) before you open an untrusted
+archive with tighter limits. A part that is zero is left out. Decoder memory counts only the
+allocations archivey checks itself: xz, LZMA Alone and zstd leave that check to their library.
 
 `--outer` removes only the compression layer: `archivey extract data.tgz --outer` writes
 `data.tar` and keeps the original, as `gunzip -k` does.

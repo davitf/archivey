@@ -1178,6 +1178,7 @@ def _cli_both(
             "dry run: nothing was written\n",
         ):
             err = err.replace(only_dry, "")
+        err = re.sub(r"(?m)^peak use of the reader limits: .*\n", "", err)
         for would, did in (
             ("would extract into", "extracting into"),
             ("would keep in", "kept in"),
@@ -1441,6 +1442,29 @@ def test_cli_dry_run_writes_nothing(
     assert "dry run, nothing written: 1 extracted" in err
     assert sorted(p.name for p in tmp_path.iterdir()) == ["bundle.tar", "tmp"]
     assert list((tmp_path / "tmp").iterdir()) == []
+
+
+def test_cli_dry_run_reports_peak_use_of_the_reader_limits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    py7zr = pytest.importorskip("py7zr")
+    archive = tmp_path / "a.7z"
+    filters = [{"id": py7zr.FILTER_LZMA2, "preset": 1, "dict_size": 1 << 20}]
+    with py7zr.SevenZipFile(archive, "w", filters=filters) as out:
+        out.writestr(b"x" * 1000, "a.txt")
+    monkeypatch.chdir(tmp_path)
+    code, err = _cli(["x", "a.7z", "--dry-run", "--hide-progress"])
+    assert code == 0
+    (line,) = [
+        ln for ln in err.splitlines() if ln.startswith("peak use of the reader limits")
+    ]
+    assert "decoder memory " in line
+    assert "LZMA2 dictionary size" in line
+    assert "listing 1 members" in line
+    # A real run does not print it.
+    code, err = _cli(["x", "a.7z", "-d", "real", "--hide-progress"])
+    assert code == 0
+    assert "peak use of the reader limits" not in err
 
 
 _SAME_AS_REAL = "same as the real run"  # the hoist line the real run printed, predicted
