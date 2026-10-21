@@ -1534,7 +1534,7 @@ def _spilled_spooled_file(_tmp_path: Path) -> BinaryIO:
     "make",
     [
         pytest.param(_read_write_file, id="w+b"),
-        pytest.param(lambda _: tempfile.NamedTemporaryFile(), id="named-temporary"),
+        pytest.param(lambda _: tempfile.NamedTemporaryFile(), id="named-temporary"),  # noqa: SIM115 - the handle outlives this statement; its owner closes it
         pytest.param(_spilled_spooled_file, id="spooled-spilled"),
     ],
 )

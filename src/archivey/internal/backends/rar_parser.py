@@ -3485,11 +3485,12 @@ def _parse_rar5(
                         needs_next_volume = True
                     seen_file_offsets.add(member.header_offset)
             elif block_type == _RAR5_SERVICE:
-                if member.skipped_header_records or member.header_walk_stop_reason:
-                    if not _append_damaged_service_header(
-                        damaged_service_headers, member
-                    ):
-                        damaged_service_headers_omitted += 1
+                if (
+                    member.skipped_header_records or member.header_walk_stop_reason
+                ) and not _append_damaged_service_header(
+                    damaged_service_headers, member
+                ):
+                    damaged_service_headers_omitted += 1
                 if _is_stored_rar5_cmt(member):
                     source.seek(data_offset)
                     # The packed size, as for any stored payload: the unpacked one

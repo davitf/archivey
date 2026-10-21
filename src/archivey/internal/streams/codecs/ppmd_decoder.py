@@ -706,11 +706,15 @@ class PpmdDecoder(BaseDecoder):
         # at its end mark, so any post-eof pull is trailing garbage (measured: +N bytes
         # on compressible payloads). Corrupt-but-declared-complete sized packs can still
         # fill toward ``unpack_size`` here — container CRC is the backstop.
-        if max_length > 0 and self._pack_complete() is True and not self._exhausted:
-            if not getattr(self._native, "needs_input", False):
-                drained = self._drain_empty_chunked(max_length)
-                out += drained
-                self._produced += len(drained)
+        if (
+            max_length > 0
+            and self._pack_complete() is True
+            and not self._exhausted
+            and not getattr(self._native, "needs_input", False)
+        ):
+            drained = self._drain_empty_chunked(max_length)
+            out += drained
+            self._produced += len(drained)
         if not self.finished:
             self._pending_error = TruncatedError("File is truncated")
         self._maybe_check_end()
@@ -787,7 +791,7 @@ class PpmdDecoder(BaseDecoder):
                 # the worker hit its budget and exited, so it will not be resumed.
                 if decomp.decode(b"\0", 1):
                     return
-        except Exception:  # noqa: BLE001 - teardown hygiene; never raise from close()/__del__
+        except Exception:  # noqa: BLE001, S110 - teardown hygiene; never raise from close()/__del__
             pass
 
     def spoil_child(self) -> None:

@@ -385,7 +385,7 @@ class ArchiveStream(ReadOnlyIOStream):
             if self.closed:
                 try:
                     opened.close()
-                except Exception:  # noqa: BLE001 - best-effort; stream already closing
+                except Exception:  # noqa: BLE001, S110 - best-effort; stream already closing
                     pass
                 raise ValueError("I/O operation on closed file.")
             self._inner = opened
@@ -697,7 +697,7 @@ class ArchiveStream(ReadOnlyIOStream):
         if before is not None:
             try:
                 self._maybe_warn_rewind(before, after)
-            except Exception:  # noqa: BLE001 - the seek's own error propagates instead
+            except Exception:  # noqa: BLE001, S110 - the seek's own error propagates instead
                 pass
 
     def _digest_intact(self) -> bool | None:

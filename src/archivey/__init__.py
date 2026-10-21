@@ -264,7 +264,7 @@ def _pin_public_module() -> None:
         if not obj.__module__.startswith("archivey.internal"):
             continue
         if isinstance(obj, type):
-            own = obj.__dict__.get("__annotations__")
+            own = obj.__dict__.get("__annotations__")  # noqa: RUF063 - own annotations only, without importing inspect at import time
             if own:
                 try:
                     hints = typing.get_type_hints(obj, include_extras=True)

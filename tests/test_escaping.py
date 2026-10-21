@@ -38,7 +38,9 @@ _DANGEROUS = ("\x1b", "\r", "\n", "\x00", "\x9b")
         "\u200b",
         "\ud800",  # lone high surrogate
         "\U0001d173",  # astral non-printable
-        "\udc80",  # surrogateescape of byte 0x80
+        # surrogateescape of byte 0x80. Not a duplicate of "\ud800": ruff compares lone
+        # surrogates lossily.
+        "\udc80",  # noqa: PT014
     ],
 )
 def test_dangerous_characters_do_not_survive(text: str) -> None:

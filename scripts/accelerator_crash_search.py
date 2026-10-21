@@ -153,7 +153,7 @@ def _decode(codec: str, source: object, parallelization: int) -> int:
         # close() stops rapidgzip's threads; one still running at exit aborts.
         try:
             stream.close()
-        except Exception:  # noqa: BLE001 - the case is over either way
+        except Exception:  # noqa: BLE001, S110 - the case is over either way
             pass
 
 
@@ -410,7 +410,7 @@ class _Worker:
     wait for an answer with a timeout on every platform."""
 
     def __init__(self, codec: str, parallelization: int) -> None:
-        self.stderr = tempfile.TemporaryFile()
+        self.stderr = tempfile.TemporaryFile()  # noqa: SIM115 - the handle outlives this statement; its owner closes it
         # Where the worker writes its ``path`` cases. Removed here after the worker is
         # reaped, since a worker that aborts never runs its own clean-up.
         self.tmpdir = tempfile.TemporaryDirectory(
@@ -652,7 +652,7 @@ def _print_report(reports: list[CodecReport]) -> None:
         import importlib.metadata
 
         print(f"rapidgzip {importlib.metadata.version('rapidgzip')}")
-    except Exception:  # noqa: BLE001 - only a label
+    except Exception:  # noqa: BLE001, S110 - only a label
         pass
     for report in reports:
         outcomes = ", ".join(f"{k} {v}" for k, v in sorted(report.outcomes.items()))

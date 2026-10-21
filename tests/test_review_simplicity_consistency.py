@@ -530,7 +530,7 @@ def test_reader_surface_is_uniform_across_formats(key: str, tmp_path: Path) -> N
         with pytest.raises(TypeError):
             len(reader)  # type: ignore[arg-type]
         with pytest.raises(TypeError):
-            "some-name" in reader  # type: ignore[operator]
+            _ = "some-name" in reader  # type: ignore[operator]
         assert reader.get("no-such-member") is None
         with pytest.raises(KeyError):
             reader.read("no-such-member")
@@ -761,7 +761,7 @@ def test_bidi_name_warning_is_queryable_data(tmp_path: Path) -> None:
 
     from archivey.diagnostics import DiagnosticCode
 
-    name = "invoice‮cod.exe"
+    name = "invoice\u202ecod.exe"
     path = tmp_path / "bidi.tar"
     with tarfile.open(path, "w") as tar:
         tar.addfile(tarfile.TarInfo(name), io.BytesIO(b""))
@@ -804,7 +804,7 @@ def test_bidi_diagnostic_is_emitted_once_per_presentation(
 
     path = tmp_path / "bidi.zip"
     with zipfile.ZipFile(path, "w") as zf:
-        zf.writestr("a‮b.txt", b"x")
+        zf.writestr("a\u202eb.txt", b"x")
 
     with open_archive(path) as reader:
         if driver == "members-twice":

@@ -667,7 +667,7 @@ def test_wrapper_over_readonly_file_is_not_writable() -> None:
         with open(path, "wb") as f:
             f.write(DATA)
         # A read-only file object: it exposes write() but the wrapper must not.
-        raw = open(path, "rb", buffering=0)
+        raw = open(path, "rb", buffering=0)  # noqa: SIM115 - the handle outlives this statement; its owner closes it
         assert hasattr(raw, "write")
         wrapper = BinaryIOWrapper(raw)
         assert wrapper.writable() is False

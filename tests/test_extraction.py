@@ -4874,7 +4874,7 @@ def _tar_with_member(path: Path, name: str, *, link_target: str | None = None) -
 
 @pytest.mark.parametrize(
     "name",
-    ["invoice‮cod.exe", "a⁦b.txt", "x‪y", "z‬.bin"],
+    ["invoice\u202ecod.exe", "a\u2066b.txt", "x\u202ay", "z\u202c.bin"],
     ids=["rlo", "lri", "lre", "pdf"],
 )
 @pytest.mark.parametrize("policy", [ExtractionPolicy.STRICT, ExtractionPolicy.STANDARD])
@@ -4924,7 +4924,9 @@ def test_bidi_override_name_extracts_under_trusted(name: str, tmp_path: Path) ->
     assert (dest / name).is_file()  # faithful bytes: stored name, unmodified
 
 
-@pytest.mark.parametrize("name", ["invoice‮cod.exe", "a⁦b.txt"], ids=["rlo", "lri"])
+@pytest.mark.parametrize(
+    "name", ["invoice\u202ecod.exe", "a\u2066b.txt"], ids=["rlo", "lri"]
+)
 def test_apply_name_policy_rejects_bidi_override(name: str, tmp_path: Path) -> None:
     """The typed error itself, at the boundary that produces it.
 
@@ -4949,12 +4951,12 @@ def test_bidi_override_in_a_symlink_target_is_refused(tmp_path: Path) -> None:
     from archivey.exceptions import FilterRejectionError
     from archivey.internal.filters import apply_name_policy
 
-    member = _member("link", type=MemberType.SYMLINK, link_target="rea‮dm.txt")
+    member = _member("link", type=MemberType.SYMLINK, link_target="rea\u202edm.txt")
     check_universal(member, tmp_path)  # not a universal violation
     with pytest.raises(FilterRejectionError):
         apply_name_policy(member, ExtractionPolicy.STRICT)
 
-    src = _tar_with_member(tmp_path / "a.tar", "link", link_target="rea‮dm.txt")
+    src = _tar_with_member(tmp_path / "a.tar", "link", link_target="rea\u202edm.txt")
     dest = tmp_path / "out"
     report = open_and_extract(src, dest, on_error=OnError.STOP)
     assert report.results[0].status is ExtractionStatus.BLOCKED
@@ -4963,7 +4965,7 @@ def test_bidi_override_in_a_symlink_target_is_refused(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "name",
-    ["‏doc.pdf", "‎total-2024.txt", "؜فهرس.txt"],
+    ["\u200fdoc.pdf", "\u200etotal-2024.txt", "\u061cفهرس.txt"],
     ids=["rlm", "lrm", "alm"],
 )
 def test_bidi_directional_marks_still_extract(name: str, tmp_path: Path) -> None:
@@ -4994,7 +4996,7 @@ def test_rtl_script_without_controls_extracts_silently(tmp_path: Path) -> None:
 
 def test_bidi_override_is_a_blocked_result_under_continue(tmp_path: Path) -> None:
     """It inherits the whole `FilterRejectionError` lifecycle, which is what a batch wants."""
-    src = _tar_with_member(tmp_path / "a.tar", "invoice‮cod.exe")
+    src = _tar_with_member(tmp_path / "a.tar", "invoice\u202ecod.exe")
     report = open_and_extract(src, tmp_path / "out", on_error=OnError.CONTINUE)
     (result,) = report.results
     assert result.status is ExtractionStatus.BLOCKED

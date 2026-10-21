@@ -286,7 +286,7 @@ def test_rapidgzip_isize_soft_short_raises_on_readall(tmp_path: Path) -> None:
         if not s.closed:
             try:
                 s.close()
-            except Exception:  # noqa: BLE001 - test cleanup
+            except Exception:  # noqa: BLE001, S110 - test cleanup
                 pass
     assert not close_raised
     # Completing read must not silently accept a truncated single-member stream.
@@ -520,7 +520,7 @@ def test_rapidgzip_caller_file_object_truncation(tmp_path: Path) -> None:
     pytest.importorskip("rapidgzip")
     full = gzip.compress(b"the quick brown fox\n" * 800)
     p = _write(tmp_path, "trunc-fileobj.gz", full[: max(18, len(full) // 2)])
-    fh = open(p, "rb")
+    fh = open(p, "rb")  # noqa: SIM115 - the handle outlives this statement; its owner closes it
     try:
         with (
             pytest.raises(CorruptionError),

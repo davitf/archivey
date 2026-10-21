@@ -14,6 +14,7 @@ import subprocess
 import zipfile
 import zlib
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -245,7 +246,7 @@ def test_magic_wins_over_conflicting_extension(
 
     class _ExtBackend(ReadBackend):
         FORMATS = (ArchiveFormat.RAR,)
-        EXTENSIONS = {".rar": ArchiveFormat.RAR}
+        EXTENSIONS: ClassVar[dict[str, ArchiveFormat]] = {".rar": ArchiveFormat.RAR}
 
         def open_read(self, *a, **k):  # pragma: no cover
             raise NotImplementedError

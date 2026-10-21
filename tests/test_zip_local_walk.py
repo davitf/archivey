@@ -159,7 +159,7 @@ def _walk(
 @pytest.mark.parametrize("force_zip64", [False, True], ids=["classic", "zip64"])
 def test_walk_reads_what_zipfile_wrote(pipe: bool, force_zip64: bool) -> None:
     raw = _write(pipe=pipe, force_zip64=force_zip64)
-    read, walk, end = _walk(raw)
+    read, _, end = _walk(raw)
     with zipfile.ZipFile(io.BytesIO(raw)) as zf:
         assert [r.name.decode() for r in read] == zf.namelist()
         for r in read:
@@ -196,7 +196,7 @@ def test_the_stored_scan_ignores_a_descriptor_signature_inside_the_data() -> Non
             member.write(payload)
         with zf.open("y", "w") as member:
             member.write(b"after")
-    read, _walk_, _end = _walk(out.getvalue())
+    read, _, _end = _walk(out.getvalue())
     assert [r.data for r in read] == [payload, b"after"]
 
 
@@ -226,7 +226,7 @@ def test_the_stored_scan_stops_at_a_planted_descriptor_for_a_prefix() -> None:
 def test_an_empty_archive_starts_with_the_end_record() -> None:
     buf = io.BytesIO()
     zipfile.ZipFile(buf, "w").close()
-    read, walk, end = _walk(buf.getvalue())
+    read, _, end = _walk(buf.getvalue())
     assert read == []
     assert end is not None
     assert end.entries_declared == 0
@@ -439,7 +439,7 @@ def test_descriptors_without_their_signature_are_found_by_what_follows() -> None
     piped = _write(pipe=True)
     raw = without_descriptor_signatures(piped)
     assert DATA_DESCRIPTOR_SIGNATURE not in raw
-    read, _walk_, _end = _walk(raw)
+    read, _, _end = _walk(raw)
     with zipfile.ZipFile(io.BytesIO(piped)) as zf:
         assert [r.data for r in read] == [zf.read(i) for i in zf.infolist()]
     stored = next(r for r in read if r.name == b"big-stored.bin")
@@ -818,7 +818,7 @@ def test_zip64_end_records_are_read_from_the_stream(
         m.setattr(zipfile, "ZIP_FILECOUNT_LIMIT", 0)
         raw = _write(pipe=True)
     assert b"PK\x06\x06" in raw
-    _read, walk, end = _walk(raw)
+    _read, _, end = _walk(raw)
     assert end is not None
     assert end.zip64
     assert end.entries_declared == len(_DATA)

@@ -346,14 +346,12 @@ def sweep_fixture(
             outcome = _classify(
                 raw,
                 out_len,
-                expected_len
-                if cut == len(fixture.data)
                 # For a proper prefix cut of a complete fixture, expected full output is
                 # only achievable if the cut still contains a complete stream. Treat
                 # "expected" as full length only for the uncut file; for cuts, any ok
                 # read that isn't a raise is silent short/zero relative to full payload,
                 # unless out_len equals full (shouldn't for real truncations).
-                else (expected_len),
+                expected_len,
             )
             # Refine: for cuts of complete fixtures, "full" means recovered full payload
             # despite truncation (bad). For the uncut file, "full" is success.

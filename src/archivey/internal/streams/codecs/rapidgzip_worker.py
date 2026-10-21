@@ -457,7 +457,7 @@ def _main(argv: list[str]) -> None:
         # when the interpreter finalizes aborts the process.
         try:
             stream.close()
-        except Exception:  # noqa: BLE001 - the process is ending either way
+        except Exception:  # noqa: BLE001, S110 - the process is ending either way
             pass
 
 

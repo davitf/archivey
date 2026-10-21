@@ -4417,5 +4417,5 @@ class ExtractionCoordinator:
         if stream is not None:
             try:
                 stream.close()
-            except Exception:  # noqa: BLE001 - teardown hygiene; the result is recorded
+            except Exception:  # noqa: BLE001, S110 - teardown hygiene; the result is recorded
                 pass

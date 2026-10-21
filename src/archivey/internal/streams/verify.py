@@ -964,7 +964,7 @@ class VerifyingStream(ReadOnlyIOStream):
             # has nothing left to do.
             try:
                 inner.close()
-            except Exception:  # noqa: BLE001 - the refusal below is the error to report
+            except Exception:  # noqa: BLE001, S110 - the refusal below is the error to report
                 pass
             finally:
                 super().close()

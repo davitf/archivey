@@ -177,7 +177,7 @@ def _scn_arch_seek(module: str) -> None:
         f.read(2000)
         f.seek(len(PAYLOAD) // 2)
         f.read(1000)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001, S110
         pass
     _LEAKED.append(f)
 

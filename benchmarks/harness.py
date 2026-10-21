@@ -1327,24 +1327,27 @@ def _structural_checks(
                         f"{r.case}: bytes_decompressed={r.bytes_decompressed} "
                         f"> baseline×{SOLID_RANDOM_BYTES_FACTOR}={limit}"
                     )
-        if r.operation == "read_all" and r.unpacked_bytes is not None:
-            # zip/tar/gzip count at member output. Under-decode is a silent short
-            # read; over-decode catches decode-twice-deliver-once (each open still
-            # increments the shared ByteCounter even when only the second handle
-            # is delivered to the caller).
-            if r.format in ("zip", "tar", "gzip", "Z", "tar.gz", "tar.bz2", "rar"):
-                if r.bytes_decompressed < r.unpacked_bytes:
-                    failures.append(
-                        f"{r.case}: bytes_decompressed={r.bytes_decompressed} "
-                        f"< unpacked={r.unpacked_bytes}"
-                    )
-                over_limit = int(r.unpacked_bytes * NONSOLID_DECODE_FACTOR)
-                if r.bytes_decompressed > over_limit:
-                    failures.append(
-                        f"{r.case}: bytes_decompressed={r.bytes_decompressed} "
-                        f"> unpacked×{NONSOLID_DECODE_FACTOR}={over_limit} "
-                        f"(non-solid re-decode?)"
-                    )
+        # zip/tar/gzip count at member output. Under-decode is a silent short
+        # read; over-decode catches decode-twice-deliver-once (each open still
+        # increments the shared ByteCounter even when only the second handle
+        # is delivered to the caller).
+        if (
+            r.operation == "read_all"
+            and r.unpacked_bytes is not None
+            and r.format in ("zip", "tar", "gzip", "Z", "tar.gz", "tar.bz2", "rar")
+        ):
+            if r.bytes_decompressed < r.unpacked_bytes:
+                failures.append(
+                    f"{r.case}: bytes_decompressed={r.bytes_decompressed} "
+                    f"< unpacked={r.unpacked_bytes}"
+                )
+            over_limit = int(r.unpacked_bytes * NONSOLID_DECODE_FACTOR)
+            if r.bytes_decompressed > over_limit:
+                failures.append(
+                    f"{r.case}: bytes_decompressed={r.bytes_decompressed} "
+                    f"> unpacked×{NONSOLID_DECODE_FACTOR}={over_limit} "
+                    f"(non-solid re-decode?)"
+                )
         # Seek counts: two-sided vs committed baseline ± slack. Upper bound catches
         # silent re-open churn; lower bound catches paths that characteristically
         # seek *more* silently falling back. Missing baseline = skip. Only
@@ -1379,13 +1382,17 @@ def _structural_checks(
         # A skipped ON row seeks 0 times because it never ran; that is not evidence
         # the accelerator failed to engage (this check predates skip rows, when a
         # missing rapidgzip omitted the case entirely).
-        if accel_off is not None and accel_on is not None and not accel_on.skipped:
-            if accel_on.source_seek_count <= accel_off.source_seek_count:
-                failures.append(
-                    f"zip_read_all_accel_on: source_seek_count="
-                    f"{accel_on.source_seek_count} <= accel_off "
-                    f"{accel_off.source_seek_count} (accelerator not engaged?)"
-                )
+        if (
+            accel_off is not None
+            and accel_on is not None
+            and not accel_on.skipped
+            and accel_on.source_seek_count <= accel_off.source_seek_count
+        ):
+            failures.append(
+                f"zip_read_all_accel_on: source_seek_count="
+                f"{accel_on.source_seek_count} <= accel_off "
+                f"{accel_off.source_seek_count} (accelerator not engaged?)"
+            )
     return failures
 
 

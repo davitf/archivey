@@ -768,7 +768,7 @@ def test_non_seekable_gzip_streams_fine() -> None:
         # Read while the generator is live: exhaustion closes the current stream.
         pairs = list(ar.stream_members())
         assert len(pairs) == 1
-        member, stream = pairs[0]
+        _member, stream = pairs[0]
         assert stream is not None
         # Re-open via random open is unavailable in streaming mode; drain via a fresh
         # streaming pass that reads before the generator finishes.

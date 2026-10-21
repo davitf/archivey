@@ -141,7 +141,7 @@ def _install_probes() -> list[str]:
     for mod in pkgutil.walk_packages(archivey.__path__, "archivey."):
         try:
             importlib.import_module(mod.name)
-        except Exception:  # noqa: BLE001 - an optional dependency is missing
+        except Exception:  # noqa: BLE001, S112 - an optional dependency is missing
             continue
     try:
         from archivey.internal import config as internal_config

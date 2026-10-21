@@ -406,7 +406,7 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         if bzip2:
             argv.append(BZIP2_ARG)
         try:
-            stderr = tempfile.TemporaryFile()
+            stderr = tempfile.TemporaryFile()  # noqa: SIM115 - the handle outlives this statement; its owner closes it
         except OSError as exc:
             raise _start_error(str(exc)) from exc
         self._stderr = stderr
@@ -964,7 +964,7 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         if self._death is None and self._proc is not None:
             try:
                 self._known_offsets = self._offsets(OFFSETS_AVAILABLE)
-            except Exception:  # noqa: BLE001 - the last index sent is still true
+            except Exception:  # noqa: BLE001, S110 - the last index sent is still true
                 pass
         return dict(self._known_offsets)
 
