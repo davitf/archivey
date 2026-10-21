@@ -826,7 +826,8 @@ class DecompressorStream(ReadOnlyIOStream):
         self._make_decoder = make_decoder
         try:
             if isinstance(path, (str, os.PathLike)):
-                self._inner: BinaryIO = open(os.fspath(path), "rb")  # noqa: SIM115 - the handle outlives this statement; its owner closes it
+                # The handle outlives this statement; its owner closes it.
+                self._inner: BinaryIO = open(os.fspath(path), "rb")  # noqa: SIM115
                 self._owned_inner = self._inner
             else:
                 # typeshed keeps BufferedIOBase and BinaryIO apart; at runtime it is one.

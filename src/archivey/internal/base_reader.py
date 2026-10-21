@@ -14,8 +14,6 @@ from collections.abc import (
     Iterator,
     Mapping,
     Sequence,
-)
-from collections.abc import (
     Set as AbstractSet,
 )
 from contextlib import AbstractContextManager, nullcontext
@@ -85,8 +83,7 @@ from archivey.internal.enum_args import coerce_enum, coerce_enum_collection
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
 from archivey.internal.format_provenance import FormatProvenance
 from archivey.internal.listing_limits import ListingLimitTracker
-from archivey.internal.logs import backends as logger
-from archivey.internal.logs import integrity as integrity_logger
+from archivey.internal.logs import backends as logger, integrity as integrity_logger
 from archivey.internal.measurement import (
     ByteCounter,
     IoStats,

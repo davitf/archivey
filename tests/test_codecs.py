@@ -43,8 +43,7 @@ from archivey.internal.config import (
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.hashing import crc32_digest
-from archivey.internal.streams import codecs as codecs_module
-from archivey.internal.streams import crypto
+from archivey.internal.streams import codecs as codecs_module, crypto
 from archivey.internal.streams.codecs import (
     Codec,
     CodecParams,

@@ -2113,8 +2113,7 @@ def test_accelerator_mode_auto_resolution() -> None:
 
 
 hypothesis = pytest.importorskip("hypothesis")
-from hypothesis import given  # noqa: E402
-from hypothesis import strategies as st  # noqa: E402
+from hypothesis import given, strategies as st  # noqa: E402
 
 
 def _seek_interleaving_ops(stream: Any, plaintext: bytes, ops: list[str]) -> None:

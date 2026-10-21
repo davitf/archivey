@@ -285,7 +285,7 @@ def _open_under_suspended_pass(
     real_close_streams = reader._close_public_streams
     real_close_archive = reader._close_archive
 
-    def recorded_pass(*args, **kwargs):
+    def recorded_pass(*args, **kwargs):  # a generator wrapper
         try:
             yield from real_pass(*args, **kwargs)
         finally:
@@ -366,7 +366,7 @@ def test_close_tears_down_when_a_close_step_fails(
     p = _open_under_suspended_pass(
         make_source(tmp_path), streaming, monkeypatch, fail=_FAILING_STEPS[fail]
     )
-    with pytest.raises(Exception) as excinfo:
+    with pytest.raises(Exception) as excinfo:  # checked per case below
         p.reader.close()
     exc = excinfo.value
     if fail == "wind-down":

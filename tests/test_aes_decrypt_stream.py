@@ -13,8 +13,7 @@ from collections.abc import Callable
 import pytest
 
 try:
-    from hypothesis import example, given
-    from hypothesis import strategies as st
+    from hypothesis import example, given, strategies as st
 except ImportError:  # pragma: no cover - hypothesis is a dev-group dep
     example = given = st = None  # type: ignore[misc, assignment]
 

@@ -791,7 +791,8 @@ class PpmdDecoder(BaseDecoder):
                 # the worker hit its budget and exited, so it will not be resumed.
                 if decomp.decode(b"\0", 1):
                     return
-        except Exception:  # noqa: BLE001, S110 - teardown hygiene; never raise from close()/__del__
+        except Exception:  # noqa: BLE001, S110
+            # Teardown hygiene; never raise from close()/__del__.
             pass
 
     def spoil_child(self) -> None:

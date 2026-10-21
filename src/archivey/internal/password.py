@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable, Container, Iterator
-from collections.abc import Sequence as ABCSequence
+from collections.abc import Callable, Container, Iterator, Sequence as ABCSequence
 from contextvars import ContextVar
 from typing import TypeGuard, TypeVar
 

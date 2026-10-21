@@ -130,7 +130,8 @@ class PrefixWorkspace:
         )
 
         if isinstance(source, (str, Path)):
-            self._handle = open(source, "rb")  # noqa: SIM115 - the handle outlives this statement; its owner closes it
+            # The handle outlives this statement; its owner closes it.
+            self._handle = open(source, "rb")  # noqa: SIM115
             self._owns_handle = True
             self._entry_pos = 0
         elif isinstance(source, ArchiveSource) and not source.seekable():

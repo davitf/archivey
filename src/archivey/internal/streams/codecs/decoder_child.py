@@ -586,7 +586,8 @@ class DecoderChild:
     def flag(self, name: str) -> bool:
         value = self._state.get(name)
         if not isinstance(value, bool):
-            raise AttributeError(name)  # noqa: TRY004 - stands in for the decoder lacking this attribute
+            # Stands in for the decoder lacking this attribute.
+            raise AttributeError(name)  # noqa: TRY004
         return value
 
     def has(self, name: str) -> bool:
@@ -625,7 +626,8 @@ class DecoderChild:
     def unconsumed_tail(self) -> bytes:
         size = self._state.get("unconsumed_tail")
         if not isinstance(size, int):
-            raise AttributeError("unconsumed_tail")  # noqa: TRY004 - stands in for the decoder lacking this attribute
+            # Stands in for the decoder lacking this attribute.
+            raise AttributeError("unconsumed_tail")  # noqa: TRY004
         if size == 0:
             return b""
         if size <= len(self._input):

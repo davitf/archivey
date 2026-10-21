@@ -642,7 +642,7 @@ class MemberVerifier:
                 return self._read_sized_all(inner)
             try:
                 data = inner.read(-1)
-            except Exception:
+            except Exception:  # abandon verify; re-raise decoder error
                 self._abandon()
                 raise
             if self._concluded and self._frontier_pending:
@@ -661,7 +661,7 @@ class MemberVerifier:
         if self._abandoned or self._concluded:
             try:
                 data = inner.read(n)
-            except Exception:
+            except Exception:  # abandon verify; re-raise decoder error
                 self._abandon()
                 raise
             if self._frontier_pending:
@@ -683,7 +683,7 @@ class MemberVerifier:
 
         try:
             data = inner.read(want)
-        except Exception:
+        except Exception:  # abandon verify; re-raise decoder error
             self._abandon()
             raise
 

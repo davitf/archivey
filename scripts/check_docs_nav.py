@@ -117,7 +117,7 @@ def load_nav_files() -> list[str]:
     NavLoader.add_multi_constructor("", lambda loader, suffix, node: None)
 
     with MKDOCS_YML.open(encoding="utf-8") as fh:
-        config = yaml.load(fh, Loader=NavLoader)
+        config = yaml.load(fh, Loader=NavLoader)  # tags neutralised above
 
     found: list[str] = []
 

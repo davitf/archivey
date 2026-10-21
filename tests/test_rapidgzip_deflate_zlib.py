@@ -449,7 +449,7 @@ def _body_flip_the_stdlib_rejects(good: bytes) -> bytes:
     raise AssertionError("no rejected body flip found")
 
 
-def _on_zlib(data: bytes):
+def _on_zlib(data: bytes):  # returns the codec's stream type
     pytest.importorskip("rapidgzip")
     on = StreamConfig(use_rapidgzip=AcceleratorMode.ON, seekable=True)
     return open_codec_stream(Codec.ZLIB, io.BytesIO(data), config=on)
@@ -523,8 +523,7 @@ def test_tar_zz_member_damage_raises_under_rapidgzip_on(tmp_path: Path) -> None:
     pytest.importorskip("rapidgzip")
     import tarfile
 
-    from archivey import AcceleratorMode as PublicMode
-    from archivey import ArchiveyConfig
+    from archivey import AcceleratorMode as PublicMode, ArchiveyConfig
 
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w") as tar:

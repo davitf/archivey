@@ -32,8 +32,7 @@ from archivey.exceptions import (
     EncryptionError,
     TruncatedError,
 )
-from archivey.internal import password as password_module
-from archivey.internal import password_confirm
+from archivey.internal import password as password_module, password_confirm
 from archivey.internal.backends import zip_reader, zipcrypto
 from archivey.internal.password import is_wrong_password
 from archivey.internal.password_confirm import PASSWORD_CONFIRM_PREFIX_BYTES

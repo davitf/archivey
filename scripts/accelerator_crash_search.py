@@ -410,7 +410,8 @@ class _Worker:
     wait for an answer with a timeout on every platform."""
 
     def __init__(self, codec: str, parallelization: int) -> None:
-        self.stderr = tempfile.TemporaryFile()  # noqa: SIM115 - the handle outlives this statement; its owner closes it
+        # The handle outlives this statement; its owner closes it.
+        self.stderr = tempfile.TemporaryFile()  # noqa: SIM115
         # Where the worker writes its ``path`` cases. Removed here after the worker is
         # reaped, since a worker that aborts never runs its own clean-up.
         self.tmpdir = tempfile.TemporaryDirectory(

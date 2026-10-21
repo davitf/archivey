@@ -406,7 +406,8 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         if bzip2:
             argv.append(BZIP2_ARG)
         try:
-            stderr = tempfile.TemporaryFile()  # noqa: SIM115 - the handle outlives this statement; its owner closes it
+            # The handle outlives this statement; its owner closes it.
+            stderr = tempfile.TemporaryFile()  # noqa: SIM115
         except OSError as exc:
             raise _start_error(str(exc)) from exc
         self._stderr = stderr

@@ -32,8 +32,7 @@ from archivey.exceptions import (
     PackageNotInstalledError,
     UnsupportedFeatureError,
 )
-from archivey.internal.streams import codecs as codecs_module
-from archivey.internal.streams import crypto as crypto_module
+from archivey.internal.streams import codecs as codecs_module, crypto as crypto_module
 from archivey.reader import ArchiveReader
 from archivey.types import MemberType, OnError
 from tests.conftest import requires, requires_binary

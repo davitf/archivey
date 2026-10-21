@@ -1375,7 +1375,7 @@ def test_progress_callback_requires_tty(monkeypatch: pytest.MonkeyPatch) -> None
     from archivey.cli import progress as progress_mod
 
     class _NonTTY(io.StringIO):
-        def isatty(self) -> bool:
+        def isatty(self) -> bool:  # match TextIO API
             return False
 
     monkeypatch.setattr(progress_mod.sys, "__stderr__", _NonTTY())

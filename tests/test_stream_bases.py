@@ -347,7 +347,7 @@ def _import_all_archivey_modules() -> None:
             continue
         try:
             importlib.import_module(module.name)
-        except Exception as exc:
+        except Exception as exc:  # any import-time failure is this check
             raise ImportError(
                 f"{module.name} failed to import while walking archivey modules "
                 "for the ReadOnlyIOStream resume-offset inventory. This walk also "

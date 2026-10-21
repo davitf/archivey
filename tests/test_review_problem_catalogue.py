@@ -107,7 +107,7 @@ def test_neutral_catalogue_is_derivable_and_current() -> None:
     `python scripts/derive_neutral_catalogue.py` — do not edit the derived file.
     """
     assert NEUTRAL.exists(), f"{NEUTRAL} is missing; run {DERIVE.name}"
-    result = subprocess.run(
+    result = subprocess.run(  # fixed argv, repo-local script
         [sys.executable, str(DERIVE), "--check"],
         capture_output=True,
         text=True,

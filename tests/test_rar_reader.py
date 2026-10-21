@@ -4094,8 +4094,7 @@ def test_rar3_unicode_name_decode_matches_reference_and_stays_bounded() -> None:
     never exceed ``len(std_name) + len(encdata)`` on success.
     """
     pytest.importorskip("hypothesis")
-    from hypothesis import example, given
-    from hypothesis import strategies as st
+    from hypothesis import example, given, strategies as st
 
     opcodeish = st.sampled_from([0x00, 0x40, 0x80, 0xC0, 0xFF, 0x7F, 0x01, 0x81])
     encdata_st = st.one_of(

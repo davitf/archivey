@@ -201,14 +201,19 @@ target-version = "py311"
 
 [tool.ruff.lint]
 # Ruff 0.16 grew its default set from 59 rules to 413 (bugbear, simplify, RUF, a pylint
-# and a bandit subset, refurb, pie, pyi, …); we take all of it. It also dropped these
-# pycodestyle/pyflakes rules from the defaults; we keep them, so the second line here
-# restores them rather than relying on the default set.
+# and a bandit subset, refurb, pie, pyi, …); we take all of it. It also dropped some
+# pycodestyle E4/E7 and pyflakes rules from the defaults. "F" on the first line already
+# selects every pyflakes rule; the second line restores the E4/E7 ones. E902 (E9) is
+# still in the default set.
 extend-select = [
     "I", "F", "C4", "ISC", "RET", "BLE", "UP",
     "E401", "E402", "E701", "E702", "E703", "E711", "E712", "E713", "E714", "E721",
-    "E731", "E741", "E742", "E743", "F403", "F405", "F722",
+    "E731", "E741", "E742", "E743",
 ]
+
+[tool.ruff.lint.isort]
+# One `from m import (...)` per module, aliases included (`Set as AbstractSet`).
+combine-as-imports = true
 
 [tool.ruff.lint.flake8-bugbear]
 # Immutable values, safe as argument and dataclass defaults (B008, RUF009): an enum.Flag

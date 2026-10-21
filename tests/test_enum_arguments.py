@@ -510,7 +510,7 @@ CLI_ENUM_OPTIONS = [
 def _parser_choices(option: str) -> list[str]:
     """The ``choices=`` argparse will enforce for ``option``, read off the real parser."""
     parser = build_parser()
-    for action in parser._actions:
+    for action in parser._actions:  # argparse exposes no public reader
         if option in action.option_strings:
             assert action.choices is not None, f"{option} has no choices"
             return list(action.choices)

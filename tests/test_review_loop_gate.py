@@ -449,7 +449,7 @@ def test_a_decision_carries_its_question() -> None:
 
 
 def _run(stdin: str, *args: str) -> dict:
-    result = subprocess.run(
+    result = subprocess.run(  # fixed argv
         [sys.executable, str(SCRIPT), *args],
         input=stdin,
         capture_output=True,

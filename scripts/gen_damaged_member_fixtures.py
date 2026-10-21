@@ -38,8 +38,6 @@ sys.path.insert(0, str(REPO_ROOT))
 # One definition of the member content: the test compares against the same function.
 from tests.test_damaged_member_pass import (  # noqa: E402
     _MEMBER_SIZE as MEMBER_SIZE,
-)
-from tests.test_damaged_member_pass import (  # noqa: E402
     _member_text as member_text,
 )
 

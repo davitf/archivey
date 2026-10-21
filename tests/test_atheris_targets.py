@@ -16,8 +16,7 @@ from pathlib import Path
 import pytest
 
 from archivey import ArchiveFormat, ArchiveyError, open_archive
-from tests.atheris_fuzz import TARGET_NAMES
-from tests.atheris_fuzz import seeds as fuzz_seeds
+from tests.atheris_fuzz import TARGET_NAMES, seeds as fuzz_seeds
 from tests.atheris_fuzz.seeds import (
     _compressed_tar_seeds,
     _koly_block,
