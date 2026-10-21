@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Measure how quickly stdlib ZIP codecs reject wrong-key / random input.
 
 Used to evidence-back the ZipCrypto multi-password confirmation bound

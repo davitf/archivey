@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Look for inputs that crash rapidgzip's decoders when they run in-process.
 
 archivey runs rapidgzip in a child process for every codec it decodes (gzip, zlib, raw

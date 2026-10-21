@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Record which file time each archiver stores in its "creation time" slots.
 
 ZIP's NTFS extra field (0x000A), 7z's CTime property and libarchive's PAX

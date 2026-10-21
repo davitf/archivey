@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """What can RARLAB ``unrar`` accept as its *archive* input, and what does it emit?
 
 Supporting ``dev-docs/formats/rar.md`` §1 (the process boundary) and §2.3.

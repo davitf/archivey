@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Regenerate ``tests/fixtures/rar/`` archives with the RARLAB ``rar`` CLI.
 
 Usage (from the repo root)::

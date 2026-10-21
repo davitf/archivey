@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Regenerate ``tests/fixtures/damaged_member/`` with the ``7z`` and RARLAB ``rar`` CLIs.
 
 Usage (from the repo root)::

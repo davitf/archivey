@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Does a valid Brotli stream ever carry consecutive *declaring* meta-blocks?
 
 Supporting `dev-docs/investigations/brotli-uncompressed-block-runs.md`, which asks whether

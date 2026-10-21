@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Capability declaration vs observed behaviour, against the declarative corpus.
 
 Evidence for ``dev-docs/investigations/capability-declaration-vs-behaviour.md``.

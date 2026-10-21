@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Does loading BOTH rapidgzip and indexed_bzip2 in one process corrupt the heap on macOS?
 
 The full-suite macOS abort turned out NOT to be archivey leaving streams unclosed (the leak

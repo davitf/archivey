@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Characterize rapidgzip (and IndexedBzip2File) truncation/corruption behaviour.
 
 Builds gzip/bzip2 fixtures of several shapes, truncates at every byte offset (or a

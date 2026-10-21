@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Stress the rapidgzip child-process path under pytest, and catch a stalled test.
 
 gzip, zlib and raw DEFLATE decode through rapidgzip in a child process, which rapidgzip

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Measure what running rapidgzip in a child process costs, against in-process and stdlib.
 
 rapidgzip 0.16 aborts the process on a truncated DEFLATE stream, so archivey decodes the

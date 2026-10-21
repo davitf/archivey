@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Standalone reproduction for the macOS accelerator shutdown abort.
 
 Background

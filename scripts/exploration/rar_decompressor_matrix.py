@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Compare RAR decompressor CLIs against RARLAB ``unrar p``.
 
 Supporting ``dev-docs/investigations/alternative-rar-decompressors.md``.
