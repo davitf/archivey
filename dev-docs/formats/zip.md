@@ -43,13 +43,13 @@ them.
 | **EOCD** — end of central directory | `PK\x05\x06` | 22 fixed bytes plus an optional comment: total entries, the size of the CDH run, `offset_cd` (where that run starts), the disk numbers, the comment length. The only record found by *position* rather than by a pointer |
 
 archivey takes every member field from the CDH and reads the LFH only to locate the data
-(§2.3). Three exceptions read the LFH for more. When the two copies of the name differ, as
-bytes, the member keeps the CDH's name and reports `MEMBER_LOCAL_NAME_DIFFERS`; stdlib
-refused it. When the two name different compression methods, the member is decoded by the
-LFH's, which sits next to the data and is the only one a pipe has, so a file and a pipe
-read the same bytes; it reports `MEMBER_LOCAL_METHOD_DIFFERS`. When the CDH stores CRC-32 0 for a file or link that is not WinZip AE-2 and
-the LFH a real value, the LFH's is the member's CRC-32, reported as
-`MEMBER_LOCAL_CRC_USED` (§5).
+(§2.3). Three exceptions read the LFH for more. When the two copies of the name differ,
+as bytes, the member keeps the CDH's name and reports `MEMBER_LOCAL_NAME_DIFFERS`;
+stdlib refused it. When the two name different compression methods, the member is
+decoded by the LFH's, which sits next to the data and is the only one a pipe has, so a
+file and a pipe read the same bytes; it reports `MEMBER_LOCAL_METHOD_DIFFERS`. When the
+CDH stores CRC-32 0 for a file or link that is not WinZip AE-2 and the LFH a real value,
+the LFH's is the member's CRC-32, reported as `MEMBER_LOCAL_CRC_USED` (§5).
 
 **The index is at the end.** The central directory is authoritative and is found by
 scanning backwards from the last bytes for the EOCD. So:
