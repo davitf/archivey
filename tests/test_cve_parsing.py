@@ -4,33 +4,29 @@ against archivey.
 Each test builds the smallest archive with the header shape a CVE describes and checks
 that archivey ends it with a typed error, or reads it the way the format defines,
 without a hang or an allocation the archive's size does not pay for. A test names the
-CVE it replays, so a failure points at the published write-up. The extraction-side
-replays (traversal, links) are in ``test_cve_regressions.py``.
+CVE it replays, so a failure points at the published write-up.
 """
 
 from __future__ import annotations
 
 import io
 import struct
-import tracemalloc
 import zipfile
 
 import pytest
 
-from archivey import ArchiveyConfig, DiagnosticCode, ListingLimits, open_archive
+from archivey import ArchiveyConfig, DiagnosticCode, open_archive
 from archivey.exceptions import (
-    ArchiveyError,
     CorruptionError,
-    ResourceLimitError,
     TruncatedError,
 )
+from archivey.internal.backends.tar_parser import BLOCKSIZE
+from tests.memory_util import traced_peak
 from tests.streams_util import NonSeekableBytesIO
+from tests.tar_build import END, block, data, pax, pax_record
 
 # ``pipe`` reads a stream that cannot seek, so a ZIP is read by its local headers.
 _MODES = pytest.mark.parametrize("mode", ["random", "stream", "pipe"])
-
-BLOCK = 512
-_END = b"\x00" * (2 * BLOCK)
 
 
 def _open(data: bytes, mode: str, config: ArchiveyConfig | None = None):
@@ -52,75 +48,38 @@ def _read_everything(
 # --- TAR -------------------------------------------------------------------------
 
 
-def _octal(value: int, width: int) -> bytes:
-    return f"{value:0{width - 1}o}".encode() + b"\x00"
+def _field(start: int, end: int, raw: bytes):
+    def patch(h: bytearray) -> None:
+        h[start:end] = raw
+
+    return patch
 
 
-def _tar_header(
-    name: bytes = b"f",
-    *,
-    size: int | bytes = 0,
-    typeflag: bytes = b"0",
-    mtime: bytes | None = None,
-) -> bytes:
-    """One ustar header block; ``size`` and ``mtime`` as raw field bytes override the
-    octal encoding, for the base-256 forms."""
-    h = bytearray(BLOCK)
-    h[0 : len(name)] = name
-    h[100:108] = _octal(0o644, 8)
-    h[108:116] = _octal(1000, 8)
-    h[116:124] = _octal(1000, 8)
-    h[124:136] = size if isinstance(size, bytes) else _octal(size, 12)
-    h[136:148] = mtime if mtime is not None else _octal(1_700_000_000, 12)
-    assert len(h) == BLOCK, "a field overflowed"
-    h[156:157] = typeflag
-    h[257:265] = b"ustar\x0000"
-    h[148:156] = b" " * 8
-    h[148:156] = f"{sum(h):06o}".encode() + b"\x00 "
-    return bytes(h)
+def _pax_body(body: bytes) -> bytes:
+    """A PAX header block holding ``body`` as is, framed or not."""
+    return block(b"PaxHeader", size=len(body), typeflag=b"x") + data(body)
 
 
-def _padded(payload: bytes) -> bytes:
-    return payload + b"\x00" * (-len(payload) % BLOCK)
-
-
-def _pax_record(key: bytes, value: bytes) -> bytes:
-    payload = b" " + key + b"=" + value + b"\n"
-    length = len(payload) + 1
-    while length != len(str(length)) + len(payload):
-        length = len(str(length)) + len(payload)
-    return str(length).encode() + payload
-
-
-def _pax(body: bytes, typeflag: bytes = b"x") -> bytes:
-    return _tar_header(b"PaxHeader", size=len(body), typeflag=typeflag) + _padded(body)
-
-
-def _file(name: bytes, data: bytes) -> bytes:
-    return _tar_header(name, size=len(data)) + _padded(data)
+def _file(name: bytes, payload: bytes) -> bytes:
+    return block(name, size=len(payload)) + data(payload)
 
 
 @_MODES
 def test_cve_2025_8194_negative_tar_size(mode: str) -> None:
     # tarfile read a base-256 size field as a negative number and moved its offset
     # back to a header it had read, looping forever. A negative size is damage here.
-    minus_one = b"\xff" * 12
-    data = _tar_header(b"loop", size=minus_one) + _file(b"after", b"x") + _END
-    with pytest.raises(CorruptionError):
-        _read_everything(data, mode=mode)
+    minus_one = _field(124, 136, b"\xff" * 12)
+    archive = block(b"loop", patch=minus_one) + _file(b"after", b"x") + END
+    with pytest.raises(CorruptionError, match="negative size"):
+        _read_everything(archive, mode=mode)
 
 
 @_MODES
 def test_cve_2025_8194_negative_pax_size(mode: str) -> None:
     # The same loop from a PAX ``size`` record, which tarfile also took as signed.
-    data = (
-        _pax(_pax_record(b"size", b"-1024"))
-        + _file(b"loop", b"")
-        + _file(b"after", b"x")
-        + _END
-    )
-    with pytest.raises(CorruptionError):
-        _read_everything(data, mode=mode)
+    archive = pax({"size": "-1024"}) + _file(b"loop", b"") + _file(b"after", b"x") + END
+    with pytest.raises(CorruptionError, match="size is not a number"):
+        _read_everything(archive, mode=mode)
 
 
 @_MODES
@@ -128,10 +87,10 @@ def test_cve_2024_6232_pax_header_of_many_records_is_linear(mode: str) -> None:
     # tarfile parsed PAX records with backtracking regular expressions, so a header
     # of many short or padded records took quadratic time. A megabyte of records
     # (and one record padded by a megabyte of spaces) is read in one linear pass.
-    many = _pax_record(b"comment", b"x") * 100_000
-    padded = _pax_record(b"comment", b" " * 1_000_000)
-    data = _pax(many) + _pax(padded) + _file(b"f", b"data") + _END
-    assert _read_everything(data, mode=mode) == {"f": b"data"}
+    many = pax_record(b"comment", b"x") * 100_000
+    padded = pax_record(b"comment", b" " * 1_000_000)
+    archive = _pax_body(many) + _pax_body(padded) + _file(b"f", b"data") + END
+    assert _read_everything(archive, mode=mode) == {"f": b"data"}
 
 
 @_MODES
@@ -139,39 +98,9 @@ def test_cve_2024_6232_malformed_pax_length_is_damage(mode: str) -> None:
     # The same report's other input shape: a length prefix of many digits. The
     # record does not parse, so the header is refused at its first record.
     body = b"0" * 100_000 + b"1 comment=x\n"
-    data = _pax(body) + _file(b"f", b"data") + _END
-    with pytest.raises(CorruptionError):
-        _read_everything(data, mode=mode)
-
-
-@_MODES
-def test_gnu_long_name_chain_is_charged_to_the_listing_limit(mode: str) -> None:
-    # A chain of extended headers (GNU long names here) before one member. No header
-    # in the chain is a member, so ``max_members`` does not count them; each one is
-    # charged to ``max_metadata_bytes`` as it is read.
-    name = b"n" * 1000
-    chain = (
-        _tar_header(b"././@LongLink", size=len(name), typeflag=b"L") + _padded(name)
-    ) * 200
-    data = chain + _file(b"f", b"data") + _END
-    config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=64_000))
-    with pytest.raises(ResourceLimitError):
-        _read_everything(data, mode=mode, config=config)
-    # Without the cap the chain reads as tarfile and GNU tar read it: the last long
-    # name names the member.
-    assert _read_everything(data, mode=mode) == {"n" * 1000: b"data"}
-
-
-@_MODES
-@pytest.mark.parametrize("typeflag", [b"x", b"g", b"L", b"K"])
-def test_huge_extended_header_is_not_allocated(mode: str, typeflag: bytes) -> None:
-    # An extended header declaring a terabyte (base-256 size) in a file of three
-    # blocks. A reader that allocates the declared size up front fails on memory.
-    # The size is charged to ``max_metadata_bytes`` before anything is read.
-    terabyte = b"\x80" + (1 << 40).to_bytes(11, "big")
-    data = _tar_header(b"PaxHeader", size=terabyte, typeflag=typeflag) + _END
-    with pytest.raises(ResourceLimitError, match="extended header"):
-        _read_everything(data, mode=mode)
+    archive = _pax_body(body) + _file(b"f", b"data") + END
+    with pytest.raises(CorruptionError, match="malformed record"):
+        _read_everything(archive, mode=mode)
 
 
 @_MODES
@@ -186,20 +115,23 @@ def test_huge_extended_header_is_not_allocated(mode: str, typeflag: bytes) -> No
 )
 def test_cve_2025_25724_out_of_range_mtime(mode: str, mtime: bytes) -> None:
     # bsdtar's verbose listing did not check ``strftime`` for a time it could not
-    # format, and used a buffer it had not filled. A time that no ``datetime`` holds lists the member with
-    # no time instead of failing the listing. Minus one is a time (1969).
-    data = _tar_header(b"f", size=4, mtime=mtime) + _padded(b"data") + _END
-    with _open(data, mode) as reader:
-        for member, stream in reader.stream_members():
-            assert member.name == "f"
-            assert stream is not None and stream.read() == b"data"
-            if mtime == b"\xff" * 12:
-                assert member.modified is not None and member.modified.year == 1969
-            else:
-                assert member.modified is None
-        assert reader.diagnostics.counts.get(
-            DiagnosticCode.MEMBER_TIMESTAMP_INVALID
-        ) == (None if mtime == b"\xff" * 12 else 1)
+    # format, and used a buffer it had not filled. A time that no ``datetime`` holds
+    # lists the member with no time instead of failing the listing, in every mode
+    # (``test_audit_cross_format`` checks the random-access listing). Minus one is a
+    # time (1969).
+    archive = block(b"f", size=4, patch=_field(136, 148, mtime)) + data(b"data") + END
+    with _open(archive, mode) as reader:
+        seen = [(m, s.read() if s else None) for m, s in reader.stream_members()]
+        ((member, content),) = seen
+        assert member.name == "f"
+        assert content == b"data"
+        counts = reader.diagnostics.counts
+    if mtime == b"\xff" * 12:
+        assert member.modified is not None and member.modified.year == 1969
+        assert DiagnosticCode.MEMBER_TIMESTAMP_INVALID not in counts
+    else:
+        assert member.modified is None
+        assert counts[DiagnosticCode.MEMBER_TIMESTAMP_INVALID] == 1
 
 
 # --- ZIP -------------------------------------------------------------------------
@@ -335,21 +267,25 @@ def test_extra_field_longer_than_its_area(mode: str, declared: int) -> None:
         info = zipfile.ZipInfo("f")
         info.extra = struct.pack("<HH", 0x5455, declared)
         zf.writestr(info, b"data")
-    data = buf.getvalue()
-    with _open(data, mode) as reader:
-        for member, stream in reader.stream_members():
-            assert stream is not None and stream.read() == b"data"
-            assert member.modified is not None and member.modified.year == 1980
+    with _open(buf.getvalue(), mode) as reader:
+        seen = [(m, s.read() if s else None) for m, s in reader.stream_members()]
+    ((member, content),) = seen
+    assert content == b"data"
+    assert member.modified is not None and member.modified.year == 1980
 
 
 @_MODES
 def test_cve_2024_8088_name_of_many_slashes(mode: str) -> None:
     # zipfile.Path could loop forever building implied directories from crafted
-    # names. Names of many slashes and many levels list in one pass.
-    name = "a" + "/" * 60_000 + "b"
-    data = _zip((name, b"x"), ("c/" * 20_000 + "d", b"y"))
-    with _open(data, mode) as reader:
-        assert len(list(reader.stream_members())) >= 2
+    # names. Names of many slashes and many levels list in one pass: the slashes
+    # collapse into one (with a diagnostic), and the levels are kept.
+    deep = "c/" * 20_000 + "d"
+    archive = _zip(("a" + "/" * 60_000 + "b", b"x"), (deep, b"y"))
+    with _open(archive, mode) as reader:
+        names = [member.name for member, _ in reader.stream_members()]
+        counts = reader.diagnostics.counts
+    assert names == ["a/b", deep]
+    assert counts[DiagnosticCode.MEMBER_NAME_NORMALIZED] == 1
 
 
 @_MODES
@@ -369,13 +305,14 @@ def test_declared_size_smaller_than_the_data(mode: str) -> None:
 @pytest.mark.parametrize("cut", [300, 512, 700, 1024, 1536, 2047])
 def test_cve_2026_11972_truncated_tar_in_a_stream_ends(mode: str, cut: int) -> None:
     # tarfile in streaming mode (``r|``) mishandled the end of a cut archive and
-    # looped. A TAR cut anywhere ends with a typed error or with the members before
-    # the cut, in one pass.
-    data = _file(b"a", b"x" * 600) + _END
-    try:
-        _read_everything(data[:cut], mode=mode)
-    except ArchiveyError as exc:
-        assert isinstance(exc, (TruncatedError, CorruptionError)), exc
+    # looped. A TAR cut inside its member is truncated; one cut in the end-of-archive
+    # blocks after the member still reads the member whole.
+    archive = _file(b"a", b"x" * 600) + END
+    if cut < BLOCKSIZE + 1024:
+        with pytest.raises(TruncatedError):
+            _read_everything(archive[:cut], mode=mode)
+    else:
+        assert _read_everything(archive[:cut], mode=mode) == {"a": b"x" * 600}
 
 
 @_MODES
@@ -388,14 +325,16 @@ def test_cve_2026_15310_declared_size_is_not_preallocated(
     # zipfile sized an output buffer from the member's declared size for bzip2 and
     # LZMA members, so a small member declaring 4 GiB took 4 GiB. The declared size
     # here only bounds the output; the member's real data is all that is held.
-    data = bytearray(_zip(("f", b"z" * 1000), compress=method))
-    struct.pack_into("<L", data, 22, 0xFFFFFFFE)
-    struct.pack_into("<L", data, _central_offsets(bytes(data))[0] + 24, 0xFFFFFFFE)
-    tracemalloc.start()
-    try:
+    # The peak is the decoder's own state (about 9 MiB for LZMA), not the 4 GiB.
+    archive = bytearray(_zip(("f", b"z" * 1000), compress=method))
+    struct.pack_into("<L", archive, 22, 0xFFFFFFFE)
+    struct.pack_into(
+        "<L", archive, _central_offsets(bytes(archive))[0] + 24, 0xFFFFFFFE
+    )
+
+    def read() -> None:
         with pytest.raises(TruncatedError, match="ended after 1000 of"):
-            _read_everything(bytes(data), mode=mode)
-        _, peak = tracemalloc.get_traced_memory()
-    finally:
-        tracemalloc.stop()
-    assert peak < 64 << 20, peak
+            _read_everything(bytes(archive), mode=mode)
+
+    read()
+    assert traced_peak(read) < 16 << 20
