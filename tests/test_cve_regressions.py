@@ -68,25 +68,36 @@ def _assert_outside_untouched(tmp_path: Path, outside: Path) -> None:
     assert (outside / "victim").read_bytes() == b"original"
 
 
+def _reraise(exc: OSError) -> None:
+    raise exc
+
+
 def _assert_no_link_leaves(dest: Path) -> None:
     """Every symlink under ``dest`` leads to something inside it. The kernel follows
     each link (``os.stat``), one component at a time, and the inode it lands on must
     be one the walk found under ``dest``; ``realpath`` would not do, since it has the
-    blind spot CVE-2025-4517 used. A dangling link must name a path inside."""
+    blind spot CVE-2025-4517 used. A dangling link must name a path inside. A file
+    counts as inside only when the walk found all its hardlinks, so a hardlink to a
+    file outside does not make a symlink to it look inside. A directory the walk
+    cannot open fails the check rather than hiding the links under it."""
     st = dest.stat()
     inside = {(st.st_dev, st.st_ino)}
+    seen: dict[tuple[int, int], list[int]] = {}  # inode: [links found, st_nlink]
     links: list[tuple[str, int, str]] = []
     # By directory descriptor: the tree's real paths can be longer than PATH_MAX.
     fds: list[int] = []
     try:
-        for parent, dirnames, filenames, dir_fd in os.fwalk(dest):
+        for parent, dirnames, filenames, dir_fd in os.fwalk(dest, onerror=_reraise):
             fds.append(os.dup(dir_fd))
             for name in dirnames + filenames:
                 st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
                 if stat.S_ISLNK(st.st_mode):
                     links.append((parent, fds[-1], name))
-                else:
+                elif stat.S_ISDIR(st.st_mode):
                     inside.add((st.st_dev, st.st_ino))
+                else:
+                    seen.setdefault((st.st_dev, st.st_ino), [0, st.st_nlink])[0] += 1
+        inside |= {key for key, (found, nlink) in seen.items() if found >= nlink}
         for parent, dir_fd, name in links:
             try:
                 st = os.stat(name, dir_fd=dir_fd)
