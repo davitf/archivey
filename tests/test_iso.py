@@ -219,11 +219,13 @@ def test_read_empty_member(rock_ridge_iso: Path) -> None:
 def test_seek_within_opened_member(rock_ridge_iso: Path) -> None:
     # The opened member stream is seekable (PyCdlibIO via _PyCdlibStream/DelegatingStream)
     # once SEEKABLE is declared.
-    with open_archive(rock_ridge_iso, seekable_members=True) as ar:
-        with ar.open("file.txt") as f:
-            assert f.read(5) == b"hello"
-            f.seek(0)
-            assert f.read() == b"hello world"
+    with (
+        open_archive(rock_ridge_iso, seekable_members=True) as ar,
+        ar.open("file.txt") as f,
+    ):
+        assert f.read(5) == b"hello"
+        f.seek(0)
+        assert f.read() == b"hello world"
 
 
 def test_streaming_over_seekable_iso(rock_ridge_iso: Path) -> None:
@@ -385,9 +387,11 @@ def test_a_parser_error_is_named_without_its_repr() -> None:
     # Byte 140 of the primary descriptor is the low byte of the type L path table's
     # location.
     image[16 * 2048 + 140] = 0
-    with raises_corruption_not_truncation() as excinfo:
-        with open_archive(io.BytesIO(bytes(image)), format=ArchiveFormat.ISO):
-            pass
+    with (
+        raises_corruption_not_truncation() as excinfo,
+        open_archive(io.BytesIO(bytes(image)), format=ArchiveFormat.ISO),
+    ):
+        pass
     assert isinstance(excinfo.value.__cause__, struct.error)
     message = str(excinfo.value)
     cause = excinfo.value.__cause__
@@ -2089,11 +2093,13 @@ def test_a_zisofs_member_lists_its_decoded_size_and_reads_decoded(
 
 def test_a_zisofs_member_seeks_across_blocks() -> None:
     data = _zisofs_image(_ZISOFS_PLAIN)
-    with open_archive(io.BytesIO(data), seekable_members=True) as ar:
-        with ar.open("zzz") as stream:
-            for offset in (70_000, 5, 54_000, len(_ZISOFS_PLAIN) - 3):
-                stream.seek(offset)
-                assert stream.read(10) == _ZISOFS_PLAIN[offset : offset + 10]
+    with (
+        open_archive(io.BytesIO(data), seekable_members=True) as ar,
+        ar.open("zzz") as stream,
+    ):
+        for offset in (70_000, 5, 54_000, len(_ZISOFS_PLAIN) - 3):
+            stream.seek(offset)
+            assert stream.read(10) == _ZISOFS_PLAIN[offset : offset + 10]
 
 
 def test_a_zisofs_member_seeks_relative_and_clamps_underflow_to_zero() -> None:
@@ -2101,19 +2107,21 @@ def test_a_zisofs_member_seeks_relative_and_clamps_underflow_to_zero() -> None:
     before the start clamps to 0 as every member stream does; it is the caller's
     seek, not damage in the image."""
     data = _zisofs_image(_ZISOFS_PLAIN)
-    with open_archive(io.BytesIO(data), seekable_members=True) as ar:
-        with ar.open("zzz") as stream:
-            assert stream.seek(-4, io.SEEK_END) == len(_ZISOFS_PLAIN) - 4
-            assert stream.read() == b"tail"
-            stream.seek(70_000)
-            assert stream.seek(-60_000, io.SEEK_CUR) == 10_000
-            assert stream.read(10) == _ZISOFS_PLAIN[10_000:10_010]
-            assert stream.seek(-(10**7), io.SEEK_CUR) == 0
-            assert stream.read(10) == _ZISOFS_PLAIN[:10]
-            assert stream.seek(-(10**7), io.SEEK_END) == 0
-            assert stream.read(10) == _ZISOFS_PLAIN[:10]
-            stream.seek(0)
-            assert_seek_underflow_matches_bytesio(stream)
+    with (
+        open_archive(io.BytesIO(data), seekable_members=True) as ar,
+        ar.open("zzz") as stream,
+    ):
+        assert stream.seek(-4, io.SEEK_END) == len(_ZISOFS_PLAIN) - 4
+        assert stream.read() == b"tail"
+        stream.seek(70_000)
+        assert stream.seek(-60_000, io.SEEK_CUR) == 10_000
+        assert stream.read(10) == _ZISOFS_PLAIN[10_000:10_010]
+        assert stream.seek(-(10**7), io.SEEK_CUR) == 0
+        assert stream.read(10) == _ZISOFS_PLAIN[:10]
+        assert stream.seek(-(10**7), io.SEEK_END) == 0
+        assert stream.read(10) == _ZISOFS_PLAIN[:10]
+        stream.seek(0)
+        assert_seek_underflow_matches_bytesio(stream)
 
 
 def test_the_zisofs_stream_refuses_a_negative_absolute_seek_and_a_bad_whence() -> None:
@@ -2164,9 +2172,11 @@ def test_a_damaged_zisofs_block_is_corruption() -> None:
     at = data.index(stored)
     first_block = at + struct.unpack_from("<I", stored, 16)[0]  # pointer 0
     data[first_block : first_block + 8] = b"\xff" * 8
-    with open_archive(io.BytesIO(bytes(data))) as ar:
-        with raises_corruption_not_truncation():
-            ar.read("zzz")
+    with (
+        open_archive(io.BytesIO(bytes(data))) as ar,
+        raises_corruption_not_truncation(),
+    ):
+        ar.read("zzz")
 
 
 @pytest.mark.parametrize(
@@ -2231,9 +2241,11 @@ def test_a_zisofs_block_that_inflates_past_the_block_size_is_corruption() -> Non
         _build_rr_iso(populate), b"zzz", _zf_entry(32 * 1024) + _UNKNOWN_ENTRY
     )
     assert pointers == struct.pack("<II", 24, len(good))
-    with open_archive(io.BytesIO(data)) as ar:
-        with raises_corruption_not_truncation(match="block 0"):
-            ar.read("zzz")
+    with (
+        open_archive(io.BytesIO(data)) as ar,
+        raises_corruption_not_truncation(match="block 0"),
+    ):
+        ar.read("zzz")
 
 
 def test_pycdlib_used_directly_is_not_filtered() -> None:
@@ -2342,9 +2354,11 @@ def test_a_strict_policy_refuses_a_cut_rock_ridge_area() -> None:
 
     data = _cut_after(_build_rr_iso(_two_rr_files), b"aaa")
     strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
-    with pytest.raises(ArchiveyError):
-        with open_archive(io.BytesIO(data), config=strict) as ar:
-            ar.members()
+    with (
+        pytest.raises(ArchiveyError),
+        open_archive(io.BytesIO(data), config=strict) as ar,
+    ):
+        ar.members()
 
 
 # --- names that are not UTF-8 ----------------------------------------------------------

@@ -413,7 +413,7 @@ class ProcessOutputStream(DelegatingStream):
         try:
             self._check_exit(wait_timeout=None)
         # BaseException: chain onto inner.close()'s error, do not replace it.
-        except BaseException as mapped:  # noqa: BLE001
+        except BaseException as mapped:
             if close_error is not None:
                 raise close_error from mapped
             raise

@@ -216,9 +216,11 @@ def test_rar5_complete_archive_emits_no_eof_warning() -> None:
 def test_rar5_cut_at_header_boundary_refused_under_strict() -> None:
     data = (_RAR_FIXTURES / "basic_nonsolid__.rar").read_bytes()
     config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
-    with open_archive(io.BytesIO(_rar5_without_endarc(data)), config=config) as reader:
-        with pytest.raises(DiagnosticRaisedError):
-            reader.members()
+    with (
+        open_archive(io.BytesIO(_rar5_without_endarc(data)), config=config) as reader,
+        pytest.raises(DiagnosticRaisedError),
+    ):
+        reader.members()
 
 
 def test_rar5_volume_set_endarc(tmp_path: Path) -> None:
@@ -268,12 +270,14 @@ def _assert_truncated_listing(
         assert isinstance(report.error, TruncatedError)
         assert message in str(report.error)
         assert not _eof_marker_diagnostics(reader.diagnostics)
-    with open_archive(
-        io.BytesIO(data), password=password, streaming=streaming
-    ) as reader:
-        # members() is random-access only; a streaming pass raises at the damage.
-        with pytest.raises(TruncatedError):
-            list(reader) if streaming else reader.members()
+    # members() is random-access only; a streaming pass raises at the damage.
+    with (
+        open_archive(
+            io.BytesIO(data), password=password, streaming=streaming
+        ) as reader,
+        pytest.raises(TruncatedError),
+    ):
+        list(reader) if streaming else reader.members()
 
 
 @requires("cryptography")
@@ -360,9 +364,11 @@ def test_rar4_header_encrypted_cut_inside_the_first_encrypted_header_names_both_
     password, the cut is the true cause. A wrong password on a small, whole
     archive gets the same message, so the cut is the second reading."""
     data = _hp_fixture("encrypted_header__rar4.rar")
-    with pytest.raises(EncryptionError) as caught:
-        with open_archive(io.BytesIO(data[:length]), password=_HP_PASSWORD) as reader:
-            reader.members()
+    with (
+        pytest.raises(EncryptionError) as caught,
+        open_archive(io.BytesIO(data[:length]), password=_HP_PASSWORD) as reader,
+    ):
+        reader.members()
     message = str(caught.value)
     assert "wrong password?" in message, message
     assert (
@@ -812,9 +818,11 @@ def test_rar_damaged_endarc_random_access_reads_every_member(
 def test_rar_damaged_endarc_refused_under_strict(fixture: str, version: int) -> None:
     data = _edit_endarc((_RAR_FIXTURES / fixture).read_bytes(), version)
     config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
-    with open_archive(io.BytesIO(data), config=config) as reader:
-        with pytest.raises(DiagnosticRaisedError):
-            reader.members()
+    with (
+        open_archive(io.BytesIO(data), config=config) as reader,
+        pytest.raises(DiagnosticRaisedError),
+    ):
+        reader.members()
 
 
 @pytest.mark.parametrize(("fixture", "version"), _ENDARC_FIXTURES)
@@ -1051,9 +1059,11 @@ def test_rar4_header_encrypted_damaged_endarc_with_an_unproven_key_is_a_wrong_pa
     with open_archive(io.BytesIO(empty), password=_HP_PASSWORD) as reader:
         assert reader.members() == []
     damaged = _rar3_hp_damaged_endarc(empty)
-    with pytest.raises(EncryptionError, match=r"wrong password\?"):
-        with open_archive(io.BytesIO(damaged), password=_HP_PASSWORD) as reader:
-            reader.members()
+    with (
+        pytest.raises(EncryptionError, match=r"wrong password\?"),
+        open_archive(io.BytesIO(damaged), password=_HP_PASSWORD) as reader,
+    ):
+        reader.members()
 
 
 def _rar5_hp_reencrypt_endarc(data: bytes, password: str = _HP_PASSWORD) -> bytes:
@@ -1125,9 +1135,11 @@ def test_rar5_header_encrypted_damaged_endarc_with_no_check_value_is_a_wrong_pas
         assert len(reader.members()) == 6
         assert not _eof_marker_diagnostics(reader.diagnostics)
     damaged = _rar5_hp_reencrypt_endarc(data)
-    with pytest.raises(EncryptionError, match=r"wrong password\?"):
-        with open_archive(io.BytesIO(damaged), password=_HP_PASSWORD) as reader:
-            reader.members()
+    with (
+        pytest.raises(EncryptionError, match=r"wrong password\?"),
+        open_archive(io.BytesIO(damaged), password=_HP_PASSWORD) as reader,
+    ):
+        reader.members()
 
 
 def _flip_block_type_to_endarc(data: bytes, version: int, which: str) -> bytes:
@@ -1166,10 +1178,12 @@ def test_rar_header_whose_type_byte_reads_as_endarc_is_a_damaged_header(
         (_RAR_FIXTURES / fixture).read_bytes(), version, which
     )
     seen: list[str] = []
-    with pytest.raises(CorruptionError) as excinfo:
-        with open_archive(io.BytesIO(data), streaming=streaming) as reader:
-            for member, _stream in reader.stream_members():
-                seen.append(member.name)
+    with (
+        pytest.raises(CorruptionError) as excinfo,
+        open_archive(io.BytesIO(data), streaming=streaming) as reader,
+    ):
+        for member, _stream in reader.stream_members():
+            seen.append(member.name)
     assert not isinstance(excinfo.value, TruncatedError)
     assert seen == ([] if which == "main" else ["file1.txt"])
     if which == "main":
@@ -1349,9 +1363,11 @@ def test_tar_damaged_second_eof_block_keeps_the_listing(streaming: bool) -> None
 def test_tar_damaged_second_eof_block_refused_under_strict() -> None:
     data, _members = _tar_with_damaged_second_eof_block()
     config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
-    with open_archive(io.BytesIO(data), config=config) as reader:
-        with pytest.raises(DiagnosticRaisedError):
-            reader.members()
+    with (
+        open_archive(io.BytesIO(data), config=config) as reader,
+        pytest.raises(DiagnosticRaisedError),
+    ):
+        reader.members()
 
 
 # ---------------------------------------------------------------------------
@@ -1411,9 +1427,11 @@ def test_diagnostic_policy_raise_control() -> None:
     """Control: the enum spelling raises on the trailing data."""
     policy = DiagnosticPolicy(raise_on={DiagnosticCode.ARCHIVE_TRAILING_DATA})
     config = ArchiveyConfig(diagnostic_policy=policy)
-    with pytest.raises(DiagnosticRaisedError):
-        with open_archive(io.BytesIO(_tar_with_trailing_garbage()), config=config) as r:
-            r.members()
+    with (
+        pytest.raises(DiagnosticRaisedError),
+        open_archive(io.BytesIO(_tar_with_trailing_garbage()), config=config) as r,
+    ):
+        r.members()
 
 
 @pytest.mark.parametrize(
@@ -1436,9 +1454,11 @@ def test_diagnostic_policy_string_spelling_is_refused_or_honoured(
     except ArchiveyUsageError:
         return  # refused at construction: acceptable
     config = ArchiveyConfig(diagnostic_policy=policy)
-    with pytest.raises(DiagnosticRaisedError):
-        with open_archive(io.BytesIO(_tar_with_trailing_garbage()), config=config) as r:
-            r.members()
+    with (
+        pytest.raises(DiagnosticRaisedError),
+        open_archive(io.BytesIO(_tar_with_trailing_garbage()), config=config) as r,
+    ):
+        r.members()
 
 
 # ---------------------------------------------------------------------------
@@ -1476,9 +1496,12 @@ def test_stdlib_zipfile_rechecks_crc_after_rewind_control(tmp_path: Path) -> Non
     """Control: stdlib ``zipfile`` resets its running CRC on a rewind and raises."""
     path = tmp_path / "damaged.zip"
     _damaged_stored_zip(path)
-    with zipfile.ZipFile(path) as zf, zf.open("m.txt") as stream:
-        with pytest.raises(zipfile.BadZipFile):
-            _partial_then_start(stream)  # type: ignore[arg-type]
+    with (
+        zipfile.ZipFile(path) as zf,
+        zf.open("m.txt") as stream,
+        pytest.raises(zipfile.BadZipFile),
+    ):
+        _partial_then_start(stream)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(
@@ -1493,10 +1516,12 @@ def test_full_read_after_rewind_to_start_is_verified(
 ) -> None:
     path = tmp_path / "damaged.zip"
     _damaged_stored_zip(path)
-    with open_archive(path, seekable_members=True) as reader:
-        with reader.open("m.txt") as stream:
-            with pytest.raises(CorruptionError):
-                ops(stream)  # type: ignore[arg-type]
+    with (
+        open_archive(path, seekable_members=True) as reader,
+        reader.open("m.txt") as stream,
+        pytest.raises(CorruptionError),
+    ):
+        ops(stream)  # type: ignore[arg-type]
 
 
 def _bad_crc_deflated_zip(path: Path, payload: bytes) -> None:
@@ -1536,14 +1561,16 @@ def test_rewind_after_a_mid_member_seek_rearms_the_check(
     payload = b"LINE-abcde\n" * 3000
     path = tmp_path / name
     build(path, payload)
-    with open_archive(path, seekable_members=True) as reader:
-        with reader.open("m.txt") as stream:
-            stream.seek(5000)
-            stream.read(10)
-            stream.seek(0)
-            with pytest.raises(CorruptionError):
-                while stream.read(4096):
-                    pass
+    with (
+        open_archive(path, seekable_members=True) as reader,
+        reader.open("m.txt") as stream,
+    ):
+        stream.seek(5000)
+        stream.read(10)
+        stream.seek(0)
+        with pytest.raises(CorruptionError):
+            while stream.read(4096):
+                pass
 
 
 # ---------------------------------------------------------------------------
