@@ -53,10 +53,10 @@ if importlib.util.find_spec("_tracemalloc") is None:
 # ``has_package`` (through ``requires`` or ``importorskip``) instead. The source of truth
 # is ``deps._UNUSED_UNDER_PYPY``; this copy is kept by hand because it must be in place
 # before anything imports archivey, and importing ``deps`` imports ``lz4.frame``.
+# ``tests/test_codecs.py`` checks that it matches.
+UNUSED_UNDER_PYPY_NAMES = frozenset({"rapidgzip", "lz4", "pyppmd", "inflate64"})
 UNUSED_UNDER_PYPY = (
-    frozenset({"rapidgzip", "lz4", "pyppmd", "inflate64"})
-    if sys.implementation.name == "pypy"
-    else frozenset()
+    UNUSED_UNDER_PYPY_NAMES if sys.implementation.name == "pypy" else frozenset()
 )
 for _blocked in UNUSED_UNDER_PYPY - {"pyppmd", "inflate64"}:
     sys.modules[_blocked] = None  # type: ignore[assignment]
