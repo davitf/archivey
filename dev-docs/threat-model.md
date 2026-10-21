@@ -142,6 +142,10 @@ which are safe to delete once no extraction is running.
 `tests/test_property_safety.py` covers `normalize_member_name`, `check_universal` and
 `resolve_link_target_name` over arbitrary input, and the mutation harness asserts the
 destination is still a directory after every successful extract.
+`tests/test_cve_regressions_7z_rar.py` replays the traversal and link-chain advisories
+against py7zr and WinRAR as 7z and RAR5 archives (7z `S_IFLNK` attribute records and
+RAR5 redirect records, every policy, random and streaming), where the tests above use
+TAR.
 
 ### A later member cannot make an extracted symlink escape
 
@@ -770,6 +774,8 @@ much before the ratio refuses it, where it wrote about 5 MiB before that floor e
 `::test_recorded_size_check_skips_members_the_run_does_not_decode`,
 `::test_forged_recorded_size_fails_only_its_member`;
 `tests/test_cross_os_extraction.py::test_link_limit_copies_trip_the_archive_wide_ratio`.
+`tests/test_cve_regressions_7z_rar.py::test_py7zr_cve_2026_55195_decompression_bomb`
+(7z, refused from the recorded sizes).
 
 #### RAR reads by glob-named member
 
@@ -918,6 +924,10 @@ OSS-Fuzz [waits until archivey has more users](#oss-fuzz).
 
 **Tests.** `tests/test_iso.py::test_pycdlib_directory_cycle_does_not_hang` (plain, Rock
 Ridge and Joliet), `::test_pycdlib_udf_directory_cycle_does_not_hang` (UDF).
+`tests/test_cve_regressions_7z_rar.py` replays published 7z and RAR reader advisories
+on hand-built headers: a COPY folder short of its size, a cyclic coder graph, huge
+declared counts (with an allocation bound), pack-stream counts that must parse in
+linear time, and RAR headers too small to hold their own fields.
 
 ### Directory sources changed concurrently
 
@@ -1005,6 +1015,8 @@ and tqdm's `desc` (escaped) is outside the sweep.
 `test_extract_summary_escapes_*`, `test_hoist_escapes_*`, `test_info_escapes_*`,
 `test_missing_archive_name_is_escaped_once`. The cross-platform CLI tests use U+2028;
 the ANSI/CR spoof is Unix-only, since NTFS refuses control bytes in names.
+`tests/test_cve_regressions_7z_rar.py::test_unrar_cve_2024_33899_escape_sequences_in_names`
+replays the unrar advisory over a RAR's member names through `list`, `test` and `extract`.
 
 ### Detection is bounded and says when it guessed
 

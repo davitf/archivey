@@ -7,6 +7,11 @@ destination, hostile structure ends in a typed error and does not hang or exhaus
 memory, and a name cannot drive the terminal. A test names the CVE it replays, so a
 failure points at the published write-up of the attack.
 
+``tests/test_extraction.py`` already covers traversal and link chains over TAR. The
+tests here add the 7z and RAR5 encodings of the same attacks, which reach extraction
+through different records (7z ``S_IFLNK`` attributes, RAR5 redirect records), under
+every policy, random and streaming.
+
 Only logic-class bugs are replayed. Memory-safety bugs in C decoders (7-Zip's own
 decoders, unrar's) do not run here: archivey reads 7z and RAR headers in Python, and
 ``unrar`` and ``unar`` only ever write member bytes to a pipe.
@@ -340,24 +345,33 @@ def test_7zip_cve_2024_11612_copy_coder_short_of_its_size() -> None:
                     pass
 
 
-def test_commons_compress_cve_2021_35515_coder_cycle_is_corruption() -> None:
-    # Commons Compress 1.6 to 1.20 looped for ever building the coder list when the
-    # bind pairs of a folder formed a cycle. Two coders bound to each other's output
-    # have no pack input and no end.
+def _three_copy_coders(bind_pairs: list[tuple[int, int]]) -> bytes:
+    """One folder of three COPY coders with these two bind pairs ``(in, out)``. The
+    one in-stream left unbound reads the pack stream; 7z stores no index for it."""
     header = _header(
-        folders=[
-            _folder(
-                [_coder(_COPY), _coder(_COPY)],
-                bind_pairs=[(0, 1), (1, 0)],
-            )
-        ],
-        coder_unpack_sizes=[[1, 1]],
+        folders=[_folder([_coder(_COPY)] * 3, bind_pairs=bind_pairs)],
+        coder_unpack_sizes=[[1, 1, 1]],
         pack_sizes=[1],
         names=["loop"],
     )
-    with pytest.raises(CorruptionError):
-        with open_archive(io.BytesIO(_archive(b"x", header))) as reader:
-            reader.members()
+    return _archive(b"x", header)
+
+
+def _read_the_member(data: bytes) -> bytes:
+    with open_archive(io.BytesIO(data)) as reader:
+        (member,) = reader.members()
+        with reader.open(member) as stream:
+            return stream.read()
+
+
+def test_commons_compress_cve_2021_35515_coder_cycle_is_corruption() -> None:
+    # Commons Compress 1.6 to 1.20 looped for ever building the coder list when the
+    # bind pairs of a folder formed a cycle. Here coders 0 and 1 feed each other and
+    # coder 2 alone reads the pack stream and gives the output, so a walk back from
+    # the output never reaches 0 or 1.
+    assert _read_the_member(_three_copy_coders([(1, 2), (0, 1)])) == b"x"  # a chain
+    with pytest.raises(CorruptionError, match="cycle"):
+        _read_the_member(_three_copy_coders([(0, 1), (1, 0)]))
 
 
 def _huge_count_headers() -> list[tuple[str, bytes, type[ArchiveyError]]]:
