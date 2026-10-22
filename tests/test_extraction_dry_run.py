@@ -30,6 +30,7 @@ from archivey import (
     ExtractionLimits,
     ExtractionPolicy,
     ExtractionStatus,
+    MemberType,
     NameCollisionError,
     OnError,
     OverwritePolicy,
@@ -1376,7 +1377,9 @@ def test_scratch_is_removed_when_its_tree_is_deeper_than_path_max(
     # directory stayed in the temp directory. The deep part covers the descriptor
     # walk; a directory down there keeps no mode (its path is too long to set one,
     # as in a real run). The locked ``ro`` up front covers the chmod: its file
-    # cannot be removed until ``ro`` is opened up.
+    # cannot be removed until ``ro`` is opened up. The last links resolve past
+    # PATH_MAX, so the filter refuses them; the members under them still go in under
+    # real directories named ``l``, so the tree stays deeper than PATH_MAX.
     component = "d" * 250
     depth = os.pathconf(tmp_path, "PC_PATH_MAX") // len(component) + 2
     entries: list[tuple[str, str, object]] = [("ro/f", "file", 0), ("ro", "dir", 0o555)]
@@ -1391,7 +1394,13 @@ def test_scratch_is_removed_when_its_tree_is_deeper_than_path_max(
     dest = tmp_path / "out"
     with open_archive(io.BytesIO(blob)) as reader:
         report = reader.extract_all(dest, policy=ExtractionPolicy.TRUSTED, dry_run=True)
-    assert {r.status for r in report.results} == {ExtractionStatus.EXTRACTED}
+    blocked = [r.member for r in report.results if r.status is ExtractionStatus.BLOCKED]
+    assert blocked
+    assert all(m.type is MemberType.SYMLINK for m in blocked)
+    assert {r.status for r in report.results} == {
+        ExtractionStatus.EXTRACTED,
+        ExtractionStatus.BLOCKED,
+    }
     _assert_nothing_left(tmp_path, dest)
 
 
