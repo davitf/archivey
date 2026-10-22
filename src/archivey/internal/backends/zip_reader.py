@@ -94,6 +94,7 @@ from archivey.internal.backends.zip_aes import (
     WinZipAesInfo,
     aes_record_differences,
     iter_extra_fields,
+    local_first,
     open_winzip_aes_member,
     parse_winzip_aes_extra,
     split_extra_fields,
@@ -3111,11 +3112,10 @@ class ZipReader(BaseArchiveReader):
                 parse_winzip_aes_extra(header.extra), loc.aes
             )
             if differ:
-                order = ", local first" if any(" against " in d for d in differ) else ""
                 raise CorruptionError(
                     f"ZIP member {quoted(member.name)}: its local header and its "
                     "central directory entry disagree on its encryption "
-                    f"({', '.join(differ)}{order}), so the two headers describe "
+                    f"({', '.join(differ)}{local_first(differ)}), so the two headers describe "
                     "different data",
                     archive_name=self._archive_name,
                     member_name=member.name,

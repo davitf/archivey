@@ -143,7 +143,8 @@ def aes_record_differences(
 ) -> list[str]:
     """How a member's local WinZip AES record differs from its central one: empty
     when the two are equal, else one item per differing field, each "local against
-    central", or the side that holds no valid record.
+    central" (:func:`local_first` words the order), or the side that holds no valid
+    record. Unequal records always give at least one item.
 
     Every field decides what a read yields: the version whether the CRC is checked,
     the strength the key and salt lengths, the method the codec. A file read decodes
@@ -167,7 +168,18 @@ def aes_record_differences(
             f"AES compression method {local.actual_method} against "
             f"{central.actual_method}"
         )
+    if not differ:
+        # Unequal records whose compared fields all match: a field added to
+        # WinZipAesInfo and not compared above. Still a difference, so both reads
+        # still refuse; test_zip_aes pins the fields compared.
+        differ.append("the WinZip AES records differ")
     return differ
+
+
+def local_first(differ: list[str]) -> str:
+    """The suffix that says which side of an "X against Y" item is the local
+    header's, for a message listing ``differ``; empty when no item is a pair."""
+    return ", local first" if any(" against " in item for item in differ) else ""
 
 
 def parse_winzip_aes_extra(extra: bytes) -> WinZipAesInfo | None:

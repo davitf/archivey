@@ -266,8 +266,10 @@ directory's name, and a file or link reports `MEMBER_LOCAL_NAME_DIFFERS`, as a f
 read reports it (the requirement on headers that disagree). Nor SHALL one that names
 another compression method, unless one of the two is WinZip AES (99): the pass decoded
 by the local method, as a file read decodes, and a file or link reports
-`MEMBER_LOCAL_METHOD_DIFFERS`, as a file read reports it when it opens the member, so
-also when the member fails on a CRC or size the directory contradicts. Method 99 in
+`MEMBER_LOCAL_METHOD_DIFFERS`, as a file read reports it once the member's local
+header passes its checks, before the data is decoded: so also when the data then fails
+on a CRC or size the directory contradicts (a size the overlap guard refuses aside,
+below). Method 99 in
 both headers SHALL fail the member when the two AES records differ in any field
 (version, strength, real method) or one is missing or unparseable; the message names
 the fields, or the side that lacks a record. `extract_all` settles them as
@@ -283,7 +285,11 @@ in the directory over another local method fails with `EncryptionError` where a 
 raises `CorruptionError`; so does a local AES strength other than the directory's, and an
 AE-1 local record over an AE-2 one fails on its CRC-32 and a missing local record with
 `UnsupportedFeatureError`, each during the pass, where a file read raises
-`CorruptionError` on the records. It MAY also
+`CorruptionError` on the records; a member whose directory names another method and a
+compressed size the file read's overlap guard refuses reports
+`MEMBER_LOCAL_METHOD_DIFFERS` from the pass, which keeps no such bound, and nothing from
+a file (both raise `CorruptionError`; under `STRICT` the pass raises the report).
+It MAY also
 differ in these: a damaged bit-3 codec member can fail with another `CorruptionError`
 subclass, and ends the pass, losing the members after it, if its decode read more than 4
 MiB past the data's end; a bit-3 codec member whose stream runs on into its descriptor
@@ -575,9 +581,12 @@ and SHALL report a code with `LocalHeaderContext`:
   decoded by the local header's method: it sits next to the data, and a read from a pipe
   has nothing else, so a file and a pipe read the same bytes, which the CRC-32 still
   checks. A file read reports when it opens the member (`field="method"`,
-  `local_method`, `central_method`), once per member, a file or link only, as for the
-  name; the pass reports once it has read the directory, also for a member that then
-  fails on another field, as a file read reports before its data fails. The listing
+  `local_method`, `central_method`), once its local header passes its checks and before
+  the data is decoded, once per member, a file or link only, as for the name; the pass
+  reports once it has read the directory, also for a member whose data then fails on a
+  CRC or size, as a file read does. A member the overlap guard refuses reports nothing
+  from a file and still reports from the pass (DR-5a; the forward-pass requirement
+  lists it). The listing
   keeps the directory's method: `compression` and `extra["zip.compress_type"]` name it,
   as every listed field comes from the directory (a CRC-32 of 0 aside, below), and the
   diagnostic carries both.

@@ -344,8 +344,9 @@ sending side when the ZIP is done.
   local header only is refused with `CorruptionError` from both, from a pipe once the pass
   reaches the directory. WinZip AES in both headers with AES records that differ (version, key
   strength or method), or with one header's record missing, is refused with `CorruptionError`
-  from a file; a pipe, which decrypts by the local record, refuses it too, by the error that
-  meets (`EncryptionError` for another key strength) or once the pass reaches the directory.
+  from a file. A pipe decrypts by the local record and refuses it too: where that decryption
+  fails, with the error it meets (`EncryptionError` for another key strength), and where it
+  succeeds, once the pass reaches the directory.
 - **Both headers declare less than the data decodes to:** the member is refused with
   `CorruptionError`.
 - **Bytes after a member's compressed stream:** a member's compressed data must hold one stream of

@@ -498,6 +498,35 @@ def test_a_method_difference_is_reported_on_a_member_that_fails_its_crc(
     assert counts[DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS] == 1
 
 
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_a_method_difference_beside_an_overlapping_size_differs_by_read(
+    pipe: bool,
+) -> None:
+    """The directory names another method and a compressed size that runs past the
+    directory's start. A file read's overlap guard refuses the member while checking
+    its local header, before any report; the pass, which keeps no such bound, reports
+    the method and fails the member at the end on the sizes. A recorded difference
+    (DR-5a): both raise ``CorruptionError``, only the pass reports."""
+    blob = bytearray(_one_member_zip(_METHOD_TEXT, central_method=8))
+    struct.pack_into("<I", blob, blob.index(b"PK\x01\x02") + 20, len(_METHOD_TEXT) * 2)
+    source = NonSeekableBytesIO(bytes(blob)) if pipe else io.BytesIO(bytes(blob))
+    match = "bytes stored against" if pipe else "Overlapped entries"
+    with archivey.open_archive(source, streaming=pipe) as ar:
+        try:
+            with pytest.raises(CorruptionError, match=match):
+                if pipe:
+                    for _, stream in ar.stream_members():
+                        assert stream is not None
+                        stream.read()
+                else:
+                    ar.read("member.bin")
+        finally:
+            counts = ar.diagnostics.counts
+    assert counts.get(DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS, 0) == (
+        1 if pipe else 0
+    )
+
+
 def test_a_damaged_local_header_is_refused_before_an_unsupported_method() -> None:
     """The open checks the local header, the overlap guard included, before it looks
     up the codec: a member whose method no reader supports and whose local header is

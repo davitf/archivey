@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import hmac
 import io
@@ -1199,3 +1200,23 @@ def test_aes_hmac_mismatch_keeps_withholding_the_last_chunk(forward: bool) -> No
             stage.read(1 << 16)
     # A zero-length read carries no verdict, as on any ``io`` stream.
     assert stage.read(0) == b""
+
+
+def test_aes_record_differences_compares_every_record_field() -> None:
+    """``aes_record_differences`` names each field it compares. A field added to
+    ``WinZipAesInfo`` must be compared there too, or its difference comes out only as
+    the generic fallback item."""
+    compared = {"vendor_version", "strength", "actual_method"}
+    assert {field.name for field in dataclasses.fields(WinZipAesInfo)} == compared
+    local, central = WinZipAesInfo(1, 1, 0), WinZipAesInfo(2, 3, 8)
+    differ = zip_aes.aes_record_differences(local, central)
+    assert differ == [
+        "AE-1 against AE-2",
+        "AES key strength 1 against 3",
+        "AES compression method 0 against 8",
+    ]
+    assert zip_aes.local_first(differ) == ", local first"
+    assert zip_aes.aes_record_differences(local, local) == []
+    missing = zip_aes.aes_record_differences(None, central)
+    assert missing == ["the local header holds no valid WinZip AES record"]
+    assert zip_aes.local_first(missing) == ""

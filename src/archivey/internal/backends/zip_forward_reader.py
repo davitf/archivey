@@ -46,6 +46,7 @@ from archivey.internal.backends.zip_aes import (
     WinZipAesForwardStream,
     WinZipAesInfo,
     aes_record_differences,
+    local_first,
     open_winzip_aes_forward,
     open_winzip_aes_member,
     parse_winzip_aes_extra,
@@ -272,11 +273,9 @@ def _header_disagreements(
 
 
 def _header_error(member: ArchiveMember, differ: list[str]) -> CorruptionError:
-    # Which side of an "X against Y" pair is the local header's.
-    order = ", local first" if any(" against " in item for item in differ) else ""
     return CorruptionError(
         f"ZIP member {quoted(member.name)}: its local header and its central "
-        f"directory entry disagree ({', '.join(differ)}{order}); the data the "
+        f"directory entry disagree ({', '.join(differ)}{local_first(differ)}); the data the "
         "stream held for it was read as the local header describes it, and a read "
         "that follows the directory reads it differently",
         member_name=member.name,
@@ -2081,13 +2080,16 @@ class ZipForwardReader(ZipReader):
                 central.method,
             ):
                 # The pass decoded by the local method, as a file read does
-                # (``_with_local_method``); a file or link only, as from a file. The
-                # report goes wherever a file read gives one, so whether the member
-                # also fails at the end (a CRC-32 or size the directory contradicts)
-                # does not matter: a file read reports the method before its data
-                # fails those checks. WinZip AES on one side is the exception: a file
-                # read refuses that member on the headers without a report, and the
-                # pass fails it (``_header_disagreements``).
+                # (``_with_local_method``); a file or link only, as from a file. A
+                # file read reports once its local-header checks pass and before it
+                # decodes, so it reports a member whose data then fails on a CRC-32
+                # or size the directory contradicts, and so does the pass, which
+                # fails that member at the end. It reports nothing for a member those
+                # checks refuse: WinZip AES on one side, skipped here, and a central
+                # compressed size the overlap guard refuses, not skipped. The pass
+                # would have to rebuild the guard's bound (the next local header or
+                # the directory, per member) to tell those apart, so it reports
+                # them: a crafted-only difference (DR-5a), in the spec and zip.md.
                 self._report_local_method(
                     cast("_ZipLocator", member._raw), member, local_method
                 )
