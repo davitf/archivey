@@ -8,7 +8,7 @@ for the backends.
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
 from archivey.config import (
@@ -38,6 +38,7 @@ __all__ = [
     "check_decoder_memory",
     "probe_lzma_dictionary",
     "stream_config_from_archivey",
+    "without_accelerators",
 ]
 
 
@@ -129,6 +130,19 @@ def stream_config_from_archivey(
         use_indexed_bzip2=config.use_indexed_bzip2,
         decoder_limits=config.decoder_limits,
         process_isolation=config.process_isolation,
+    )
+
+
+def without_accelerators(config: StreamConfig) -> StreamConfig:
+    """``config`` decoding with the standard library, whatever its accelerators say.
+
+    Every accelerator setting a ``StreamConfig`` has is listed here once, so a new one
+    added here reaches every path that must not start a child.
+    """
+    return replace(
+        config,
+        use_rapidgzip=AcceleratorMode.OFF,
+        use_indexed_bzip2=AcceleratorMode.OFF,
     )
 
 

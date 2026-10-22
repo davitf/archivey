@@ -2388,7 +2388,8 @@ class BaseArchiveReader(ArchiveReader):
 
         Both reads ask for one byte past what they need. On a member that is exactly
         that long, the extra byte reaches end of stream, so its checksum is verified as
-        a whole read would.
+        a whole read would. On a reparse buffer, a byte there means the data runs on
+        past the buffer, which then does not parse as one.
         """
         if not self._link_data_refused_by_size(
             member, is_reparse_point=is_reparse_point

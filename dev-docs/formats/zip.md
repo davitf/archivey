@@ -43,11 +43,13 @@ them.
 | **EOCD** — end of central directory | `PK\x05\x06` | 22 fixed bytes plus an optional comment: total entries, the size of the CDH run, `offset_cd` (where that run starts), the disk numbers, the comment length. The only record found by *position* rather than by a pointer |
 
 archivey takes every member field from the CDH and reads the LFH only to locate the data
-(§2.3). Two exceptions read the LFH for more. When the two copies of the name differ, as
-bytes, the member keeps the CDH's name and reports `MEMBER_LOCAL_NAME_DIFFERS`; stdlib
-refused it. When the CDH stores CRC-32 0 for a file or link that is not WinZip AE-2 and
-the LFH a real value, the LFH's is the member's CRC-32, reported as
-`MEMBER_LOCAL_CRC_USED` (§5).
+(§2.3). Three exceptions read the LFH for more. When the two copies of the name differ,
+as bytes, the member keeps the CDH's name and reports `MEMBER_LOCAL_NAME_DIFFERS`;
+stdlib refused it. When the two name different compression methods, the member is
+decoded by the LFH's, which sits next to the data and is the only one a pipe has, so a
+file and a pipe read the same bytes; it reports `MEMBER_LOCAL_METHOD_DIFFERS`. When the
+CDH stores CRC-32 0 for a file or link that is not WinZip AE-2 and the LFH a real value,
+the LFH's is the member's CRC-32, reported as `MEMBER_LOCAL_CRC_USED` (§5).
 
 **The index is at the end.** The central directory is authoritative and is found by
 scanning backwards from the last bytes for the EOCD. So:
@@ -378,7 +380,7 @@ took nothing from in `extra["zip.extra_fields"]`.
 | `name` | CDH name bytes, decoded as above, or the CDH Unicode Path field's name; `\` → `/` only for DOS/FAT-origin entries | — |
 | `raw_name` | The stored bytes `name` was decoded from, verbatim (no backslash rewrite) | — |
 | `extra["alternate_raw_name"]` | The CDH name bytes, when the Unicode Path field named the member | No such field, or it does not match |
-| `mode` | `external_attr >> 16` | The producer was not Unix-like, or `external_attr` is 0 — then `None`, never a substituted default |
+| `mode` | The permission bits of `external_attr >> 16` | The producer was not Unix-like, or the high word is 0 (a Unix host that stored DOS attribute bits at most, which unzip 6.00 also reads as no Unix mode) — then `None`, never a substituted default |
 | `uid` / `gid` | The owner extra fields, read in blob order as unzip 6.00 reads them (§6): Info-ZIP new Unix `0x7875` (version 1, ids of 2, 4 or 8 bytes; Info-ZIP `zip` writes it on Unix by default, 4-byte ids) and Info-ZIP Unix type 2 `0x7855` (16-bit ids) each decide the owner afresh, readable or not, and a `0x7855` after a `0x7875` is ignored; PKWARE Unix `0x000d` and Info-ZIP old Unix `0x5855` (16-bit ids after two times) count only when neither came before, and then the last one that holds ids wins. The two 16-bit Info-ZIP fields hold the ids in local headers only (their central copies are empty, or the two times alone), so a file read finds them only from writers that copy the ids into the directory. A forward pass yields no owner, and takes the directory's at the end | No such field, or the deciding field holds none. A `0x7875` of another version and the central short copies are silent; a deciding field that is cut short, too short for its ids, a `0x7855` neither empty nor exactly 4 bytes, or a `0x7875` with an id size unzip does not read gives none and is dropped with `MEMBER_HEADER_RECORD_SKIPPED` (`record="unix_owner"`, `record_id` the tag). Writers on Windows store none |
 | `uname` / `gname` | — | Always: no ZIP extra field records owner names |
 | `modified` / `accessed` / `created` / `ctime` | CDH DOS date-time (naive local, 2-second granularity) ← NTFS extra `0x000A` (UTC) ← PKWARE Unix `0x000d` or Info-ZIP old Unix `0x5855` (access and modification time, UTC) ← Extended Timestamp `0x5455` (UTC), later overriding earlier — parsed by archivey. macOS `ditto` and Archive Utility write only `0x5855`, so without it a macOS archive would list naive local DOS times. The Unix fields' times follow unzip 6.00 (measured with `unzip` on crafted local headers, `test_unix_field_times_match_unzip`): ignored in a blob that holds a `0x5455` with data, or after a `0x7855` or `0x7875` (the rule their ids follow), the last one long enough for both times winning. They sit above NTFS, which unzip on Unix does not read. The two "creation" slots (NTFS FILETIME, Extended Timestamp third time; the latter wins) mean what the writer's host says, not what the field says: on Linux and macOS, 7-Zip and p7zip fill the NTFS one from `st_ctime` and libarchive the UT one; Info-ZIP and `ditto` there store no creation time. From a FAT / OS2 / NTFS / VFAT host ("version made by", `_ZIP_BIRTH_TIME_HOSTS`) the time is a birth time and is `created`; from any other host, unknown included, it goes to `ctime` and `created` is `None`. libarchive on Windows stamps host 3 but stores the birth time, so its time lands in `ctime` too. Info-ZIP on Windows puts its birth time in the UT field of the local header only, which listing does not read. Per-writer measurements: [`writer-timestamp-slots.md`](../investigations/writer-timestamp-slots.md) | 1980 sentinel, or every layer invalid. Each invalid layer emits `MEMBER_TIMESTAMP_INVALID`, whose `field` is the member attribute that layer would have filled (the creation slot `created` or `ctime` by the same host rule), even when a lower layer still fills it |
@@ -387,7 +389,7 @@ took nothing from in `extra["zip.extra_fields"]`.
 | `compression` | CDH method → `CompressionMethod` | — |
 | `is_encrypted` | general-purpose bit 0, or method 99: a WinZip AES member is encrypted even when a writer left bit 0 clear, and opening it asks for a password either way, so listing and opening share one predicate | — |
 | `hashes["crc32"]` | CDH CRC (the local header's or data descriptor's on a listing from local headers; `_crc_is_digest` says which members carry one), as four big-endian bytes — present for AE-1 (and verified on read); omitted for AE-2, where the format zeroes the field and the HMAC is the integrity signal | WinZip AE-2 members |
-| `comment` | CDH member comment. APPNOTE puts it under the name's bit 11, so it decodes as the name would: UTF-8 when flagged over a valid UTF-8 name; unflagged, or flagged over a name that is not UTF-8, the same sniff as an unflagged name (UTF-8 if valid, else `encoding=`, else `zip_unflagged_fallback_encoding`), with no diagnostic; a byte the codec leaves undefined survives as a lone surrogate. `ArchiveInfo.comment` (the end record's, which has no flag) decodes as an unflagged one | The entry stores none, which is the common case |
+| `comment` | CDH member comment. APPNOTE puts it under the name's bit 11, so it decodes as the name would: UTF-8 when flagged over a valid UTF-8 name; unflagged, or flagged over a name that is not UTF-8, the same sniff as an unflagged name (UTF-8 if valid, else `encoding=`, else `zip_unflagged_fallback_encoding`), with no diagnostic; a byte the codec leaves undefined survives as a lone surrogate. Before the sniff, an Info-ZIP Unicode Comment field (`0x6375`) gives the comment by the Unicode Path field's rules (above): version 1 with the CRC-32 of the stored comment, read as 7-Zip reads it (Info-ZIP `unzip` 6.00 prints the header bytes instead); a malformed one is dropped with `MEMBER_HEADER_RECORD_SKIPPED` (`record="unicode_comment"`). The field is read only when bit 11 is clear, as for a name, so a flag the name refutes leaves it unread, as in 7-Zip 23.01. When the field gives the comment, the header's comment bytes are not kept: unlike a name, a comment is never looked up, so there is no `alternate_raw_name` counterpart, and 7-Zip shows only the field's text too. `ArchiveInfo.comment` (the end record's, which has no flag) decodes as an unflagged one | The entry stores none, which is the common case |
 | `create_system` | CDH "version made by", high byte | Never — an unrecognised value maps to `CreateSystem.UNKNOWN` rather than to nothing |
 | `extra` | `zip.compress_type`, plus `zip.aes_vendor_version` / `zip.aes_strength` / `zip.aes_actual_method` on AE members, plus `is_reparse_point` from the attribute bit and `is_junction` when a stored reparse buffer says so (§2.2.1) | — |
 | `extra["zip.extra_fields"]` | The CDH extra fields archivey took no value from, as `{tag: data}`: unknown tags (a vendor's field, the `jar` tool's empty `0xcafe`) and known ones that gave nothing (malformed, a Unicode Path field about another name, a `0x5855` under a `0x5455`). The first of several fields with one tag; a tag any copy of which gave a value is left out, and so are the structural ZIP64, WinZip AES and Strong Encryption fields. Charged to `max_metadata_bytes` at 72 bytes per field plus its data (an empty field retains about 70 bytes). A pipe pass sets it when it reaches the directory | Every field gave a value, or there are none: the usual case |
@@ -454,6 +456,21 @@ put back to the type it would otherwise have had and keeps that content, with
 `SYMLINK_TARGET_UNAVAILABLE(reason="reparse_data_unrecognized")` recording the
 reinterpretation. Presenting it the other way round would cost the caller a readable
 member on the strength of a bit, and `open()` on it would raise.
+
+**Data longer than the buffer is not the buffer** (maintainer decision, 2026-10-21).
+Windows returns exactly the 8-byte header and `ReparseDataLength` bytes, so a member whose
+data runs on past them is data that does not parse as a link buffer, and takes the
+re-type above. The read stops one byte past the buffer, as before. Reading such a
+member as a link used to leave the rest of its data and its CRC unread, so one changed
+byte in the target listed as a different target with no error. As a `FILE`, the member's
+CRC is checked when it is read. A read that meets a failed CRC at that one byte past the
+buffer is damage (`target_data_damaged`), not a re-type. The 7z backend shares this
+parse, and the pipe pass agrees (`ZipForwardReader._link_target_opener`). For a buffer
+over the bound it keeps, it uses the size from the directory. For data within the target
+cap, which it decodes to the end, a failed CRC past that one byte does not decide: it
+keeps the data and gives the file read's answer, a `FILE` whose read raises the damage.
+When the bound on what it keeps drops such data (§2.2.2), it keeps the verdict instead:
+whether the data, read as far as a file read reads it, parses as no buffer.
 
 Two members are left a link with no target. One has *no* data, so there is nothing to
 reinterpret. The other is **directory-shaped** — stored with the trailing slash — where
@@ -584,7 +601,13 @@ link target is a path and shorter than most files. At the directory it keeps onl
 links' data. A link whose data was dropped is listed without its target and reports
 `SYMLINK_TARGET_UNAVAILABLE` with `reason="target_data_dropped"`, naming
 `max_metadata_bytes`; the rest of the listing stands, and `extract_all` does not place
-the link and fails that member alone.
+the link and fails that member alone. A drop keeps no bytes, but it does keep one
+verdict: whether the data is no reparse buffer as a file read reads one
+(`_NO_BUFFER_REASONS`). A Windows reparse point whose dropped data is no buffer is then
+re-typed as from a file (§2.2.1), so the bound changes a target, never a type. The
+verdict costs one parse of at most the dropped data, at the drop, and no bytes held.
+Kept ciphertext is not decrypted to decide, so the dropped data of an encrypted reparse
+point nobody read stays a link with no target.
 
 **Bytes after a member that are no local header.** The walk stops at the first bytes
 after a member that are not a local header and keeps the rest of the stream, as after
@@ -627,10 +650,24 @@ and extraction does not place it. A directory entry pointing at a local
 header an earlier entry took ends the pass with `CorruptionError`. Two headers storing
 different names fail nothing: the member takes the directory's name, and a file or link
 reports `MEMBER_LOCAL_NAME_DIFFERS` as a file read does when it opens the member (§5);
-extraction places it under the directory's name.
+extraction places it under the directory's name. Two headers naming different compression
+methods fail nothing either: the pass decoded by the local one, as a file read decodes,
+and a file or link reports `MEMBER_LOCAL_METHOD_DIFFERS`, also when the member fails on
+a CRC or size the directory contradicts: a file read reports once the local header
+passes its checks, before it decodes, so it reports a member whose data then fails. A
+member the file read's overlap guard refuses on its central compressed size reports
+nothing from a file and still reports from the pass, which keeps no such bound
+(§"Where the pass and a file read differ"). WinZip AES is the exception: method 99 in
+one header only, or in both with AES records that differ in any field (version,
+strength, real method) or with one side's record missing or unparseable
+(`aes_record_differences`), is refused as a header disagreement, without the report. A
+file read refuses it too, by the same error except where the pass fails it mid-pass
+(§"Where the pass and a file read differ"). The listing keeps the directory's method in
+`compression` and `extra["zip.compress_type"]`, as every listed field comes from the
+directory (a CRC-32 of 0 aside, §5).
 
 **Where the pass and a file read differ**, each pinned in
-`tests/test_zip_pipe_parity.py` (`_DIFFERS`) or the tests named in §8. The first four
+`tests/test_zip_pipe_parity.py` (`_DIFFERS`) or the tests named in §8. The first seven
 are shapes only crafted archives have (DR-5a). The next five come from staging the
 members before the directory is read, and DR-5a names each of them. The rest come from
 damage, from the directory's refusals the file read is to drop, or, for the last one
@@ -648,6 +685,31 @@ ordinary archive can reach:
   holds is refused (`CorruptionError`); the file read takes the sizes from the directory
   and reads the member
   (`test_zip_local_walk.py::test_an_unheld_local_size_reads_by_file`).
+- WinZip AES (method 99) in the directory with another method in the local header: a
+  file read refuses the member with `CorruptionError` (the AES record is the directory's,
+  so the two headers disagree on the encryption). The pass has the local header alone, so
+  it decodes by what that says, usually ZipCrypto, whose check byte the AES data fails:
+  `EncryptionError` (`test_audit_backup_scan.py::test_winzip_aes_in_the_directory_only_is_corruption`).
+  Only a crafted archive has this shape (DR-5a). The other direction, method 99 in the
+  local header only, raises `CorruptionError` from both reads (the pass at its end).
+- Method 99 in both headers with AES records that differ: a file read refuses the member
+  with `CorruptionError` naming the fields. The pass decodes by the local record, so it
+  fails the member at the end on the records only where that decode succeeds (a real
+  method that fits, AE-2 over AE-1, a missing central record). Otherwise it fails it
+  during the pass: another strength gives the wrong key, so `EncryptionError`; AE-1 over
+  AE-2 checks a CRC-32 the AE-2 entry leaves at 0, so a CRC-32 mismatch; a missing or
+  unparseable local record, `UnsupportedFeatureError`
+  (`test_audit_backup_scan.py::test_winzip_aes_records_that_differ_in_any_field_are_corruption`,
+  `::test_a_missing_winzip_aes_record_is_named`). Only a crafted archive has this shape.
+- A directory entry naming another compression method and a compressed size that runs
+  into the next local header or the directory: a file read's overlap guard refuses the
+  member while checking its local header, before `_with_local_method` reports, so it
+  raises `CorruptionError` with no `MEMBER_LOCAL_METHOD_DIFFERS`. The pass keeps no such
+  bound: it reports the method once it reads the directory and fails the member on the
+  sizes, so under `STRICT` it raises `DiagnosticRaisedError` there. Matching it would
+  mean rebuilding the guard's per-member bound (the next local header, or the
+  directory's start) in the pass, for a crafted-only shape (DR-5a)
+  (`test_audit_backup_scan.py::test_a_method_difference_beside_an_overlapping_size_differs_by_read`).
 - Under `on_error="stop"`, a member whose data fails as the pass stages it stops the
   run, though the directory may then not list or select it. A refusal of the local
   header's name by the universal checks or the name policy stops the run the same way
@@ -710,7 +772,10 @@ ordinary archive can reach:
   higher limits keep those bytes.
 - A symlink whose target is behind `max_metadata_bytes` of short members' data no
   shorter than it is listed without its target (`target_data_dropped`); the file read
-  lists it (§"What the pass keeps for link targets").
+  lists it (§"What the pass keeps for link targets"). A reparse point whose dropped data
+  is no buffer is re-typed as from a file, except for an encrypted one nobody read, whose
+  dropped ciphertext is not decrypted: it stays a link with no target where the file read may
+  re-type it.
 
 ### 2.3 Member data
 
@@ -1132,7 +1197,8 @@ ours.
 | A ZIP with a digital signature record (`PK\x05\x05`, APPNOTE 4.3.13) between its directory and its end record is refused with `CorruptionError` ("Bad magic number") | **archivey** | The end record's directory size and offset do not count the record, so its bytes shift where the directory is taken to start, the way prepended data does. stdlib `zipfile` refuses it the same way, and a read from a pipe matches the file read. Few writers produce the record; reading past it is not planned |
 | A prefixed ZIP behind bytes that look like neither an executable nor a script is not detected, though it opens with `format=ZIP` | **archivey** | The tail probe is designed and unshipped (§2.1) |
 | An LZMA member 7-Zip wrote with `-mm=LZMA:lc=8` (any `lc + lp` over 4) raises `UnsupportedFeatureError`, though 7-Zip reads it | **library** | The member is valid: the format allows `lc + lp` up to 12 and 7-Zip decodes it. liblzma, which stdlib `lzma` wraps, decodes `lc + lp` up to 4 only (`LZMA_LCLP_MAX`) and fails the rest with `LZMAError: Internal error`. Left unsupported by maintainer decision, 2026-10-08 (§6). 7z members behave the same ([`7z.md`](7z.md) §5) |
-| A member whose local header stores another name, or a real CRC-32 where the directory stores 0, reads with `MEMBER_LOCAL_NAME_DIFFERS` (which `STRICT` refuses) or `MEMBER_LOCAL_CRC_USED` (which `STRICT` reads); one whose two headers both understate its size is refused with `CorruptionError` | **archivey** | Found in real archives (a backup-drive scan, [§3.3-3.5](../investigations/2026-10-backup-scan.md)). `unzip` reads all three. The name case is another code page, or `\` against `/`; the directory's name is used, so the local one decides nothing. The CRC case is every Adobe AIR package's `META-INF/AIR/hash`; the data is checked against the local value. The size case is refused because the declared size is the bound that stops decoding (DR-9a). A file read sees the name only when it opens the member's data, and only a file or link reports it: extraction reads no directory's data, so neither read reports a directory's. A file read reads the local header of a zero-CRC file or link (not AE-2, whose HMAC checks it) when it lists it, one positioned read per such member; a directory's zero CRC keeps no digest from either read (`DIGEST_UNVERIFIABLE`). From a pipe, the pass reports both at the directory; under `STRICT` only the name case raises there, after every member was staged and before any is placed, so nothing of the run is in the destination; the CRC case is recorded |
+| A ZIP missing its first bytes lists every member, reads the members whose local headers survive, and raises `CorruptionError` for each member whose header was cut, saying how many bytes the archive seems to be missing | **format** | The central directory still names every member, but its offsets count from the lost start, so the first local headers fall before byte 0; the directory holds no copy of the lost bytes, so nothing recovers them. The number is `-EndRecord.base`, one for the whole archive. A directory offset or size field that is too large gives the same shape with nothing missing, so the message says "seems". Found in real files (a backup-drive scan, [§4](../investigations/2026-10-backup-scan.md)); `unzip` reports "missing N bytes in zipfile" and then fails every member |
+| A member whose local header stores another name, or a real CRC-32 where the directory stores 0, reads with `MEMBER_LOCAL_NAME_DIFFERS` (which `STRICT` refuses) or `MEMBER_LOCAL_CRC_USED` (which `STRICT` reads); one whose two headers both understate its size is refused with `CorruptionError` | **archivey** | Found in real archives (a backup-drive scan, [§3.3-3.5](../investigations/2026-10-backup-scan.md)). `unzip` reads all three. The name case is another code page, or `\` against `/`; the directory's name is used, so the local one decides nothing. The CRC case is every Adobe AIR package's `META-INF/AIR/hash`; the data is checked against the local value. The size case is refused because the declared size is the bound that stops decoding (DR-9a). A file read sees the name only when it opens the member's data, and only a file or link reports it: extraction reads no directory's data, so neither read reports a directory's. A file read reads the local header of a zero-CRC file or link (not AE-2, whose HMAC checks it) when it lists it, one positioned read per such member; a directory's zero CRC keeps no digest from either read (`DIGEST_UNVERIFIABLE`). A local header naming another compression method is decoded by it and reports `MEMBER_LOCAL_METHOD_DIFFERS`, which `STRICT` refuses (§6). From a pipe, the pass reports these at the directory; under `STRICT` only the name and method cases raise there, after every member was staged and before any is placed, so nothing of the run is in the destination; the CRC case is recorded |
 
 ## 6. Decisions
 
@@ -1172,6 +1238,7 @@ ours.
 | No lower deflate bound: only the upper one, 1032 to 1, narrows the size (davi, 2026-10-16, project thread: a lower bound only settles members truly over 4 GiB, and those can as well be over 8 GiB) | Empty stored blocks pad a valid stream without bound, so any lower bound picks a size 4 GiB too large for a padded stream with a matching CRC-32 (seen in review). The upper bound is deflate's own and a read checks it | A lower bound of seven eighths of the compressed size, which holds for real encoders and kept more sizes exact, but reported a wrong size for valid data |
 | `ARCHIVE_OFFSET_WRAPPED` is advisory, outside `ARCHIVE_INTEGRITY_CODES` (davi, 2026-10-15, project thread) | macOS Archive Utility writes a ZIP past 4 GiB this way by default and reads it back, so `STRICT` would refuse an ordinary Mac archive; a correction is kept only when a local header with the member's name is there, and the CRC-32 is still checked, the `MEMBER_SPECIAL_FILE_HAS_DATA` pattern (DR-25). Reopen if a writer other than macOS is found producing wrapped offsets that a correction misreads | The integrity set, under DR-3 (the stored offsets misdescribe where good data sits) |
 | Read a member whose central and local headers disagree on the name, or whose central CRC is 0 while the local CRC is right; keep refusing one whose two headers both understate the size (davi, 2026-10-10) | The first two are found in real archives (another code page or `\` against `/` in the local name; every Adobe AIR package), `unzip` reads both, and archivey takes every field from the central directory, so the local name decides nothing; the data is still checked against the local CRC. The third is refused because the declared size is the bound that stops decoding (DR-9a). The name case reports `MEMBER_LOCAL_NAME_DIFFERS`, which strict refuses because another tool shows another name; the CRC case reports `MEMBER_LOCAL_CRC_USED`, which strict reads because the data is still checked (davi, 2026-10-15). Both carry `LocalHeaderContext`. Reopen if a real writer produces the third shape at scale. Shipped with stage 5 of the native ZIP reader | Refusing all three, which loses archives `unzip` reads; reading the third, which drops the size bound |
+| Decode a member whose local header names another compression method than its directory entry by the local method, and report `MEMBER_LOCAL_METHOD_DIFFERS` (in `ARCHIVE_INTEGRITY_CODES`, so `STRICT` refuses it), from a file and a pipe (davi, 2026-10-21) | The local header sits next to the data, and a pipe has only it, so a file and a pipe read the same bytes; the CRC-32 still checks them. A tool that trusts the other header decodes other bytes or fails, so `STRICT` refuses it, as for the name. Measured on a one-member ZIP whose local method was set to stored over a deflated body: `unzip` 6.00 takes the local method and fails (exit 2), 7-Zip reports "Headers Error" and "CRC Failed", and stdlib `zipfile` reads it by the central method. No real archive in the backup-drive scan has the shape. WinZip AES (method 99) on one side only is refused: the AES record is read from the central extra field, so the headers disagree on the encryption; so is method 99 in both headers when the two AES records differ in any field (version, strength, real method) or one is missing or unparseable. A file read reports once the local header passes its checks, before it decodes, so a member whose data then fails on a CRC or size the directory contradicts reports from a file and a pipe; one the overlap guard refuses reports only from a pipe (§"Where the pass and a file read differ"). The listing keeps the directory's method in `compression` and `extra["zip.compress_type"]`, as every listed field comes from the directory (a CRC-32 of 0 aside, §5), and the diagnostic carries both methods | Refusing it with `CorruptionError`, as `unzip` and 7-Zip fail it (the first draft); decoding by the central method, which a pipe cannot do, so the two reads would deliver different bytes; reading it silently, as before |
 | Two stored names that decode to the same name stay ordinary duplicates (davi, 2026-10-10) | Once each name decodes on its own, `c3 a9` (valid UTF-8) and `82` (cp437) can both become `é.txt`. The later member supersedes the earlier like any duplicate (`is_current=False`, `SUPERSEDED` on extraction) and the two `raw_name`s differ, so nothing is lost and no new public name is needed. Reopen if a real archive shows a collision a user needs both copies of | A dedicated diagnostic or a renaming rule |
 | AppleDouble sidecars (`._name`, `__MACOSX/`) stay ordinary members with no marking key (davi, 2026-10-16, project thread) | Marked by name alone, a key adds nothing over the name filter in `docs/formats.md` and also marks a real file named `._x` | `extra["macos.resource_of"]` set from the name (#839, closed). Reopen with a mark that checks the AppleDouble magic in the data (`IDEAS.md`) |
 | Leave LZMA1 `lc + lp` over 4 unsupported | 7-Zip writes it only when asked (`lc=8`). Decoding it needs an LZMA1 decoder other than liblzma | `pylzma` 0.6.1, which binds 7-Zip's own LZMA SDK and does decode these (an `lc=8` ZIP member read back byte-identical, one-shot and through `decompressobj`), but ships only an sdist (a C compiler for every install) under the LGPL, the reasons it was rejected for BCJ2 too; a pure-Python LZMA1 decoder (very slow); handing such members to the `7z` CLI (archivey has no 7z CLI backend). `backports.lzma` and libarchive both use liblzma |
@@ -1217,6 +1284,7 @@ move.
 | Encoding sniff, fallback, override, escalation | `::test_unflagged_utf8_name_is_sniffed` and the four tests after it |
 | Owner ids from each of the four fields, their ranking, the central directory's short copies, and a damaged deciding field dropped with `MEMBER_HEADER_RECORD_SKIPPED` (strict refuses); a pass yields no owner and leaves the same owner on disk as a file read | `tests/test_zip.py::test_unix_owner_extra_fields` and the tests after it, through `::test_trusted_as_root_owner_matches_from_a_pipe`; `::test_trusted_applies_the_directory_owner_from_a_pipe` checks the applied owner without root |
 | Unicode Path field names the member over the sniff and `encoding=`; a stale, unknown-version or local-only field is ignored | `tests/test_audit2_zip.py::test_unicode_path_extra_field_names_the_member` and the tests after it |
+| Unicode Comment field (`0x6375`) gives an unflagged member comment over the sniff and `encoding=`; a stale or unknown-version field is ignored; a malformed one is dropped with `MEMBER_HEADER_RECORD_SKIPPED`; a trusted flag's comment does not consult it | `tests/test_audit2_zip.py::test_unicode_comment_field_gives_the_member_comment` and the tests after it |
 | A short, empty, cut-short or non-UTF-8 Unicode Path field is dropped with `MEMBER_HEADER_RECORD_SKIPPED` on every Python version, with no stdlib warning; strict refuses; a flagged name's field is not consulted | `tests/test_audit2_zip.py::test_malformed_unicode_path_field_is_dropped_with_a_diagnostic` and the three tests after it |
 | Backslash by origin | `::test_backslash_converted_for_dos_windows_entry`, `::test_backslash_kept_literal_for_unix_entry` |
 | Symlink target from member data; encrypted target withheld | `::test_symlink_member`, `::test_encrypted_symlink_listing_without_password` |
@@ -1239,7 +1307,7 @@ move.
 | A third-party AE-1 archive reads, with the CRC exposed and verified | `::test_external_ae1_archive_from_pyzipper` |
 | ZipCrypto candidate confirmation, STORED CRC pass; ZipCrypto over Zstd; ZipCrypto seeks; stage output equals stdlib's | `tests/test_zip_multipassword.py` |
 | The STORED CRC pass reads through the same validated local header as the open, so it never runs over a member the open refuses | `tests/test_zip_multipassword.py::test_stored_confirm_reads_through_the_validated_local_header` |
-| From a pipe, short members' data and kept ciphertext are not charged to `max_metadata_bytes`; the longest is dropped first past it, and a dropped link lists targetless with `target_data_dropped` and leaves no file from `extract_all`; the archive comment is weighed at the end record | `tests/test_zip_pipe.py::test_small_files_data_is_not_charged_to_max_metadata_bytes`, `::test_kept_ciphertext_is_not_charged_to_max_metadata_bytes`, `::test_the_kept_data_drops_the_longest_first`, `::test_a_link_whose_kept_data_was_dropped_leaves_no_file_behind`, `::test_the_archive_comment_counts_toward_max_metadata_bytes` |
+| From a pipe, short members' data and kept ciphertext are not charged to `max_metadata_bytes`; the longest is dropped first past it, and a dropped link lists targetless with `target_data_dropped` and leaves no file from `extract_all`, and a reparse point whose dropped data is no buffer is re-typed as from a file; the archive comment is weighed at the end record | `tests/test_zip_pipe.py::test_small_files_data_is_not_charged_to_max_metadata_bytes`, `::test_kept_ciphertext_is_not_charged_to_max_metadata_bytes`, `::test_the_kept_data_drops_the_longest_first`, `::test_a_link_whose_kept_data_was_dropped_leaves_no_file_behind`, `::test_the_archive_comment_counts_toward_max_metadata_bytes`; `tests/test_zip_pipe_reparse.py::test_data_past_a_link_buffer_the_pass_dropped_is_a_file_from_a_pipe_too`, `::test_a_link_buffer_the_pass_dropped_stays_a_link_without_its_target`, `::test_dropped_ciphertext_of_an_unread_reparse_point_stays_a_link_from_a_pipe` |
 | A local name that differs from the directory's, and a central CRC-32 of 0 under a right local one, read from a file and a pipe, strict refusing the name case only; a wrong local CRC-32 and 0 in both still fail; both headers understating the size stays refused | `tests/test_audit_backup_scan.py::test_local_name_in_another_codepage_still_reads` and the tests after it, `tests/test_zip_pipe.py::test_a_name_that_differs_between_the_two_headers_takes_the_directory_name`, `tests/test_zip_pipe_extract.py::test_a_name_the_two_headers_disagree_on_is_written_by_the_directory_name`, `tests/test_zip_multipassword.py::test_a_zero_central_crc_takes_the_check_byte_from_the_local_crc` |
 | WinZip AES seeks at every block phase and backward; the HMAC survives seeks, including over bytes a seek skipped and on a `read(n)` ending exactly at the end; a partial read after a seek has no verdict | `tests/test_zip_aes.py::test_aes_decrypt_stream_seeks_at_every_block_phase`, `::test_aes_decrypt_stream_seeks_keep_the_hmac`, `::test_aes_decrypt_stream_seek_to_current_position_keeps_the_hmac`, `::test_aes_decrypt_stream_catches_tampered_ciphertext_a_seek_skipped`, `::test_aes_decrypt_stream_partial_read_after_seek_has_no_verdict`, `::test_aes_member_seeks`, `tests/test_member_stream_contract.py` (`zip-aes` rows) |
 | A tampered AE-2 DEFLATE member still raises under rapidgzip's own seeks (`AUTO` and `ON`, one password and two) | `tests/test_zip_aes.py::test_aes_hmac_survives_a_seekable_accelerator` |

@@ -893,7 +893,7 @@ def _cut_short(fp: BinaryIO, exc: Exception) -> TruncatedError | None:
 
 # Trailing ";1"/";42" version suffix on an ISO 9660 or Joliet file identifier. ``\Z``,
 # not ``$``: ``$`` also matches before a final newline, which would drop it from the name.
-_VERSION_SUFFIX = re.compile(r";(\d+)\Z")
+_VERSION_SUFFIX = re.compile(r";([0-9]+)\Z")
 
 # How many records under a Rock Ridge directory are searched for a file that also sits
 # in the Joliet tree, to find that directory's Joliet counterpart. Bounds the cost of a
@@ -2606,7 +2606,15 @@ class IsoReader(BaseArchiveReader):
             solid_block_count=None,
         )
         pvd = self._iso.pvd
-        volume_id = pvd.volume_identifier.decode("ascii", errors="replace").rstrip()
+        # The standard allows d-characters only, but writers store the -V text as it
+        # was given (xorriso: UTF-8). It records no charset, as a Rock Ridge name does
+        # not, so it decodes the way a byte name does: UTF-8, else encoding=, else
+        # surrogateescape. The Joliet copy is not read: xorriso turns its non-ASCII
+        # bytes into "_", and its 16 characters are half the primary's 32 bytes. Only
+        # the space padding the standard defines is removed, and before the decode, so
+        # a multi-byte encoding= never meets the padding and a label's own trailing
+        # character (a no-break space, say) stays.
+        volume_id = self._decode_bytes_name(pvd.volume_identifier.rstrip(b" "))
         info_extra = ArchiveInfoExtra({"iso.namespace": self._namespace})
         return ArchiveInfo(
             format=self._format,
