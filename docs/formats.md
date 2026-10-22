@@ -1140,12 +1140,11 @@ file; with `format=`, a `.bz2` opens at once. Close the sending side when the fi
   back the skipped part of the last member; past about 64 MiB of that, the standard library
   reads the whole file again instead, which gives the right result but takes longer. A wrong
   length in a member before the last is not caught, but every member's checksum still is, so
-  the data is right.
-  A cut file built on purpose can still read short with no error, if its last eight bytes are
-  made to match the end of the data. So when you need certainty, set
+  the data is right. A cut file built on purpose can still read short with no error, if its
+  last eight bytes are made to match the end of the data. So when you need certainty, set
   `ArchiveyConfig(use_rapidgzip=AcceleratorMode.OFF)`. This applies to a bare `.gz` or
-  `open_stream` (and bare zlib or raw Deflate), not to ZIP or 7z members, whose stored CRC and size
-  catch short or wrong data.
+  `open_stream` (and bare zlib or raw Deflate), not to ZIP or 7z members, whose stored CRC and
+  size catch short or wrong data.
 - The `[seekable]` accelerator's bzip2 decoder reads input that is not bzip2 as an empty stream.
   When it yields nothing, archivey decodes the source again with the standard library, so a damaged
   `.bz2` raises the same error whether or not `seekable_members=True` engaged the accelerator.
