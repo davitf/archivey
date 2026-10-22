@@ -28,9 +28,16 @@ and each change will be listed here. No major changes are expected.
   reads, streams and extracts members the same way for ZIP, TAR (plain or compressed),
   7z, RAR, ISO 9660, plain directories and single compressed files. The format is
   detected from the content, so a misnamed file still opens.
-- **Native readers.** archivey parses ZIP, TAR, 7z and RAR headers itself. The common
-  ZIP, TAR and 7z methods need no extra package; `[recommended]` adds the other codecs,
-  encryption and ISO, and RAR data needs `unrar`, `rar` or `unar`. The
+- **Native readers.** archivey parses ZIP, TAR, 7z and RAR headers itself. The
+  compression methods come from three places:
+  - the standard library, with no extra package: Deflate, bzip2, LZMA, LZMA2, xz, Delta
+    and BCJ, and Zstandard on Python 3.14 and later;
+  - archivey's own code: the BCJ2 and ARM64 filters, Unix compress (`.Z`), ZipCrypto
+    and the lzip container;
+  - third-party packages in `[recommended]`: PPMd, Deflate64, Brotli, LZ4, Zstandard
+    before Python 3.14, and AES.
+
+  ISO images also need `[recommended]`, and RAR data needs `unrar`, `rar` or `unar`. The
   [install page](docs/install.md) has the details.
 - **Encrypted archives** in ZIP, 7z and RAR, with one password or a list of candidates.
 - **Safe extraction by default.** `extract_all()` blocks path traversal, link escapes
