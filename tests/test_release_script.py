@@ -489,3 +489,14 @@ def test_every_scheduled_workflow_is_classified() -> None:
 def test_every_gate_can_be_dispatched() -> None:
     for workflow in release.RELEASE_GATE_WORKFLOWS:
         assert "workflow_dispatch" in _triggers(WORKFLOWS / workflow), workflow
+
+
+def test_tag_checks_the_gates_on_another_branch(
+    released_root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A release PR opened by hand names its branch with ``--branch``."""
+    assert release.main(["--dry-run", "tag", "0.2.1", "--branch", "hand-made"]) == 0
+    out = capsys.readouterr().out
+    assert "+ gh pr view hand-made --json headRefOid" in out
+    for workflow in release.RELEASE_GATE_WORKFLOWS:
+        assert f"+ gh run list --workflow {workflow} --branch hand-made" in out

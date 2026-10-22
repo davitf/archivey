@@ -401,7 +401,7 @@ def cmd_tag(args: argparse.Namespace) -> None:
                 " merge the release PR"
             )
     notes = changelog_section(CHANGELOG.read_text(encoding="utf-8"), version)
-    _check_gates(runner, f"release/v{version}")
+    _check_gates(runner, args.branch or f"release/v{version}")
     pre = re.search(r"(a|b|rc)\d+$", version) is not None
     cmd = ["gh", "release", "create", f"v{version}", "--target", "main"]
     cmd += ["--title", f"archivey {version}", "--notes-file", "-"]
@@ -458,6 +458,11 @@ def main(argv: list[str] | None = None) -> int:
         "tag", help="create the GitHub release and tag after the merge"
     )
     tag.add_argument("version")
+    tag.add_argument(
+        "--branch",
+        help="the release pull request's branch, if `start` did not open it"
+        " (default: release/vVERSION)",
+    )
     finish = sub.add_parser("finish", help="move main to the next .dev0 version")
     finish.add_argument("version", nargs="?", help="default: the next patch .dev0")
     args = parser.parse_args(argv)

@@ -216,7 +216,8 @@ four commands.
    `uv run python scripts/release.py tag X.Y.Z` checks that each gate has a green run on
    the release PR's last commit. If one is missing, still running or red, it refuses and
    prints the command that starts it. A commit pushed to the release PR after `start`
-   needs new gate runs. Then it creates the GitHub Release `vX.Y.Z` on
+   needs new gate runs. For a release PR that `start` did not open, pass its branch
+   with `--branch` and start each gate on that branch yourself. Then it creates the GitHub Release `vX.Y.Z` on
    `main`, with the CHANGELOG section as its body (marked as a pre-release for
    `a`/`b`/`rc` versions). The tag starts `publish.yml`, which publishes to PyPI after the
    `pypi` environment approval. Agent sessions cannot do this step (their GitHub access
