@@ -233,7 +233,7 @@ class Runner:
         ).stdout
 
     def write(self, path: Path, text: str) -> None:
-        print(f"+ write {path.relative_to(ROOT)}", flush=True)
+        print(f"+ write {path.relative_to(ROOT).as_posix()}", flush=True)
         if not self.dry_run:
             path.write_text(text, encoding="utf-8")
 
@@ -397,7 +397,7 @@ def cmd_tag(args: argparse.Namespace) -> None:
         current = project_version(path.read_text(encoding="utf-8"))
         if current != version:
             raise ReleaseError(
-                f"{path.relative_to(ROOT)} is at version {current}, not {version};"
+                f"{path.relative_to(ROOT).as_posix()} is at version {current}, not {version};"
                 " merge the release PR"
             )
     notes = changelog_section(CHANGELOG.read_text(encoding="utf-8"), version)
