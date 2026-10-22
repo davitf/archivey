@@ -893,7 +893,7 @@ def _cut_short(fp: BinaryIO, exc: Exception) -> TruncatedError | None:
 
 # Trailing ";1"/";42" version suffix on an ISO 9660 or Joliet file identifier. ``\Z``,
 # not ``$``: ``$`` also matches before a final newline, which would drop it from the name.
-_VERSION_SUFFIX = re.compile(r";(\d+)\Z")
+_VERSION_SUFFIX = re.compile(r";([0-9]+)\Z")
 
 # How many records under a Rock Ridge directory are searched for a file that also sits
 # in the Joliet tree, to find that directory's Joliet counterpart. Bounds the cost of a
