@@ -145,14 +145,16 @@ def _peer_available(name: str) -> str | None:
         return None if _py7zr_available() else "py7zr not importable"
     if name == "rarfile":
         return None if _rarfile_available() else "rarfile not importable"
-    try:
-        importlib.import_module("libarchive")
-    # Without the system library, libarchive-c fails in ctypes: OSError when the
-    # library will not load, AttributeError when a symbol is missing, TypeError on
-    # Windows when find_library finds nothing and LoadLibrary gets None.
-    except (ImportError, OSError, AttributeError, TypeError) as exc:
-        return f"{name} not importable ({type(exc).__name__})"
-    return None
+    if name == "libarchive-c":
+        try:
+            importlib.import_module("libarchive")
+        # Without the system library, libarchive-c fails in ctypes: OSError when the
+        # library will not load, AttributeError when a symbol is missing, TypeError on
+        # Windows when find_library finds nothing and LoadLibrary gets None.
+        except (ImportError, OSError, AttributeError, TypeError) as exc:
+            return f"{name} not importable ({type(exc).__name__})"
+        return None
+    raise ValueError(f"unknown peer {name!r}")
 
 
 PEER_OPS: dict[str, dict[str, Callable[..., object]]] = {

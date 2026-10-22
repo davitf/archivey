@@ -96,13 +96,14 @@ path meets them today. Measured figures, with their host and commit, live in
   correctness features justify it (e.g. extract with path/symlink guards).
 - **Metadata / listing** (open+list): aspirational peer ratios — ZIP/TAR at most
   **2–3×** vs `zipfile`/`tarfile`; native 7z/RAR **≈parity** (~1.25×) with
-  `py7zr`/`rarfile`. The 7z/RAR band is **not met today**: 7z and RAR listing is
+  `py7zr`/`rarfile`. TAR is within its band. The ZIP and 7z/RAR bands are **not
+  met today**: ZIP listing is well past 3× `zipfile`, and 7z and RAR listing is
   slower than py7zr and rarfile. The cost is per member: on ZIP and 7z mostly building
   `ArchiveMember`, on RAR mostly header parsing. Lazy `ArchiveMember` derivation is
-  the named follow-up, not a release blocker. Reading 7z/RAR member data is at or
-  ahead of those peers; `libarchive` (C) is faster than archivey on nearly every
-  path. Figures with host and commit: `benchmarks/RESULTS.md` §"Third-party
-  peers".
+  the named follow-up, not a release blocker.
+- **Against other readers:** reading 7z/RAR member data is at or ahead of `py7zr`
+  and `rarfile`; `libarchive` (C) is faster than archivey on nearly every path.
+  Figures with host and commit: `benchmarks/RESULTS.md` §"Third-party peers".
 - The bottleneck in real workloads is data movement and *re*-decompression, not
   header parsing. The benchmark suite tracks **bytes decompressed and seek
   patterns**, not just wall time — an implementation that re-reads a solid block

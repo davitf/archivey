@@ -12,6 +12,7 @@ import pytest
 from benchmarks import peers
 
 
+@pytest.mark.timeout(120)
 def test_peers_report_runs_at_ci_scale(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
