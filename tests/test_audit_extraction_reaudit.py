@@ -24,6 +24,7 @@ import pytest
 import archivey
 from archivey import ExtractionStatus
 from archivey.cli.main import main
+from tests.conftest import requires_unrar_cli
 from tests.extract_util import open_and_extract
 
 posix_links = pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
@@ -956,6 +957,7 @@ def _link_follows_symlinks(tmp_path: Path) -> bool:
 
 
 @posix_links
+@requires_unrar_cli()
 @pytest.mark.parametrize(
     "entries",
     [
@@ -1003,11 +1005,8 @@ def test_rar_hard_links_extract_as_unrar_does_in_both_modes(
     # unrar links to what it has already written: a hard link whose target comes later
     # fails, and a hard link to a symlink is a second name for the symlink. Both modes
     # must leave the tree unrar leaves.
-    import shutil
     import subprocess
 
-    if shutil.which("unrar") is None:
-        pytest.skip("requires external binary(ies): unrar")
     if request.node.callspec.id in {
         "to-a-symlink",
         "chain-to-a-symlink",

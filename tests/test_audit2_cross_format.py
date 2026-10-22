@@ -48,6 +48,7 @@ from archivey.internal.backends.rar_parser import (
     parse_rar_archive,
     parse_rar_volumes,
 )
+from archivey.internal.password import is_wrong_password
 from archivey.reader import ForwardArchiveReader
 from archivey.types import ArchiveMember, MemberType
 from tests.conftest import requires, requires_binary
@@ -351,20 +352,122 @@ def test_rar4_header_encrypted_cut_after_a_proven_key_is_truncated(
     _assert_truncated_listing(data[:length], members=members, streaming=streaming)
 
 
+# The clause an unproven encrypted header's wrong-password message adds when its
+# read ran out of ciphertext.
+_NAMES_CUT_OR_DAMAGE = (
+    "if the password is right, the file ends inside the encrypted header that "
+    "starts at byte {start}, or that header is damaged"
+)
+
+
 @requires("cryptography")
 @pytest.mark.parametrize("length", [44, 60, 91])
-def test_rar4_header_encrypted_cut_inside_the_first_encrypted_header_is_a_wrong_password(
+def test_rar4_header_encrypted_cut_inside_the_first_encrypted_header_names_both_causes(
     length: int,
 ) -> None:
     """Inside the first encrypted header (bytes 44-91 of the fixture) no header has
     decrypted yet, so nothing proves the key, and a garbage header size from a wrong
-    key also runs to the end of the file. That stays a wrong-password error."""
+    key also runs to the end of the file. It stays a wrong-password error, so a
+    password list moves on, but the message also gives the reading for the right
+    password. For this input that is the cut. The message names damage beside it,
+    because damage in a whole header garbles its size the same way and the parser
+    cannot tell the two apart. A wrong password on a small, whole archive gets the
+    same message, so this reading comes second."""
     data = _hp_fixture("encrypted_header__rar4.rar")
     with (
-        pytest.raises(EncryptionError, match="wrong password"),
+        pytest.raises(EncryptionError) as caught,
         open_archive(io.BytesIO(data[:length]), password=_HP_PASSWORD) as reader,
     ):
         reader.members()
+    message = str(caught.value)
+    assert "wrong password?" in message, message
+    assert _NAMES_CUT_OR_DAMAGE.format(start=20) in message, message
+
+
+@requires("cryptography")
+def test_rar4_header_encrypted_damage_in_the_first_header_names_damage() -> None:
+    """Damage in a whole first header can garble its size just as a wrong key
+    does, so the read runs to the end of the file. With the right password that is
+    damage, not a cut, and the message names both."""
+    data = bytearray(_hp_fixture("encrypted_header__rar4.rar"))
+    data[28] ^= 0xFF  # in the first ciphertext block, which holds HEAD_SIZE
+    with pytest.raises(EncryptionError) as caught:
+        parse_rar_archive(io.BytesIO(bytes(data)), password=_HP_PASSWORD)
+    message = str(caught.value)
+    assert "wrong password?" in message, message
+    assert _NAMES_CUT_OR_DAMAGE.format(start=20) in message, message
+
+
+@requires("cryptography")
+def test_rar4_header_encrypted_bad_size_in_the_first_header_names_no_cut() -> None:
+    """A first header whose size the walk refuses before its ciphertext runs out
+    (``HEAD_SIZE`` 3, under the 7-byte minimum) is a wrong password or damage the
+    file holds whole, never a cut, so the message does not suggest one. This one
+    fails inside the header read, where the cut is decided, not at the CRC16 check
+    after it."""
+
+    def tiny_header_size(plain: bytearray) -> None:
+        struct.pack_into("<H", plain, 5, 3)
+
+    data = _rar3_reencrypt_header(
+        _hp_fixture("encrypted_header__rar4.rar"), 20, 64, tiny_header_size
+    )
+    with pytest.raises(EncryptionError) as caught:
+        parse_rar_archive(io.BytesIO(data), password=_HP_PASSWORD)
+    message = str(caught.value)
+    assert "wrong password?" in message, message
+    assert "ends inside" not in message, message
+
+
+@requires("cryptography")
+def test_rar5_header_encrypted_cut_with_no_check_value_names_both_causes() -> None:
+    """Without a check value nothing proves a RAR5 header password, so a cut in an
+    encrypted header stays the wrong-password error, and names the cut or damage
+    as RAR3's does."""
+    data = _rar5_hp_without_check_value(_hp_fixture("encrypted_header__.rar"))
+    with pytest.raises(EncryptionError) as caught:
+        parse_rar_archive(io.BytesIO(data[:-40]), password=_HP_PASSWORD)
+    message = str(caught.value)
+    assert "wrong password?" in message, message
+    # The header the cut lands in starts at byte 738 of the edited fixture.
+    assert message.endswith(_NAMES_CUT_OR_DAMAGE.format(start=738)), message
+
+
+def _rar4_hp_first_header_garbage_name_size() -> bytes:
+    """The first encrypted header (``file1.txt``) re-encrypted with ``name_size``
+    (plaintext offset 26) set to 0xFFFF and its CRC16 left as it was."""
+
+    def garbage_name_size(plain: bytearray) -> None:
+        struct.pack_into("<H", plain, 26, 0xFFFF)
+
+    return _rar3_reencrypt_header(
+        _hp_fixture("encrypted_header__rar4.rar"), 20, 64, garbage_name_size
+    )
+
+
+@requires("cryptography")
+@pytest.mark.parametrize("password", [_HP_PASSWORD, "nope"])
+def test_rar4_header_encrypted_garbage_name_size_before_proof_is_a_wrong_password(
+    password: str,
+) -> None:
+    """A wrong key can decrypt the first header into a FILE header whose
+    ``name_size`` runs past the header. Before any CRC16 has proven the key, that
+    must be the wrong-password error, so a password list goes on to the next
+    candidate. The field parse fails before the CRC16 can be checked, so the walk
+    checks the CRC16 over the whole header and judges by that.
+
+    With the right password the header was read whole and fails only its CRC16, so
+    the message names no cut or damage clause: that clause is for a read that ran
+    out of ciphertext. A wrong key does run out here (it decrypts a garbage size
+    past the end of the file), so the clause is asserted absent for the right
+    password only."""
+    with pytest.raises(EncryptionError, match=r"wrong password\?") as caught:
+        parse_rar_archive(
+            io.BytesIO(_rar4_hp_first_header_garbage_name_size()), password=password
+        )
+    assert is_wrong_password(caught.value)
+    if password == _HP_PASSWORD:
+        assert "ends inside" not in str(caught.value), caught.value
 
 
 def _rar3_reencrypt_header(
@@ -530,9 +633,17 @@ def test_rar4_header_encrypted_end_block_proves_the_key_for_the_next_volume() ->
 def test_rar4_header_encrypted_set_damage_with_a_wrong_password_is_a_wrong_password() -> (
     None
 ):
+    """The message names the volume its byte offset is in, as a cut's does: a wrong
+    key fails volume 1's only encrypted header, whose read runs out."""
     volume1, volume2 = _rar4_hp_set_damaged_in_volume2()
-    with pytest.raises(EncryptionError, match=r"wrong password\?"):
+    with pytest.raises(EncryptionError, match=r"wrong password\?") as caught:
         parse_rar_volumes([io.BytesIO(volume1), io.BytesIO(volume2)], password="nope")
+    assert is_wrong_password(caught.value)
+    message = str(caught.value)
+    assert message.endswith(
+        _NAMES_CUT_OR_DAMAGE.format(start=20)
+        + " (volume 1 of the set; the offset is within that volume)"
+    ), message
 
 
 @requires("cryptography")

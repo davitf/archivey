@@ -109,6 +109,12 @@ _MAX_SKIPPED_HEADER_RECORDS = 16
 # header's fixed fields and its declared extra area. They are not a record, so the
 # reader words that diagnostic on its own.
 RAR5_UNPLACED_BYTES = "unplaced bytes"
+# The ``record`` of the entry on the ``QO`` service header for its FILE copies whose
+# ``header_offset`` a clean walk never reached (:func:`_qo_unmatched_copies`). Not a
+# dropped record either: the QO payload parsed whole, and the reader words this
+# diagnostic on its own. At most one per volume and it retains nothing
+# attacker-sized, so :data:`_MAX_DAMAGED_SERVICE_HEADERS` does not count it.
+RAR5_QO_UNMATCHED_COPIES = "unmatched copies"
 # RAR 1.5-4 service header holding the preceding file's Unix owner (``rar -ow``),
 # and the ``reason`` of the ``skipped_header_records`` entry for one whose data holds
 # no NUL, which ``unrar`` applies no owner from.
@@ -120,7 +126,8 @@ RAR3_UOW_NO_NUL = "no NUL in its owner data"
 # headers retained 80 MB before this cap. Counting them as members instead would
 # refuse an archive ``unrar`` lists, which is the opposite of this walk's posture,
 # so they get their own cap and the overflow is reported as a count. Structural
-# for the same reason as the cap above.
+# for the same reason as the cap above. It counts only headers whose walk did not
+# finish: the overflow message says so, and a ``QO`` unmatched-copies entry is not one.
 _MAX_DAMAGED_SERVICE_HEADERS = 16
 # BytesIO/file seek offsets must fit in a C ssize_t; hostile RAR5 vints can exceed that.
 _MAX_SEEK = (1 << 63) - 1
@@ -544,7 +551,9 @@ class RarMemberInfo:
 
 @dataclass(slots=True, frozen=True)
 class DamagedServiceHeader:
-    """A SERVICE header whose extra-area walk dropped a record or gave up.
+    """A SERVICE header whose extra-area walk dropped a record or gave up, or a ``QO``
+    header whose FILE copies matched no header a clean walk reached
+    (:data:`RAR5_QO_UNMATCHED_COPIES`).
 
     Not a :class:`RarMemberInfo`: a service header is not a member, nothing lists
     it, and keeping the whole parse of one both says otherwise and retains far more
@@ -572,7 +581,9 @@ class RarArchive:
     #: ``name.partN.rar`` sets. Taken from volume 1.
     old_volume_naming: bool = False
     #: SERVICE headers (``CMT``, ``QO``) whose extra-area walk dropped a record or
-    #: gave up, in file order, at most ``_MAX_DAMAGED_SERVICE_HEADERS`` of them.
+    #: gave up, in file order, at most ``_MAX_DAMAGED_SERVICE_HEADERS`` of them, plus
+    #: at most one ``QO`` entry per volume for copies that matched no header the walk
+    #: reached, which the cap does not count.
     #: They are not members, so nothing lists them and the reader's per-member
     #: diagnostics never see them — yet the same leniency applies to their headers,
     #: and the argument that leniency is not silent rests on a diagnostic being
@@ -761,17 +772,31 @@ def parse_rar_volumes(
         if gap and previous:
             missing.extend(range(previous + 1, number))
         previous = number
-        part = _parse_rar_volume(
-            volume,
-            password=password,
-            kdf_cache=kdf_cache,
-            volume_index=number - 1,
-            use_qo=use_qo,
-            max_members=max_members,
-            max_metadata_bytes=max_metadata_bytes,
-            name_encoding=name_encoding,
-            password_proven=password_proven,
+        # The walk's byte offsets are within this volume, not the concatenated space
+        # the member offsets below use, so a message that gives one names the volume.
+        where = (
+            f" (volume {number} of the set; the offset is within that volume)"
+            if len(volumes) > 1
+            else ""
         )
+        try:
+            part = _parse_rar_volume(
+                volume,
+                password=password,
+                kdf_cache=kdf_cache,
+                volume_index=number - 1,
+                use_qo=use_qo,
+                max_members=max_members,
+                max_metadata_bytes=max_metadata_bytes,
+                name_encoding=name_encoding,
+                password_proven=password_proven,
+            )
+        except EncryptionError as exc:
+            if not where or not getattr(exc, _OFFSET_IN_VOLUME, False):
+                raise
+            # Still the wrong-password error, so a password list moves on.
+            located = wrong_password_error(exc.raw_message + where)
+            raise located.with_traceback(exc.__traceback__) from exc.__cause__
         password_proven = part.password_proven
 
         for member in part.members:
@@ -780,10 +805,7 @@ def parse_rar_volumes(
             member.data_parts = [
                 (offset + base_offset, size) for offset, size in member.data_parts
             ]
-        if len(volumes) > 1:
-            # The walk's byte offsets are within this volume, not the concatenated
-            # space the member offsets above use, so the message names the volume.
-            where = f" (volume {number} of the set; the offset is within that volume)"
+        if where:
             if part.truncated is not None:
                 part.truncated += where
             if part.damaged is not None:
@@ -807,7 +829,8 @@ def parse_rar_volumes(
             # field, so leaving this out made a damaged header past volume 1
             # silent — the archive opened clean and nothing said a header could
             # not be finished. The cap applies to the merged list for the same
-            # reason it applies to one volume's.
+            # reason it applies to one volume's, and passes QO unmatched-copies
+            # entries through as it does there.
             for damaged in part.damaged_service_headers:
                 if not _append_damaged_service_header(
                     merged.damaged_service_headers, damaged
@@ -899,9 +922,13 @@ def _append_damaged_service_header(
     another volume, and narrows it here rather than at the call sites, so nothing
     is built for a header the cap is about to turn away. The caller counts what
     this refuses: nothing is dropped silently, because the reader reports the
-    count alongside the headers it does describe.
+    count alongside the headers it does describe. A ``QO`` unmatched-copies entry
+    is always kept and never counted: the overflow message says each counted
+    header was not read to the end, which is not true of it.
     """
-    if len(headers) >= _MAX_DAMAGED_SERVICE_HEADERS:
+    if len(headers) >= _MAX_DAMAGED_SERVICE_HEADERS and not _is_qo_unmatched_copies(
+        source
+    ):
         return False
     headers.append(
         source
@@ -913,6 +940,13 @@ def _append_damaged_service_header(
         )
     )
     return True
+
+
+def _is_qo_unmatched_copies(source: RarMemberInfo | DamagedServiceHeader) -> bool:
+    return isinstance(source, DamagedServiceHeader) and any(
+        record == RAR5_QO_UNMATCHED_COPIES
+        for record, _, _ in source.skipped_header_records
+    )
 
 
 # The two RAR5 redirect types that are Windows reparse points. RAR is the one format
@@ -1325,10 +1359,18 @@ def _encrypted_header_cut(start: int) -> str:
     ciphertext blocks, so a file that ends anywhere after its first byte and before
     its last cannot be a clean end: the writer never stops part-way.
     """
-    return (
-        f"RAR archive is truncated: the file ends inside the encrypted header "
-        f"that starts at byte {start}"
-    )
+    return f"RAR archive is truncated: {_ends_inside_encrypted_header(start)}"
+
+
+# Set on a raised error whose message gives a byte offset within one volume, so that
+# ``parse_rar_volumes`` can name the volume, as it does for the returned strings.
+_OFFSET_IN_VOLUME = "_archivey_rar_offset_in_volume"
+
+
+def _ends_inside_encrypted_header(start: int) -> str:
+    """The clause that places a cut in an encrypted header, shared by the proven cut
+    and the unproven wrong-password message so the two say it the same way."""
+    return f"the file ends inside the encrypted header that starts at byte {start}"
 
 
 class _RarHeaderCrcError(CorruptionError):
@@ -1439,7 +1481,10 @@ def _header_failure(
     :class:`EncryptionError` and password candidates keep iterating. Once the key is
     proven (a matching CRC16 in RAR3, a check value in RAR5), a failure there is
     damage, and one that ran out of ciphertext is a cut. Unproven, a garbage size
-    reads to the end of the file as well, so that stays a wrong password. A plain
+    reads to the end of the file as well, so that stays a wrong password; when the
+    read did run out, the message also names a cut or a damaged header, because
+    with the right password one of those is the cause (damage can garble the size
+    just as a wrong key does) and nothing here can tell them apart. A plain
     header the file holds only part of is a cut: unrar lists the members before it
     and reports an unexpected end of archive.
 
@@ -1448,9 +1493,21 @@ def _header_failure(
     """
     if isinstance(header_fd, _HeaderDecryptStream):
         if not proven:
-            raise wrong_password_error(
-                f"Failed to decrypt {version} headers (wrong password?)"
-            ) from exc
+            message = f"Failed to decrypt {version} headers (wrong password?)"
+            if header_fd.hit_eof:
+                # A wrong key's garbage size runs to the end of a small archive as
+                # well, so the cut is the second reading, not the first; a damaged
+                # header garbles the size the same way, so it is named too.
+                message += (
+                    "; if the password is right, "
+                    f"{_ends_inside_encrypted_header(start)}, "
+                    "or that header is damaged"
+                )
+                error = wrong_password_error(message)
+                # The offset is within this volume; ``parse_rar_volumes`` names it.
+                setattr(error, _OFFSET_IN_VOLUME, True)
+                raise error from exc
+            raise wrong_password_error(message) from exc
         if header_fd.hit_eof:
             return _encrypted_header_cut(start)
     elif isinstance(exc, _RarHeaderCutError):
@@ -3289,6 +3346,39 @@ def _emit_and_skip_qo_run(
     return needs_next
 
 
+def _qo_unmatched_copies(
+    qo_by_off: dict[int, RarMemberInfo], seen_file_offsets: set[int]
+) -> DamagedServiceHeader | None:
+    """The ``QO`` header's report of copies a clean walk never reached, or ``None``.
+
+    Listing follows the walk: a copy is used only when the walk lands on its
+    ``header_offset``, as ``unrar`` substitutes a copy only for a FILE header it
+    reaches, so an unmatched copy is not a member and the listing is unchanged.
+    ``rar`` writes one copy per FILE header it caches, so a copy that matches none is
+    a damaged or crafted record, which a strict policy should be able to refuse. It
+    rides on the ``MEMBER_HEADER_RECORD_SKIPPED`` channel of a damaged service header.
+    The caller asks only after a clean end. A walk that was cut or stopped at a
+    damaged header leaves copies unreached for that reason alone. A damaged end block
+    stops nothing, but it already makes the archive corrupt, and a claim that the QO
+    record is crafted would then rest on a walk whose last header failed its check.
+    """
+    count = sum(1 for offset in qo_by_off if offset not in seen_file_offsets)
+    if not count:
+        return None
+    noun = "copy" if count == 1 else "copies"
+    return DamagedServiceHeader(
+        name=_RAR5_QO_NAME,
+        skipped_header_records=(
+            (
+                RAR5_QO_UNMATCHED_COPIES,
+                None,
+                f"{count} FILE header {noun} that matched no header the walk reached",
+            ),
+        ),
+        header_walk_stop_reason=None,
+    )
+
+
 def _parse_rar5(
     source: BinaryIO,
     *,
@@ -3537,6 +3627,17 @@ def _parse_rar5(
 
         # Unknown block — skip data area.
         _seek_after_packed(source, data_offset, add_size)
+
+    # A cut or a damaged header stops the walk early, so copies past it are unreached
+    # for that reason alone; both break out of the loop before ``end_block_seen`` is
+    # set, so that flag alone withholds the report for them. A damaged end block
+    # stops nothing, but the archive is already corrupt and the QO claim would rest
+    # on a header whose CRC failed, so it is withheld there too. The entry bypasses
+    # the cap (_is_qo_unmatched_copies).
+    if end_block_seen and end_block_damaged_at is None:
+        unmatched = _qo_unmatched_copies(qo_by_off, seen_file_offsets)
+        if unmatched is not None:
+            damaged_service_headers.append(unmatched)
 
     return RarArchive(
         version=5,

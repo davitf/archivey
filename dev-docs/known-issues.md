@@ -248,7 +248,7 @@ the exact remaining `unpack_size` and never passes `-1`; refuses unsized PPMd7 a
 construction; decodes unsized PPMd8 in bounded 64 KiB requests; injects at most one capped
 NUL at the end; stops at a spent payload; and hands pyppmd the whole member in one
 `decode`, so a short return is the end. Two exceptions are fed in pieces: members over
-`DecoderLimits.max_ppmd_in_process_input` (16 MiB by default), and a ZIP member read from
+`DecoderLimits.max_ppmd_held_input` (16 MiB by default), and a ZIP member read from
 a stream that cannot seek, whose sizes follow its data, so its input runs on into the rest
 of the archive. Fed in pieces, pyppmd 1.3.1 can return short at a false `eof` with input
 unread, which reads as a spent payload: a valid member then raises `TruncatedError` a few
