@@ -118,7 +118,11 @@ class DiagnosticCode(StrEnum):
     """A stored timestamp could not be used, so that time is left unset."""
     MEMBER_HEADER_RECORD_SKIPPED = "member_header_record_skipped"
     """An optional record in a member's header could not be read and was dropped, so
-    the field it would fill is left unset rather than wrong."""
+    the field it would fill is left unset rather than wrong. RAR also reports two
+    faults here that drop no record, because they too are header damage a strict
+    policy should refuse: bytes in a RAR5 header that belong to no record, and a RAR5
+    quick-open record holding FILE header copies that match no header the walk reached.
+    The context's ``record`` tells them apart."""
     SYMLINK_TARGET_UNAVAILABLE = "symlink_target_unavailable"
     """A link's target could not be read: it is empty, too long, damaged, or needs a
     codec or package that is missing. The link stays listed with ``link_target``
@@ -509,6 +513,14 @@ class MemberHeaderRecordContext(_JsonSafeContext):
     ``unicode_comment``, the field's tag for ``unix_owner``), so an unnamed record is
     still identifiable.
 
+    Two RAR5 ``record`` values name no dropped record, and nothing is left unset for
+    them. ``"unplaced bytes"`` is bytes between a header's fixed fields and its
+    declared extra area, which were skipped. ``"unmatched copies"`` is on the ``QO``
+    quick-open service header, whose payload was read whole: some of its cached FILE
+    header copies match no header the walk reached, which ``rar`` never writes, so the
+    record is damaged or crafted. The listing comes from the headers the walk read, as
+    with ``unrar``. ``reason`` says how many copies; ``record_id`` is ``None``.
+
     A RAR5 member header is attacker-sized, so how many records one member may drop is
     capped and reaching the cap stops the header being read; an ISO Rock Ridge entry
     list stops at its first malformed entry. ``list_truncated`` is true on the one
@@ -518,12 +530,14 @@ class MemberHeaderRecordContext(_JsonSafeContext):
     ``unicode_comment`` and one ``unix_owner`` record.
 
     A RAR5 archive's own ``CMT`` and ``QO`` service headers carry the same records
-    and are reported the same way, and they are not members: those diagnostics
+    and are reported the same way, plus the ``QO`` header's ``"unmatched copies"``
+    above, and they are not members: those diagnostics
     carry an empty ``member_name`` and a ``member_id`` of ``None``, and the message
     names the header and what the archive therefore does without. How many such
-    headers one archive describes is bounded, so there is one further shape: a
-    single diagnostic, in the same empty-``member_name`` shape but naming no header
-    and with ``list_truncated`` false, saying how many were left undescribed.
+    damaged headers one archive describes is bounded, so there is one further shape:
+    a single diagnostic, in the same empty-``member_name`` shape but naming no header
+    and with ``list_truncated`` false, saying how many were left undescribed. The
+    ``"unmatched copies"`` diagnostic is never one of those left out.
     """
 
     kind: Literal["member_header_record"] = "member_header_record"
