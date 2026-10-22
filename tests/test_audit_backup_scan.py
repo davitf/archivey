@@ -34,7 +34,12 @@ from archivey import (
     MemberType,
 )
 from archivey.diagnostics import LocalHeaderContext, raw_name_to_base64
-from archivey.exceptions import CorruptionError, DiagnosticRaisedError, EncryptionError
+from archivey.exceptions import (
+    CorruptionError,
+    DiagnosticRaisedError,
+    EncryptionError,
+    UnsupportedFeatureError,
+)
 from archivey.internal import detection
 from archivey.internal.hashing import crc32_digest
 from archivey.internal.streams import codecs as codecs_module
@@ -416,8 +421,8 @@ def test_local_method_that_differs_decodes_by_the_local_header(
 
 def test_the_listing_keeps_the_directory_method() -> None:
     """``compression`` and ``extra["zip.compress_type"]`` come from the directory, as
-    every listed field does: a file read lists before it reads any local header. The
-    diagnostic carries both methods."""
+    every listed field does (a CRC-32 of 0 aside). The diagnostic carries both
+    methods."""
     blob = _one_member_zip(_METHOD_TEXT, deflate=True, central_method=0)
     with archivey.open_archive(io.BytesIO(blob)) as ar:
         (member,) = ar.members()
@@ -467,6 +472,30 @@ def test_a_local_method_that_does_not_fit_the_data_is_corruption(pipe: bool) -> 
     blob = _one_member_zip(_METHOD_TEXT, deflate=True, local_method=0)
     with pytest.raises(CorruptionError):
         _read_only_member(blob, pipe=pipe)
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_a_method_difference_is_reported_on_a_member_that_fails_its_crc(
+    pipe: bool,
+) -> None:
+    """The directory names another method and another CRC-32. A file read reports the
+    method as it opens the member, then refuses the data on the directory's CRC-32;
+    the pass reads the data by the local header and fails the member at the end, on
+    the CRC-32 the headers disagree on. Both report the method once and raise."""
+    blob = _one_member_zip(_METHOD_TEXT, central_method=8, central_crc=0x1234_5678)
+    source = NonSeekableBytesIO(blob) if pipe else io.BytesIO(blob)
+    with archivey.open_archive(source, streaming=pipe) as ar:
+        try:
+            with pytest.raises(CorruptionError, match="(?i)crc"):
+                if pipe:
+                    for _, stream in ar.stream_members():
+                        assert stream is not None
+                        stream.read()
+                else:
+                    ar.read("member.bin")
+        finally:
+            counts = ar.diagnostics.counts
+    assert counts[DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS] == 1
 
 
 def test_a_damaged_local_header_is_refused_before_an_unsupported_method() -> None:
@@ -559,8 +588,90 @@ def test_winzip_aes_records_naming_different_methods_are_corruption(
     deflated = stored_size - 16 - 2 - 10  # salt (AES-256), check value, HMAC
     struct.pack_into("<I", blob, 22, deflated)
     struct.pack_into("<I", blob, central + 24, deflated)
-    with pytest.raises(CorruptionError, match="WinZip AES"):
+    with pytest.raises(CorruptionError, match="AES compression method 0 against 8"):
         _drain_aes(bytes(blob), pipe=pipe)
+
+
+def _aes_zip_with_a_patched_record(
+    *, offset: int, value: int, size: int = 1, central: bool = False, **build: int
+) -> bytes:
+    """A one-member WinZip AES ZIP whose local (or ``central``) 0x9901 record has
+    ``value`` written ``offset`` bytes into it: -4 is the tag, 0 the version, 4 the
+    strength."""
+    blob = bytearray(build_aes_zip([(b"a.txt", b"h" * 2000)], password=b"pw", **build))
+    local_field, central_field = _aes_record_method_offsets(bytes(blob))
+    at = (central_field if central else local_field) - 5 + offset
+    blob[at : at + size] = value.to_bytes(size, "little")
+    return bytes(blob)
+
+
+@requires("cryptography")
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+@pytest.mark.parametrize(
+    ("build", "offset", "value", "differ", "pipe_error"),
+    [
+        # A local key length the right password does not fit: refused mid-pass.
+        ({}, 4, 1, "AES key strength 1 against 3", EncryptionError),
+        ({"strength": 1}, 4, 3, "AES key strength 3 against 1", EncryptionError),
+        # AE-1 checks a CRC-32 that AE-2 data leaves at 0: refused mid-pass.
+        ({}, 0, 1, "AE-1 against AE-2", "CRC-32 mismatch"),
+        # AE-2 checks no CRC-32, so the pass reads the data and refuses the member at
+        # its end, on the records.
+        ({"vendor_version": 1}, 0, 2, "AE-2 against AE-1", "AE-2 against AE-1"),
+    ],
+    ids=["strength-1-over-3", "strength-3-over-1", "ae1-over-ae2", "ae2-over-ae1"],
+)
+def test_winzip_aes_records_that_differ_in_any_field_are_corruption(
+    pipe: bool,
+    build: dict[str, int],
+    offset: int,
+    value: int,
+    differ: str,
+    pipe_error: str | type[Exception],
+) -> None:
+    """Method 99 in both headers and the same real method, but another AES version
+    or strength in the local record. A file read decodes by the central record and
+    the pass by the local one, so a file read refuses the member on the records,
+    naming the field; the pass refuses it too, mid-pass or at its end."""
+    blob = _aes_zip_with_a_patched_record(
+        offset=offset, value=value, size=2 if offset == 0 else 1, **build
+    )
+    expected: type[Exception] = CorruptionError
+    match = differ
+    if pipe and isinstance(pipe_error, type):
+        expected, match = pipe_error, "Wrong password"
+    elif pipe:
+        match = pipe_error
+    with pytest.raises(expected, match=match):
+        _drain_aes(blob, pipe=pipe)
+
+
+@requires("cryptography")
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+@pytest.mark.parametrize(
+    ("offset", "value", "central"),
+    [(-4, 0x9902, False), (4, 7, False), (-4, 0x9902, True)],
+    ids=["local-tag", "local-strength", "central-tag"],
+)
+def test_a_missing_winzip_aes_record_is_named(
+    pipe: bool, offset: int, value: int, central: bool
+) -> None:
+    """Method 99 in both headers, but one side's 0x9901 record is absent (another
+    tag) or unparseable (strength 7). A file read names the side that lacks it; a
+    pipe, which decodes by the local record, refuses a missing local one as
+    unsupported before the directory arrives, and names a missing central one at
+    the end of the pass."""
+    blob = _aes_zip_with_a_patched_record(
+        offset=offset, value=value, size=2 if offset == -4 else 1, central=central
+    )
+    side = "the directory" if central else "the local header"
+    expected: type[Exception] = CorruptionError
+    match = f"{side} holds no valid WinZip AES record"
+    if pipe and not central:
+        expected, match = UnsupportedFeatureError, "without a valid WinZip AES"
+    with pytest.raises(expected, match=match) as caught:
+        _drain_aes(blob, pipe=pipe)
+    assert "None" not in str(caught.value)
 
 
 @pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])

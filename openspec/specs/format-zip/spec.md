@@ -264,9 +264,13 @@ the reversed pair, which only updates the members. A local header that stores an
 name than the directory entry SHALL NOT fail the member: the member takes the
 directory's name, and a file or link reports `MEMBER_LOCAL_NAME_DIFFERS`, as a file
 read reports it (the requirement on headers that disagree). Nor SHALL one that names
-another compression method, unless one of the two is WinZip AES (99) or the two AES
-records name different real methods: the pass decoded by the local method, as a file
-read decodes, and a file or link reports `MEMBER_LOCAL_METHOD_DIFFERS`. `extract_all` settles them as
+another compression method, unless one of the two is WinZip AES (99): the pass decoded
+by the local method, as a file read decodes, and a file or link reports
+`MEMBER_LOCAL_METHOD_DIFFERS`, as a file read reports it when it opens the member, so
+also when the member fails on a CRC or size the directory contradicts. Method 99 in
+both headers SHALL fail the member when the two AES records differ in any field
+(version, strength, real method) or one is missing or unparseable; the message names
+the fields, or the side that lacks a record. `extract_all` settles them as
 `safe-extraction` states. A directory entry pointing at a local header an earlier
 entry already took SHALL end the pass with `CorruptionError`.
 
@@ -276,7 +280,10 @@ the pass reads past) and the reversed pair fail a member the file read writes; b
 between a bit-3 codec member's end and its descriptor, refused from a file, are counted
 into the member; the first of several inconclusive password candidates wins; WinZip AES
 in the directory over another local method fails with `EncryptionError` where a file read
-raises `CorruptionError`. It MAY also
+raises `CorruptionError`; so does a local AES strength other than the directory's, and an
+AE-1 local record over an AE-2 one fails on its CRC-32 and a missing local record with
+`UnsupportedFeatureError`, each during the pass, where a file read raises
+`CorruptionError` on the records. It MAY also
 differ in these: a damaged bit-3 codec member can fail with another `CorruptionError`
 subclass, and ends the pass, losing the members after it, if its decode read more than 4
 MiB past the data's end; a bit-3 codec member whose stream runs on into its descriptor
@@ -569,14 +576,16 @@ and SHALL report a code with `LocalHeaderContext`:
   has nothing else, so a file and a pipe read the same bytes, which the CRC-32 still
   checks. A file read reports when it opens the member (`field="method"`,
   `local_method`, `central_method`), once per member, a file or link only, as for the
-  name; the pass reports once it has read the directory. The listing keeps the
-  directory's method, as it keeps every field: `compression` and
-  `extra["zip.compress_type"]` name the directory's method, since a file read lists a
-  member before it reads any local header, and the diagnostic carries both. WinZip AES
-  (method 99) in one header only SHALL refuse the member, from a file and a pipe: its
-  record is read from the directory's extra field, so the two headers disagree on the
-  encryption. So SHALL method 99 in both headers when the two AES records name
-  different real methods: the pass would decode by the local record and a file read by
+  name; the pass reports once it has read the directory, also for a member that then
+  fails on another field, as a file read reports before its data fails. The listing
+  keeps the directory's method: `compression` and `extra["zip.compress_type"]` name it,
+  as every listed field comes from the directory (a CRC-32 of 0 aside, below), and the
+  diagnostic carries both.
+  WinZip AES (method 99) in one header only SHALL refuse the member, from a file and a
+  pipe, without the report: its record is read from the directory's extra field, so the
+  two headers disagree on the encryption. So SHALL method 99 in both headers when the
+  two AES records differ in any field (version, strength, real method) or one side's is
+  missing or unparseable: the pass would decode by the local record and a file read by
   the directory's.
 - **A CRC-32 of 0** (`MEMBER_LOCAL_CRC_USED`, which `STRICT` reads: the data is still
   checked; maintainer ruling 2026-10-15). The directory stores 0 for a file or link of

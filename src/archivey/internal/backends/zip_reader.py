@@ -92,6 +92,7 @@ from archivey.internal.backends.zip_aes import (
     ZIP_WRONG_PASSWORD_MSG,
     ExtraField,
     WinZipAesInfo,
+    aes_record_differences,
     iter_extra_fields,
     open_winzip_aes_member,
     parse_winzip_aes_extra,
@@ -3090,8 +3091,10 @@ class ZipReader(BaseArchiveReader):
         trusts the directory decodes other bytes or fails). WinZip AES (method 99) on
         one side only is refused: its record is read from the central extra field, so
         the two headers disagree on how the data is encrypted. So is AES on both sides
-        when the two AES records name different real methods: the pass decodes by the
-        local record, this read by the central one.
+        when the two AES records differ in any field (version, strength or real
+        method), or one side's record is missing or unparseable
+        (``aes_record_differences``): the pass decodes by the local record, this read
+        by the central one.
 
         The local header is read and checked here, ahead of the codec and password
         refusals in the open, on purpose: the check holds the overlap guard against a
@@ -3104,15 +3107,16 @@ class ZipReader(BaseArchiveReader):
             self._reraise_member_error(exc, member.name)
         local_method = header.method
         if local_method == loc.method == _WINZIP_AES_METHOD:
-            local_aes = parse_winzip_aes_extra(header.extra)
-            local_real = None if local_aes is None else local_aes.actual_method
-            central_real = None if loc.aes is None else loc.aes.actual_method
-            if local_real != central_real:
+            differ = aes_record_differences(
+                parse_winzip_aes_extra(header.extra), loc.aes
+            )
+            if differ:
+                order = ", local first" if any(" against " in d for d in differ) else ""
                 raise CorruptionError(
-                    f"ZIP member {quoted(member.name)}: its local WinZip AES record "
-                    f"names compression method {local_real} and its central directory "
-                    f"entry's {central_real}, so the two headers describe different "
-                    "data",
+                    f"ZIP member {quoted(member.name)}: its local header and its "
+                    "central directory entry disagree on its encryption "
+                    f"({', '.join(differ)}{order}), so the two headers describe "
+                    "different data",
                     archive_name=self._archive_name,
                     member_name=member.name,
                     source_format=ArchiveFormat.ZIP,

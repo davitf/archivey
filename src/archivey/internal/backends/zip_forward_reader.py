@@ -45,6 +45,7 @@ from archivey.internal.backends.zip_aes import (
     ZIP_WRONG_PASSWORD_MSG,
     WinZipAesForwardStream,
     WinZipAesInfo,
+    aes_record_differences,
     open_winzip_aes_forward,
     open_winzip_aes_member,
     parse_winzip_aes_extra,
@@ -227,8 +228,9 @@ def _header_disagreements(
     and a file read decodes by the local method too, reporting
     ``MEMBER_LOCAL_METHOD_DIFFERS`` as the pass does. WinZip AES (method 99) on one side
     only counts, as a file read refuses it: the two headers disagree on the encryption.
-    So do two AES records naming different real methods: the pass decoded by the local
-    record, and a file read refuses the member.
+    So do two AES records that differ in any field, or a missing or unparseable record
+    on one side (:func:`aes_record_differences`): the pass decoded by the local record, and a file
+    read refuses the member.
     """
     flags, crc = local.flags, local.crc
     compressed_size, file_size = local.compressed_size, local.file_size
@@ -239,13 +241,9 @@ def _header_disagreements(
     ):
         differ.append(f"compression method {local.method} against {central.method}")
     elif local.method == central.method == _WINZIP_AES_METHOD:
-        central_aes = parse_winzip_aes_extra(central.extra)
-        local_real = None if local.aes is None else local.aes.actual_method
-        central_real = None if central_aes is None else central_aes.actual_method
-        if local_real != central_real:
-            differ.append(
-                f"WinZip AES compression method {local_real} against {central_real}"
-            )
+        differ.extend(
+            aes_record_differences(local.aes, parse_winzip_aes_extra(central.extra))
+        )
     encrypted = _is_encrypted_entry(flags, local.method)
     if encrypted != _is_encrypted_entry(central.flags, central.method):
         differ.append(
@@ -2069,9 +2067,6 @@ class ZipForwardReader(ZipReader):
             order.extend(kept)
             placed.extend(kept)
             unlisted = []
-        # Built once: a scan of ``failed`` per member would make this loop quadratic
-        # in the directory's entry count.
-        failed_members = {id(failure[1]) for failure in failed}
         for member, central in updates:
             self._update_from_directory(member, central)
             local_name = renamed.get(cast("int", member._member_id))
@@ -2081,14 +2076,18 @@ class ZipForwardReader(ZipReader):
                     cast("_ZipLocator", member._raw), member, local_name
                 )
             local_method = remethoded.get(cast("int", member._member_id))
-            if local_method is not None and id(member) not in failed_members:
+            if local_method is not None and _WINZIP_AES_METHOD not in (
+                local_method,
+                central.method,
+            ):
                 # The pass decoded by the local method, as a file read does
-                # (``_with_local_method``); a file or link only, as from a file. A
-                # failed member reports nothing. The method disagreements that fail
-                # one are WinZip AES's (``_header_disagreements``), which a file read
-                # refuses without a report, so a report here would be one no file read
-                # gives. The name report above has no such skip: a file read reports
-                # a name before it refuses anything.
+                # (``_with_local_method``); a file or link only, as from a file. The
+                # report goes wherever a file read gives one, so whether the member
+                # also fails at the end (a CRC-32 or size the directory contradicts)
+                # does not matter: a file read reports the method before its data
+                # fails those checks. WinZip AES on one side is the exception: a file
+                # read refuses that member on the headers without a report, and the
+                # pass fails it (``_header_disagreements``).
                 self._report_local_method(
                     cast("_ZipLocator", member._raw), member, local_method
                 )

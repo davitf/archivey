@@ -138,6 +138,38 @@ def split_extra_fields(extra: bytes) -> tuple[ExtraField, ...]:
     return tuple(fields)
 
 
+def aes_record_differences(
+    local: WinZipAesInfo | None, central: WinZipAesInfo | None
+) -> list[str]:
+    """How a member's local WinZip AES record differs from its central one: empty
+    when the two are equal, else one item per differing field, each "local against
+    central", or the side that holds no valid record.
+
+    Every field decides what a read yields: the version whether the CRC is checked,
+    the strength the key and salt lengths, the method the codec. A file read decodes
+    by the central record and the forward pass by the local one, so any difference
+    refuses the member on both (``ZipReader._with_local_method``,
+    ``_header_disagreements``).
+    """
+    if local == central:
+        return []
+    if local is None:
+        return ["the local header holds no valid WinZip AES record"]
+    if central is None:
+        return ["the directory holds no valid WinZip AES record"]
+    differ = []
+    if local.vendor_version != central.vendor_version:
+        differ.append(f"AE-{local.vendor_version} against AE-{central.vendor_version}")
+    if local.strength != central.strength:
+        differ.append(f"AES key strength {local.strength} against {central.strength}")
+    if local.actual_method != central.actual_method:
+        differ.append(
+            f"AES compression method {local.actual_method} against "
+            f"{central.actual_method}"
+        )
+    return differ
+
+
 def parse_winzip_aes_extra(extra: bytes) -> WinZipAesInfo | None:
     """Return AE info from a ZIP extra field blob, or ``None`` when absent/malformed."""
     for field in iter_extra_fields(extra):
