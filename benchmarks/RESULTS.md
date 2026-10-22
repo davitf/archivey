@@ -144,33 +144,47 @@ not the separate `indexed_bzip2` package. The stdlib peer reads in one forward p
 | tar.bz2 | 274.3 ms | 193.9 ms | 262.2 ms | 0.71× |
 | ZIP deflate, 64 members | 21.1 ms | 2 767 ms | — | **131×** slower |
 
-**These rows force the accelerator on below the size where it pays.** rapidgzip
-and its bzip2 decoder run in a child process (the default
-`ProcessIsolation.KNOWN_CRASHES`, since PR 904). `src/archivey/config.py` records
-the cost: about 45 ms per accelerated stream to start the child and open the stream,
-repaid at about 3.4 ms per MB of compressed DEFLATE input, so rapidgzip breaks even
-near 13 MB compressed. `use_rapidgzip` under `AUTO`, the default, therefore engages
-only from 16 MiB of known compressed input (`use_indexed_bzip2` from 1 MiB). These
-fixtures compress to far less than that, so `AUTO` stays on the stdlib for all of
-them. The ON rows show the start-up cost, not a slower default:
+**These rows force the accelerator on below the size where it pays.** Since PR 493,
+rapidgzip and its bzip2 decoder run in a child process, one per stream (PR 904 later
+made this the `ProcessIsolation.KNOWN_CRASHES` default and kept it). Each child costs
+a fixed start-up, which `src/archivey/config.py` puts at about 45 ms and a break-even
+near 13 MB of compressed DEFLATE input. `use_rapidgzip` under `AUTO`, the default,
+therefore engages only from 16 MiB of known compressed input (`use_indexed_bzip2`
+from 1 MiB). These fixtures compress to far less than that, so `AUTO` stays on the
+stdlib for all of them, and the ON rows show start-up cost:
 
-- The ZIP row opens 64 streams: (2 767 − 21) ms ÷ 64 is 43 ms per member, the
-  recorded start-up cost.
+- The ZIP row opens 64 streams: (2 767 − 21) ms ÷ 64 is 43 ms per member.
 - tar.gz is one stream, and its 123 ms over accelerator-off is that start-up plus
   the transfer.
 - bzip2 decodes slowly enough that even this small input repays the start-up.
 
 The figures this section quoted before (tar.gz 2.57× and tar.bz2 2.97× faster than
-accelerator off) were measured in-process, before PR 904. None of these rows reaches
-the size where `AUTO` turns the accelerator on, so this page has no current figure
-for that case.
+accelerator off) were measured in-process, before PR 493. None of these rows reaches
+the size where `AUTO` turns the accelerator on, so the harness has no current figure
+for that case. A separate measurement (2026-10-22, same host class, CPython 3.13.16,
+text-like data compressing about 2:1, fastest of three warm reads) fills part of the
+gap. It is not part of the harness runs above:
+
+- **Where `AUTO` engages on a sequential source it wins.** A single 64 MiB `.gz`
+  reads in 289 ms with the accelerator against 456 ms without; a 64-member 64 MiB
+  `.tar.gz` in 301 against 550 ms; a 32 MiB `.tar.bz2` in 475 against 1 800 ms.
+- **A single `.gz` or `.bz2` starts two children**, about 70 ms in total: the
+  one-byte format check at open uses an accelerated stream, and the read starts
+  another. A `.tar.gz` starts one.
+- **In-ZIP DEFLATE never gains, and the default can pick it.** With
+  `seekable_members=True`, `AUTO` uses rapidgzip for a ZIP DEFLATE member of 16 MiB
+  or more compressed. A 32 MiB member (17 MB compressed) reads in 379 ms that way
+  against 230 ms with the accelerator off. Even in-process rapidgzip loses there
+  (289 ms), because a ZIP member reaches it as a Python stream rather than a path,
+  so every read and seek calls back into the parent. This is the one case found
+  where the default is slower with the accelerator than without.
 
 **The documented command fails its sanity ceiling on this host.**
 `targz_read_all_accel_on` measured 10.9–13.6× against its own stdlib pair, above
 the harness's 10× `WALL_RATIO_BUDGET`, so all three runs exited non-zero on that
 one case. The nightly on `main` measured the same case at 5.3× on 2026-10-21.
 
-At **ci** scale (tiny fixtures) the accelerator was already slower before PR 904,
+At **ci** scale (tiny fixtures) the accelerator was already slower before PR 493,
 because indexing and thread-pool startup dominate.
 
 ### 7z BCJ branch filters — liblzma staging vs `pybcj`
