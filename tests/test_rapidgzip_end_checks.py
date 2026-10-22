@@ -26,6 +26,7 @@ import io
 import random
 import zlib
 from collections.abc import Callable
+from pathlib import Path
 from typing import BinaryIO
 
 import pytest
@@ -50,6 +51,7 @@ from archivey.internal.streams.codecs.rapidgzip_select import (
 )
 from archivey.types import ArchiveFormat
 from tests.conftest import requires
+from tests.streams_util import rapidgzip_soft_end
 from tests.test_zip_native_codecs import _build_minimal_zip
 
 _OFF = AcceleratorMode.OFF
@@ -768,6 +770,19 @@ def _skip_to_50000(s: BinaryIO) -> None:
     s.seek(50_000)
 
 
+def _require_a_soft_end(blob: bytes, tmp_path: Path) -> None:
+    """Skip where this rapidgzip build does not end the cut in ``blob`` with no error
+    after decoding to the end of the file, as the Linux wheels do on a member cut after
+    its header. A build that raises there (the macOS wheels), or stops short of the end,
+    gets the standard library's verdict at once, so the last-member check whose
+    internals a test spies on never runs; the verdict tests above hold there too."""
+    path = tmp_path / "cut.gz"
+    path.write_bytes(blob)
+    end = rapidgzip_soft_end(str(path))
+    if end is None or end[1] < len(blob):
+        pytest.skip("this rapidgzip build does not end softly at the end of this cut")
+
+
 @requires("rapidgzip")
 @pytest.mark.parametrize("chunk", [-1, 100])
 def test_a_forged_last_trailer_hashed_since_a_skip_raises(chunk: int) -> None:
@@ -783,7 +798,7 @@ def test_a_forged_last_trailer_hashed_since_a_skip_raises(chunk: int) -> None:
 
 @requires("rapidgzip")
 def test_a_forged_last_trailer_reaching_before_a_skip_is_not_checked(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """The guarantee covers a read from start to end with no seek. After a seek skipped
     output, a last-member trailer whose length reaches back before the seek target has
@@ -792,6 +807,7 @@ def test_a_forged_last_trailer_reaching_before_a_skip_is_not_checked(
     (with the accelerator off it raises)."""
     _require_the_accelerator_in_use()
     blob = _cut_after_two_members(101_000)  # the length of the whole output
+    _require_a_soft_end(blob, tmp_path)
     assert _outcome(Codec.GZIP, blob, _OFF, _skip_to_50000)[1] is TruncatedError
     handovers = _handovers(monkeypatch)
     read_back = _read_backs(monkeypatch)
@@ -916,7 +932,7 @@ def test_the_last_member_check_reads_back_little_more_than_the_last_member(
 
 @requires("rapidgzip")
 def test_a_forged_last_trailer_reads_back_no_more_than_the_checkpoint_spacing(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """A candidate's length comes from the file. A cut file whose last four bytes are
     forged to a length just under the output's would once have had the whole output
@@ -932,6 +948,7 @@ def test_a_forged_last_trailer_reads_back_no_more_than_the_checkpoint_spacing(
         + gzip.compress(b"third", mtime=0)[:10]
     )
     blob[-4:] = (len(first) - 1000).to_bytes(4, "little")
+    _require_a_soft_end(bytes(blob), tmp_path)
     read_back = _read_backs(monkeypatch)
     off = _outcome(Codec.GZIP, bytes(blob), _OFF, _no_seek)
     assert off[1] is TruncatedError
