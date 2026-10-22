@@ -31,15 +31,16 @@ and each change will be listed here. No major changes are expected.
   compress), 7z, RAR (1.5 through RAR5), ISO 9660 (Joliet, Rock Ridge, zisofs; needs
   `pycdlib` 1.22 or later), plain directories, and single-file streams (gzip, bzip2, xz,
   lzip, LZMA, zstd, lz4, zlib, Brotli, Unix compress). Self-extracting archives are read
-  behind their stub. An ISO whose directory tree loops back on itself, in any of its
-  trees, is refused at open.
+  behind their stub.
 - **Automatic format detection** from the file's content, with the extension as the last
   signal, so a misnamed file still opens.
 - **Native readers.** archivey parses ZIP, TAR, 7z and RAR headers itself, without
   `zipfile`, `tarfile` or any third-party package, so listing them needs no extra
   install unless a TAR's compression is outside the standard library (zstd before Python
-  3.14, lz4). 7z data decodes without external tools, BCJ2 included. RAR data needs
-  RARLAB `unrar` or `rar`, or `unar`.
+  3.14, lz4). 7z data in the common methods (LZMA, LZMA2, Deflate, BZip2, Delta and the
+  executable filters, BCJ2 included) decodes with no extra package or external tool;
+  `[recommended]` adds PPMd, Deflate64, Brotli, LZ4, Zstandard before Python 3.14, and
+  AES. RAR data needs RARLAB `unrar` or `rar`, or `unar`.
 - **Encrypted archives:** ZipCrypto and WinZip AES in ZIP, AES in 7z (headers too),
   and RAR3/RAR5 encryption, with one password or a list of candidates.
 - **Safe extraction by default.** `extract_all()` blocks path traversal, symlink and
