@@ -467,6 +467,8 @@ parse, and the pipe pass agrees (`ZipForwardReader._link_target_opener`). For a 
 over the bound it keeps, it uses the size from the directory. For data within the target
 cap, which it decodes to the end, a failed CRC past that one byte does not decide: it
 keeps the data and gives the file read's answer, a `FILE` whose read raises the damage.
+When the bound on what it keeps drops such data (§2.2.2), it keeps the verdict instead:
+whether the data, read as far as a file read reads it, parses as no buffer.
 
 Two members are left a link with no target. One has *no* data, so there is nothing to
 reinterpret. The other is **directory-shaped** — stored with the trailing slash — where
@@ -597,7 +599,13 @@ link target is a path and shorter than most files. At the directory it keeps onl
 links' data. A link whose data was dropped is listed without its target and reports
 `SYMLINK_TARGET_UNAVAILABLE` with `reason="target_data_dropped"`, naming
 `max_metadata_bytes`; the rest of the listing stands, and `extract_all` does not place
-the link and fails that member alone.
+the link and fails that member alone. A drop keeps no bytes, but it does keep one
+verdict: whether the data is no reparse buffer as a file read reads one
+(`_DroppedNoBuffer`). A Windows reparse point whose dropped data is no buffer is then
+re-typed as from a file (§2.2.1), so the bound changes a target, never a type. The
+verdict costs one parse of at most the dropped data, at the drop, and no bytes held.
+Kept ciphertext is not decrypted to decide, so the dropped data of an encrypted reparse
+point nobody read stays a link with no target.
 
 **Bytes after a member that are no local header.** The walk stops at the first bytes
 after a member that are not a local header and keeps the rest of the stream, as after
@@ -723,7 +731,10 @@ ordinary archive can reach:
   higher limits keep those bytes.
 - A symlink whose target is behind `max_metadata_bytes` of short members' data no
   shorter than it is listed without its target (`target_data_dropped`); the file read
-  lists it (§"What the pass keeps for link targets").
+  lists it (§"What the pass keeps for link targets"). A reparse point whose dropped data
+  is no buffer is re-typed as from a file, except for an encrypted one nobody read, whose
+  dropped ciphertext is not decrypted: it stays a link with no target where the file read may
+  re-type it.
 
 ### 2.3 Member data
 
@@ -1253,7 +1264,7 @@ move.
 | A third-party AE-1 archive reads, with the CRC exposed and verified | `::test_external_ae1_archive_from_pyzipper` |
 | ZipCrypto candidate confirmation, STORED CRC pass; ZipCrypto over Zstd; ZipCrypto seeks; stage output equals stdlib's | `tests/test_zip_multipassword.py` |
 | The STORED CRC pass reads through the same validated local header as the open, so it never runs over a member the open refuses | `tests/test_zip_multipassword.py::test_stored_confirm_reads_through_the_validated_local_header` |
-| From a pipe, short members' data and kept ciphertext are not charged to `max_metadata_bytes`; the longest is dropped first past it, and a dropped link lists targetless with `target_data_dropped` and leaves no file from `extract_all`; the archive comment is weighed at the end record | `tests/test_zip_pipe.py::test_small_files_data_is_not_charged_to_max_metadata_bytes`, `::test_kept_ciphertext_is_not_charged_to_max_metadata_bytes`, `::test_the_kept_data_drops_the_longest_first`, `::test_a_link_whose_kept_data_was_dropped_leaves_no_file_behind`, `::test_the_archive_comment_counts_toward_max_metadata_bytes` |
+| From a pipe, short members' data and kept ciphertext are not charged to `max_metadata_bytes`; the longest is dropped first past it, and a dropped link lists targetless with `target_data_dropped` and leaves no file from `extract_all`, and a reparse point whose dropped data is no buffer is re-typed as from a file; the archive comment is weighed at the end record | `tests/test_zip_pipe.py::test_small_files_data_is_not_charged_to_max_metadata_bytes`, `::test_kept_ciphertext_is_not_charged_to_max_metadata_bytes`, `::test_the_kept_data_drops_the_longest_first`, `::test_a_link_whose_kept_data_was_dropped_leaves_no_file_behind`, `::test_the_archive_comment_counts_toward_max_metadata_bytes`; `tests/test_zip_pipe_reparse.py::test_data_past_a_link_buffer_the_pass_dropped_is_a_file_from_a_pipe_too`, `::test_a_link_buffer_the_pass_dropped_stays_a_link_without_its_target` |
 | A local name that differs from the directory's, and a central CRC-32 of 0 under a right local one, read from a file and a pipe, strict refusing the name case only; a wrong local CRC-32 and 0 in both still fail; both headers understating the size stays refused | `tests/test_audit_backup_scan.py::test_local_name_in_another_codepage_still_reads` and the tests after it, `tests/test_zip_pipe.py::test_a_name_that_differs_between_the_two_headers_takes_the_directory_name`, `tests/test_zip_pipe_extract.py::test_a_name_the_two_headers_disagree_on_is_written_by_the_directory_name`, `tests/test_zip_multipassword.py::test_a_zero_central_crc_takes_the_check_byte_from_the_local_crc` |
 | WinZip AES seeks at every block phase and backward; the HMAC survives seeks, including over bytes a seek skipped and on a `read(n)` ending exactly at the end; a partial read after a seek has no verdict | `tests/test_zip_aes.py::test_aes_decrypt_stream_seeks_at_every_block_phase`, `::test_aes_decrypt_stream_seeks_keep_the_hmac`, `::test_aes_decrypt_stream_seek_to_current_position_keeps_the_hmac`, `::test_aes_decrypt_stream_catches_tampered_ciphertext_a_seek_skipped`, `::test_aes_decrypt_stream_partial_read_after_seek_has_no_verdict`, `::test_aes_member_seeks`, `tests/test_member_stream_contract.py` (`zip-aes` rows) |
 | A tampered AE-2 DEFLATE member still raises under rapidgzip's own seeks (`AUTO` and `ON`, one password and two) | `tests/test_zip_aes.py::test_aes_hmac_survives_a_seekable_accelerator` |

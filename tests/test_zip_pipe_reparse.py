@@ -404,8 +404,9 @@ class _PipeSink(io.RawIOBase):
 
 
 @pytest.mark.parametrize("bit3", [False, True], ids=["sized", "bit3"])
+@pytest.mark.parametrize("read", [True, False], ids=["read", "unread"])
 def test_short_damaged_data_past_a_link_buffer_is_a_file_from_a_pipe_too(
-    bit3: bool,
+    read: bool, bit3: bool
 ) -> None:
     """Data within the target cap that runs on past its buffer, with a damaged byte
     after the buffer. The file read stops one byte past the buffer, so it never meets
@@ -426,9 +427,18 @@ def test_short_damaged_data_past_a_link_buffer_is_a_file_from_a_pipe_too(
     raw = bytearray(sink.data if isinstance(sink, _PipeSink) else sink.getvalue())
     raw[raw.index(b"P" * 100) + 50] = ord("Q")
     data = bytes(raw)
-    from_file = _from_file(data)["link"]
-    assert from_file.type is MemberType.FILE
-    piped = _from_pipe(data, read=False)
+    with archivey.open_archive(io.BytesIO(data)) as reader:
+        from_file = reader.members()[0]
+        assert from_file.type is MemberType.FILE
+        with pytest.raises(archivey.CorruptionError), reader.open(from_file) as stream:
+            stream.read()
+    with archivey.open_archive(NonSeekableBytesIO(data), streaming=True) as reader:
+        for member, stream in reader.stream_members():
+            if read and member.name == "link":
+                assert stream is not None
+                with pytest.raises(archivey.CorruptionError):
+                    stream.read()
+        piped = {m.name: m for m in reader.members_report().members}
     assert piped["link"].type is MemberType.FILE
     assert piped["link"].link_target is None
     assert list(piped) == ["link", "z"]
@@ -541,3 +551,86 @@ def test_a_bit3_reparse_buffer_whose_decode_fails_past_it(after: int) -> None:
     piped = _from_pipe(data, read=False)["link"]
     assert piped.type is from_file.type
     assert piped.link_target is None
+
+
+def _listed_under(data: bytes, *, budget: int, pipe: bool) -> tuple[MemberType, str]:
+    config = archivey.ArchiveyConfig(
+        listing_limits=ListingLimits(max_metadata_bytes=budget)
+    )
+    source = NonSeekableBytesIO(data) if pipe else io.BytesIO(data)
+    with archivey.open_archive(source, streaming=pipe, config=config) as reader:
+        if pipe:
+            for _ in reader.stream_members():
+                pass
+            members = reader.members_report().members
+        else:
+            members = reader.members()
+        (reason,) = [
+            str(d.context.reason)
+            for d in reader.diagnostics.retained
+            if d.code is DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE
+        ]
+        return members[0].type, reason
+
+
+@pytest.mark.parametrize("shape", ["damaged", "intact", "over-cap"], ids=lambda s: s)
+def test_data_past_a_link_buffer_the_pass_dropped_is_a_file_from_a_pipe_too(
+    shape: str,
+) -> None:
+    """``max_metadata_bytes`` makes the pass drop the longest data it keeps for link
+    targets. Data that runs on past its buffer is no buffer as the file read reads it,
+    so a member whose data the pass dropped is a file from a pipe as from a file,
+    damaged or not, and whether it kept the whole data or a buffer's start."""
+    buffer = _reparse_buffer(IO_REPARSE_TAG_SYMLINK, "C:\\target", "C:\\target")
+    if shape == "over-cap":
+        # Over the target cap, the pass keeps the buffer's start, here one declaring
+        # 6000 bytes of padding past its names: within the bound on that start, over
+        # this listing's ``max_metadata_bytes``.
+        tag, length, reserved = struct.unpack_from("<IHH", buffer)
+        content = struct.pack("<IHH", tag, length + 6000, reserved) + buffer[8:]
+        content += bytes(6000) + b"P" * 100
+        assert len(content) < _MAX_REPARSE_PREFIX
+    else:
+        content = buffer + b"P" * (MAX_LINK_TARGET_BYTES - len(buffer))
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        info = zipfile.ZipInfo("link")
+        info.create_system = 0
+        info.external_attr = 0x20 | FILE_ATTRIBUTE_REPARSE_POINT
+        # Level 0 stores the bytes as they are, so one padding byte can be changed.
+        zf.writestr(info, content, compress_type=zipfile.ZIP_DEFLATED, compresslevel=0)
+        zf.writestr("z", b"z" * 100)
+    raw = bytearray(buf.getvalue())
+    if shape == "damaged":
+        raw[raw.index(b"P" * 100) + 50] = ord("Q")
+    data = bytes(raw)
+    budget = MAX_LINK_TARGET_BYTES
+    from_file = _listed_under(data, budget=budget, pipe=False)
+    assert from_file == (MemberType.FILE, "reparse_data_unrecognized")
+    assert _listed_under(data, budget=budget, pipe=True) == from_file
+
+
+def test_a_link_buffer_the_pass_dropped_stays_a_link_without_its_target() -> None:
+    """The stated exception, for a buffer that is one: dropped, it stays the link
+    the file read lists, without the target the file read reads."""
+    target = "C:\\" + "t" * 1000
+    content = _reparse_buffer(IO_REPARSE_TAG_SYMLINK, target, target)
+    assert len(content) <= MAX_LINK_TARGET_BYTES
+    data = _zip(
+        [
+            ("link", 0x20 | FILE_ATTRIBUTE_REPARSE_POINT, content),
+            ("z", 0x20, b"z" * 100),
+        ]
+    )
+    budget = MAX_LINK_TARGET_BYTES
+    config = archivey.ArchiveyConfig(
+        listing_limits=ListingLimits(max_metadata_bytes=budget)
+    )
+    with archivey.open_archive(io.BytesIO(data), config=config) as reader:
+        from_file = reader.members()[0]
+    assert from_file.type is MemberType.SYMLINK
+    assert from_file.link_target == "C:/" + "t" * 1000
+    assert _listed_under(data, budget=budget, pipe=True) == (
+        MemberType.SYMLINK,
+        "target_data_dropped",
+    )

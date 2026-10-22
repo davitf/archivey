@@ -1505,7 +1505,11 @@ same reason. A read that ends one byte past the buffer and fails its check is da
 instead (`reason="target_data_damaged"`). This holds for ZIP and 7z, and for a ZIP read
 from a pipe. The pipe pass gives the same answer when its own decode finds a failed
 check after that byte, and it knows the member's size from the directory even when it
-kept no part of a buffer over its bound.
+kept no part of a buffer over its bound. When `max_metadata_bytes` makes the pass drop
+the data it keeps for link targets, it keeps whether that data is no buffer as the file
+read reads it, and gives the same answer, except for an encrypted member nobody read,
+whose dropped ciphertext it does not decrypt: that member stays a link with no target
+(`reason="target_data_dropped"`).
 
 A member whose data outruns a declared size under the cap is corrupt, not over-long:
 where the backend verifies data against the declared size (ZIP always, 7z whenever
