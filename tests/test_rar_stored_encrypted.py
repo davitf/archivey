@@ -26,7 +26,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.internal.backends import rar_reader, rar_unrar
-from tests.conftest import requires, requires_binary
+from tests.conftest import requires, requires_binary, requires_unrar_cli
 
 _RAR = Path(__file__).parent / "fixtures" / "rar"
 _RAR5 = _RAR / "encryption_stored_sizes__.rar"
@@ -243,7 +243,7 @@ def test_split_member_reads_through_unrar() -> None:
 
 
 @requires("cryptography")
-@requires_binary("unrar")
+@requires_unrar_cli()
 @pytest.mark.parametrize("path", [_RAR5, _RAR4], ids=["rar5", "rar4"])
 def test_bytes_match_unrar(path: Path) -> None:
     with open_archive(path, config=_UNRAR, password="password") as archive:

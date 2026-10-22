@@ -3051,6 +3051,8 @@ class ZipReader(BaseArchiveReader):
         directory's is reported (``_report_local_name``), and the member reads by
         the directory's name.
         """
+        if loc.header_offset < 0:
+            raise CorruptionError(self._front_cut_message(loc.header_offset))
         if loc.header_offset >= self._end.cd_start:
             # Every local header comes before the directory, as ``_holds_local_header``
             # says; not sought, since a source on disk cannot seek to every offset a
@@ -3134,6 +3136,28 @@ class ZipReader(BaseArchiveReader):
             )
         self._report_local_method(loc, member, local_method)
         return replace(loc, method=local_method, data_start=header.data_start)
+
+    def _front_cut_message(self, header_offset: int) -> str:
+        """The refusal for a local header the directory puts before byte 0.
+
+        Every offset is a stored value, never negative, plus ``EndRecord.base``, so
+        ``-base`` is at least every member's own shortfall and is the size of a front
+        cut when the directory's own offset field is sound. A directory offset or size
+        field that is too large gives the same shape with nothing missing, which is why
+        the message says "seems".
+        """
+        missing = max(-self._end.base, -header_offset)
+        detail = (
+            ""
+            if missing == -header_offset
+            else f"; this member's local header would start {-header_offset} bytes "
+            "before the start of the file"
+        )
+        return (
+            f"The archive seems to be missing at least its first {missing} bytes: "
+            "its central directory puts local headers before the start of the file"
+            f"{detail}"
+        )
 
     def _check_open(self) -> None:
         if self._fp is None:
