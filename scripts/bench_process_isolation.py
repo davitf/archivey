@@ -5,10 +5,12 @@ archive below is read in full under ``NONE``, ``KNOWN_CRASHES`` and ``NATIVE_DEC
 with the accelerators off, each case in a fresh interpreter (a warm-up read, then the
 best of three). Single streams of several sizes give the cost per MiB of output; ZIP and
 7z archives of one member and of many give the cost per decoder. A solid 7z folder is
-read by one decoder, so it pays the per-decoder cost once.
+read by one decoder, so it pays the per-decoder cost once; what it pays per member read
+comes out of the same pairs. The derived figures are printed after the table.
 
 The 7z archives need a ``7z`` program on ``PATH`` (py7zr's PPMd writer produces
-archives that fail their own CRC); without one their rows are skipped. The payload is
+archives that fail their own CRC); without one, or where it refuses a method, their rows
+are skipped with a note, as the zstd rows are without a zstd module. The payload is
 random words, which gzip compresses about two to one.
 
 Usage::
@@ -66,11 +68,12 @@ def _write_7z(
 ) -> bool:
     program = shutil.which("7z") or shutil.which("7zz") or shutil.which("7za")
     if program is None:
+        print(f"skipped {path.name}: no 7z program on PATH")
         return False
     with tempfile.TemporaryDirectory() as tmp:
         for name, data in members.items():
             Path(tmp, name).write_bytes(data)
-        subprocess.run(
+        done = subprocess.run(
             [
                 program,
                 "a",
@@ -80,9 +83,13 @@ def _write_7z(
             ]
             + sorted(members),
             cwd=tmp,
-            check=True,
+            check=False,
             capture_output=True,
+            text=True,
         )
+    if done.returncode != 0:
+        print(f"skipped {path.name}: {program} failed: {done.stderr.strip()}")
+        return False
     return True
 
 
@@ -91,9 +98,11 @@ def _build(root: Path) -> list[Path]:
     paths: list[Path] = []
 
     def single(name: str, data: bytes | None) -> None:
-        if data is not None:
-            (root / name).write_bytes(data)
-            paths.append(root / name)
+        if data is None:
+            print(f"skipped {name}: no zstd module (Python 3.14, or backports.zstd)")
+            return
+        (root / name).write_bytes(data)
+        paths.append(root / name)
 
     for mib in (1, 16, 64):
         part = payload[: mib * _MIB]
@@ -110,7 +119,12 @@ def _build(root: Path) -> list[Path]:
                 zf.writestr(f"m{i:05}.txt", payload[i * each : (i + 1) * each])
         paths.append(root / name)
     small = {f"m{i:05}.txt": payload[i * 4096 : (i + 1) * 4096] for i in range(1024)}
-    for method, solid in (("LZMA2", False), ("PPMd", False), ("PPMd", True)):
+    for method, solid in (
+        ("LZMA2", False),
+        ("LZMA2", True),
+        ("PPMd", False),
+        ("PPMd", True),
+    ):
         name = f"{method.lower()}-{'solid' if solid else 'nonsolid'}-1024x4K.7z"
         if _write_7z(root / name, small, method, solid=solid):
             paths.append(root / name)
@@ -151,6 +165,7 @@ def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         paths = _build(Path(tmp))
         print(f"{'archive':32}" + "".join(f"{mode:>17}" for mode in _MODES))
+        results: dict[str, list[float]] = {}
         for path in paths:
             times = [
                 float(
@@ -164,9 +179,44 @@ def main() -> None:
                 )
                 for mode in _MODES
             ]
+            results[path.name] = times
             base = times[0]
             cells = "".join(f"{t * 1000:9.0f} ms {t / base:4.2f}x" for t in times)
             print(f"{path.name:32}{cells}")
+        _print_derived(results)
+
+
+def _extra(results: dict[str, list[float]], name: str, mode: int) -> float | None:
+    """Seconds ``name`` took under ``_MODES[mode]`` beyond ``NONE``."""
+    times = results.get(name)
+    return None if times is None else times[mode] - times[0]
+
+
+def _print_derived(results: dict[str, list[float]]) -> None:
+    """The per-decoder and per-member figures the docstrings quote, from paired rows:
+    the extra time of the many-decoder archive minus that of its one-decoder pair, per
+    extra decoder; and a solid folder's extra time per member it reads."""
+    print()
+    pairs = (
+        ("ZIP deflate", "deflate-1024x-8M.zip", "deflate-1x-8M.zip"),
+        ("7z LZMA2", "lzma2-nonsolid-1024x4K.7z", "lzma2-solid-1024x4K.7z"),
+        ("7z PPMd", "ppmd-nonsolid-1024x4K.7z", "ppmd-solid-1024x4K.7z"),
+    )
+    for mode in (1, 2):
+        for label, many, one in pairs:
+            extra_many = _extra(results, many, mode)
+            extra_one = _extra(results, one, mode)
+            if extra_many is None or extra_one is None:
+                continue
+            per = (extra_many - extra_one) / 1023 * 1000
+            print(f"{_MODES[mode]:>16} {label:12} per decoder: {per:.2f} ms")
+        for method in ("lzma2", "ppmd"):
+            extra = _extra(results, f"{method}-solid-1024x4K.7z", mode)
+            if extra is not None:
+                per = extra / 1024 * 1000
+                print(
+                    f"{_MODES[mode]:>16} 7z {method} solid, per member read: {per:.2f} ms"
+                )
 
 
 if __name__ == "__main__":

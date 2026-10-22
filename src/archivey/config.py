@@ -90,10 +90,10 @@ class ProcessIsolation(Enum):
     process: rapidgzip (``use_rapidgzip``, ``use_indexed_bzip2``) and pyppmd (every PPMd
     member). Every other decoder runs in the caller's process. Processes are reused for
     later decoders. Measured on one Linux machine (``scripts/bench_process_isolation.py``),
-    each PPMd decoder costs about 1.5 to 2 ms more than in-process: a non-solid 7z of
-    small PPMd members took about twice as long. A ZIP member or a non-solid 7z member
-    has a decoder of its own; a solid 7z folder is one decoder for all its members, so
-    it pays that once, and about 10% more for the copying.
+    each PPMd decoder costs about 1.4 to 2 ms more than in-process: a non-solid 7z of
+    1024 PPMd members of 4 KiB took about twice as long. A ZIP member or a non-solid 7z
+    member has a decoder of its own. A solid 7z folder is one decoder for all its
+    members: it pays that once, and about 0.1 to 0.35 ms for each member read from it.
     Where no child process can be started, a PPMd member raises
     :class:`~archivey.ResourceLimitError` and rapidgzip under ``AUTO`` falls back to the
     standard library."""
@@ -103,12 +103,14 @@ class ProcessIsolation(Enum):
 
     Each open decoder has a process of its own, and processes are reused for later
     decoders. Measured on one Linux machine (``scripts/bench_process_isolation.py``), a
-    single stream of 1 to 64 MiB took about 1.05 to 1.5 times as long for bzip2, 1.1 to
-    1.6 times for xz, 1.4 to 2 times for gzip and deflate, and 2 to 6 times for zstd,
-    mostly copying data between processes. Each decoder also costs about 0.6 to 1 ms (ZIP
-    deflate and non-solid 7z LZMA2 members), and a PPMd decoder about 1.5 to 2 ms, as
-    under ``KNOWN_CRASHES``; an archive of many small members pays mostly that. A solid
-    7z folder is one decoder. An idle process holds about 9 MB. Where no child process
+    single stream (1 to 64 MiB for gzip and zstd, 1 to 16 MiB for bzip2 and xz) took
+    about 1.05 to 1.5 times as long for bzip2, 1.1 to 1.6 times for xz, 1.4 to 2 times
+    for gzip and deflate, and 2 to 6 times for zstd, mostly copying data between
+    processes. Each decoder also costs about 0.6 to 1 ms (ZIP deflate and non-solid 7z
+    LZMA2 members), and a PPMd decoder about 1.4 to 2 ms, as under ``KNOWN_CRASHES``; an
+    archive of many small members pays mostly that. A solid 7z folder is one decoder,
+    plus about 0.1 to 0.35 ms for each member read from it. An idle process holds about
+    9 MB. Where no child process
     can be started (a frozen application, archivey imported from a zip, a refused
     spawn), opening a decoder raises :class:`~archivey.ResourceLimitError`; nothing is
     decoded in the caller's process."""
