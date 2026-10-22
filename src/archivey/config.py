@@ -89,7 +89,8 @@ class ProcessIsolation(Enum):
     """The default: only the decoders seen to crash on some input run in a child
     process: rapidgzip (``use_rapidgzip``, ``use_indexed_bzip2``) and pyppmd (every PPMd
     member). Every other decoder runs in the caller's process. Processes are reused for
-    later members, so a run of small PPMd members costs little more than in-process.
+    later members, so a run of small PPMd members costs about 1.5 ms more per member than
+    in-process: measured on Linux, 2048 members of 4 KiB took about twice as long.
     Where no child process can be started, a PPMd member raises
     :class:`~archivey.ResourceLimitError` and rapidgzip under ``AUTO`` falls back to the
     standard library."""
@@ -99,11 +100,12 @@ class ProcessIsolation(Enum):
 
     Each open decoder has a process of its own, and processes are reused for later
     members, so the cost is mostly copying data between processes: measured on Linux,
-    reads took about 1.05 times as long for bzip2 and xz, 1.2 to 1.5 times for gzip and
-    deflate, and about 5 times for zstd. An idle process holds about 9 MB. Where no child
-    process can be started (a frozen application, archivey imported from a zip, a
-    refused spawn), opening a decoder raises :class:`~archivey.ResourceLimitError`;
-    nothing is decoded in the caller's process."""
+    reads took about 1.05 to 1.2 times as long for bzip2, 1.2 to 1.6 times for xz, 1.4 to
+    2 times for gzip and deflate, and 2 to 5 times for zstd, plus about 0.6 to 0.9 ms per
+    member. An idle process holds about 9 MB. Where no child process can be started (a
+    frozen application, archivey imported from a zip, a refused spawn), opening a decoder
+    raises :class:`~archivey.ResourceLimitError`; nothing is decoded in the caller's
+    process."""
     NONE = "none"
     """No child process at all: every decoder runs in the caller's process.
 

@@ -41,7 +41,7 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
         stops asking once it sees the end, but stopping a decoder that might still be waiting for
         input takes one more call, and that call can crash it too, on members of any size. In a
         child process the crash becomes a `CorruptionError` for that member. Archivey reuses the
-        processes, so a run of small members costs about 1 ms more per member than decoding in
+        processes, so a run of small members costs about 1.5 ms more per member than decoding in
         your process.
 
 - **Running out of memory raises `MemoryError`, not an `ArchiveyError`,** so it's never mistaken for
@@ -154,10 +154,10 @@ costs only the member being read:
   library's decoder with one warning.
 - **`ProcessIsolation.NATIVE_DECODERS`** also isolates zlib, bz2, lzma, zstd, lz4, brotli and
   inflate64 (Deflate64), detection's trial decodes included. Reads take longer, mostly copying data
-  between processes: on Linux, about 1.05 times as long for bzip2 and xz, 1.2 to 1.5 times for
-  gzip and deflate, and about 5 times for zstd, plus about 0.6 ms per member. Each process holds
-  about 9 MB while it waits to be reused. Where no child process can start, reading raises
-  `ResourceLimitError`; nothing is decoded in your process instead.
+  between processes: on Linux, about 1.05 to 1.2 times as long for bzip2, 1.2 to 1.6 times for
+  xz, 1.4 to 2 times for gzip and deflate, and 2 to 5 times for zstd, plus about 0.6 to 0.9 ms per
+  member. Each process holds about 9 MB while it waits to be reused. Where no child process can
+  start, reading raises `ResourceLimitError`; nothing is decoded in your process instead.
 - **`ProcessIsolation.NONE`** decodes everything in your process. It's for trusted files, tests,
   and places that can't start processes. A damaged or crafted PPMd member can crash your process,
   and rapidgzip isn't used.
