@@ -12,7 +12,7 @@ one line. How to write the entry: see
 
 ## [Unreleased]
 
-## [0.2.0] - 2026-10-21
+## [0.2.0] - 2026-10-22
 
 First public release. This repository is a rewrite: the earlier v1 / alpha line
 (previously published from what is now
@@ -105,6 +105,13 @@ and each change will be listed here. No major changes are expected.
 - `crc32_digest`, public in 0.2.0rc1. To compare a CRC-32 from `member.hashes` with
   your own, use `zlib.crc32(data).to_bytes(4, "big")`.
 
+### Fixed
+
+- About 30 bugs found since 0.2.0rc1, most in reading damaged or crafted ZIP, RAR and 7z
+  archives, in dry runs, and under PyPy. A ZIP member whose local header names a
+  different compression method than the central directory is now decoded by the local
+  header's method, and reported as `MEMBER_LOCAL_METHOD_DIFFERS`.
+
 ### Performance
 
 archivey's time over the standard library's or reference reader's time (lower is
@@ -134,10 +141,10 @@ the full table are in [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md).
 
 ## [0.2.0rc1] - 2026-10-18
 
-Release candidate for 0.2.0, to test the release flow. 0.2.0 differs from it in three
-ways: it adds the `archivey-cli` companion package (an `archivey-cli` 0.2.0rc1 was
-published after the tag), it removes `crc32_digest` (see Removed under 0.2.0), and it
-fixes bugs.
+Release candidate for 0.2.0, to test the release flow. 0.2.0 adds the `archivey-cli`
+companion package and `ArchiveyConfig.process_isolation`, renames one `DecoderLimits`
+field and removes `crc32_digest` (see Changed and Removed under 0.2.0), and fixes bugs,
+one of them a security fix.
 
 <!--
 What goes in this file, from 0.2.0 on:
