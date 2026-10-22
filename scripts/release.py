@@ -55,8 +55,11 @@ _LINK_RE = re.compile(r"^\[[^\]]+\]: ", re.MULTILINE)
 
 #: The test workflows that do not run in full on every pull request and every push to
 #: main. ``start`` runs each one on the release branch and ``tag`` refuses until each one
-#: is green on the release pull request's last commit, so a regression that only they
-#: catch cannot ship. ``benchmark-wall.yml`` is left out: the release checklist §2 runs
+#: is green on the release pull request's last commit. That covers the release branch's
+#: content. A squash merge also brings in whatever reached ``main`` while the release
+#: pull request was open, which only ``ci.yml`` has seen; when that matters, merge
+#: ``main`` into the release branch and run the gates again before merging.
+#: ``benchmark-wall.yml`` is left out: the release checklist §2 runs
 #: the benchmark by hand. ``tests/test_release_script.py`` fails when a scheduled
 #: workflow is neither here nor in its list of workflows that are not gates.
 RELEASE_GATE_WORKFLOWS = (
@@ -303,7 +306,7 @@ def _check_gates(runner: Runner, branch: str) -> str:
     """Refuse unless each release gate passed on the release pull request's last commit.
 
     Returns the pull request's merge commit, which is what the tag points at; a dry run
-    returns ``main``.
+    returns a placeholder for it.
     """
     pr = runner.read(
         "gh", "pr", "view", branch, "--json", "headRefOid,mergeCommit"
@@ -330,12 +333,16 @@ def _check_gates(runner: Runner, branch: str) -> str:
                 f"  {workflow}: {problem}\n    {shlex.join(_gate_dispatch(workflow, branch))}"
             )
     if failing:
+        # The branch is usually deleted when its pull request merges, and a dispatch
+        # needs a branch, so put it back at the gated commit first.
+        restore = shlex.join(["git", "push", "origin", f"{head}:refs/heads/{branch}"])
         raise ReleaseError(
-            f"these release gates have no green run on the last commit of {branch};"
-            " start each one with the command below, then run tag again:\n"
-            + "\n".join(failing)
+            f"the newest run of these release gates is not green on the last commit of"
+            f" {branch} ({head}). If {branch} was deleted on merge, restore it with"
+            f" `{restore}`. Then start each gate with the command below, wait for it,"
+            " and run tag again:\n" + "\n".join(failing)
         )
-    return merge or "main"
+    return merge or "<release-PR-merge-commit>"
 
 
 def cmd_notes(_args: argparse.Namespace) -> None:

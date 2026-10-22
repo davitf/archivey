@@ -216,8 +216,13 @@ four commands.
    `uv run python scripts/release.py tag X.Y.Z` checks that each gate's newest run on the
    release PR's last commit is green. If one is missing, still running or red, it refuses
    and prints the command that starts it. A commit pushed to the release PR after `start`
-   needs new gate runs. `tag` then creates the GitHub Release `vX.Y.Z` on the release
-   PR's merge commit, so a PR merged after it is not in the release. Its body is the
+   needs new gate runs. If the release PR's branch was deleted on merge, the refusal also
+   prints the `git push` that restores it at the gated commit, so the gates can run there
+   again. `tag` then creates the GitHub Release `vX.Y.Z` on the release PR's merge
+   commit, so a PR merged after it is not in the release. A PR merged into `main` while
+   the release PR was open is in it, though, and only `ci.yml` has seen it: when one
+   touches what the gates test, merge `main` into the release branch and rerun the gates
+   before merging. Its body is the
    CHANGELOG section, and it is marked as a pre-release for `a`/`b`/`rc` versions. The
    tag starts `publish.yml`, which publishes to PyPI after the `pypi` environment
    approval. Agent sessions cannot do this step (their GitHub access refuses tag pushes

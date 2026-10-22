@@ -320,7 +320,8 @@ def test_dry_run_tag_checks_both_packages(
         encoding="utf-8",
     )
     assert release.main(["--dry-run", "tag", "0.2.1"]) == 0
-    assert "+ gh release create v0.2.1 --target main" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "+ gh release create v0.2.1 --target '<release-PR-merge-commit>'" in out
 
     cli = release.CLI_PYPROJECT
     cli.write_text(
@@ -464,6 +465,8 @@ def test_tag_refuses_a_gate_without_a_green_run_on_the_head(
     err = capsys.readouterr().err
     assert f"{first}: {reason}" in err
     assert f"{rest[-1]}: no run on" in err
+    assert "newest run of these release gates is not green" in err
+    assert f"git push origin {HEAD}:refs/heads/release/v0.2.1" in err
     for workflow in (first, rest[-1]):
         assert f"gh workflow run {workflow} --ref release/v0.2.1" in err
     for workflow in rest[:-1]:
