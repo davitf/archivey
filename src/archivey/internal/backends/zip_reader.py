@@ -2382,8 +2382,11 @@ class ZipReader(BaseArchiveReader):
         # on a 20 000-entry listing.
         host = entry.version_made_by >> 8
         is_unix = host == 3
-        # Permission bits only; None when no usable Unix mode was stored.
-        mode = stat.S_IMODE(full_mode) if (external_attr != 0 and is_unix) else None
+        # Permission bits only; None when no usable Unix mode was stored. A Unix host
+        # with a zero high word stored DOS attribute bits at most, which unzip 6.00
+        # also reads as "no Unix mode" (it falls back to the DOS bits), so the entry
+        # gets no mode rather than 000.
+        mode = stat.S_IMODE(full_mode) if (full_mode and is_unix) else None
 
         create_system = _CREATE_SYSTEM_BY_VALUE.get(host, CreateSystem.UNKNOWN)
         # Split once: the name, the times, the owner and the leftovers all read it.
