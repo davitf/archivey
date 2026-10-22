@@ -652,14 +652,15 @@ end of the output, which takes choosing four bytes of the content. A last member
 or more of output does not match, as its length is wrapped, and is read by the
 standard-library decoder, at the cost of a second decode.
 
-These checks are guaranteed only for a read from start to end with no seek. When a seek
-short of the end has skipped output, only the checks that need no second decode SHALL
-run: there is no CRC-32 of the whole output, and the last four bytes of the file stand in
-as the ISIZE of a file with no further member. In a file with a further member, a CRC-32
-kept from where reading resumed SHALL check the last member's trailer as above whatever
-the last four bytes say, where it covers the candidate's output to the end; a candidate
-that reaches back before that point SHALL be accepted with no read-back and no handover.
-A seek that meets the end reads the output through first, so it gets the full check.
+When a seek short of the end has skipped output, there is no CRC-32 of the whole output,
+and the last four bytes of the file stand in as the ISIZE of a file with no further
+member. In a file with a further member, the last member's trailer SHALL still be checked
+as above whatever the last four bytes say, and no candidate SHALL be accepted unchecked: a
+CRC-32 kept from where reading resumed covers a candidate that starts after that point,
+and for one that starts before it the skipped part is read back from the accelerator.
+That read-back SHALL be bounded, at most 64 MiB of output in all; a candidate past it
+hands the read to the standard-library decoder, which gives the right result at the cost
+of a second decode.
 
 #### Scenario: accelerator error parity
 

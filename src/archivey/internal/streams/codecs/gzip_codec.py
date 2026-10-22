@@ -160,6 +160,14 @@ _EMPTY_MEMBER_REACH = 1 << 10
 # accelerators", and the ``compressed-streams`` and ``seekable-decompressor-streams``
 # specs state it; change them together.
 _CRC_CHECKPOINT_SPACING = 4 << 20
+# How much skipped output in all the backstop reads back from rapidgzip to check the last
+# member's trailer after a seek skipped output: the part of a candidate before the point
+# where reading resumed, which no saved CRC-32 covers. A candidate past what is left of
+# it hands the read to the standard library, which gives the right result at the cost of
+# a second decode. ``dev-docs/formats/gzip.md`` §2.3 and §5, ``docs/formats.md``
+# §"Limits and accelerators", and the ``compressed-streams`` and
+# ``seekable-decompressor-streams`` specs state it; change them together.
+_SKIPPED_READ_BACK = 64 << 20
 
 
 class _CheckpointedCrc:
@@ -222,10 +230,9 @@ class _GzipTruncationCheckStream(DelegatingStream):
        that trailer holds the CRC-32 and length of the end of the output
        (:meth:`_last_member_ends_the_file`, which saved CRC-32 checkpoints make cheap).
        A decode that stopped short of the end, or any other mismatch, hands the read to
-       the standard library. The guarantee covers a read from start to end with no
-       seek: after a seek skipped output, only the checks that need no second decode
-       run, and the last member's trailer is checked only where the CRC-32 kept since
-       reading resumed covers that member.
+       the standard library. After a seek skipped output, that check reads back the
+       skipped part of the last member, under a ceiling past which the standard library
+       decides.
 
        The compressed position is what tells a cut member followed by a complete one
        from a multi-member file: the trailer is then the last member's, and the further
@@ -565,12 +572,14 @@ class _GzipTruncationCheckStream(DelegatingStream):
         here without the standard library. A last member of 4 GiB or more does not match,
         as its length is wrapped, and goes to the standard library.
 
-        After a seek short of the end skipped output, only cheap checks run: the
-        guarantee covers a read from start to end with no seek. A candidate is checked
-        only when the CRC-32 kept from where reading resumed covers it to the end. When
-        none matches, the read goes to the standard library only if every candidate was
-        checked; one that could not be is accepted, with no read-back past the checkpoint
-        spacing and no second decode.
+        After a seek short of the end skipped output, the check still runs. A CRC-32 is
+        kept from where reading resumed, so a candidate that starts after that point is
+        checked as above. For one that starts before it, the skipped part, from the
+        candidate's start to the resume point, is read back from rapidgzip and its
+        CRC-32 combined with the one kept since. That read-back has a ceiling,
+        ``_SKIPPED_READ_BACK`` in all: a candidate past what is left of it hands the read
+        to the standard library, which gives the right result at the cost of a second
+        decode. Nothing is accepted that was not checked.
 
         An empty last member (bgzip ends every file with one) has a trailer of eight
         zeros, which any run of zeros would match, so it counts only when zlib decodes
@@ -605,13 +614,23 @@ class _GzipTruncationCheckStream(DelegatingStream):
             ),
             None,
         )
-        unchecked = False
+        budget = _SKIPPED_READ_BACK
         for start in sorted(trailers, reverse=True):  # shortest first
-            if hasher is None or start < hasher.start:
-                unchecked = True  # after a skip: no CRC-32 of this output was kept
-            elif self._crc_to_the_end(hasher, start) == trailers[start]:
+            if hasher is not None and start >= hasher.start:
+                crc = self._crc_to_the_end(hasher, start)
+            else:
+                # After a skip, no saved CRC-32 covers the output from ``start`` to where
+                # reading resumed (the end, with no CRC-32 kept since): read it back.
+                resume = self._pos if hasher is None else hasher.start
+                if resume - start > budget:
+                    return False  # past the ceiling: the standard library decides
+                budget -= resume - start
+                crc = self._output_crc(start, resume, 0)
+                if crc is not None and hasher is not None:
+                    crc = crc32_combine(crc, hasher.value, self._pos - resume)
+            if crc == trailers[start]:
                 return True
-        return unchecked
+        return False
 
     def _crc_to_the_end(self, hasher: _CheckpointedCrc, start: int) -> int | None:
         """The CRC-32 of the output from ``start`` to its end (``_pos``), which
