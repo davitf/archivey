@@ -30,6 +30,7 @@ from archivey import (
     ExtractionLimits,
     ExtractionPolicy,
     ExtractionStatus,
+    MemberType,
     NameCollisionError,
     OnError,
     OverwritePolicy,
@@ -463,7 +464,7 @@ def test_link_targets_that_name_dest_match(streaming: bool, tmp_path: Path) -> N
         }
         calls = iter((False, True))
         real, dry = _both(
-            lambda: io.BytesIO(blobs[next(calls)]),
+            lambda: io.BytesIO(blobs[next(calls)]),  # noqa: B023 - called within this iteration
             work,
             policy=policy,
             open_kwargs={"streaming": streaming},
@@ -494,7 +495,7 @@ def test_link_past_a_missing_name_meets_what_dest_holds(
         }
         calls = iter((False, True))
         real, dry = _both(
-            lambda: io.BytesIO(blobs[next(calls)]),
+            lambda: io.BytesIO(blobs[next(calls)]),  # noqa: B023 - called within this iteration
             work,
             policy=policy,
             populate=lambda dest: _put(
@@ -533,11 +534,10 @@ def test_bodies_are_read_and_verified(tmp_path: Path) -> None:
 def test_limits_still_apply(tmp_path: Path) -> None:
     blob = _tar([("big", "file", b"x" * 4096)])
     dest = tmp_path / "out"
-    with open_archive(io.BytesIO(blob)) as reader:
-        with pytest.raises(ResourceLimitError):
-            reader.extract_all(
-                dest, limits=ExtractionLimits(max_extracted_bytes=1024), dry_run=True
-            )
+    with open_archive(io.BytesIO(blob)) as reader, pytest.raises(ResourceLimitError):
+        reader.extract_all(
+            dest, limits=ExtractionLimits(max_extracted_bytes=1024), dry_run=True
+        )
     _assert_nothing_left(tmp_path, dest)
 
 
@@ -1220,9 +1220,11 @@ def test_cli_dry_run_names_where_a_root_lands_past_a_file(
 def test_destination_that_is_a_file_is_refused(tmp_path: Path) -> None:
     dest = tmp_path / "out"
     dest.write_bytes(b"")
-    with open_archive(io.BytesIO(_tar([("a", "file", 0)]))) as reader:
-        with pytest.raises(ExtractionError, match="not a directory"):
-            reader.extract_all(dest, dry_run=True)
+    with (
+        open_archive(io.BytesIO(_tar([("a", "file", 0)]))) as reader,
+        pytest.raises(ExtractionError, match="not a directory"),
+    ):
+        reader.extract_all(dest, dry_run=True)
     assert list((tmp_path / "tmp").iterdir()) == []
 
 
@@ -1232,9 +1234,8 @@ def test_destination_under_a_file_is_refused(tmp_path: Path) -> None:
     raised = []
     for dry_run in (False, True):
         dest = tmp_path / "afile" / ("dry" if dry_run else "real") / "out"
-        with open_archive(io.BytesIO(blob)) as reader:
-            with pytest.raises(OSError) as caught:
-                reader.extract_all(dest, dry_run=dry_run)
+        with open_archive(io.BytesIO(blob)) as reader, pytest.raises(OSError) as caught:
+            reader.extract_all(dest, dry_run=dry_run)
         raised.append(caught.value)
     real, dry = raised
     if os.name != "nt":
@@ -1314,14 +1315,16 @@ def test_errors_and_warnings_name_dest(
     # The directory is locked before its file is written, so the write fails.
     blob = _tar([("ro", "dir", 0o555), ("ro/f", "file", 0)])
     dest = tmp_path / "out"
-    with caplog.at_level(logging.WARNING, logger="archivey"):
-        with open_archive(io.BytesIO(blob)) as reader:
-            report = reader.extract_all(
-                dest,
-                policy=ExtractionPolicy.TRUSTED,
-                on_error=OnError.CONTINUE,
-                dry_run=True,
-            )
+    with (
+        caplog.at_level(logging.WARNING, logger="archivey"),
+        open_archive(io.BytesIO(blob)) as reader,
+    ):
+        report = reader.extract_all(
+            dest,
+            policy=ExtractionPolicy.TRUSTED,
+            on_error=OnError.CONTINUE,
+            dry_run=True,
+        )
     failed = report.results[-1]
     assert failed.status is ExtractionStatus.FAILED
     assert isinstance(failed.error, PermissionError)
@@ -1330,24 +1333,32 @@ def test_errors_and_warnings_name_dest(
     assert str(dest / "ro") in caplog.text
     assert "archivey-dry-run-" not in caplog.text
 
-    with open_archive(io.BytesIO(blob)) as reader:
-        with pytest.raises(PermissionError) as caught:
-            reader.extract_all(
-                dest,
-                policy=ExtractionPolicy.TRUSTED,
-                on_error=OnError.STOP,
-                dry_run=True,
-            )
+    with (
+        open_archive(io.BytesIO(blob)) as reader,
+        pytest.raises(PermissionError) as caught,
+    ):
+        reader.extract_all(
+            dest,
+            policy=ExtractionPolicy.TRUSTED,
+            on_error=OnError.STOP,
+            dry_run=True,
+        )
     assert str(dest / "ro") in str(caught.value)
     assert "archivey-dry-run-" not in str(caught.value)
     _assert_nothing_left(tmp_path, dest)
 
 
+@pytest.mark.parametrize(
+    "fd_walk",
+    [False, *([True] if dry_run_module._FD_WALK else [])],
+    ids=lambda v: "fd-walk" if v else "path-walk",
+)
 def test_scratch_is_removed_when_the_archive_locks_its_own_directories(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fd_walk: bool
 ) -> None:
     # The directories get their modes when the run ends; the scratch directory is
-    # removed after that.
+    # removed after that, by either walk.
+    monkeypatch.setattr(dry_run_module, "_FD_WALK", fd_walk)
     blob = _tar([("ro/f", "file", 0), ("ro", "dir", 0o555), ("zero", "dir", 0)])
     dest = tmp_path / "out"
     with open_archive(io.BytesIO(blob)) as reader:
@@ -1356,14 +1367,53 @@ def test_scratch_is_removed_when_the_archive_locks_its_own_directories(
     _assert_nothing_left(tmp_path, dest)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="PATH_MAX is a POSIX limit")
+def test_scratch_is_removed_when_its_tree_is_deeper_than_path_max(
+    tmp_path: Path,
+) -> None:
+    # Each directory is reached through a short symlink to it, so every member name
+    # is short while the real paths in the scratch tree are longer than PATH_MAX.
+    # Removing that tree by full path failed with ENAMETOOLONG, and the scratch
+    # directory stayed in the temp directory. The deep part covers the descriptor
+    # walk; a directory down there keeps no mode (its path is too long to set one,
+    # as in a real run). The locked ``ro`` up front covers the chmod: its file
+    # cannot be removed until ``ro`` is opened up. The last links resolve past
+    # PATH_MAX, so the filter refuses them; the members under them still go in under
+    # real directories named ``l``, so the tree stays deeper than PATH_MAX.
+    component = "d" * 250
+    depth = os.pathconf(tmp_path, "PC_PATH_MAX") // len(component) + 2
+    entries: list[tuple[str, str, object]] = [("ro/f", "file", 0), ("ro", "dir", 0o555)]
+    path = ""
+    for _ in range(depth):
+        entries.append((f"{path}{component}", "dir", None))
+        entries.append((f"{path}l", "sym", component))
+        path += "l/"
+    entries.append((f"{path}f", "file", 0))
+    entries.append((path.rstrip("/") + "/" + component, "dir", 0o555))
+    blob = _tar(entries)
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(blob)) as reader:
+        report = reader.extract_all(dest, policy=ExtractionPolicy.TRUSTED, dry_run=True)
+    blocked = [r.member for r in report.results if r.status is ExtractionStatus.BLOCKED]
+    assert blocked
+    assert all(m.type is MemberType.SYMLINK for m in blocked)
+    assert {r.status for r in report.results} == {
+        ExtractionStatus.EXTRACTED,
+        ExtractionStatus.BLOCKED,
+    }
+    _assert_nothing_left(tmp_path, dest)
+
+
 def test_scratch_is_removed_on_abort_and_the_message_names_dest(
     tmp_path: Path,
 ) -> None:
     blob = _tar([("A", "file", 0), ("a", "file", 0)])
     dest = tmp_path / "out"
-    with open_archive(io.BytesIO(blob)) as reader:
-        with pytest.raises(NameCollisionError) as caught:
-            reader.extract_all(dest, abort_on=[AbortOn.NAME_COLLISION], dry_run=True)
+    with (
+        open_archive(io.BytesIO(blob)) as reader,
+        pytest.raises(NameCollisionError) as caught,
+    ):
+        reader.extract_all(dest, abort_on=[AbortOn.NAME_COLLISION], dry_run=True)
     assert display_path(dest / "A") in str(caught.value)
     assert "archivey-dry-run-" not in str(caught.value)
     _assert_nothing_left(tmp_path, dest)

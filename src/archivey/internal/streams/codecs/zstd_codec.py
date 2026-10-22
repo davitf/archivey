@@ -36,8 +36,6 @@ from archivey.internal.streams.codecs.framed_decoder import (
 from archivey.internal.streams.codecs.isolated import natives_for
 from archivey.internal.streams.codecs.zstd_framing import (
     FRAME_MAGIC as ZSTD_FRAME_MAGIC,
-)
-from archivey.internal.streams.codecs.zstd_framing import (
     regular_frame_behind_skippable_frames,
 )
 from archivey.internal.streams.codecs.zstd_seek_table import build_seek_table_index

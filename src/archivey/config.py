@@ -69,9 +69,9 @@ class AcceleratorMode(Enum):
         # AUTO: only pay for seek machinery when the caller asked for seekable streams.
         if not (available and seekable):
             return False
-        if min_size is not None and input_size is not None and input_size < min_size:
-            return False
-        return True
+        return not (
+            min_size is not None and input_size is not None and input_size < min_size
+        )
 
 
 class ProcessIsolation(Enum):

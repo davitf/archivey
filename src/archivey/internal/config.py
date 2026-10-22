@@ -28,8 +28,8 @@ if TYPE_CHECKING:
 # ``DEFAULT_ARCHIVEY_CONFIG`` are imported for use below, not re-exported —
 # callers take those from ``archivey.config``.
 __all__ = [
-    "AcceleratorMode",
     "DEFAULT_STREAM_CONFIG",
+    "AcceleratorMode",
     "DecoderLimits",
     "KeyDerivationBudget",
     "ProcessIsolation",
