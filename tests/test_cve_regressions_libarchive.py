@@ -429,6 +429,7 @@ def test_cve_2025_25724_out_of_range_mtime(
     path.write_bytes(archive)
     listing = subprocess.run(
         [sys.executable, "-m", "archivey", "list", str(path)],
+        check=False,
         capture_output=True,
         text=True,
         timeout=120,
@@ -466,13 +467,15 @@ def test_cve_2007_3644_archive_ending_inside_an_extended_header(
     extended header. CVE-2024-57970: it read past a GNU long-link header cut short.
     Both are a truncated archive, and say so."""
     start = time.monotonic()
-    with pytest.raises(TruncatedError):
-        with open_archive(io.BytesIO(archive), streaming=streaming) as reader:
-            if streaming:
-                for _ in reader.stream_members():
-                    pass
-            else:
-                reader.members()
+    with (
+        pytest.raises(TruncatedError),
+        open_archive(io.BytesIO(archive), streaming=streaming) as reader,
+    ):
+        if streaming:
+            for _ in reader.stream_members():
+                pass
+        else:
+            reader.members()
     assert time.monotonic() - start < 5
 
 
@@ -481,10 +484,12 @@ def test_cve_2015_8932_compress_header_with_bad_code_width(flags: int) -> None:
     """libarchive before 3.2.0 shifted by the .Z header's code width unchecked. A
     width outside 9..16 bits, or reserved flags, is refused before any decoding."""
     data = b"\x1f\x9d" + bytes([flags]) + b"\x41\x00" * 10
-    with pytest.raises((CorruptionError, UnsupportedFeatureError)) as info:
-        with open_archive(io.BytesIO(data), format=ArchiveFormat.Z) as reader:
-            with reader.open(reader.members()[0]) as stream:
-                stream.read()
+    with (
+        pytest.raises((CorruptionError, UnsupportedFeatureError)) as info,
+        open_archive(io.BytesIO(data), format=ArchiveFormat.Z) as reader,
+        reader.open(reader.members()[0]) as stream,
+    ):
+        stream.read()
     assert "code width" in str(info.value) or "reserved flags" in str(info.value)
 
 
