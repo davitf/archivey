@@ -167,18 +167,41 @@ _SUSPENDED_SOURCES = [
     pytest.param(_sevenzip_fixture, True, id="7z-solid-streaming"),
 ]
 
+# Reading a member of the RAR fixture runs RARLAB unrar, which a core-only install
+# may lack. Listing it does not, so only the tests that read are gated, keyed on the
+# fixture function rather than the row id. binary_refusal("unrar") is archivey's own
+# rule, met by RARLAB unrar or rar 6.0+.
+_UNRAR_REFUSAL = binary_refusal("unrar")
+_READ_SOURCES = [
+    pytest.param(
+        *p.values,
+        id=p.id,
+        marks=pytest.mark.skipif(
+            _UNRAR_REFUSAL is not None, reason=f"needs unrar: {_UNRAR_REFUSAL}"
+        ),
+    )
+    if p.values[0] is _rar_fixture
+    else p
+    for p in _SUSPENDED_SOURCES
+]
 
-@pytest.mark.parametrize(("make_source", "streaming"), _SUSPENDED_SOURCES)
+
+@pytest.mark.parametrize(("make_source", "streaming"), _READ_SOURCES)
 def test_close_while_stream_members_suspended_closes_reader(
     tmp_path: Path, make_source, streaming: bool
 ) -> None:
     reader = open_archive(make_source(tmp_path), streaming=streaming)
     it = reader.stream_members()
-    # Stop at the first file, so a stream is open mid-pass.
-    stream = next(s for _m, s in it if s is not None)
+    # Stop at the first file with data and read one byte of it, so a stream is part-read
+    # mid-pass (a solid block or an unrar pipe in flight).
+    stream = next(s for m, s in it if s is not None and m.size)
+    assert len(stream.read(1)) == 1
     reader.close()
-    # The yielded stream went with the reader, and the reader takes no new calls.
+    # The yielded stream went with the reader, reads as any closed stream does, and the
+    # reader takes no new calls.
     assert stream.closed
+    with pytest.raises(ValueError, match="closed file"):
+        stream.read(1)
     with pytest.raises(ArchiveyUsageError, match="closed"):
         reader.stream_members()
     # Resuming the suspended pass reports the close instead of reading on.
@@ -234,26 +257,6 @@ def test_close_while_streaming_iteration_suspended_closes_reader(
     reader.close()
     with pytest.raises(ArchiveyUsageError, match="closed"):
         next(it)
-
-
-# Reading a member of the RAR fixture runs RARLAB unrar, which a core-only install
-# may lack. Listing it does not, so only the tests that read are gated, keyed on the
-# fixture function rather than the row id. binary_refusal("unrar") is archivey's own
-# rule, met by RARLAB unrar or rar 6.0+; requires_binary("unrar") would also want the
-# unrar command itself on PATH.
-_UNRAR_REFUSAL = binary_refusal("unrar")
-_READ_SOURCES = [
-    pytest.param(
-        *p.values,
-        id=p.id,
-        marks=pytest.mark.skipif(
-            _UNRAR_REFUSAL is not None, reason=f"needs unrar: {_UNRAR_REFUSAL}"
-        ),
-    )
-    if p.values[0] is _rar_fixture
-    else p
-    for p in _SUSPENDED_SOURCES
-]
 
 
 @dataclass
