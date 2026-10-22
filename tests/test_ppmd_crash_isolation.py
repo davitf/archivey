@@ -4,7 +4,7 @@ pyppmd (1.3.1, and 1.2.0) segfaults when asked to decode after a corrupt stream 
 hit its end early. Every PPMd member therefore decodes in a child process
 (``ppmd_child``, on the shared decoder worker), unless ``process_isolation`` is
 ``NONE``; there ``PpmdDecoder`` hands pyppmd a member whole when it is at most
-``DecoderLimits.max_ppmd_in_process_input`` of compressed input. The hostile-input
+``DecoderLimits.max_ppmd_held_input`` of compressed input. The hostile-input
 tests run in a fresh interpreter so that a regression fails the test instead of
 killing the session.
 """
@@ -332,7 +332,7 @@ def test_a_child_that_cannot_start_is_a_resource_limit(
     "limits",
     [
         DecoderLimits(),
-        DecoderLimits(max_ppmd_in_process_input=1024),
+        DecoderLimits(max_ppmd_held_input=1024),
         DecoderLimits.UNLIMITED,
     ],
     ids=["held", "in-pieces", "unlimited"],

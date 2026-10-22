@@ -418,9 +418,9 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
             ),
             _case(
                 "DecoderLimits",
-                "max_ppmd_in_process_input",
+                "max_ppmd_held_input",
                 bad,
-                lambda b=bad: DecoderLimits(max_ppmd_in_process_input=b),
+                lambda b=bad: DecoderLimits(max_ppmd_held_input=b),
             ),
             _case(
                 "SpoolLimits",
@@ -1201,3 +1201,13 @@ def test_empty_string_path_is_refused(
             case.call()
         assert isinstance(caught.value, ArchiveyUsageError)
     assert sorted(p.name for p in cwd.iterdir()) == ["precious.txt"]
+
+
+def test_max_ppmd_in_process_input_kwarg_is_gone() -> None:
+    """``max_ppmd_in_process_input`` became ``max_ppmd_held_input`` with no alias.
+
+    Python rejects unknown kwargs on its own; this locks the removal, so accepting the
+    old spelling again has to delete this test.
+    """
+    with pytest.raises(TypeError, match="max_ppmd_in_process_input"):
+        DecoderLimits(max_ppmd_in_process_input=1)  # type: ignore[call-arg]
