@@ -228,8 +228,9 @@ Each setting in `CONFIG` does one job:
   may use on your server.
 - `ProcessIsolation.NATIVE_DECODERS` runs every native decoder, such as zlib, bz2 and lzma, in a
   child process, so a crash in one raises `CorruptionError` for that member instead of ending your
-  server. AES decryption and checksums still run in your process. Reads take longer, by about
-  1.05 to 5 times depending on the compression
+  server. AES decryption and checksums still run in your process. A large stream reads about
+  1.05 to 6 times slower depending on the compression, and each member with its own decoder adds
+  about 1 ms (2 ms for PPMd), which is most of the cost for an archive of many small members
   ([Decoders in a child process](security.md#decoders-in-a-child-process)).
 - `DiagnosticPolicy.STRICT` raises `DiagnosticRaisedError` when the archive itself is unusual, such
   as a name that displays as a different one, bytes after the end of the archive, or a TAR that ends

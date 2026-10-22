@@ -2713,6 +2713,9 @@ def test_a_utf8_rock_ridge_name_ignores_encoding() -> None:
         # A final newline is part of the name, so no version follows it.
         ("FOO;1\n", True, ("FOO;1\n", None)),
         ("FOO;1\n", False, ("FOO;1\n", None)),
+        # A version is ASCII digits; an Arabic-Indic one is part of the name.
+        ("FOO;\u0661", True, ("FOO;\u0661", None)),
+        ("FOO;\u0661", False, ("FOO;\u0661", None)),
     ],
 )
 def test_strip_version_rules(
