@@ -67,9 +67,11 @@ def test_a_directory_entry_contradicting_the_local_header_fails_the_member(
     header; the directory describes other data, so the member fails at the end."""
     raw = _zip()
     struct.pack_into(fmt, raw, _central(raw) + at, value)
-    with archivey.open_archive(io.BytesIO(bytes(raw))) as archive:
-        with pytest.raises(CorruptionError):
-            archive.read("a.txt")
+    with (
+        archivey.open_archive(io.BytesIO(bytes(raw))) as archive,
+        pytest.raises(CorruptionError),
+    ):
+        archive.read("a.txt")
     with pytest.raises(
         CorruptionError, match="local header and its central directory entry disagree"
     ):
@@ -120,9 +122,11 @@ def test_a_member_decoding_short_of_its_size_is_truncation_as_from_a_file() -> N
     for at in (22, _central(raw) + 24):  # the size, in both headers
         struct.pack_into("<I", raw, at, 1000)
     message = r"Decompressed content ended after 220 of 1000 expected bytes\."
-    with archivey.open_archive(io.BytesIO(bytes(raw))) as archive:
-        with pytest.raises(TruncatedError, match=message):
-            archive.read("a.txt")
+    with (
+        archivey.open_archive(io.BytesIO(bytes(raw))) as archive,
+        pytest.raises(TruncatedError, match=message),
+    ):
+        archive.read("a.txt")
     with pytest.raises(TruncatedError, match=message):
         _drain(bytes(raw))
 
@@ -164,9 +168,11 @@ def test_damage_past_the_prefix_under_a_lone_surviving_password_is_the_codecs(
     monkeypatch.setattr(password_confirm, "PASSWORD_CONFIRM_PREFIX_BYTES", 4096)
     monkeypatch.setattr(zip_reader, "PASSWORD_CONFIRM_PREFIX_BYTES", 4096)
     passwords = [right, b"also-wrong"]
-    with archivey.open_archive(io.BytesIO(bytes(blob)), password=passwords) as archive:
-        with pytest.raises(TruncatedError):
-            archive.read("a.txt")
+    with (
+        archivey.open_archive(io.BytesIO(bytes(blob)), password=passwords) as archive,
+        pytest.raises(TruncatedError),
+    ):
+        archive.read("a.txt")
     with pytest.raises(TruncatedError) as caught:
         _drain(bytes(blob), password=passwords)
     assert not isinstance(caught.value, EncryptionError)
@@ -182,8 +188,10 @@ def test_an_aes_member_short_of_its_size_under_several_passwords_is_truncation()
     for signature, at in ((b"PK\x03\x04", 22), (b"PK\x01\x02", 24)):
         struct.pack_into("<I", raw, raw.index(signature) + at, 100_000)
     passwords = [b"right", b"wrong"]
-    with archivey.open_archive(io.BytesIO(bytes(raw)), password=passwords) as archive:
-        with pytest.raises(TruncatedError):
-            archive.read("a.bin")
+    with (
+        archivey.open_archive(io.BytesIO(bytes(raw)), password=passwords) as archive,
+        pytest.raises(TruncatedError),
+    ):
+        archive.read("a.bin")
     with pytest.raises(TruncatedError):
         _drain(bytes(raw), password=passwords)

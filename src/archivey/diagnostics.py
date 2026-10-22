@@ -504,24 +504,24 @@ class MemberTimestampContext(_JsonSafeContext):
 class MemberHeaderRecordContext(_JsonSafeContext):
     """An optional metadata record inside a member header was unreadable.
 
-    The record was dropped and the member listed without whatever it carried, so
-    the field it would have populated is absent rather than wrong. ``record`` names
-    the record as the format calls it (a RAR5 extra area's ``hash``, ``time``,
-    ``redir``, ``version``; ZIP's Unicode Path extra field, ``unicode_path``, and its
-    Unix owner extra fields, ``unix_owner``; ISO's Rock Ridge records, ``rock_ridge``;
-    a TAR device header's ``device_numbers``, when its devmajor or devminor field is
-    not a number);
-    ``record_id`` is its numeric type where the format has one (0x7075 for
-    ``unicode_path``, the field's tag for ``unix_owner``), so an unnamed record is
+    The record was dropped and the member listed without whatever it carried, so the
+    field it would have populated is absent rather than wrong. ``record`` names the
+    record as the format calls it (a RAR5 extra area's ``hash``, ``time``, ``redir``,
+    ``version``; ZIP's Unicode Path extra field, ``unicode_path``, its Unicode Comment
+    extra field, ``unicode_comment``, and its Unix owner extra fields, ``unix_owner``;
+    ISO's Rock Ridge records, ``rock_ridge``; a TAR device header's ``device_numbers``,
+    when its devmajor or devminor field is not a number); ``record_id`` is its numeric
+    type where the format has one (0x7075 for ``unicode_path``, 0x6375 for
+    ``unicode_comment``, the field's tag for ``unix_owner``), so an unnamed record is
     still identifiable.
 
-    A RAR5 member header is attacker-sized, so how many records one member may drop
-    is capped and reaching the cap stops the header being read; an ISO Rock Ridge
-    entry list stops at its first malformed entry. ``list_truncated`` is true on the
-    one diagnostic reporting either cut — it is the *record* list that was cut
-    short, not the archive's listing; ``record`` names nothing on that one.
-    Everywhere else it is false. ZIP never sets it: a member reports at most one
-    ``unicode_path`` and one ``unix_owner`` record.
+    A RAR5 member header is attacker-sized, so how many records one member may drop is
+    capped and reaching the cap stops the header being read; an ISO Rock Ridge entry
+    list stops at its first malformed entry. ``list_truncated`` is true on the one
+    diagnostic reporting either cut — it is the *record* list that was cut short, not
+    the archive's listing; ``record`` names nothing on that one. Everywhere else it is
+    false. ZIP never sets it: a member reports at most one ``unicode_path``, one
+    ``unicode_comment`` and one ``unix_owner`` record.
 
     A RAR5 archive's own ``CMT`` and ``QO`` service headers carry the same records
     and are reported the same way, and they are not members: those diagnostics
