@@ -566,14 +566,13 @@ class DecoderLimits:
     16 MiB.
 
     The decoder is pyppmd, in a child process unless ``process_isolation`` is
-    ``ProcessIsolation.NONE``. Fed whole, it decodes a valid member in full and is
-    asked little after a corrupt one ends early, the state in which it can crash. Fed in
-    pieces, it can stop at a false end on valid data (``TruncatedError`` a few KiB
-    short), and it cannot tell a corrupt stream that ended from a valid one waiting for
-    input. Holding costs memory in this process: the held input, and about as much
-    again while it is copied. A larger member, and a ZIP member read from a stream that
-    cannot seek with its sizes stored after its data, is fed in pieces. ``None`` holds
-    every member whose size is known, at a memory cost that grows with the member."""
+    ``ProcessIsolation.NONE``. Fed whole, it is asked little after a corrupt member
+    ends early, the state in which it can crash. Fed in pieces, it cannot tell a
+    corrupt stream that ended from a valid one waiting for input. Holding costs memory
+    in this process: the held input, and about as much again while it is copied. A
+    larger member, and a ZIP member read from a stream that cannot seek with its sizes
+    stored after its data, is fed in pieces. ``None`` holds every member whose size is
+    known, at a memory cost that grows with the member."""
 
     UNLIMITED: ClassVar[DecoderLimits]
 
