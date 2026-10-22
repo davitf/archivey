@@ -621,9 +621,7 @@ def test_ppmd_child_decodes_a_7z_nested_in_a_ppmd_7z(tmp_path: Path) -> None:
     path.write_bytes(
         _zip_of({"o.7z": ppmd_7z("inner.7z", ppmd_7z("text.txt", payload))})
     )
-    config = _config(
-        "off", decoder_limits=DecoderLimits(max_ppmd_in_process_input=1024)
-    )
+    config = _config("off", decoder_limits=DecoderLimits(max_ppmd_held_input=1024))
 
     def go() -> None:
         with (
