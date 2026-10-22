@@ -144,14 +144,17 @@ not the separate `indexed_bzip2` package. The stdlib peer reads in one forward p
 | tar.bz2 | 274.3 ms | 193.9 ms | 262.2 ms | 0.71× |
 | ZIP deflate, 64 members | 21.1 ms | 2 767 ms | — | **131×** slower |
 
-**These rows force the accelerator on below the size where it pays.** Since PR 493,
-rapidgzip and its bzip2 decoder run in a child process, one per stream (PR 904 later
-made this the `ProcessIsolation.KNOWN_CRASHES` default and kept it). Each child costs
-a fixed start-up, which `src/archivey/config.py` puts at about 45 ms and a break-even
-near 13 MB of compressed DEFLATE input. `use_rapidgzip` under `AUTO`, the default,
-therefore engages only from 16 MiB of known compressed input (`use_indexed_bzip2`
-from 1 MiB). These fixtures compress to far less than that, so `AUTO` stays on the
-stdlib for all of them, and the ON rows show start-up cost:
+**These rows force the accelerator on below the size where it pays.** rapidgzip has
+run in a child process, one per stream, since PR 493, and its bzip2 decoder since
+PR 661 (PR 904 later made this part of the `ProcessIsolation.KNOWN_CRASHES` default
+and kept it). Each child costs a fixed start-up, which `src/archivey/config.py` puts
+at about 45 ms and a break-even near 13 MB of compressed DEFLATE input. The default
+setting, `AUTO`, engages the accelerator only when **both** hold: the caller asked
+for seekable streams (`seekable_members=True` on `open_archive`, `seekable=True` on
+`open_stream`), and the known compressed input is at least 16 MiB for
+`use_rapidgzip` or 1 MiB for `use_indexed_bzip2`. A default call asks for no seeking,
+so it stays on the stdlib whatever the size. These fixtures are also far below the
+thresholds, and the ON rows show start-up cost:
 
 - The ZIP row opens 64 streams: (2 767 − 21) ms ÷ 64 is 43 ms per member.
 - tar.gz is one stream, and its 123 ms over accelerator-off is that start-up plus
@@ -165,19 +168,21 @@ for that case. A separate measurement (2026-10-22, same host class, CPython 3.13
 text-like data compressing about 2:1, fastest of three warm reads) fills part of the
 gap. It is not part of the harness runs above:
 
-- **Where `AUTO` engages on a sequential source it wins.** A single 64 MiB `.gz`
-  reads in 289 ms with the accelerator against 456 ms without; a 64-member 64 MiB
-  `.tar.gz` in 301 against 550 ms; a 32 MiB `.tar.bz2` in 475 against 1 800 ms.
+- **Where `AUTO` engages on a gzip or bzip2 file or tar, it wins** (that is, with
+  seekable streams asked for and a large input). A single 64 MiB `.gz` reads in
+  289 ms with the accelerator against 456 ms without; a 64-member 64 MiB `.tar.gz`
+  in 301 against 550 ms; a 32 MiB `.tar.bz2` in 475 against 1 800 ms.
 - **A single `.gz` or `.bz2` starts two children**, about 70 ms in total: the
   one-byte format check at open uses an accelerated stream, and the read starts
   another. A `.tar.gz` starts one.
-- **In-ZIP DEFLATE never gains, and the default can pick it.** With
-  `seekable_members=True`, `AUTO` uses rapidgzip for a ZIP DEFLATE member of 16 MiB
+- **In-ZIP DEFLATE never gains, and `AUTO` can pick it.** With
+  `seekable_members=True`, the default `use_rapidgzip=AUTO` uses rapidgzip for a ZIP DEFLATE member of 16 MiB
   or more compressed. A 32 MiB member (17 MB compressed) reads in 379 ms that way
-  against 230 ms with the accelerator off. Even in-process rapidgzip loses there
-  (289 ms), because a ZIP member reaches it as a Python stream rather than a path,
-  so every read and seek calls back into the parent. This is the one case found
-  where the default is slower with the accelerator than without.
+  against 230 ms with the accelerator off. The process boundary is not the cause:
+  rapidgzip called directly in the same process, outside archivey (no archivey
+  setting decodes in-process), also loses at 289 ms. A ZIP member reaches rapidgzip
+  as a Python file object rather than a path, so each of its reads and seeks calls
+  back into Python. This is the one case found where `AUTO` is slower than `OFF`.
 
 **The documented command fails its sanity ceiling on this host.**
 `targz_read_all_accel_on` measured 10.9–13.6× against its own stdlib pair, above
