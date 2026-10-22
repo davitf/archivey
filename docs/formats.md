@@ -333,6 +333,20 @@ sending side when the ZIP is done.
   directory's name is used and `MEMBER_LOCAL_NAME_DIFFERS` is reported, which `STRICT` refuses. The
   data is checked against the local CRC-32 and `MEMBER_LOCAL_CRC_USED` is reported, which `STRICT`
   reads: Adobe AIR packages store `META-INF/AIR/hash` this way.
+- **The local header names another compression method than the directory:** the member is
+  decoded by the local header's method, from a file and a pipe alike. The local header sits next to
+  the data and is all a pipe has, so both reads give the same bytes, still checked against the
+  CRC-32. `MEMBER_LOCAL_METHOD_DIFFERS` is reported, which `STRICT` refuses, since a tool that
+  trusts the directory reads the member differently. The member's `compression` still names the
+  directory's method, as the listing comes from the directory; the diagnostic gives both. WinZip
+  AES in the directory only is refused with `CorruptionError` from a file and `EncryptionError`
+  from a pipe, where the local header alone says how the data is encrypted. WinZip AES in the
+  local header only is refused with `CorruptionError` from both, from a pipe once the pass
+  reaches the directory. WinZip AES in both headers with AES records that differ (version, key
+  strength or method), or with one header's record missing, is refused with `CorruptionError`
+  from a file. A pipe decrypts by the local record and refuses it too: where that decryption
+  fails, with the error it meets (`EncryptionError` for another key strength), and where it
+  succeeds, once the pass reaches the directory.
 - **Both headers declare less than the data decodes to:** the member is refused with
   `CorruptionError`.
 - **Bytes after a member's compressed stream:** a member's compressed data must hold one stream of
