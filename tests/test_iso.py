@@ -9,6 +9,7 @@ import contextlib
 import io
 import os
 import struct
+import subprocess
 from collections.abc import Callable, Generator
 from pathlib import Path
 from typing import IO, Any
@@ -37,7 +38,7 @@ from archivey.internal.backends.iso_reader import IsoReader, _strip_version
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.streamtools import DEFAULT_UNKNOWN_LENGTH_READ_STEP
 from archivey.types import FormatSupport
-from tests.conftest import requires
+from tests.conftest import requires, requires_binary
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.streams_util import (
     FactSizedReadRecorder,
@@ -186,6 +187,54 @@ def test_plain_iso_namespace_and_fidelity(tmp_path: Path) -> None:
         assert "FILE.TXT" in names
         assert "DIR/" in names
         assert ar.get("FILE.TXT").mode is None  # no POSIX metadata
+
+
+_PVD_VOLUME_ID = slice(16 * 2048 + 40, 16 * 2048 + 72)
+
+
+@requires_binary("xorriso")
+def test_volume_id_written_as_utf8_is_the_comment(tmp_path: Path) -> None:
+    """xorriso 1.5.6 stores ``-V`` as UTF-8 in the primary descriptor (its Joliet copy
+    turns each non-ASCII byte into ``_``), so the comment reads it as a name is read."""
+    (tmp_path / "a.txt").write_bytes(b"hi")
+    path = tmp_path / "v.iso"
+    subprocess.run(
+        ["xorriso", "-as", "mkisofs", "-quiet", "-R", "-J", "-V", "Café vol"]
+        + ["-o", str(path), str(tmp_path / "a.txt")],
+        check=True,
+        capture_output=True,
+    )
+    assert path.read_bytes()[_PVD_VOLUME_ID].startswith("Café vol".encode())
+    with open_archive(path) as ar:
+        assert ar.info.comment == "Café vol"
+
+
+@pytest.mark.parametrize(
+    ("encoding", "expected"),
+    [(None, "caf\udce9 vol"), ("cp1252", "café vol"), ("utf-8", "caf\udce9 vol")],
+)
+def test_volume_id_decodes_as_a_byte_name(
+    tmp_path: Path, encoding: str | None, expected: str
+) -> None:
+    # Not UTF-8: encoding= decodes it, as for a Rock Ridge or ISO 9660 name, and a byte
+    # nothing decodes survives as a lone surrogate rather than U+FFFD.
+    image = bytearray(_build_iso(rock_ridge=True, joliet=True))
+    image[_PVD_VOLUME_ID] = b"caf\xe9 vol".ljust(32, b" ")
+    path = tmp_path / "v.iso"
+    path.write_bytes(image)
+    with open_archive(path, encoding=encoding) as ar:
+        assert ar.info.comment == expected
+
+
+def test_volume_id_keeps_its_own_trailing_character(tmp_path: Path) -> None:
+    # Only the standard's space padding is removed: a label ending in a no-break space
+    # keeps it, though Python counts it as whitespace.
+    image = bytearray(_build_iso(rock_ridge=True, joliet=True))
+    image[_PVD_VOLUME_ID] = "Café\xa0".encode().ljust(32, b" ")
+    path = tmp_path / "v.iso"
+    path.write_bytes(image)
+    with open_archive(path) as ar:
+        assert ar.info.comment == "Café\xa0"
 
 
 # ---------------------------------------------------------------------------
