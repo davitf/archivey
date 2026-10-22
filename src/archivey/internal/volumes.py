@@ -57,7 +57,7 @@ SourceSequence = Sequence[SourceItem]
 # in the ZIP backend instead. ``name.z01`` does match the broad old-scheme RAR shape
 # below, and what keeps it out of a RAR set there is stated beside that pattern.
 #
-# **Three digits minimum, not ``\d+``.** 7-Zip numbers from ``.001`` and widens past
+# **Three digits minimum, not one or more.** 7-Zip numbers from ``.001`` and widens past
 # part 999, so nothing it emits needs fewer. Accepting one or two would swallow
 # ``name.zip.1`` / ``name.zip.2`` — what wget and naive rotation produce for two
 # downloads of the *same* file — and concatenate two independent complete archives,
@@ -87,8 +87,9 @@ _MAX_VOLUME_PART = 999_999
 # This pattern and ``_RAR_PART_RE`` end in ``\Z``, not ``$``: ``$`` also matches before
 # a final newline, which would read ``name.7z.001\n`` as a volume name. Digits are
 # ``[0-9]``, not ``\d``: on a ``str`` pattern ``\d`` matches any Unicode digit, so
-# ``0.7z.\u0660\u0660\u0660`` (Arabic-Indic zeros) was a numbered part *and* an
-# old-scheme RAR continuation, and the schemes stopped being disjoint.
+# ``0.7z.\u066000`` (an Arabic-Indic zero, then two ASCII zeros) was a numbered part
+# (``\d{3,6}`` took all three) *and* an old-scheme RAR continuation (its
+# ``[^.0-9]`` took the Arabic-Indic zero as the letter), so the schemes overlapped.
 _NUMBERED_VOLUME_RE = re.compile(
     r"^(?P<base>.+\.(?:7z|zip|exe))\.0*(?P<part>[0-9]{3,6})\Z", re.IGNORECASE
 )
