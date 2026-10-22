@@ -8,6 +8,8 @@ GitHub release notes. So the edits are pinned here, including on the real files.
 from __future__ import annotations
 
 import importlib.util
+import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -301,6 +303,7 @@ def test_dry_run_start_prints_the_steps_in_order(
         ["git", "push"],
         ["gh", "pr"],
         ["gh", "workflow"],
+        *[["gh", "workflow"]] * len(release.RELEASE_GATE_WORKFLOWS),
     ]
 
 
@@ -317,7 +320,8 @@ def test_dry_run_tag_checks_both_packages(
         encoding="utf-8",
     )
     assert release.main(["--dry-run", "tag", "0.2.1"]) == 0
-    assert "+ gh release create v0.2.1 --target main" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "+ gh release create v0.2.1 --target '<release-PR-merge-commit>'" in out
 
     cli = release.CLI_PYPROJECT
     cli.write_text(
@@ -326,3 +330,199 @@ def test_dry_run_tag_checks_both_packages(
     )
     assert release.main(["--dry-run", "tag", "0.2.1"]) == 1
     assert "archivey-cli/pyproject.toml is at version 0.2.0" in capsys.readouterr().err
+
+
+def test_dry_run_start_dispatches_each_gate_once(
+    fake_root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert release.main(["--dry-run", "start", "0.2.1", "--no-testpypi"]) == 0
+    dispatches = [
+        line for line in capsys.readouterr().out.splitlines()
+        if line.startswith("+ gh workflow run")
+    ]  # fmt: skip
+    assert dispatches == [
+        f"+ gh workflow run {workflow} --ref release/v0.2.1"
+        for workflow in release.RELEASE_GATE_WORKFLOWS
+    ]
+
+
+HEAD = "a" * 40
+OLD = "b" * 40
+MERGE = "c" * 40
+
+
+def _run(sha: str, status: str = "completed", conclusion: str = "success") -> dict:
+    return {
+        "headSha": sha,
+        "status": status,
+        "conclusion": conclusion,
+        "url": f"https://example.invalid/{sha[:4]}",
+    }
+
+
+@pytest.fixture
+def released_root(fake_root: Path) -> Path:
+    """``fake_root`` after the release PR for 0.2.1 merged."""
+    for path in (release.ROOT_PYPROJECT, release.CLI_PYPROJECT):
+        path.write_text(
+            release.set_project_version(path.read_text(encoding="utf-8"), "0.2.1"),
+            encoding="utf-8",
+        )
+    release.CHANGELOG.write_text(
+        release.changelog_for_release(CHANGELOG, "0.2.1", "v0.2.0", "2026-11-20"),
+        encoding="utf-8",
+    )
+    return fake_root
+
+
+def _fake_gh(
+    monkeypatch: pytest.MonkeyPatch,
+    runs: dict[str, list[dict]],
+    merge_commit: str | None = MERGE,
+) -> list[list[str]]:
+    """Answer ``gh pr view`` with HEAD and ``gh run list`` from ``runs``; record the rest.
+
+    The commands that would change something are recorded and not run.
+    """
+    changes: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        cmd = list(cmd)
+        if cmd[:3] == ["gh", "pr", "view"]:
+            merged = {"oid": merge_commit} if merge_commit else None
+            out = json.dumps({"headRefOid": HEAD, "mergeCommit": merged})
+        elif cmd[:3] == ["gh", "run", "list"]:
+            assert cmd[cmd.index("--branch") + 1] == "release/v0.2.1"
+            out = json.dumps(runs.get(cmd[cmd.index("--workflow") + 1], []))
+        else:
+            changes.append(cmd)
+            out = ""
+        return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
+
+    monkeypatch.setattr(release, "_require_clean_main", lambda: None)
+    monkeypatch.setattr(release.subprocess, "run", fake_run)
+    return changes
+
+
+def _all_green() -> dict[str, list[dict]]:
+    return {w: [_run(HEAD)] for w in release.RELEASE_GATE_WORKFLOWS}
+
+
+def test_tag_passes_when_every_gate_is_green_on_the_head(
+    released_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runs = _all_green()
+    # A newer red run on an old commit does not matter.
+    runs[release.RELEASE_GATE_WORKFLOWS[0]].insert(0, _run(OLD, conclusion="failure"))
+    changes = _fake_gh(monkeypatch, runs)
+    assert release.main(["tag", "0.2.1"]) == 0
+    assert [cmd[:6] for cmd in changes] == [
+        ["gh", "release", "create", "v0.2.1", "--target", MERGE]
+    ]
+
+
+def test_tag_refuses_before_the_release_pr_merges(
+    released_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    changes = _fake_gh(monkeypatch, _all_green(), merge_commit=None)
+    assert release.main(["tag", "0.2.1"]) == 1
+    assert changes == []
+    assert "has not merged yet" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("gate_runs", "reason"),
+    [
+        ([], "no run on aaaaaaaaaaaa"),
+        ([_run(OLD)], "no run on aaaaaaaaaaaa"),
+        ([_run(HEAD, conclusion="failure")], "failure"),
+        ([_run(HEAD, status="in_progress", conclusion="")], "still running"),
+        # Newest first: a red run after a green one on the same commit holds the release.
+        ([_run(HEAD, conclusion="failure"), _run(HEAD)], "failure"),
+        (
+            [_run(HEAD, status="in_progress", conclusion=""), _run(HEAD)],
+            "still running",
+        ),
+    ],
+    ids=["missing", "older-commit", "red", "running", "red-after-green", "rerunning"],
+)
+def test_tag_refuses_a_gate_without_a_green_run_on_the_head(
+    released_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    gate_runs: list[dict],
+    reason: str,
+) -> None:
+    first, *rest = release.RELEASE_GATE_WORKFLOWS
+    runs = _all_green()
+    runs[first] = gate_runs
+    runs[rest[-1]] = []
+    changes = _fake_gh(monkeypatch, runs)
+    assert release.main(["tag", "0.2.1"]) == 1
+    assert changes == []
+    err = capsys.readouterr().err
+    assert f"{first}: {reason}" in err
+    assert f"{rest[-1]}: no run on" in err
+    assert "newest run of these release gates is not green" in err
+    assert f"git push origin {HEAD}:refs/heads/release/v0.2.1" in err
+    for workflow in (first, rest[-1]):
+        assert f"gh workflow run {workflow} --ref release/v0.2.1" in err
+    for workflow in rest[:-1]:
+        assert f"{workflow}:" not in err
+
+
+def test_dry_run_tag_prints_the_gate_checks(
+    released_root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert release.main(["--dry-run", "tag", "0.2.1"]) == 0
+    out = capsys.readouterr().out
+    assert "+ gh pr view release/v0.2.1 --json headRefOid" in out
+    for workflow in release.RELEASE_GATE_WORKFLOWS:
+        assert f"+ gh run list --workflow {workflow} --branch release/v0.2.1" in out
+    assert out.index("+ gh run list") < out.index("+ gh release create")
+
+
+WORKFLOWS = ROOT / ".github" / "workflows"
+# Scheduled workflows that are not release gates, and why.
+NOT_RELEASE_GATES = {
+    "benchmark-wall.yml": "the release checklist §2 runs the benchmark by hand",
+    "conflict-notice.yml": "comments on conflicted pull requests; it tests nothing",
+}
+
+
+def _triggers(path: Path) -> dict:
+    # pyyaml is in the dev group, which the core-only leg does not install.
+    yaml = pytest.importorskip("yaml")
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    # YAML 1.1 reads the bare key `on` as True.
+    triggers = data.get("on", data.get(True))
+    return triggers if isinstance(triggers, dict) else dict.fromkeys(triggers)
+
+
+def test_every_scheduled_workflow_is_classified() -> None:
+    """A new scheduled workflow fails here until it is a gate or has a reason not to be."""
+    scheduled = {
+        path.name for path in WORKFLOWS.glob("*.y*ml") if "schedule" in _triggers(path)
+    }
+    gates = set(release.RELEASE_GATE_WORKFLOWS)
+    assert not gates & set(NOT_RELEASE_GATES)
+    assert scheduled - gates - set(NOT_RELEASE_GATES) == set()
+    assert set(NOT_RELEASE_GATES) <= scheduled
+
+
+def test_every_gate_can_be_dispatched() -> None:
+    for workflow in release.RELEASE_GATE_WORKFLOWS:
+        assert "workflow_dispatch" in _triggers(WORKFLOWS / workflow), workflow
+
+
+def test_tag_checks_the_gates_on_another_branch(
+    released_root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A release PR opened by hand names its branch with ``--branch``."""
+    assert release.main(["--dry-run", "tag", "0.2.1", "--branch", "hand-made"]) == 0
+    out = capsys.readouterr().out
+    assert "+ gh pr view hand-made --json headRefOid" in out
+    for workflow in release.RELEASE_GATE_WORKFLOWS:
+        assert f"+ gh run list --workflow {workflow} --branch hand-made" in out

@@ -10,9 +10,12 @@ else is here. A release is four commands, run from a clean, up-to-date ``main``:
 2. ``start X.Y.Z`` sets the version in both pyproject files (and the ``archivey-cli``
    pin), refreshes ``uv.lock``, moves the ``[Unreleased]`` text under a dated
    ``[X.Y.Z]`` heading with its compare links, commits on ``release/vX.Y.Z``, pushes,
-   opens the release pull request and starts the TestPyPI dry run on that branch.
-3. After the release pull request merges: ``tag X.Y.Z`` creates the GitHub release
-   ``vX.Y.Z`` on ``main`` with the CHANGELOG section as its body. The tag starts
+   opens the release pull request and starts the TestPyPI dry run and the
+   ``RELEASE_GATE_WORKFLOWS`` on that branch.
+3. After the release pull request merges: ``tag X.Y.Z`` checks that each release gate
+   passed on the pull request's last commit, then creates the GitHub release
+   ``vX.Y.Z`` on that pull request's merge commit, with the CHANGELOG section as its
+   body. Pull requests merged after it are not in the release. The tag starts
    ``publish.yml``, which uploads to PyPI. Run it with your own ``gh`` login: agent
    sessions cannot push tags or create releases.
 4. ``finish`` sets ``main`` to the next ``.dev0`` version in a small pull request, so
@@ -28,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import json
 import re
 import shlex
 import subprocess
@@ -48,6 +52,24 @@ _UNRELEASED_RE = re.compile(r"^## \[Unreleased\][^\n]*\n", re.MULTILINE)
 _HEADING_RE = re.compile(r"^## \[", re.MULTILINE)
 _TRAILER_RE = re.compile(r"^(<!--|\[[^\]]+\]: )", re.MULTILINE)
 _LINK_RE = re.compile(r"^\[[^\]]+\]: ", re.MULTILINE)
+
+#: The test workflows that do not run in full on every pull request and every push to
+#: main. ``start`` runs each one on the release branch and ``tag`` refuses until each one
+#: is green on the release pull request's last commit. That covers the release branch's
+#: content. A squash merge also brings in whatever reached ``main`` while the release
+#: pull request was open, which only ``ci.yml`` has seen; when that matters, merge
+#: ``main`` into the release branch and run the gates again before merging.
+#: ``benchmark-wall.yml`` is left out: the release checklist §2 runs
+#: the benchmark by hand. ``tests/test_release_script.py`` fails when a scheduled
+#: workflow is neither here nor in its list of workflows that are not gates.
+RELEASE_GATE_WORKFLOWS = (
+    "accelerator-crash-search.yml",
+    "accelerator-fuzz-soak.yml",
+    # Its pull request mode runs each target for 1 to 3 seconds; a dispatched run uses
+    # the nightly budgets, about ten times longer.
+    "atheris-fuzz.yml",
+    "rapidgzip-resume-stress.yml",
+)
 
 
 class ReleaseError(Exception):
@@ -204,6 +226,16 @@ class Runner:
         if not self.dry_run:
             subprocess.run(cmd, cwd=ROOT, check=True, text=True, input=input_text)
 
+    def read(self, *cmd: str) -> str | None:
+        """The output of a command that changes nothing; a dry run prints it and returns None."""
+        if self.dry_run:
+            print("+ " + shlex.join(cmd), flush=True)
+            return None
+        # stderr goes to the terminal, so a failing ``gh`` says why.
+        return subprocess.run(
+            cmd, cwd=ROOT, check=True, stdout=subprocess.PIPE, text=True
+        ).stdout
+
     def write(self, path: Path, text: str) -> None:
         print(f"+ write {path.relative_to(ROOT).as_posix()}", flush=True)
         if not self.dry_run:
@@ -247,6 +279,72 @@ def _write_versions(runner: Runner, pyprojects: dict[Path, str]) -> None:
     runner.run("uv", "lock")
 
 
+def _gate_dispatch(workflow: str, branch: str) -> list[str]:
+    return ["gh", "workflow", "run", workflow, "--ref", branch]
+
+
+def gate_problems(runs: list[dict[str, str]], head_sha: str) -> str | None:
+    """Why the dispatched runs of one gate do not pass ``head_sha``, or None if they do.
+
+    ``runs`` is ``gh run list --json`` output, newest first. Only a run on ``head_sha``
+    counts: a commit pushed to the release pull request after the dispatch needs a new
+    run. The newest run on it decides, so a red run after a green one holds the release:
+    most gates hunt for crashes, and a second run that finds one is the news.
+    """
+    on_head = [run for run in runs if run.get("headSha") == head_sha]
+    if not on_head:
+        return f"no run on {head_sha[:12]}"
+    latest = on_head[0]
+    if latest.get("status") == "completed" and latest.get("conclusion") == "success":
+        return None
+    if latest.get("status") != "completed":
+        return f"still running ({latest.get('url', '')})"
+    return f"{latest.get('conclusion') or 'failed'} ({latest.get('url', '')})"
+
+
+def _check_gates(runner: Runner, branch: str) -> str:
+    """Refuse unless each release gate passed on the release pull request's last commit.
+
+    Returns the pull request's merge commit, which is what the tag points at; a dry run
+    returns a placeholder for it.
+    """
+    pr = runner.read(
+        "gh", "pr", "view", branch, "--json", "headRefOid,mergeCommit"
+    )  # fmt: skip
+    head = merge = None
+    if pr is not None:
+        data = json.loads(pr)
+        head = data["headRefOid"]
+        merge = (data.get("mergeCommit") or {}).get("oid")
+        if not merge:
+            raise ReleaseError(f"the pull request from {branch} has not merged yet")
+    failing: list[str] = []
+    for workflow in RELEASE_GATE_WORKFLOWS:
+        out = runner.read(
+            "gh", "run", "list", "--workflow", workflow, "--branch", branch,
+            "--event", "workflow_dispatch", "--limit", "20",
+            "--json", "headSha,status,conclusion,url",
+        )  # fmt: skip
+        if head is None or out is None:  # a dry run
+            continue
+        problem = gate_problems(json.loads(out), head)
+        if problem is not None:
+            failing.append(
+                f"  {workflow}: {problem}\n    {shlex.join(_gate_dispatch(workflow, branch))}"
+            )
+    if failing:
+        # The branch is usually deleted when its pull request merges, and a dispatch
+        # needs a branch, so put it back at the gated commit first.
+        restore = shlex.join(["git", "push", "origin", f"{head}:refs/heads/{branch}"])
+        raise ReleaseError(
+            f"the newest run of these release gates is not green on the last commit of"
+            f" {branch} ({head}). If {branch} was deleted on merge, restore it with"
+            f" `{restore}`. Then start each gate with the command below, wait for it,"
+            " and run tag again:\n" + "\n".join(failing)
+        )
+    return merge or "<release-PR-merge-commit>"
+
+
 def cmd_notes(_args: argparse.Namespace) -> None:
     previous = _previous_tag()
     since = f"{previous}..HEAD" if previous else "HEAD"
@@ -280,8 +378,9 @@ def cmd_start(args: argparse.Namespace) -> None:
     runner.run("git", "push", "-u", "origin", branch)
     body = (
         f"Sets the version to {version} in both packages and dates the CHANGELOG entry.\n\n"
-        "Started by `scripts/release.py start`. The TestPyPI dry run runs on this branch"
-        " (Actions, Publish). After merge: `scripts/release.py tag"
+        "Started by `scripts/release.py start`. The TestPyPI dry run and the release"
+        " gates (`RELEASE_GATE_WORKFLOWS` in the script) run on this branch. Merge when"
+        " they and CI are green. After merge: `scripts/release.py tag"
         f" {version}`, then `scripts/release.py finish`.\n"
     )
     runner.run(
@@ -299,9 +398,11 @@ def cmd_start(args: argparse.Namespace) -> None:
             "-f",
             "target=testpypi",
         )
+    for workflow in RELEASE_GATE_WORKFLOWS:
+        runner.run(*_gate_dispatch(workflow, branch))
     print(
-        f"\nNext: wait for CI and the TestPyPI run, read the CHANGELOG entry, merge, then"
-        f" run `scripts/release.py tag {version}`."
+        "\nNext: wait for CI, the TestPyPI run and the release gates, read the CHANGELOG"
+        f" entry, merge, then run `scripts/release.py tag {version}`."
     )
 
 
@@ -318,8 +419,9 @@ def cmd_tag(args: argparse.Namespace) -> None:
                 " merge the release PR"
             )
     notes = changelog_section(CHANGELOG.read_text(encoding="utf-8"), version)
+    target = _check_gates(runner, args.branch or f"release/v{version}")
     pre = re.search(r"(a|b|rc)\d+$", version) is not None
-    cmd = ["gh", "release", "create", f"v{version}", "--target", "main"]
+    cmd = ["gh", "release", "create", f"v{version}", "--target", target]
     cmd += ["--title", f"archivey {version}", "--notes-file", "-"]
     if pre:
         cmd.append("--prerelease")
@@ -374,6 +476,11 @@ def main(argv: list[str] | None = None) -> int:
         "tag", help="create the GitHub release and tag after the merge"
     )
     tag.add_argument("version")
+    tag.add_argument(
+        "--branch",
+        help="the release pull request's branch, if `start` did not open it"
+        " (default: release/vVERSION)",
+    )
     finish = sub.add_parser("finish", help="move main to the next .dev0 version")
     finish.add_argument("version", nargs="?", help="default: the next patch .dev0")
     args = parser.parse_args(argv)
