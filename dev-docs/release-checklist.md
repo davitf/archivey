@@ -208,22 +208,23 @@ four commands.
    (and the `archivey[recommended]==` pin), refreshes `uv.lock`, moves the `[Unreleased]`
    text under a dated `## [X.Y.Z]` heading with its compare links, opens the release PR
    from `release/vX.Y.Z`, and starts the TestPyPI dry run on that branch (Actions →
-   Publish). It also starts each release gate workflow on that branch. These jobs no
-   longer run on every change, so a regression that only they catch could otherwise
+   Publish). It also starts each release gate workflow on that branch. These jobs do
+   not run in full on every change, so a regression that only they catch could otherwise
    ship. `RELEASE_GATE_WORKFLOWS` in `scripts/release.py` is the one list of them.
    `start` refuses an empty `[Unreleased]`.
 3. When CI, the TestPyPI run and the release gates are green, merge the release PR. Then
-   `uv run python scripts/release.py tag X.Y.Z` checks that each gate has a green run on
-   the release PR's last commit. If one is missing, still running or red, it refuses and
-   prints the command that starts it. A commit pushed to the release PR after `start`
-   needs new gate runs. For a release PR that `start` did not open, pass its branch
-   with `--branch` and start each gate on that branch yourself. Then it creates the GitHub Release `vX.Y.Z` on
-   `main`, with the CHANGELOG section as its body (marked as a pre-release for
-   `a`/`b`/`rc` versions). The tag starts `publish.yml`, which publishes to PyPI after the
-   `pypi` environment approval. Agent sessions cannot do this step (their GitHub access
-   refuses tag pushes and has no tool that creates a release), so it is yours. The tag
-   `gh release create` makes is lightweight; `publish.yml` and `git describe --tags`
-   need only the ref, so an annotated tag is not required.
+   `uv run python scripts/release.py tag X.Y.Z` checks that each gate's newest run on the
+   release PR's last commit is green. If one is missing, still running or red, it refuses
+   and prints the command that starts it. A commit pushed to the release PR after `start`
+   needs new gate runs. `tag` then creates the GitHub Release `vX.Y.Z` on the release
+   PR's merge commit, so a PR merged after it is not in the release. Its body is the
+   CHANGELOG section, and it is marked as a pre-release for `a`/`b`/`rc` versions. The
+   tag starts `publish.yml`, which publishes to PyPI after the `pypi` environment
+   approval. Agent sessions cannot do this step (their GitHub access refuses tag pushes
+   and has no tool that creates a release), so it is yours. The tag `gh release create`
+   makes is lightweight; `publish.yml` and `git describe --tags` need only the ref, so an
+   annotated tag is not required. For a release PR that `start` did not open, pass its
+   branch with `--branch`, and start each gate on that branch yourself first.
 4. Confirm both `archivey` and `archivey-cli` are on PyPI at `X.Y.Z`, and that each
    file shows provenance (an attestation) on its PyPI page. The upload action skips the
    attestation with only a warning when Trusted Publishing is not in use.

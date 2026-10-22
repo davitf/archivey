@@ -347,6 +347,7 @@ def test_dry_run_start_dispatches_each_gate_once(
 
 HEAD = "a" * 40
 OLD = "b" * 40
+MERGE = "c" * 40
 
 
 def _run(sha: str, status: str = "completed", conclusion: str = "success") -> dict:
@@ -374,7 +375,9 @@ def released_root(fake_root: Path) -> Path:
 
 
 def _fake_gh(
-    monkeypatch: pytest.MonkeyPatch, runs: dict[str, list[dict]]
+    monkeypatch: pytest.MonkeyPatch,
+    runs: dict[str, list[dict]],
+    merge_commit: str | None = MERGE,
 ) -> list[list[str]]:
     """Answer ``gh pr view`` with HEAD and ``gh run list`` from ``runs``; record the rest.
 
@@ -385,7 +388,8 @@ def _fake_gh(
     def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         cmd = list(cmd)
         if cmd[:3] == ["gh", "pr", "view"]:
-            out = HEAD + "\n"
+            merged = {"oid": merge_commit} if merge_commit else None
+            out = json.dumps({"headRefOid": HEAD, "mergeCommit": merged})
         elif cmd[:3] == ["gh", "run", "list"]:
             assert cmd[cmd.index("--branch") + 1] == "release/v0.2.1"
             out = json.dumps(runs.get(cmd[cmd.index("--workflow") + 1], []))
@@ -411,7 +415,20 @@ def test_tag_passes_when_every_gate_is_green_on_the_head(
     runs[release.RELEASE_GATE_WORKFLOWS[0]].insert(0, _run(OLD, conclusion="failure"))
     changes = _fake_gh(monkeypatch, runs)
     assert release.main(["tag", "0.2.1"]) == 0
-    assert [cmd[:4] for cmd in changes] == [["gh", "release", "create", "v0.2.1"]]
+    assert [cmd[:6] for cmd in changes] == [
+        ["gh", "release", "create", "v0.2.1", "--target", MERGE]
+    ]
+
+
+def test_tag_refuses_before_the_release_pr_merges(
+    released_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    changes = _fake_gh(monkeypatch, _all_green(), merge_commit=None)
+    assert release.main(["tag", "0.2.1"]) == 1
+    assert changes == []
+    assert "has not merged yet" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
@@ -421,8 +438,14 @@ def test_tag_passes_when_every_gate_is_green_on_the_head(
         ([_run(OLD)], "no run on aaaaaaaaaaaa"),
         ([_run(HEAD, conclusion="failure")], "failure"),
         ([_run(HEAD, status="in_progress", conclusion="")], "still running"),
+        # Newest first: a red run after a green one on the same commit holds the release.
+        ([_run(HEAD, conclusion="failure"), _run(HEAD)], "failure"),
+        (
+            [_run(HEAD, status="in_progress", conclusion=""), _run(HEAD)],
+            "still running",
+        ),
     ],
-    ids=["missing", "older-commit", "red", "running"],
+    ids=["missing", "older-commit", "red", "running", "red-after-green", "rerunning"],
 )
 def test_tag_refuses_a_gate_without_a_green_run_on_the_head(
     released_root: Path,
@@ -467,7 +490,7 @@ NOT_RELEASE_GATES = {
 
 
 def _triggers(path: Path) -> dict:
-    # pyyaml comes with the dev group, which the core-only leg does not install.
+    # pyyaml is in the dev group, which the core-only leg does not install.
     yaml = pytest.importorskip("yaml")
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     # YAML 1.1 reads the bare key `on` as True.
@@ -478,7 +501,7 @@ def _triggers(path: Path) -> dict:
 def test_every_scheduled_workflow_is_classified() -> None:
     """A new scheduled workflow fails here until it is a gate or has a reason not to be."""
     scheduled = {
-        path.name for path in WORKFLOWS.glob("*.yml") if "schedule" in _triggers(path)
+        path.name for path in WORKFLOWS.glob("*.y*ml") if "schedule" in _triggers(path)
     }
     gates = set(release.RELEASE_GATE_WORKFLOWS)
     assert not gates & set(NOT_RELEASE_GATES)
