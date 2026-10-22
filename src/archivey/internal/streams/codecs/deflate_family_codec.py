@@ -83,7 +83,9 @@ class _DeflateFamilyCodec(StreamCodec):
 
     def _leaves_to_stdlib(self, source: CodecSource, config: StreamConfig) -> bool:
         """Whether an accelerated open hands ``source`` to the standard library before
-        starting a child, on a look at its first bytes. Default: never."""
+        starting a child, on a look at its first bytes. Every such hand-off is declared
+        here, so :meth:`open` and :meth:`check_accelerator` make it alike. Default: this
+        codec has none."""
         return False
 
     def _open_stdlib(self, source: CodecSource, config: StreamConfig) -> BinaryIO:
@@ -108,14 +110,16 @@ class _DeflateFamilyCodec(StreamCodec):
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO | None:
         """Open ``source`` through rapidgzip, or ``None`` where the standard library
-        decodes it instead: here, an ``AUTO`` open whose child could not start; a
-        subclass may add its own cases.
+        decodes it instead: a source :meth:`_leaves_to_stdlib` hands over, or an
+        ``AUTO`` open whose child could not start.
 
         The layers, outermost first: :class:`_StdlibSeekContract`, the
         ``VerifyingStream`` of a declared size (:func:`_wrap_accelerated_length`), the
         codec's :meth:`_end_check`, and :class:`_StdlibOnAcceleratorError` over the
         child.
         """
+        if self._leaves_to_stdlib(source, config):
+            return None
         label = self.codec.value
         if self._bounds_source:
             source_for_child = _bound_rapidgzip_source(source, params, config)

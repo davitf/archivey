@@ -266,9 +266,10 @@ class SingleFileReader(BaseArchiveReader):
 
         The probe decodes with the standard library: rapidgzip runs in a child process,
         and one byte does not pay for starting one (about 30 ms) that the member read then
-        starts again. The accelerator is still resolved here, without starting anything
-        (``StreamCodec.check_accelerator``), so ``ON`` with rapidgzip absent or no child
-        process possible fails at open.
+        starts again. An ``ON`` accelerator is still resolved here, without starting
+        anything (``StreamCodec.check_accelerator``), so rapidgzip absent or no child
+        process possible fails at open. ``AUTO`` is left to the read, which resolves it
+        against the config the registry prepares.
         """
         if not self._seekable:
             return

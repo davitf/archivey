@@ -1339,6 +1339,25 @@ def test_open_with_accelerator_on_reports_a_refused_gzip_header_first(
         open_archive(path, config=ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON))
 
 
+def test_open_with_accelerator_on_reports_a_zlib_header_rapidgzip_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A zlib stream with a preset dictionary is not zlib to rapidgzip, so an ON open
+    # hands it to the standard library before it would start a child: the data error
+    # comes first even where no child can run.
+    from archivey.internal.streams.codecs import deps, rapidgzip_select
+
+    monkeypatch.setattr(deps, "rapidgzip", deps.LazyOptional("rapidgzip", present=True))
+    monkeypatch.setattr(
+        rapidgzip_select, "rapidgzip_child_unavailable_reason", lambda: "test says no"
+    )
+    compressor = zlib.compressobj(zdict=b"dictionary bytes here")
+    path = tmp_path / "data.zz"
+    path.write_bytes(compressor.compress(b"payload") + compressor.flush())
+    with pytest.raises(CorruptionError):
+        open_archive(path, config=ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON))
+
+
 def test_open_time_probe_still_rejects_a_wrong_codec_with_the_accelerator_on(
     tmp_path: Path,
 ) -> None:
