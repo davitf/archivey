@@ -169,8 +169,8 @@ _SUSPENDED_SOURCES = [
 
 # Reading a member of the RAR fixture runs RARLAB unrar, which a core-only install
 # may lack. Listing it does not, so only the tests that read are gated, keyed on the
-# fixture function rather than the row id. Not requires_binary("unrar"): that checks
-# only shutil.which, and binary_refusal also applies archivey's RARLAB policy.
+# fixture function rather than the row id. binary_refusal("unrar") is archivey's own
+# rule, met by RARLAB unrar or rar 6.0+.
 _UNRAR_REFUSAL = binary_refusal("unrar")
 _READ_SOURCES = [
     pytest.param(

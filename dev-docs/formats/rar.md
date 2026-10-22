@@ -187,9 +187,19 @@ test acquits as well as convicts. A set has one password, so `parse_rar_volumes`
 the proof into each later volume's walk. Before that proof (a RAR5 archive with no check
 value, or a cut or a CRC16 mismatch inside the first encrypted RAR3 header of an archive
 or set) a wrong key decrypts a garbage size that also reads to the end of the file, or
-fails the CRC16, so that stays `EncryptionError("…wrong password?")`. RAR5 does not take
-a CRC32 match as proof the way RAR3 takes a CRC16 one: RARLAB's `rar` writes the check
-value with `-hp`, so an archive without one is crafted, and the walk keeps one proof per
+fails the CRC16, so that stays `EncryptionError("…wrong password?")`, and a password
+list moves on to the next candidate. When the read ran out of ciphertext, the message
+adds the second reading: "if the password is right, the file ends inside the encrypted
+header that starts at byte N, or that header is damaged". It comes second because a
+wrong key on a small, whole archive also decrypts a size that runs to the end of the
+file and gets the same message. It names damage too because damage in a whole header
+garbles the size the same way. A header whose read did not run out of ciphertext (a size
+under the minimum, refused inside the read, or a CRC16 mismatch over a whole header) gets
+no such clause. The cut wording is one helper, shared with the proven cut's
+`TruncatedError`. In a set the clause's offset is within one volume, so the raised error
+names that volume, as the returned cut and damage strings do. RAR5 does not take a CRC32
+match as proof the way RAR3 takes a CRC16 one: RARLAB's `rar` writes the check value
+with `-hp`, so an archive without one is crafted, and the walk keeps one proof per
 format rather than add a second that only crafted input reaches. Each RAR3 header has
 its own salt, so the proof covers the password and not a later header's key: a damaged
 later salt decrypts a garbage header, which is `CorruptionError`, or a cut when its
@@ -372,7 +382,19 @@ included — it does not leave FILE after the old QO.
    files QO omitted — are not in the map, so their local headers are parsed.
 3. After QO, keep walking — recovery records, `ENDARC`, and any FILE a writer
    left past QO. A QO copy whose `header_offset` the walk never hits is not a
-   member. Reporting leftover copies is later ([`IDEAS.md`](../IDEAS.md)).
+   member: `unrar` too substitutes a copy only for a header it reaches (pinned by
+   an `unrar lb` oracle). When the walk ends at an end block read whole, the QO
+   header reports such copies as `MEMBER_HEADER_RECORD_SKIPPED` with their count,
+   and the listing stays as the walk found it. `rar` writes one copy per header it
+   caches, so a leftover copy means a damaged or crafted QO, and a strict policy
+   can refuse it. A walk that was cut or stopped at a damaged header leaves copies
+   unreached for that reason alone, so it reports nothing. A damaged end block with
+   only zeros after it stops nothing, but it already makes the archive corrupt, and
+   the claim would rest on a header whose CRC failed, so it reports nothing either.
+   The report goes on the damaged-service-header channel (`_qo_unmatched_copies`)
+   but stays out of that channel's cap: there is at most one per volume, it
+   retains nothing attacker-sized, and the cap's overflow message says each header
+   it counts was not read to the end, which is not true of this one.
 
 When `-qo+` copied every FILE, the first FILE after MAIN (or after `CMT`) is
 in the map and the chain is one seek to QO. UnRAR (`qopen.cpp`) does the same
@@ -1766,6 +1788,7 @@ python3 scripts/exploration/rar_decompressor_matrix.py      # §3 the decompress
 | QO listing serves stored reads and keeps the archive comment; unreadable QO falls back to the walk | `::test_qo_listing_stored_read_and_comment`, `::test_unreadable_qo_falls_back_to_file_walk` |
 | QO payload of non-FILE records parses in linear time; overlapping QO spans are refused | `::test_rar5_qo_non_file_records_parse_in_linear_time`, `::test_qo_overlapping_spans_are_rejected` |
 | AUTO still lists small files QO omitted; `rar a` rewrites QO; FILE after QO is still listed | `::test_auto_qo_lists_small_files_omitted_from_cache`, `::test_rar_a_rewrites_qo_and_lists_the_new_member`, `::test_file_header_after_qo_is_still_listed` |
+| A QO copy no header the walk reaches matches is reported on a clean end, refused under `STRICT`, kept past the damaged-service-header cap, not reported after a cut, a damaged header, a damaged end block or without QO, and not listed, as in `unrar` | `::test_a_qo_copy_the_walk_never_reaches_is_reported`, `::test_an_intact_qo_reports_no_unmatched_copy`, `::test_an_unmatched_qo_copy_is_kept_past_the_damaged_header_cap`, `::test_unmatched_qo_copies_are_not_reported_without_a_clean_end`, `::test_unrar_lists_the_walk_not_an_unmatched_qo_copy` |
 | A malformed optional RAR5 extra record drops the record, not the archive; encryption stays fatal; a zeroed extra area does not retain one skip per byte; the extra area is placed by its declared size | `tests/test_rar_header_record_leniency.py` |
 | An unknown compression version is `UnsupportedFeatureError` on read, for both decompressors and the solid pass; a stored member reads | `tests/test_rar_unknown_compression.py` |
 | Bounded hostile parsing: the header-size vint, hostile packed sizes, hostile modes, out-of-range timestamps | `::test_rar5_header_size_vint_is_bounded`, `::test_load_vint_single_and_multi_byte`, `::test_rar5_hostile_packed_size_is_corruption`, `::test_rar_reader_masks_hostile_unix_mode`, `::test_rar5_out_of_range_windowstime_is_tolerated` |
