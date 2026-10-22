@@ -463,8 +463,10 @@ member as a link used to leave the rest of its data and its CRC unread, so one c
 byte in the target listed as a different target with no error. As a `FILE`, the member's
 CRC is checked when it is read. A read that meets a failed CRC at that one byte past the
 buffer is damage (`target_data_damaged`), not a re-type. The 7z backend shares this
-parse, and the pipe pass agrees: for a buffer over the bound it keeps, it uses the size
-from the directory (`ZipForwardReader._link_target_opener`).
+parse, and the pipe pass agrees (`ZipForwardReader._link_target_opener`). For a buffer
+over the bound it keeps, it uses the size from the directory. For data within the target
+cap, which it decodes to the end, a failed CRC past that one byte does not decide: it
+keeps the data and gives the file read's answer, a `FILE` whose read raises the damage.
 
 Two members are left a link with no target. One has *no* data, so there is nothing to
 reinterpret. The other is **directory-shaped** — stored with the trailing slash — where

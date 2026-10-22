@@ -1434,10 +1434,13 @@ class _PassData:
         return True
 
     @property
-    def uncaptured(self) -> str | int | ArchiveyError | _KeptCiphertext | None:
+    def uncaptured(
+        self,
+    ) -> str | int | ArchiveyError | _KeptCiphertext | _UnverifiedData | None:
         """Why a drained member's bytes were not kept, when not for their length:
         what the read of an encrypted member raised, its kept ciphertext, the length
-        of a reparse buffer over ``_MAX_REPARSE_PREFIX``, or ``"damaged"`` (see
+        of a reparse buffer over ``_MAX_REPARSE_PREFIX``, or ``"damaged"``, with the
+        data when all of it was kept (``_UnverifiedData``; see
         ``ZipForwardReader._link_target_opener``).
         """
         if self._failure is not None:
@@ -1456,6 +1459,9 @@ class _PassData:
             or header.file_size <= MAX_LINK_TARGET_BYTES
             or self._size >= header.file_size
         ):
+            capture = self._capture
+            if capture is not None and self._prefix_want is None:
+                return _UnverifiedData(bytes(capture))
             return "damaged"
         return None
 
@@ -1463,6 +1469,22 @@ class _PassData:
         """Release the decoder of a pass that will not read on."""
         self.done = True
         self._close_decoded()
+
+
+class _UnverifiedData:
+    """A member's whole decoded data, within the target cap, that failed its check.
+
+    Kept because a file read of a Windows reparse buffer stops one byte past the
+    buffer: when the data runs on past that, the file read never meets the failed
+    check, and the data is no link buffer, so the member is a file
+    (``ZipForwardReader._link_target_opener``). Any other link reports the damage.
+    """
+
+    def __init__(self, data: bytes) -> None:
+        self.data = data
+
+    def __len__(self) -> int:
+        return len(self.data)
 
 
 class _KeptCiphertext:
@@ -1693,7 +1715,9 @@ class ZipForwardReader(ZipReader):
         # Member id -> why its bytes were not kept, when not for their length
         # (``_PassData.uncaptured``, or ``_DROPPED`` by ``_hold``), so a link's
         # missing target says why.
-        self._uncaptured: dict[int, str | int | ArchiveyError | _KeptCiphertext] = {}
+        self._uncaptured: dict[
+            int, str | int | ArchiveyError | _KeptCiphertext | _UnverifiedData
+        ] = {}
         # Local header offset -> what the data descriptor after a bit-3 member's data
         # said (CRC, compressed size, size), for the directory to confirm at the end.
         self._descriptors: dict[int, tuple[int, int, int]] = {}
@@ -1866,7 +1890,7 @@ class ZipForwardReader(ZipReader):
             self._hold(member._member_id, len(captured))
         elif (why := current.uncaptured) is not None:
             self._uncaptured[member._member_id] = why
-            if isinstance(why, _KeptCiphertext):
+            if isinstance(why, _KeptCiphertext | _UnverifiedData):
                 self._hold(member._member_id, len(why))
 
     def _hold(self, member_id: int, length: int) -> None:
@@ -1892,7 +1916,12 @@ class ZipForwardReader(ZipReader):
             negative, dropped = heapq.heappop(heap)
             self._kept_bytes += negative
             self._captured.pop(dropped, None)
-            self._uncaptured[dropped] = _DROPPED
+            # Data that failed its check stays damaged without its bytes: only a
+            # reparse buffer's re-type needed them (``_UnverifiedData``).
+            was = self._uncaptured.get(dropped)
+            self._uncaptured[dropped] = (
+                "damaged" if isinstance(was, _UnverifiedData) else _DROPPED
+            )
 
     # -- the directory -------------------------------------------------------------
 
@@ -2401,7 +2430,19 @@ class ZipForwardReader(ZipReader):
             # runs on past the buffer its header declares, so it is no link buffer
             # (``parse_reparse_data``) and the file read makes it a file. One byte, too
             # short for any buffer's header, gets the same answer from the same parse.
+            # The report names the member's size from the directory (checked above),
+            # not this byte's.
             captured = _NOT_A_REPARSE_BUFFER
+        if isinstance(why, _UnverifiedData):
+            if cast("_ZipLocator", member._raw).reparse_fallback is not None:
+                # What the file read reads of a reparse buffer: the header, the
+                # payload it declares and one byte. Data longer than that is never
+                # read to its failed check there, and parses as no buffer.
+                data = why.data
+                reach = REPARSE_HEADER_BYTES + reparse_payload_length(data) + 1
+                if len(data) > reach:
+                    captured = data[:reach]
+            why = "damaged"
 
         def missing() -> ArchiveyError:
             if isinstance(why, ArchiveyError):

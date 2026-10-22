@@ -1001,9 +1001,11 @@ def test_a_link_buffer_is_read_only_as_far_as_it_declares(
 
 
 def _padded_link_member(*, damaged: bool) -> tuple[bytes, bytes]:
-    """A symlink buffer with bytes after its declared end, and the byte that the
-    damaged variant changes: one in the PrintName, which is the target read first.
-    Returns ``(data, damaged_data)`` and leaves the caller to store one of them."""
+    """A symlink buffer with bytes after its declared end.
+
+    Returns ``(data, stored)``: the data to build the archive from, and the bytes to
+    store in it, which are the same data unless ``damaged``. The damaged bytes change
+    one byte in the PrintName, which is the target read first."""
     buffer = _reparse_buffer(IO_REPARSE_TAG_SYMLINK, "C:\\target", "C:\\target")
     data = buffer + b"P" * 100
     at = data.rindex("target".encode("utf-16-le"))
@@ -1077,6 +1079,33 @@ def test_a_directory_shaped_reparse_point_with_odd_data_stays_a_link(
         assert member.link_target is None
         assert not member.is_junction
         assert _unavailable_reasons(opened) == ["reparse_data_unrecognized"]
+
+
+def test_a_directory_shaped_link_buffer_with_data_past_it_stays_a_targetless_link(
+    tmp_path: Path,
+) -> None:
+    """Data that runs on past its buffer is no link buffer, and a directory-shaped
+    member is not re-typed to carry it (as above): it stays a link with no target, and
+    extraction writes nothing for it. The buffer's target used to be listed and
+    written."""
+    data = _reparse_buffer(IO_REPARSE_TAG_SYMLINK, "tree\\target", "tree\\target")
+    archive = tmp_path / "padded_directory_reparse.zip"
+    _zip_with_reparse_member(
+        archive,
+        name="linkdir/",
+        attributes=_FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT,
+        data=data + b"P" * 40,
+    )
+    with open_archive(archive) as opened:
+        (member,) = opened.members()
+        assert member.type is MemberType.SYMLINK
+        assert member.link_target is None
+        assert _unavailable_reasons(opened) == ["reparse_data_unrecognized"]
+        report = opened.extract_all(tmp_path / "out")
+    (result,) = report.results
+    assert result.status is ExtractionStatus.LINK_TARGET_UNAVAILABLE
+    assert not (tmp_path / "out" / "linkdir").exists()
+    assert not (tmp_path / "out" / "linkdir").is_symlink()
 
 
 def test_a_directory_reparse_point_with_no_data_stays_a_link(tmp_path: Path) -> None:

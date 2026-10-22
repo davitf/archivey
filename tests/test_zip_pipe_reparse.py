@@ -403,6 +403,41 @@ class _PipeSink(io.RawIOBase):
         return len(self.data)
 
 
+@pytest.mark.parametrize("bit3", [False, True], ids=["sized", "bit3"])
+def test_short_damaged_data_past_a_link_buffer_is_a_file_from_a_pipe_too(
+    bit3: bool,
+) -> None:
+    """Data within the target cap that runs on past its buffer, with a damaged byte
+    after the buffer. The file read stops one byte past the buffer, so it never meets
+    the damage, and the data is not the buffer: a file. The pass decodes all of such
+    data and finds the failed CRC, but the CRC is not what decides here: it gives the
+    file read's answer, and the damage is raised when the file is read."""
+    buffer = _reparse_buffer(IO_REPARSE_TAG_SYMLINK, "C:\\target", "C:\\target")
+    content = buffer + b"P" * 100
+    assert len(content) <= MAX_LINK_TARGET_BYTES
+    sink: io.BytesIO | _PipeSink = _PipeSink() if bit3 else io.BytesIO()
+    with zipfile.ZipFile(sink, "w") as zf:
+        info = zipfile.ZipInfo("link")
+        info.create_system = 0
+        info.external_attr = 0x20 | FILE_ATTRIBUTE_REPARSE_POINT
+        # Level 0 stores the bytes as they are, so one padding byte can be changed.
+        zf.writestr(info, content, compress_type=zipfile.ZIP_DEFLATED, compresslevel=0)
+        zf.writestr("z", b"zz")
+    raw = bytearray(sink.data if isinstance(sink, _PipeSink) else sink.getvalue())
+    raw[raw.index(b"P" * 100) + 50] = ord("Q")
+    data = bytes(raw)
+    from_file = _from_file(data)["link"]
+    assert from_file.type is MemberType.FILE
+    piped = _from_pipe(data, read=False)
+    assert piped["link"].type is MemberType.FILE
+    assert piped["link"].link_target is None
+    assert list(piped) == ["link", "z"]
+    source = NonSeekableBytesIO(data)
+    assert _target_messages(io.BytesIO(data), streaming=False) == _target_messages(
+        source, streaming=True
+    )
+
+
 @pytest.mark.parametrize("damaged", [True, False], ids=["damaged", "intact"])
 @pytest.mark.parametrize("after", [0, 1, 2])
 def test_a_damaged_bit3_reparse_buffer_is_a_link_only_where_the_file_read_says(

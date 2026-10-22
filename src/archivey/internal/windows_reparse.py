@@ -149,9 +149,9 @@ def parse_reparse_data(data: bytes) -> ReparsePoint | None:
     junction. What a reader does with ``None`` is
     decided in :meth:`~archivey.internal.base_reader.BaseArchiveReader._apply_reparse_data`.
 
-    A payload length that runs past the end of ``data`` is cut to the bytes present,
-    and the buffer still parses: a name that then falls outside those bytes decodes as
-    ``""``, so the result is a link with no target rather than ``None``.
+    A truncated buffer, whose declared payload length runs past the end of ``data``,
+    parses the bytes that are there: a name that falls outside them decodes as ``""``,
+    so the result is a link with no target rather than ``None``.
     """
     if len(data) < _HEADER.size:
         return None
@@ -166,8 +166,8 @@ def parse_reparse_data(data: bytes) -> ReparsePoint | None:
         # a link would leave the bytes after the buffer, and the member's checksum,
         # unread, so a damaged target would list as if it were whole.
         return None
-    # Trust the declared length only as far as the bytes actually present: a truncated
-    # buffer should parse what is there rather than raise.
+    # The payload is now at most the length declared, and shorter only when the buffer
+    # is truncated, which parses what is there rather than raising.
     if len(payload) < _NAMES.size:
         return None
 
