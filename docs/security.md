@@ -162,6 +162,12 @@ costs only the member being read:
   and places that can't start processes. A damaged or crafted PPMd member can crash your process,
   and rapidgzip isn't used.
 
+One isolated decoder has a known bug: pyppmd bundles a copy of 7-Zip's PPMd code from before the
+fix for [CVE-2023-31102](https://nvd.nist.gov/vuln/detail/CVE-2023-31102), an integer underflow
+and invalid read. Under the default, a crash or a wild read there costs that member, not your
+process, though a crafted member may still decode to wrong data. Under `ProcessIsolation.NONE` it
+runs in your process.
+
 AES decryption and checksums always run in your process. A child that crashes raises
 `CorruptionError`, and one killed from outside raises `ResourceLimitError` (most often the
 out-of-memory killer) or `ReadError`. No setting limits how long a decoder takes; for that, see
@@ -245,21 +251,17 @@ uses, so you can check what came out before moving it anywhere else.
 
 ## Known attacks on other archive tools
 
-Archivey's test suite replays the published vulnerabilities of other archive readers that
-could apply to it: path traversal, link and hard link escapes, and header parsing bugs in GNU
-tar, libarchive, Info-ZIP, 7-Zip, unrar and WinRAR, The Unarchiver, py7zr, rarfile, and Python's
-`tarfile` and `zipfile`, and decompression bombs and decoder bugs in the libraries it uses for
-compressed data. Each test builds the archive the advisory describes and checks that archivey
-refuses it or keeps it inside the destination. The tests are in
-[`tests/test_cve_regressions*.py`](https://github.com/davitf/archivey/tree/main/tests) and
+Archivey's test suite replays published vulnerabilities of other archive readers that could also
+apply to it: path traversal, link and hard link escapes, and header parsing bugs in GNU tar,
+libarchive, Info-ZIP, 7-Zip, unrar and WinRAR, py7zr, rarfile, Apache Commons Compress, and
+Python's `tarfile` and `zipfile`. Each test builds the archive the advisory describes and checks
+that archivey refuses it, keeps it inside the destination, or reads it as the format defines
+without allocating more than the archive's size pays for. The tests are in
+[`tests/test_cve_regressions.py`](https://github.com/davitf/archivey/blob/main/tests/test_cve_regressions.py),
+[`tests/test_cve_regressions_7z_rar.py`](https://github.com/davitf/archivey/blob/main/tests/test_cve_regressions_7z_rar.py)
+and
 [`tests/test_cve_parsing.py`](https://github.com/davitf/archivey/blob/main/tests/test_cve_parsing.py),
 and each names the advisory it replays.
-
-One dependency may still have a known bug, which archivey contains rather than avoids: pyppmd,
-which decodes PPMd data in 7z and ZIP archives, bundles a copy of 7-Zip's PPMd code from before
-the fix for [CVE-2023-31102](https://nvd.nist.gov/vuln/detail/CVE-2023-31102). By default
-archivey decodes every PPMd member in a child process, so the bug can only fail that member. With
-`ProcessIsolation.NONE` it runs in your process.
 
 ## Reporting a vulnerability
 
