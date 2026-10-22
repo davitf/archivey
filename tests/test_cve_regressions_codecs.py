@@ -41,7 +41,8 @@ from tests.memory_util import traced_peak
 #
 # CVE-2025-6176: brotli before 1.2.0 had no way to cap the output of one call, so a
 # reader that asked for one byte got the whole expansion. archivey requires brotli
-# 1.2.0 and passes ``output_buffer_limit``; every other decoder takes a ``max_length``.
+# 1.2.1 (1.2.0 added ``output_buffer_limit``; 1.2.1 fixes CVE-2026-111497) and passes
+# ``output_buffer_limit``; every other decoder takes a ``max_length``.
 # The check covers them all: one byte read from a 64 MiB run of zeros must not build
 # the 64 MiB in memory.
 
