@@ -19,6 +19,7 @@ decoders, unrar's) do not run here: archivey reads 7z and RAR headers in Python,
 
 from __future__ import annotations
 
+import gc
 import io
 import os
 import struct
@@ -323,18 +324,26 @@ def _many_folders(count: int) -> bytes:
 def test_py7zr_cve_2026_55206_pack_stream_count_is_linear() -> None:
     # py7zr 1.1.2 and earlier re-summed the pack sizes from the start for every pack
     # stream, so opening an archive with tens of thousands of them took seconds of CPU
-    # per 50 KiB of header. Here four times as many members cost about four times as
-    # long to list; a cost that grew with the square would cost sixteen times.
+    # per 50 KiB of header. Here eight times as many members cost about eight times as
+    # long to list; a cost that grew with the square would cost sixty-four times. The
+    # bound of 24 leaves room for runner noise (a Windows runner once measured 10.9x
+    # at four times the members), and the collector is off so its passes over a
+    # growing heap are not timed.
     def listing_seconds(count: int) -> float:
         data = _many_folders(count)
-        start = time.perf_counter()
-        with open_archive(io.BytesIO(data)) as reader:
-            assert len(reader.members()) == count
-        return time.perf_counter() - start
+        gc.collect()
+        gc.disable()
+        try:
+            start = time.perf_counter()
+            with open_archive(io.BytesIO(data)) as reader:
+                assert len(reader.members()) == count
+            return time.perf_counter() - start
+        finally:
+            gc.enable()
 
-    small = min(listing_seconds(8_000) for _ in range(2))
-    large = min(listing_seconds(32_000) for _ in range(2))
-    assert large < 10 * max(small, 0.01)
+    small = min(listing_seconds(4_000) for _ in range(3))
+    large = min(listing_seconds(32_000) for _ in range(3))
+    assert large < 24 * max(small, 0.005), f"{large:.3f}s vs {small:.3f}s"
 
 
 def test_7zip_cve_2024_11612_copy_coder_short_of_its_size() -> None:
