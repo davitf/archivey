@@ -41,8 +41,8 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
         stops asking once it sees the end, but stopping a decoder that might still be waiting for
         input takes one more call, and that call can crash it too, on members of any size. In a
         child process the crash becomes a `CorruptionError` for that member. Archivey reuses the
-        processes, so a run of small members costs about 1.5 ms more per member than decoding in
-        your process.
+        processes, so each PPMd member costs about 1.5 to 2 ms more than decoding in your
+        process. A solid 7z folder is decoded as one, so it pays that once.
 
 - **Running out of memory raises `MemoryError`, not an `ArchiveyError`,** so it's never mistaken for
   a damaged archive. `DecoderLimits` caps the memory an archive can ask one decoder for, 2 GiB by
@@ -149,14 +149,18 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
 costs only the member being read:
 
 - **`ProcessIsolation.KNOWN_CRASHES`**, the default, isolates the decoders that have crashed on
-  some input: rapidgzip and pyppmd. Where no child process can start, such as in a frozen
+  some input: rapidgzip and pyppmd. The decoders it leaves in your process cost nothing extra;
+  each PPMd member, or each solid 7z folder, costs about 1.5 to 2 ms more ([why every PPMd
+  member](#where-the-guarantees-stop)). Where no child process can start, such as in a frozen
   application, a PPMd member raises `ResourceLimitError`, and rapidgzip gives way to the standard
   library's decoder with one warning.
 - **`ProcessIsolation.NATIVE_DECODERS`** also isolates zlib, bz2, lzma, zstd, lz4, brotli and
-  inflate64 (Deflate64), detection's trial decodes included. Reads take longer, mostly copying data
-  between processes: on Linux, about 1.05 to 1.2 times as long for bzip2, 1.2 to 1.6 times for
-  xz, 1.4 to 2 times for gzip and deflate, and 2 to 5 times for zstd, plus about 0.6 to 0.9 ms per
-  member. Each process holds about 9 MB while it waits to be reused. Where no child process can
+  inflate64 (Deflate64), detection's trial decodes included. Reads take longer. Measured on one
+  Linux machine, a single stream took about 1.05 to 1.5 times as long for bzip2, 1.1 to 1.6 times
+  for xz, 1.4 to 2 times for gzip and deflate, and 2 to 6 times for zstd, mostly copying data
+  between processes. Each member with a decoder of its own also costs about 0.6 to 1 ms (1.5 to
+  2 ms for PPMd), which is most of the cost for an archive of many small members; a solid 7z
+  folder is one decoder. Each process holds about 9 MB while it waits to be reused. Where no child process can
   start, reading raises `ResourceLimitError`; nothing is decoded in your process instead.
 - **`ProcessIsolation.NONE`** decodes everything in your process. It's for trusted files, tests,
   and places that can't start processes. A damaged or crafted PPMd member can crash your process,
