@@ -256,9 +256,7 @@ def _short_read_bytesio(_tmp_path: Path) -> BinaryIO:
 
 def _spooled_tempfile(_tmp_path: Path) -> BinaryIO:
     # Common for buffering uploads/downloads in memory then spilling to disk.
-    f = tempfile.SpooledTemporaryFile(
-        max_size=len(CONTENT) // 2
-    )  # forced to spill  # noqa: SIM115 - the handle outlives this statement; its owner closes it
+    f = tempfile.SpooledTemporaryFile(max_size=len(CONTENT) // 2)  # forced to spill  # noqa: SIM115 - the handle outlives this statement; its owner closes it
     f.write(CONTENT)
     f.seek(0)
     return f
