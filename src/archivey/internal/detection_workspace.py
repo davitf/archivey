@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Protocol, Self
 
 from archivey.config import ProcessIsolation
 from archivey.detection_cost import (
@@ -48,6 +48,18 @@ DETECTION_LIMIT = 4096
 # buffering [0, N). 1 MiB covers a second link after a 4- or 5-nibble first block; a
 # 6-nibble first block (up to 16 MiB) is declined (``None`` → cannot disprove).
 PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE = 1 << 20
+
+
+class CandidateView(Protocol):
+    """The callable :meth:`PrefixWorkspace.candidate_view` returns.
+
+    ``view(end)`` returns the candidate's first ``end`` bytes. ``view(end, start)``
+    returns only bytes ``[start, end)``, so a reader that keeps what it got before asks
+    for the new bytes alone. Without ``start``, a reader that grows its prefix one small
+    read at a time copies the whole prefix on every read.
+    """
+
+    def __call__(self, end: int, start: int = 0, /) -> bytes: ...
 
 
 class PrefixWorkspace:
@@ -118,7 +130,8 @@ class PrefixWorkspace:
         )
 
         if isinstance(source, (str, Path)):
-            self._handle = open(source, "rb")
+            # The handle outlives this statement; its owner closes it.
+            self._handle = open(source, "rb")  # noqa: SIM115
             self._owns_handle = True
             self._entry_pos = 0
         elif isinstance(source, ArchiveSource) and not source.seekable():
@@ -253,12 +266,14 @@ class PrefixWorkspace:
         *,
         limit: int | None = None,
         arrived: bool = False,
-    ) -> Callable[[int], bytes]:
-        """A ``peek_more(n)``-shaped callable relative to ``candidate_origin``.
+    ) -> CandidateView:
+        """A ``peek_more(end)``-shaped callable relative to ``candidate_origin``.
 
-        ``peek_more(n)`` returns the first ``n`` bytes of the *candidate*, which are the
-        absolute range ``[candidate_origin, candidate_origin + n)``. Served from the
-        shared buffer — never a second fetch of bytes already retrieved.
+        ``peek_more(end)`` returns the first ``end`` bytes of the *candidate*, which are
+        the absolute range ``[candidate_origin, candidate_origin + end)``. Served from
+        the shared buffer — never a second fetch of bytes already retrieved.
+        ``peek_more(end, start)`` returns only the part from ``start``, and the receipt
+        is charged for that part only (:class:`CandidateView`).
 
         With ``arrived``, a short result does not mean the source has ended: only a
         result no longer than the one before it does. A call that asks for more than
@@ -282,23 +297,29 @@ class PrefixWorkspace:
 
         returned = 0
 
-        def peek_more(length: int) -> bytes:
+        def peek_more(end: int, start: int = 0, /) -> bytes:
             nonlocal returned
+            if start < 0:
+                raise ValueError("start must be non-negative")
             if limit is not None:
                 remaining = max(0, limit - candidate_origin)
-                if length > remaining:
+                if end > remaining:
                     self._clamped_view_read = True
-                length = min(length, remaining)
+                end = min(end, remaining)
+            wanted = max(0, end - start)
             if not arrived:
-                return self.peek_range(candidate_origin, length)
+                return self.peek_range(candidate_origin + start, wanted)
             held = len(self._buf) - candidate_origin
-            if held > returned or held >= length:
+            if held > returned or held >= end:
                 # Enough is buffered, or more than last time: no read.
-                self._receipt.prefix_bytes += length
-                data = bytes(self._buf[candidate_origin : candidate_origin + length])
+                self._receipt.prefix_bytes += wanted
+                first = candidate_origin + start
+                data = bytes(self._buf[first : first + wanted])
             else:
-                data = self.peek_range(candidate_origin, length, arrived=True)
-            returned = len(data)
+                data = self.peek_range(candidate_origin + start, wanted, arrived=True)
+            # How far into the candidate this call's answer reaches, whatever
+            # ``start`` was.
+            returned = max(0, min(len(self._buf) - candidate_origin, end))
             return data
 
         return peek_more
@@ -447,7 +468,7 @@ class PrefixWorkspace:
                 self._owned_source.close()
                 self._owned_source = None
 
-    def __enter__(self) -> PrefixWorkspace:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *exc: object) -> None:
@@ -464,13 +485,15 @@ class PrefixWorkspace:
         if nbytes <= 0:
             return b"", False
         if self._peekable is not None:
-            # Grow the source's replay prefix; slice only the delta we lack.
+            # Grow the source's replay prefix, and take only the bytes past the
+            # buffer: the whole prefix on every read would make a source that
+            # returns small reads cost the square of its length.
             start = len(self._buf)
             end = start + nbytes
             if arrived:
-                delta = self._peekable.peek_arrived(end)[start:end]
+                delta = self._peekable.peek_arrived(end, start)
                 return delta, not delta
-            delta = self._peekable.peek(end)[start:end]
+            delta = self._peekable.peek(end, start)
             return delta, len(delta) < nbytes
         if self._handle is not None:
             assert self._entry_pos is not None

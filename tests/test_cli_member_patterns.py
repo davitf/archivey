@@ -234,8 +234,10 @@ _EMPTY_SELECTIONS = {
     "every include match excluded": (
         ["docs"],
         ["docs"],
-        "warning: no members selected: --exclude removed every member the "
-        "patterns matched",
+        (
+            "warning: no members selected: --exclude removed every member the "
+            "patterns matched"
+        ),
     ),
     "exclude only": (
         [],

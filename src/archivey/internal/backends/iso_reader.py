@@ -19,15 +19,8 @@ offsets, so the image must start at ``tell() == 0`` — ``open_archive`` wraps
 mid-positioned streams (stream-position contract). A compressed ``.iso.xz`` is a
 single-file compressor wrapping the image, not mounted here.
 
-**Process-global side effect.** Importing this module (which ``import archivey`` does
-eagerly, to register backends) installs a directory-cycle guard *into pycdlib's own
-namespace* by replacing ``pycdlib.pycdlib.collections`` with a proxy whose ``deque``
-tracks visited extents — see :func:`_install_pycdlib_directory_cycle_guard`. It is
-confined to pycdlib and transparent on well-formed images, but a program that also uses
-pycdlib directly in the same process will see archivey's guarded ``deque`` there too. This
-is a deliberate trade to stop a crafted/cyclic ISO from hanging the walk forever; see
-``dev-docs/formats/iso.md`` §4. The guard covers the UDF walk too. The same import wraps
-four pycdlib methods and two pycdlib functions:
+**Installed at import.** Importing this module (which ``import archivey`` does
+eagerly, to register backends) wraps four pycdlib methods and two pycdlib functions:
 
 - ``pycdlib.rockridge.RockRidge.parse`` (:func:`_install_pycdlib_system_use_filter`),
   which filters each System Use area and refuses a Rock Ridge ``CE`` area past its
@@ -56,7 +49,7 @@ import stat
 import struct
 import threading
 import zlib
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Iterator, Mapping
 from contextvars import ContextVar
 from datetime import UTC, datetime, timedelta, timezone
 from types import ModuleType
@@ -120,6 +113,7 @@ from archivey.internal.streams.codecs.isolated import (
     Natives,
     natives_for,
 )
+from archivey.internal.streams.decompressor_stream import release_decoder
 from archivey.internal.streams.streamtools import (
     DelegatingStream,
     LockedStream,
@@ -169,114 +163,6 @@ _pycdlib_io = _optional("pycdlib.pycdlibio")
 _pycdlib_dr = _optional("pycdlib.dr")
 _pycdlib_dates = _optional("pycdlib.dates")
 _pycdlib_inode = _optional("pycdlib.inode")
-_PYCDLIB_CYCLE_GUARD_INSTALLED = False
-
-
-class _DequeGuardedCollections:
-    """Proxy over the real ``collections`` module that overrides only ``deque``.
-
-    Installed once as ``pycdlib.pycdlib.collections`` so the extent-cycle guard is confined
-    to pycdlib's own namespace — no other code in the process ever sees a patched ``deque``,
-    unlike a global ``collections.deque`` swap. Every other attribute delegates to the real
-    module.
-    """
-
-    def __init__(self, real: ModuleType, deque_cls: type) -> None:
-        self._real = real
-        self.deque = deque_cls
-
-    def __getattr__(self, name: str) -> object:
-        # Reached only for attributes not set in __init__ (i.e. everything but ``deque``).
-        return getattr(self._real, name)
-
-
-def _install_pycdlib_directory_cycle_guard() -> None:
-    """Prevent pycdlib from hanging on cyclic ISO, Joliet or UDF directory trees.
-
-    pycdlib walks directory trees with a plain ``collections.deque`` and no visit tracking,
-    so corrupt directory records that close a cycle (a child extent pointing back at an
-    ancestor) loop forever — in any namespace ``open_fp`` walks (plain ISO 9660 PVD, Rock
-    Ridge PVD, Joliet SVD, …). The mutation harness found a Joliet case on ``basic-iso``; the
-    same mechanism reproduces on plain and Rock Ridge trees (see
-    ``test_pycdlib_directory_cycle_does_not_hang``). The UDF walk
-    (``_walk_udf_directories``) uses the same ``deque`` for UDF File Entries, and a File
-    Identifier naming an ancestor's ICB loops it the same way, allocating as it goes
-    (``test_pycdlib_udf_directory_cycle_does_not_hang``).
-
-    The guard is a ``deque`` subclass that tracks the extents scheduled on *that instance*
-    and skips re-enqueueing one already seen — valid trees never revisit an extent, so this
-    is transparent on well-formed images and no-ops entirely for deques that hold anything
-    other than directory records or UDF File Entries. Directory records and UDF File Entries
-    are tracked in separate sets. Both report absolute logical blocks of the same image,
-    but they are different kinds of object in different trees, and a crafted image can
-    give a UDF File Entry the block of an ISO directory extent; one shared set would then
-    let one tree's guard drop the other tree's entry. Because
-    the visit sets live on the instance (not a per-walk closure), the subclass is installed
-    **once, permanently**, confined to pycdlib's ``collections`` reference: no per-walk swap,
-    no shared mutable state, and concurrent ISO opens on separate threads never interfere
-    (each walk builds its own deque instance).
-    """
-    if pycdlib is None:
-        return
-    global _PYCDLIB_CYCLE_GUARD_INSTALLED
-    if _PYCDLIB_CYCLE_GUARD_INSTALLED:
-        return
-
-    import collections
-
-    import pycdlib.pycdlib as pcd_module
-    from pycdlib import dr as dr_mod
-    from pycdlib import udf as udf_mod
-
-    real_deque = collections.deque
-
-    class _ExtentGuardedDeque(real_deque):
-        """A ``deque`` that drops a directory record or UDF File Entry already scheduled."""
-
-        def __init__(
-            self, iterable: Iterable[object] = (), maxlen: int | None = None
-        ) -> None:
-            items = list(iterable)
-            super().__init__(items, maxlen)
-            # Seed from the initial contents (which bypass ``append``) so a cycle back to a
-            # root/seed extent is caught too.
-            self._visited_extents: set[int] = {
-                item.extent_location()
-                for item in items
-                if isinstance(item, dr_mod.DirectoryRecord)
-            }
-            self._visited_udf_extents: set[int] = {
-                item.extent_location()
-                for item in items
-                if isinstance(item, udf_mod.UDFFileEntry)
-            }
-
-        def append(self, item: object) -> None:
-            if isinstance(item, dr_mod.DirectoryRecord):
-                visited = self._visited_extents
-            elif isinstance(item, udf_mod.UDFFileEntry):
-                visited = self._visited_udf_extents
-            else:
-                super().append(item)
-                return
-            extent = item.extent_location()
-            if extent in visited:
-                return
-            visited.add(extent)
-            super().append(item)
-
-    # setattr (not a direct assignment) so the type checkers don't flag the deliberate
-    # module -> proxy substitution against pcd_module.collections's declared Module type.
-    setattr(
-        pcd_module,
-        "collections",
-        _DequeGuardedCollections(collections, _ExtentGuardedDeque),
-    )
-    _PYCDLIB_CYCLE_GUARD_INSTALLED = True
-
-
-_install_pycdlib_directory_cycle_guard()
-
 
 # The System Use entries pycdlib parses (``RockRidge.parse``). It raises on any other
 # tag, although SUSP 1.12 §5 has a reader ignore an entry it does not recognize.
@@ -320,8 +206,8 @@ class _SystemUseNotes:
         pycdlib reads the area a ``CE`` entry names right after parsing the System Use
         area that holds it, for the length the entry declares (up to 4 GiB, clamped
         only to the image), and only then refuses an area that does not fit in one
-        logical block (``track_rr_ce_entry``). From 1.21 it follows the chain: an area
-        may end in a ``CE`` naming a further area, read the same way. This runs on
+        logical block (``track_rr_ce_entry``). It follows the chain: an area may end
+        in a ``CE`` naming a further area, read the same way. This runs on
         every area pycdlib parses, the record's own and each continuation, so every
         link is refused between the parse that names it and the read. The Linux kernel
         refuses the same entry (``rock_continue``).
@@ -492,7 +378,7 @@ def _install_pycdlib_system_use_filter() -> None:
         )
         if notes is not None:
             # pycdlib keeps the CE of a continuation area in ``ce_entries`` (``None``
-            # until one is parsed, from 1.20) and the record's own in ``dr_entries``.
+            # until one is parsed) and the record's own in ``dr_entries``.
             entries = self.ce_entries if continuation else self.dr_entries
             notes.check_continuation_entry(
                 None if entries is None else entries.ce_record
@@ -913,8 +799,8 @@ _install_pycdlib_udf_counter()
 # rather than leaking as raw exceptions. The cost of so broad a set: this backend also reads
 # pycdlib internals itself (`_nm_name`, `_rr_entry_groups`, `_times`, `_px`,
 # `_check_path_table`), inside the same window, so a bug in that code (an attribute pycdlib
-# no longer sets, say) is reported as a corrupt image rather than crashing. That is how an
-# unguarded `ce_entries is None` on pycdlib 1.20+ showed up. We keep the broad set because
+# no longer sets, or an unallocated `ce_entries`, say) is reported as a corrupt image
+# rather than crashing. We keep the broad set because
 # telling a pycdlib frame from ours would need traceback inspection on every error; the
 # guard is to run the ISO suites against newer pycdlib releases (`uv run --with pycdlib==X`).
 # A genuine OSError from the underlying handle (file not found, permission, media error) is
@@ -1007,7 +893,7 @@ def _cut_short(fp: BinaryIO, exc: Exception) -> TruncatedError | None:
 
 # Trailing ";1"/";42" version suffix on an ISO 9660 or Joliet file identifier. ``\Z``,
 # not ``$``: ``$`` also matches before a final newline, which would drop it from the name.
-_VERSION_SUFFIX = re.compile(r";(\d+)\Z")
+_VERSION_SUFFIX = re.compile(r";([0-9]+)\Z")
 
 # How many records under a Rock Ridge directory are searched for a file that also sits
 # in the Joliet tree, to find that directory's Joliet counterpart. Bounds the cost of a
@@ -1031,9 +917,8 @@ def _nm_name(record: DirectoryRecord) -> bytes | None:
 def _rr_entry_groups(rr: RockRidge) -> tuple[RockRidgeEntries, ...]:
     """The entry groups of a Rock Ridge record: its own area's, then its continuation's.
 
-    From pycdlib 1.20, ``ce_entries`` stays ``None`` until an entry spills into a
-    continuation area, so a record without one has only ``dr_entries``. On older
-    pycdlib both groups always exist.
+    pycdlib leaves ``ce_entries`` as ``None`` until an entry spills into a
+    continuation area, so a record without one has only ``dr_entries``.
     """
     ce: RockRidgeEntries | None = rr.ce_entries
     return (rr.dr_entries,) if ce is None else (rr.dr_entries, ce)
@@ -1492,15 +1377,18 @@ class _ZisofsStream(io.RawIOBase):
             decompressor = self._natives.zlib_decompressobj()
             try:
                 data = decompressor.decompress(packed, expected + 1)
+                ended = decompressor.eof and not decompressor.unused_data
             except zlib.error as exc:
                 raise CorruptionError(f"zisofs block {index}: {exc}") from exc
+            finally:
+                release_decoder(decompressor)
             if len(data) != expected:
                 raise CorruptionError(
                     f"zisofs block {index} holds {len(data)} bytes, not {expected}"
                 )
             # The stream has to end, checksum included, where the pointers say: a
             # block cut before its Adler-32 or followed by other bytes is not verified.
-            if not decompressor.eof or decompressor.unused_data:
+            if not ended:
                 raise CorruptionError(
                     f"zisofs block {index} does not end where its pointers say"
                 )
@@ -1622,61 +1510,59 @@ class IsoReader(BaseArchiveReader):
         # Boundary outside the guard; an exception the translator does not recognize
         # (a genuine OSError from the handle) propagates unchanged.
         try:
-            with self._translated_errors():
-                with self._handle_guard():
-                    # Always the source, never ``open(str(path))``: a path pycdlib opened
-                    # for itself would have nothing of ours underneath it, and the
-                    # source is what bounds the reads pycdlib sizes from the image's own
-                    # headers. pycdlib clamps a *file*'s ``data_length`` to the image,
-                    # but not a *directory*'s: a root record declaring 4 GiB asks for 4
-                    # GiB inside ``open_fp``, from a file of any size. The source turns
-                    # that into a short read, which pycdlib reports as an invalid
-                    # directory record. When the file holds less than the image
-                    # declares, ``_cut_short`` makes that a ``TruncatedError``;
-                    # otherwise, as for a full-length image whose directory declares
-                    # too much, ``_translate_exception`` makes it a
-                    # ``CorruptionError``. pycdlib never closes a file object it was
-                    # handed (``_managing_fp`` is set only by ``open()``).
-                    # Kept for ``_data_inode``, which reads extents pycdlib has no
-                    # inode for through the same handle pycdlib reads from.
-                    self._iso_fp = self._track_source_seeks(source)
-                    limits = config.listing_limits
-                    budget = (
-                        None
-                        if limits.max_members is None
-                        and limits.max_metadata_bytes is None
-                        else _ParseBudget(limits)
-                    )
-                    token = _SYSTEM_USE_NOTES.set(self._system_use)
-                    budget_token = _PARSE_BUDGET.set(budget)
-                    try:
-                        self._iso.open_fp(self._iso_fp)
-                    except _PYCDLIB_ERRORS as exc:
-                        truncated = _cut_short(self._iso_fp, exc)
-                        if truncated is None:
-                            raise
-                        raise truncated from exc
-                    finally:
-                        _PARSE_BUDGET.reset(budget_token)
-                        _SYSTEM_USE_NOTES.reset(token)
-                    self._iso_opened = True
-                    # pycdlib measured the image the same way inside ``open_fp``.
-                    self._image_length = self._iso_fp.seek(0, 2)
+            with self._translated_errors(), self._handle_guard():
+                # Always the source, never ``open(str(path))``: a path pycdlib opened
+                # for itself would have nothing of ours underneath it, and the
+                # source is what bounds the reads pycdlib sizes from the image's own
+                # headers. pycdlib clamps a *file*'s ``data_length`` to the image,
+                # but not a *directory*'s: a root record declaring 4 GiB asks for 4
+                # GiB inside ``open_fp``, from a file of any size. The source turns
+                # that into a short read, which pycdlib reports as an invalid
+                # directory record. When the file holds less than the image
+                # declares, ``_cut_short`` makes that a ``TruncatedError``;
+                # otherwise, as for a full-length image whose directory declares
+                # too much, ``_translate_exception`` makes it a
+                # ``CorruptionError``. pycdlib never closes a file object it was
+                # handed (``_managing_fp`` is set only by ``open()``).
+                # Kept for ``_data_inode``, which reads extents pycdlib has no
+                # inode for through the same handle pycdlib reads from.
+                self._iso_fp = self._track_source_seeks(source)
+                limits = config.listing_limits
+                budget = (
+                    None
+                    if limits.max_members is None and limits.max_metadata_bytes is None
+                    else _ParseBudget(limits)
+                )
+                token = _SYSTEM_USE_NOTES.set(self._system_use)
+                budget_token = _PARSE_BUDGET.set(budget)
+                try:
+                    self._iso.open_fp(self._iso_fp)
+                except _PYCDLIB_ERRORS as exc:
+                    truncated = _cut_short(self._iso_fp, exc)
+                    if truncated is None:
+                        raise
+                    raise truncated from exc
+                finally:
+                    _PARSE_BUDGET.reset(budget_token)
+                    _SYSTEM_USE_NOTES.reset(token)
+                self._iso_opened = True
+                # pycdlib measured the image the same way inside ``open_fp``.
+                self._image_length = self._iso_fp.seek(0, 2)
 
-                    # Auto-select the richest namespace: Rock Ridge > Joliet > plain
-                    # ISO 9660. Inside the guard, not after it: these are pycdlib calls
-                    # on the image just opened, so a failure here is an image failure
-                    # and belongs to the same translation and the same release.
-                    if self._iso.has_rock_ridge():
-                        self._namespace = "rock_ridge"
-                        self._path_kw = "rr_path"
-                    elif self._iso.has_joliet():
-                        self._namespace = "joliet"
-                        self._path_kw = "joliet_path"
-                    else:
-                        self._namespace = "iso9660"
-                        self._path_kw = "iso_path"
-                    self._report_trailing_data()
+                # Auto-select the richest namespace: Rock Ridge > Joliet > plain
+                # ISO 9660. Inside the guard, not after it: these are pycdlib calls
+                # on the image just opened, so a failure here is an image failure
+                # and belongs to the same translation and the same release.
+                if self._iso.has_rock_ridge():
+                    self._namespace = "rock_ridge"
+                    self._path_kw = "rr_path"
+                elif self._iso.has_joliet():
+                    self._namespace = "joliet"
+                    self._path_kw = "joliet_path"
+                else:
+                    self._namespace = "iso9660"
+                    self._path_kw = "iso_path"
+                self._report_trailing_data()
         except BaseException:
             # No reader is returned for anyone to close, and the exception's traceback
             # keeps this frame alive for as long as the caller holds it (inventory/fuzz
@@ -2720,7 +2606,15 @@ class IsoReader(BaseArchiveReader):
             solid_block_count=None,
         )
         pvd = self._iso.pvd
-        volume_id = pvd.volume_identifier.decode("ascii", errors="replace").rstrip()
+        # The standard allows d-characters only, but writers store the -V text as it
+        # was given (xorriso: UTF-8). It records no charset, as a Rock Ridge name does
+        # not, so it decodes the way a byte name does: UTF-8, else encoding=, else
+        # surrogateescape. The Joliet copy is not read: xorriso turns its non-ASCII
+        # bytes into "_", and its 16 characters are half the primary's 32 bytes. Only
+        # the space padding the standard defines is removed, and before the decode, so
+        # a multi-byte encoding= never meets the padding and a label's own trailing
+        # character (a no-break space, say) stays.
+        volume_id = self._decode_bytes_name(pvd.volume_identifier.rstrip(b" "))
         info_extra = ArchiveInfoExtra({"iso.namespace": self._namespace})
         return ArchiveInfo(
             format=self._format,

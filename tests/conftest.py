@@ -45,20 +45,20 @@ class _TracemallocUnavailable(types.ModuleType):
 if importlib.util.find_spec("_tracemalloc") is None:
     sys.modules["tracemalloc"] = _TracemallocUnavailable("tracemalloc")
 
-# archivey never uses rapidgzip, lz4 or pyppmd under PyPy, where they misread data or
-# crash the interpreter (deps.unused_reason), and the tests treat them as not installed
-# there. rapidgzip and lz4 get a ``None`` entry, which makes the import fail and
-# ``importlib.util.find_spec`` return ``None``, so no test loads them. pyppmd cannot:
-# py7zr, a test oracle, imports it. Tests that need it ask ``has_package`` (through
-# ``requires`` or ``importorskip``) instead. The source of truth is
-# ``deps._UNUSED_UNDER_PYPY``; this copy is kept by hand because it must be in place
+# archivey never uses rapidgzip, lz4, pyppmd or inflate64 under PyPy, where they misread
+# data or crash the interpreter (deps.unused_reason), and the tests treat them as not
+# installed there. rapidgzip and lz4 get a ``None`` entry, which makes the import fail and
+# ``importlib.util.find_spec`` return ``None``, so no test loads them. pyppmd and
+# inflate64 cannot: py7zr, a test oracle, imports both. Tests that need them ask
+# ``has_package`` (through ``requires`` or ``importorskip``) instead. The source of truth
+# is ``deps._UNUSED_UNDER_PYPY``; this copy is kept by hand because it must be in place
 # before anything imports archivey, and importing ``deps`` imports ``lz4.frame``.
+# ``tests/test_codecs.py`` checks that it matches.
+UNUSED_UNDER_PYPY_NAMES = frozenset({"rapidgzip", "lz4", "pyppmd", "inflate64"})
 UNUSED_UNDER_PYPY = (
-    frozenset({"rapidgzip", "lz4", "pyppmd"})
-    if sys.implementation.name == "pypy"
-    else frozenset()
+    UNUSED_UNDER_PYPY_NAMES if sys.implementation.name == "pypy" else frozenset()
 )
-for _blocked in UNUSED_UNDER_PYPY - {"pyppmd"}:
+for _blocked in UNUSED_UNDER_PYPY - {"pyppmd", "inflate64"}:
     sys.modules[_blocked] = None  # type: ignore[assignment]
 
 
@@ -190,12 +190,40 @@ def unrar_refusal() -> str | None:
     return None
 
 
+def unrar_cli_refusal() -> str | None:
+    """Why a test cannot run the ``unrar`` command itself, or ``None`` when it can.
+
+    A test that runs ``unrar`` as an oracle needs that command to be the RARLAB
+    ``unrar`` archivey accepts; such a test is marked :func:`requires_unrar_cli`.
+    :func:`unrar_refusal` alone is not enough: it also accepts ``rar`` 6.0+ when
+    ``unrar`` is missing or a lookalike, and the test would then run the wrong program.
+    """
+    from archivey.internal.backends.rar_unrar import find_rarlab_unrar
+
+    on_path = shutil.which("unrar")
+    if on_path is None:
+        return "unrar is not on PATH"
+    refusal = unrar_refusal()
+    if refusal is not None:
+        return refusal
+    # find_rarlab_unrar returns an absolute path already; abspath both sides anyway,
+    # so a relative PATH entry cannot make the two spellings differ.
+    accepted = find_rarlab_unrar()
+    if os.path.normcase(os.path.abspath(on_path)) != os.path.normcase(
+        os.path.abspath(accepted)
+    ):
+        return f"archivey refuses the unrar at {on_path} and uses rar instead"
+    return None
+
+
 def binary_refusal(name: str) -> str | None:
     """Why a test cannot use ``name``, or ``None`` when it can.
 
     For ``unar`` and ``unrar`` this is archivey's own policy (:func:`unar_refusal`,
     :func:`unrar_refusal`), so a binary on ``PATH`` that archivey refuses reads as
-    missing. Any other name only has to be on ``PATH``.
+    missing. Any other name only has to be on ``PATH``. A test that runs the
+    ``unrar`` command itself uses :func:`unrar_cli_refusal` or
+    :func:`requires_unrar_cli` instead.
     """
     if name == "unar":
         return unar_refusal()
@@ -215,16 +243,35 @@ def requires_binary(*names: str) -> pytest.MarkDecorator:
     The oracle-availability rule (``testing-contract`` spec): a test that shells out to an external
     binary must *skip*, not fail, where that binary is absent, so CI legs and dev
     machines without it stay green. ``unar`` also skips where archivey refuses the one
-    on ``PATH`` (:func:`unar_refusal`), and the reason says why.
+    on ``PATH`` (:func:`unar_refusal`). ``unrar`` means archivey's RARLAB data program
+    (:func:`unrar_refusal`) rather than the command: ``rar`` 6.0+ alone runs the test,
+    and so does a lookalike ``unrar`` beside it. A test that runs the ``unrar`` command
+    itself is marked :func:`requires_unrar_cli` instead.
     """
-    missing = [n for n in names if shutil.which(n) is None]
+    missing = [n for n in names if n != "unrar" and shutil.which(n) is None]
     reason = f"requires external binary(ies): {', '.join(missing)}"
-    if not missing and "unar" in names:
-        refusal = unar_refusal()
-        if refusal is not None:
-            missing = ["unar"]
-            reason = f"requires a unar archivey will use: {refusal}"
+    if not missing:
+        for name, refuse in (("unar", unar_refusal), ("unrar", unrar_refusal)):
+            if name not in names:
+                continue
+            refusal = refuse()
+            if refusal is not None:
+                missing = [name]
+                reason = f"requires a {name} archivey will use: {refusal}"
+                break
     return pytest.mark.skipif(bool(missing), reason=reason)
+
+
+def requires_unrar_cli() -> pytest.MarkDecorator:
+    """Skip a test that runs the ``unrar`` command unless archivey accepts that command.
+
+    For an oracle test that spawns ``unrar`` itself (:func:`unrar_cli_refusal`). A test
+    that only needs archivey to read RAR data uses ``requires_binary("unrar")``.
+    """
+    refusal = unrar_cli_refusal()
+    return pytest.mark.skipif(
+        refusal is not None, reason=f"requires a unrar archivey will use: {refusal}"
+    )
 
 
 SEVEN_ZIP_CLI_TIMEOUT = 30.0

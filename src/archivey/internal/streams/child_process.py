@@ -188,14 +188,18 @@ def outside_death(returncode: int | None, what: str) -> tuple[type[ArchiveyError
     if is_system_kill(returncode):
         return (
             ResourceLimitError,
-            f"{what}. SIGKILL comes from outside the decoder, most often the "
-            "system's out-of-memory killer, so the data may be valid; read it "
-            "again with more memory available.",
+            (
+                f"{what}. SIGKILL comes from outside the decoder, most often the "
+                "system's out-of-memory killer, so the data may be valid; read it "
+                "again with more memory available."
+            ),
         )
     return (
         ReadError,
-        f"{what}. The decoder did not crash: something outside it ended the "
-        "process, so the data may be valid; try reading it again.",
+        (
+            f"{what}. The decoder did not crash: something outside it ended the "
+            "process, so the data may be valid; try reading it again."
+        ),
     )
 
 

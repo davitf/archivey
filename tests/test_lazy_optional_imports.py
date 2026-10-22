@@ -25,6 +25,7 @@ import pytest
 from archivey.exceptions import ResourceLimitError
 from archivey.internal.config import AcceleratorMode, StreamConfig
 from archivey.internal.streams import codecs
+from tests.conftest import has_package, importorskip
 
 _GIL_REENABLING = ("pyppmd", "inflate64", "brotli", "rapidgzip")
 
@@ -42,6 +43,8 @@ _PROBE = textwrap.dedent(
 
 
 def test_import_and_format_listing_do_not_import_gil_reenabling_packages() -> None:
+    # ``find_spec``, not ``has_package``: the claim is that archivey never imports
+    # these, which holds for an installed package it does not use (under PyPy) too.
     installed = [m for m in _GIL_REENABLING if importlib.util.find_spec(m)]
     if not installed:
         # The free-threaded CI job sets this on the step that installs them, so that
@@ -101,20 +104,18 @@ def test_isolated_decoders_are_not_imported_by_the_caller() -> None:
     """Under ``NATIVE_DECODERS`` brotli, inflate64 and pyppmd decode in a child and the
     caller never imports them; nor pyppmd by default (every PPMd member decodes in a
     child)."""
-    if importlib.util.find_spec("inflate64") is None:
-        pytest.skip("inflate64 is not installed")
-    import inflate64
+    inflate64 = importorskip("inflate64")
 
     payload = b"isolated " * 100
     deflater = inflate64.Deflater()
     deflate64_data = deflater.deflate(payload) + deflater.flush()
     brotli_data = b""
-    if importlib.util.find_spec("brotli") is not None:
+    if has_package("brotli"):
         import brotli
 
         brotli_data = brotli.compress(payload)
     ppmd_data = b""
-    if importlib.util.find_spec("pyppmd") is not None:
+    if has_package("pyppmd"):
         import pyppmd
 
         encoder = pyppmd.Ppmd7Encoder(6, 16 << 20)
@@ -130,6 +131,7 @@ def test_isolated_decoders_are_not_imported_by_the_caller() -> None:
         capture_output=True,
         text=True,
         timeout=120,
+        check=False,
     )
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "imported=", proc.stdout

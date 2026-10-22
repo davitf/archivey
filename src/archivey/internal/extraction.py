@@ -29,10 +29,10 @@ import posixpath
 import stat
 import tempfile
 import uuid
-from collections.abc import Callable, Collection, Iterator
+from collections.abc import Callable, Collection, Generator, Iterator
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO, assert_never, cast
+from typing import TYPE_CHECKING, BinaryIO, Protocol, assert_never, cast
 
 from archivey.config import ExtractionLimits
 from archivey.exceptions import (
@@ -46,6 +46,7 @@ from archivey.exceptions import (
     NameCollisionError,
     NameRewrittenError,
     _UsageTypeError,
+    exception_detail,
 )
 from archivey.internal.bomb_tracker import (
     AlwaysStopResourceLimitError,
@@ -380,7 +381,7 @@ def _until_listing_damage(
     reader: BaseArchiveReader,
     pairs: Iterator[tuple[ArchiveMember, ArchiveStream | None]],
     found: list[CorruptionError],
-) -> Iterator[tuple[ArchiveMember, ArchiveStream | None]]:
+) -> Generator[tuple[ArchiveMember, ArchiveStream | None], None, None]:
     """``pairs``, ending quietly when the listing's own damage ends them.
 
     That damage is appended to ``found`` for the caller to raise once the members
@@ -394,6 +395,33 @@ def _until_listing_damage(
         if exc is not reader._walk_error:
             raise
         found.append(exc)
+
+
+class _Closable(Protocol):
+    def close(self) -> None: ...
+
+
+@contextlib.contextmanager
+def _closing_pass(passing: _Closable) -> Generator[None, None, None]:
+    """Close ``passing`` on the way out, without letting a failed close hide an error.
+
+    Closing the pass closes its open member stream, which can raise (an ``unrar``
+    exit status maps to a typed error). With an error already leaving the loop, that
+    error is the one the caller catches; the close failure rides on it as a note. On a
+    clean exit, a close failure raises as itself.
+    """
+    try:
+        yield
+    except BaseException as exc:
+        try:
+            passing.close()
+        except Exception as close_exc:  # noqa: BLE001  # kept as a note, not raised
+            exc.add_note(
+                "Closing the member pass also failed: "
+                + exception_detail(close_exc, with_type=True)
+            )
+        raise
+    passing.close()
 
 
 @dataclass
@@ -595,8 +623,8 @@ class _RunState:
 class _MemberState:
     """What the member being handled shares with its write path, in both directions.
 
-    The pass builds a new one per member, and the second pass one per orphaned
-    source and one per link, so nothing carries over.
+    The pass builds a new one per member, and the second pass one per link, so
+    nothing carries over.
     """
 
     # The destination the member asked for, published so the per-member error
@@ -779,6 +807,14 @@ class ExtractionCoordinator:
         if self._dry is not None:
             self._dry.rebase_os_error(exc)
 
+    def _rebase_resolved_os_error(self, exc: OSError) -> None:
+        """``_rebase_os_error`` for an error that names a path built from
+        ``dest_root``, the resolved dest: a real run names it so, and a dry run shows
+        it under the resolved dest too."""
+        _plain_os_error(exc)
+        if self._dry is not None:
+            self._dry.rebase_os_error(exc, resolved=True)
+
     def _run(self, reader: BaseArchiveReader, dest: Path) -> list[ExtractionResult]:
         tracker = BombTracker(
             self._limits.max_extracted_bytes,
@@ -933,9 +969,12 @@ class ExtractionCoordinator:
         # before it are all written, including the hardlinks the second pass below
         # completes, and then it is raised. A hardlink only points back, so every
         # source the second pass needs is in that prefix.
-        # The pass is not bound to a name: an error out of the loop body then drops
-        # it at once, which closes the open member stream (a held traceback would
-        # otherwise keep it, and an unrar child, alive).
+        # Each pass is closed on the way out, so an error out of the loop body closes
+        # the open member stream (and any unrar child) at once. CPython would close
+        # an unnamed pass as soon as the error left the loop; PyPy closes a dropped
+        # one only when it is collected. Binding the pass to ``pairs`` is safe only
+        # because ``_closing_pass`` closes it: without that, a caller holding the
+        # traceback would keep it (and the unrar child) alive on CPython too.
         listing_damage: list[CorruptionError] = []
         if reader._REVISES_YIELDED_MEMBERS:
             self._stage_then_place(reader, stream_selector, copies, listing_damage)
@@ -947,18 +986,20 @@ class ExtractionCoordinator:
             # ``_handle_member`` and is never recorded here. A streaming pass learns
             # of the later copy only when it arrives; see ``_park_earlier_copies``.
             current_by_name: dict[str, int] = {}
-            for original, stream in _until_listing_damage(
+            pairs = _until_listing_damage(
                 reader, reader._stream_members(stream_selector, copies), listing_damage
-            ):
-                self._handle_member(
-                    original,
-                    stream,
-                    current_by_name=current_by_name,
-                    members_done=members_done,
-                )
-                members_done += 1
-                if selected_total is not None and members_done >= selected_total:
-                    break
+            )
+            with _closing_pass(pairs):
+                for original, stream in pairs:
+                    self._handle_member(
+                        original,
+                        stream,
+                        current_by_name=current_by_name,
+                        members_done=members_done,
+                    )
+                    members_done += 1
+                    if selected_total is not None and members_done >= selected_total:
+                        break
 
         # Core second pass: resolve orphaned hardlinks whose (re-readable) source was
         # excluded. Only populated for a seekable source; forward-only orphans already
@@ -1119,24 +1160,27 @@ class ExtractionCoordinator:
         walk_selector = None if selector is None else _final_members_only(selector)
         staging: list[_Staging] = []
         members_done = 0
-        for original, stream in _until_listing_damage(
+        pairs = _until_listing_damage(
             reader, reader._stream_members(walk_selector, copies), listing_damage
-        ):
-            # A member already final when yielded was selected by ``walk_selector``.
-            entry = _Staging(original, final=original.member_state_final)
-            staging.append(entry)
-            if (
-                not entry.final
-                and selector is not None
-                and not _provisionally_selected(selector, original)
-            ):
-                # The selection is made again on what the member becomes, at
-                # placement. Its data is not staged, and it is not counted as handled.
-                entry.reported = False
-                self._close(stream)
-                continue
-            self._stage_member(entry, stream, len(staging) - 1, members_done)
-            members_done += 1
+        )
+        with _closing_pass(pairs):
+            for original, stream in pairs:
+                # A member already final when yielded was selected by ``walk_selector``.
+                entry = _Staging(original, final=original.member_state_final)
+                staging.append(entry)
+                if (
+                    not entry.final
+                    and selector is not None
+                    and not _provisionally_selected(selector, original)
+                ):
+                    # The selection is made again on what the member becomes, at
+                    # placement. Its data is not staged, and it is not counted as
+                    # handled.
+                    entry.reported = False
+                    self._close(stream)
+                    continue
+                self._stage_member(entry, stream, len(staging) - 1, members_done)
+                members_done += 1
 
         if listing_damage and any(
             listing_damage[0] is error for _, error in reader._failed_at_end
@@ -1932,7 +1976,12 @@ class ExtractionCoordinator:
         if self._dry is not None:
             self._dry.bring_in(on_disk)
         try:
-            check_universal(on_disk, dest_root, link_target_on_disk=self._on_disk)
+            check_universal(
+                on_disk,
+                dest_root,
+                link_target_on_disk=self._on_disk,
+                show_os_error=self._rebase_resolved_os_error,
+            )
         except ExtractionError as exc:
             if on_disk is not member:
                 _report_stored_spelling(exc, on_disk, member)
@@ -2372,8 +2421,7 @@ class ExtractionCoordinator:
         kind: str,
         record: Callable[[ArchiveyError | OSError, ExtractionResult], bool],
         cleanup: Callable[[], None] | None = None,
-        after: Callable[[], None] | None = None,
-    ) -> Iterator[None]:
+    ) -> Generator[None, None, None]:
         """Run the work on ``member`` in either pass, and deal with its failure.
 
         A per-member failure (``ArchiveyError`` or ``OSError``) is named as listed,
@@ -2382,9 +2430,10 @@ class ExtractionCoordinator:
         (``_stop_or_log``), unless ``record`` returns True: the caller stops on it
         later. The always-stop errors pass through. Whatever the outcome, ``cleanup``
         runs, and then the links the work may have moved are rechecked
-        (``_recheck_links``). Unless the run is stopping on the failure, ``after``
-        runs next, and then an error from the recheck ends the run. A ``_handling``
-        is never entered inside another, so nothing catches that error.
+        (``_recheck_links``). Unless the run is stopping on the failure, an error from
+        the recheck ends the run; a stopping run ends on the member's error and drops
+        the recheck's. A ``_handling`` is never entered inside another, so nothing
+        catches that error.
         """
         current = self._current
         link_error: ArchiveyError | None = None
@@ -2411,8 +2460,6 @@ class ExtractionCoordinator:
             if cleanup is not None:
                 cleanup()
             link_error = self._recheck_links()
-        if after is not None:
-            after()
         if link_error is not None:
             raise link_error
 
@@ -3132,35 +3179,22 @@ class ExtractionCoordinator:
             [orphans_by_source[source_id][0].source for source_id in needed],
             record=False,
         )
-        for member, stream in reader.stream_members(needed_sources):
-            group = orphans_by_source[member.member_id]
-            self._current = _MemberState()
-            remaining: list[_Orphan] = []
-
-            def record(
-                error: ArchiveyError | OSError, failed: ExtractionResult
-            ) -> bool:
-                # One failed source, N failed links: the fan-out is recorded on the
-                # results themselves, so a caller can tell N separate failures from one
-                # failure seen N times without joining against a diagnostic.
-                # Nothing the second pass runs raises FilterRejectionError.
-                assert failed.status is ExtractionStatus.FAILED
-                self._record_failure_group(group, error)
-                return False
-
-            with self._handling(
-                member,
-                kind="orphaned hardlink source",
-                record=record,
-                cleanup=lambda: self._close(stream),
-            ):
-                remaining = self._materialize_orphan_source(member, stream, group)
-            # Each link after the one that took the content is its own attempt: its
-            # failure is that link's, not the source's.
-            self._link_orphan_group(remaining, member.member_id)
-            needed.discard(member.member_id)
-            if not needed:
-                break  # every orphaned source is materialized; stop opening members
+        # Closed on the way out, so an error out of the loop body closes the open
+        # member stream (and any unrar child) now, not when the pass is collected.
+        passing = reader.stream_members(needed_sources)
+        with _closing_pass(passing):
+            for member, stream in passing:
+                group = orphans_by_source[member.member_id]
+                try:
+                    remaining = self._materialize_orphan_source(member, stream, group)
+                finally:
+                    self._close(stream)
+                # Each link after the one that took the content is its own attempt: its
+                # failure is that link's, not the source's.
+                self._link_orphan_group(remaining, member.member_id)
+                needed.discard(member.member_id)
+                if not needed:
+                    break  # every orphaned source is materialized; stop opening members
 
         # Any orphan whose source never reappeared (should not happen for a re-readable
         # source) is a per-member failure.
@@ -3259,30 +3293,97 @@ class ExtractionCoordinator:
     ) -> list[_Orphan]:
         """Write the source's content at the first link of ``group`` that takes it, and
         return the links after that one, for the caller to link against it. None remain
-        when every link's destination already exists under SKIP: then nothing was
-        written either."""
+        when no link took the content: every link was skipped or failed on its own, or
+        the source itself failed."""
         # Count the recovered source bytes toward the cumulative/ratio guards too.
         self._state.tracker.start_member(source_member)
 
         # The excluded source's content is written to the FIRST link whose destination the
-        # OverwritePolicy allows writing (a SKIP over an existing entry moves on to the next
-        # link), never to the source's own name — atomically (temp + os.replace), same as a
-        # normal FILE, so a failure while re-reading doesn't clobber an existing entry. The
-        # link's transformed copy supplies the on-disk mode/timestamps: hardlinks share one
-        # inode, so the metadata must be applied to the file that carries the content. Each
-        # link's destination is O2-collision-resolved against the map the main pass built
-        # (a deferred link's key may have been claimed after it was orphaned).
+        # OverwritePolicy allows writing, never to the source's own name. A link the
+        # policy declines (SKIP over an existing entry), or one that fails before the
+        # copy of the source's bytes begins (ERROR over an existing entry, a REPLACE
+        # that cannot remove what is there, a temp file its directory refuses), records
+        # that outcome as its own, and the content moves on to the next link.
         for index, orphan in enumerate(group):
-            # An error names the link as listed (the caller's ``_handling``).
-            self._current.spelled_from = orphan.spelled_from
+            placed = self._materialize_at(source_member, stream, group, index)
+            if placed is None:
+                # The source failed: every link from this one on is in its group.
+                return []
+            if placed:
+                return group[index + 1 :]
+        return []
+
+    def _materialize_at(
+        self,
+        source_member: ArchiveMember,
+        stream: BinaryIO | None,
+        group: list[_Orphan],
+        index: int,
+    ) -> bool | None:
+        """Try to write the source's content at link ``group[index]``, as one step of
+        ``_materialize_orphan_source``: True when it took the content, False when the
+        link was declined or failed on its own, ``None`` when the source failed.
+
+        The content is written atomically (temp + ``os.replace``), same as a normal
+        FILE, so a failure while re-reading does not clobber an existing entry. The
+        link's transformed copy supplies the on-disk mode and timestamps: hardlinks
+        share one inode, so the metadata goes on the file that carries the content. The
+        destination is O2-collision-resolved against the map the main pass built (a
+        deferred link's key may have been claimed after it was orphaned).
+
+        Two kinds of failure are the source's, and fail this link and every later
+        one as one group: the refusal of the source's recorded size
+        (``check_recorded_size``), which every link would meet, and any failure from
+        the moment the copy into the link's temp file begins, as the source's bytes
+        are then being read and cannot be offered to another link. Every other
+        failure (collision resolution, ``_make_room``, creating the temp file) is
+        this link's own, as for any other link (``_link_orphan``)."""
+        orphan = group[index]
+        current = self._current = _MemberState(
+            requested_path=orphan.dest_path, spelled_from=orphan.spelled_from
+        )
+        # True while a failure is the source's (see the docstring).
+        source_step = False
+        source_error: ArchiveyError | OSError | None = None
+
+        def record(error: ArchiveyError | OSError, failed: ExtractionResult) -> bool:
+            nonlocal source_error
+            # Nothing the second pass runs raises FilterRejectionError.
+            assert failed.status is ExtractionStatus.FAILED
+            if not source_step:
+                # This link's own failure, not a source fan-out: no group id.
+                self._revise_result(orphan.result_index, failed)
+                return False
+            # One failed source, N failed links: the fan-out is recorded on the
+            # results themselves, so a caller can tell N separate failures from one
+            # failure seen N times without joining against a diagnostic. Earlier
+            # links keep their own results.
+            self._record_failure_group(group[index:], error)
+            source_error = error
+            return True  # stopped on or logged below, under the source's name
+
+        def copy_begins() -> None:
+            nonlocal source_step
+            source_step = True
+
+        placed = False
+        with self._handling(orphan.original, kind="hardlink", record=record):
             resolved, prior, collided_with = self._resolve_collision(
                 orphan.original, orphan.transformed, orphan.dest_path
             )
+            current.collided_with = collided_with
             result = self._make_room(
                 orphan.original, orphan.transformed, resolved, atomic=True
             )
             if result is None:
-                self._write_file_atomic(stream, resolved, orphan.transformed)
+                # ``_write_file_atomic`` runs this check again. Running it here first
+                # lets its refusal count as the source's failure.
+                source_step = True
+                self._state.tracker.check_recorded_size()
+                source_step = False
+                self._write_file_atomic(
+                    stream, resolved, orphan.transformed, copy_begins=copy_begins
+                )
                 self._state.written_paths.add(resolved)
                 self._state.source_paths.setdefault(source_member.member_id, []).append(
                     resolved
@@ -3300,9 +3401,17 @@ class ExtractionCoordinator:
                 result_index=orphan.result_index,
             )
             self._revise_result(orphan.result_index, result)
-            if result.status is ExtractionStatus.EXTRACTED:
-                return group[index + 1 :]
-        return []
+            placed = result.status is ExtractionStatus.EXTRACTED
+        if source_error is not None:
+            self._stop_or_log(
+                source_error,
+                source_error,
+                ExtractionStatus.FAILED,
+                kind="orphaned hardlink source",
+                name=source_member.name,
+            )
+            return None
+        return placed
 
     def _link_orphan_group(self, group: list[_Orphan], source_id: int) -> None:
         """Link each orphan in ``group`` against the source content already on disk
@@ -3358,7 +3467,9 @@ class ExtractionCoordinator:
             self._revise_result(orphan.result_index, result)
 
     @contextlib.contextmanager
-    def _readonly_cleared(self, path: Path, *, ours: bool = False) -> Iterator[None]:
+    def _readonly_cleared(
+        self, path: Path, *, ours: bool = False
+    ) -> Generator[None, None, None]:
         """Let the block replace or remove ``path`` on Windows when this run wrote it
         read-only. ``ours`` says the caller knows this run wrote it (a parked copy
         already taken out of ``parked``).
@@ -3469,6 +3580,12 @@ class ExtractionCoordinator:
         problems: dict[Path, str] = {}
 
         def escapes(path: Path, target: str) -> bool:
+            if self._dry is not None:
+                # The link can now resolve through entries of dest that the scratch
+                # tree does not hold yet; a real run meets them in dest. A copy made
+                # here needs no new recheck of other links: each link copies in all
+                # it resolves through here, before its own check.
+                self._dry.bring_in_link(path, target)
             problem = _symlink_problem(path, target, dest_root)
             if problem is not None:
                 problems[path] = problem
@@ -3478,8 +3595,10 @@ class ExtractionCoordinator:
         removed = [
             (
                 link,
-                f"{problems[link.path]}: a later member changed "
-                "a path it resolves through",
+                (
+                    f"{problems[link.path]}: a later member changed "
+                    "a path it resolves through"
+                ),
             )
             for link in outcome.escaped
         ] + [
@@ -3790,6 +3909,7 @@ class ExtractionCoordinator:
         member: ArchiveMember,
         *,
         staged: Path | None = None,
+        copy_begins: Callable[[], None] | None = None,
     ) -> None:
         """Write a FILE by streaming into a temp sibling, applying ``member``'s metadata,
         then ``os.replace()``-ing it onto ``dest_path`` — atomic, so a mid-stream failure
@@ -3810,7 +3930,13 @@ class ExtractionCoordinator:
         by the same swap, and ``stream`` is not read: nothing is copied, and nothing is
         counted again, since its bytes were counted when it was staged. Where the swap
         cannot rename it (another filesystem mounted inside the destination), it is
-        copied, uncounted, as any stream is."""
+        copied, uncounted, as any stream is.
+
+        ``copy_begins`` is called once the temp file exists, just before the first
+        read of ``stream``: the orphan pass blames a failure from then on on the
+        source, not the link (``_materialize_at``). A staged write copies nothing, so
+        the two are never passed together."""
+        assert copy_begins is None or staged is None
         if staged is not None:
             self._land_staged(staged, dest_path, member)
             return
@@ -3830,6 +3956,8 @@ class ExtractionCoordinator:
             tmp = Path(tmp_name)
         try:
             with os.fdopen(fd, "wb") as dst:
+                if copy_begins is not None:
+                    copy_begins()
                 # A dry run reads and verifies the body like a real one; only the bytes
                 # go nowhere, and the file is left empty.
                 self._copy_to_fileobj(
@@ -4291,5 +4419,5 @@ class ExtractionCoordinator:
         if stream is not None:
             try:
                 stream.close()
-            except Exception:  # noqa: BLE001 - teardown hygiene; the result is recorded
+            except Exception:  # noqa: BLE001, S110 - teardown hygiene; the result is recorded
                 pass

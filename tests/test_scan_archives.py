@@ -88,7 +88,7 @@ def test_main_writes_csv_and_log(
 ) -> None:
     # ``main`` wraps library internals and reroutes the ``archivey`` logger for the
     # life of the process; neither may leak into the rest of the test session.
-    monkeypatch.setattr(scan, "_install_probes", lambda: [])
+    monkeypatch.setattr(scan, "_install_probes", list)
     logger = logging.getLogger("archivey")
     monkeypatch.setattr(logger, "handlers", list(logger.handlers))
     monkeypatch.setattr(logger, "propagate", logger.propagate)
@@ -146,7 +146,7 @@ def test_detection_probes_do_not_count_as_decoder_memory(tmp_path: Path) -> None
 
 
 def _quiet_main(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(scan, "_install_probes", lambda: [])
+    monkeypatch.setattr(scan, "_install_probes", list)
     logger = logging.getLogger("archivey")
     monkeypatch.setattr(logger, "handlers", list(logger.handlers))
     monkeypatch.setattr(logger, "propagate", logger.propagate)

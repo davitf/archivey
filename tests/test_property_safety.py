@@ -26,8 +26,7 @@ from pathlib import Path
 import pytest
 
 try:
-    from hypothesis import example, given
-    from hypothesis import strategies as st
+    from hypothesis import example, given, strategies as st
 except ImportError:  # pragma: no cover - [core-only] leg
     pytest.skip("hypothesis not installed (dev group)", allow_module_level=True)
 
@@ -567,6 +566,8 @@ def test_volume_part_helpers_total(name: str) -> None:
 @example(name="my.part1.zip.001")
 @example(name="my.part1.exe")
 @example(name="my.part1.r00")
+# ``\d`` matched Arabic-Indic zeros, so this was numbered and old-scheme RAR at once.
+@example(name="0.7z.\u066000")
 @given(name=_volume_style_names)
 def test_volume_schemes_are_disjoint(name: str) -> None:
     matched = [p.pattern for p in _VOLUME_SCHEMES if p.match(name) is not None]
