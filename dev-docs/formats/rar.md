@@ -187,9 +187,19 @@ test acquits as well as convicts. A set has one password, so `parse_rar_volumes`
 the proof into each later volume's walk. Before that proof (a RAR5 archive with no check
 value, or a cut or a CRC16 mismatch inside the first encrypted RAR3 header of an archive
 or set) a wrong key decrypts a garbage size that also reads to the end of the file, or
-fails the CRC16, so that stays `EncryptionError("…wrong password?")`. RAR5 does not take
-a CRC32 match as proof the way RAR3 takes a CRC16 one: RARLAB's `rar` writes the check
-value with `-hp`, so an archive without one is crafted, and the walk keeps one proof per
+fails the CRC16, so that stays `EncryptionError("…wrong password?")`, and a password
+list moves on to the next candidate. When the read ran out of ciphertext, the message
+adds the second reading: "if the password is right, the file ends inside the encrypted
+header that starts at byte N, or that header is damaged". It comes second because a
+wrong key on a small, whole archive also decrypts a size that runs to the end of the
+file and gets the same message. It names damage too because damage in a whole header
+garbles the size the same way. A header whose read did not run out of ciphertext (a size
+under the minimum, refused inside the read, or a CRC16 mismatch over a whole header) gets
+no such clause. The cut wording is one helper, shared with the proven cut's
+`TruncatedError`. In a set the clause's offset is within one volume, so the raised error
+names that volume, as the returned cut and damage strings do. RAR5 does not take a CRC32
+match as proof the way RAR3 takes a CRC16 one: RARLAB's `rar` writes the check value
+with `-hp`, so an archive without one is crafted, and the walk keeps one proof per
 format rather than add a second that only crafted input reaches. Each RAR3 header has
 its own salt, so the proof covers the password and not a later header's key: a damaged
 later salt decrypts a garbage header, which is `CorruptionError`, or a cut when its

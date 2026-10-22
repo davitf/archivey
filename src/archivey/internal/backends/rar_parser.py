@@ -772,17 +772,31 @@ def parse_rar_volumes(
         if gap and previous:
             missing.extend(range(previous + 1, number))
         previous = number
-        part = _parse_rar_volume(
-            volume,
-            password=password,
-            kdf_cache=kdf_cache,
-            volume_index=number - 1,
-            use_qo=use_qo,
-            max_members=max_members,
-            max_metadata_bytes=max_metadata_bytes,
-            name_encoding=name_encoding,
-            password_proven=password_proven,
+        # The walk's byte offsets are within this volume, not the concatenated space
+        # the member offsets below use, so a message that gives one names the volume.
+        where = (
+            f" (volume {number} of the set; the offset is within that volume)"
+            if len(volumes) > 1
+            else ""
         )
+        try:
+            part = _parse_rar_volume(
+                volume,
+                password=password,
+                kdf_cache=kdf_cache,
+                volume_index=number - 1,
+                use_qo=use_qo,
+                max_members=max_members,
+                max_metadata_bytes=max_metadata_bytes,
+                name_encoding=name_encoding,
+                password_proven=password_proven,
+            )
+        except EncryptionError as exc:
+            if not where or not getattr(exc, _OFFSET_IN_VOLUME, False):
+                raise
+            # Still the wrong-password error, so a password list moves on.
+            located = wrong_password_error(exc.raw_message + where)
+            raise located.with_traceback(exc.__traceback__) from exc.__cause__
         password_proven = part.password_proven
 
         for member in part.members:
@@ -791,10 +805,7 @@ def parse_rar_volumes(
             member.data_parts = [
                 (offset + base_offset, size) for offset, size in member.data_parts
             ]
-        if len(volumes) > 1:
-            # The walk's byte offsets are within this volume, not the concatenated
-            # space the member offsets above use, so the message names the volume.
-            where = f" (volume {number} of the set; the offset is within that volume)"
+        if where:
             if part.truncated is not None:
                 part.truncated += where
             if part.damaged is not None:
@@ -1348,10 +1359,18 @@ def _encrypted_header_cut(start: int) -> str:
     ciphertext blocks, so a file that ends anywhere after its first byte and before
     its last cannot be a clean end: the writer never stops part-way.
     """
-    return (
-        f"RAR archive is truncated: the file ends inside the encrypted header "
-        f"that starts at byte {start}"
-    )
+    return f"RAR archive is truncated: {_ends_inside_encrypted_header(start)}"
+
+
+# Set on a raised error whose message gives a byte offset within one volume, so that
+# ``parse_rar_volumes`` can name the volume, as it does for the returned strings.
+_OFFSET_IN_VOLUME = "_archivey_rar_offset_in_volume"
+
+
+def _ends_inside_encrypted_header(start: int) -> str:
+    """The clause that places a cut in an encrypted header, shared by the proven cut
+    and the unproven wrong-password message so the two say it the same way."""
+    return f"the file ends inside the encrypted header that starts at byte {start}"
 
 
 class _RarHeaderCrcError(CorruptionError):
@@ -1462,7 +1481,10 @@ def _header_failure(
     :class:`EncryptionError` and password candidates keep iterating. Once the key is
     proven (a matching CRC16 in RAR3, a check value in RAR5), a failure there is
     damage, and one that ran out of ciphertext is a cut. Unproven, a garbage size
-    reads to the end of the file as well, so that stays a wrong password. A plain
+    reads to the end of the file as well, so that stays a wrong password; when the
+    read did run out, the message also names a cut or a damaged header, because
+    with the right password one of those is the cause (damage can garble the size
+    just as a wrong key does) and nothing here can tell them apart. A plain
     header the file holds only part of is a cut: unrar lists the members before it
     and reports an unexpected end of archive.
 
@@ -1471,9 +1493,21 @@ def _header_failure(
     """
     if isinstance(header_fd, _HeaderDecryptStream):
         if not proven:
-            raise wrong_password_error(
-                f"Failed to decrypt {version} headers (wrong password?)"
-            ) from exc
+            message = f"Failed to decrypt {version} headers (wrong password?)"
+            if header_fd.hit_eof:
+                # A wrong key's garbage size runs to the end of a small archive as
+                # well, so the cut is the second reading, not the first; a damaged
+                # header garbles the size the same way, so it is named too.
+                message += (
+                    "; if the password is right, "
+                    f"{_ends_inside_encrypted_header(start)}, "
+                    "or that header is damaged"
+                )
+                error = wrong_password_error(message)
+                # The offset is within this volume; ``parse_rar_volumes`` names it.
+                setattr(error, _OFFSET_IN_VOLUME, True)
+                raise error from exc
+            raise wrong_password_error(message) from exc
         if header_fd.hit_eof:
             return _encrypted_header_cut(start)
     elif isinstance(exc, _RarHeaderCutError):
