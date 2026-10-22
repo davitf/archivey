@@ -51,3 +51,8 @@
 - [x] 5.6 Diagnostics spec: the `ENCRYPTED_MEMBER_UNVERIFIED` exclusion note's "revisit
       when `stream.verified` lands and this code is retired" is left as is: the code
       stays until the maintainer decides to retire it.
+
+## 6. Archive
+
+- [ ] 6.1 `openspec archive verification-level` once review settles the names and the
+      per-format table, in the PR that merges it.
