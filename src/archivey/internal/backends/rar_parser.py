@@ -110,7 +110,10 @@ _MAX_SKIPPED_HEADER_RECORDS = 16
 # reader words that diagnostic on its own.
 RAR5_UNPLACED_BYTES = "unplaced bytes"
 # The ``record`` of the entry on the ``QO`` service header for its FILE copies whose
-# ``header_offset`` a clean walk never reached (:func:`_qo_unmatched_copies`).
+# ``header_offset`` a clean walk never reached (:func:`_qo_unmatched_copies`). Not a
+# dropped record either: the QO payload parsed whole, and the reader words this
+# diagnostic on its own. At most one per volume and it retains nothing
+# attacker-sized, so :data:`_MAX_DAMAGED_SERVICE_HEADERS` does not count it.
 RAR5_QO_UNMATCHED_COPIES = "unmatched copies"
 # RAR 1.5-4 service header holding the preceding file's Unix owner (``rar -ow``),
 # and the ``reason`` of the ``skipped_header_records`` entry for one whose data holds
@@ -123,7 +126,8 @@ RAR3_UOW_NO_NUL = "no NUL in its owner data"
 # headers retained 80 MB before this cap. Counting them as members instead would
 # refuse an archive ``unrar`` lists, which is the opposite of this walk's posture,
 # so they get their own cap and the overflow is reported as a count. Structural
-# for the same reason as the cap above.
+# for the same reason as the cap above. It counts only headers whose walk did not
+# finish: the overflow message says so, and a ``QO`` unmatched-copies entry is not one.
 _MAX_DAMAGED_SERVICE_HEADERS = 16
 # BytesIO/file seek offsets must fit in a C ssize_t; hostile RAR5 vints can exceed that.
 _MAX_SEEK = (1 << 63) - 1
@@ -547,7 +551,9 @@ class RarMemberInfo:
 
 @dataclass(slots=True, frozen=True)
 class DamagedServiceHeader:
-    """A SERVICE header whose extra-area walk dropped a record or gave up.
+    """A SERVICE header whose extra-area walk dropped a record or gave up, or a ``QO``
+    header whose FILE copies matched no header a clean walk reached
+    (:data:`RAR5_QO_UNMATCHED_COPIES`).
 
     Not a :class:`RarMemberInfo`: a service header is not a member, nothing lists
     it, and keeping the whole parse of one both says otherwise and retains far more
@@ -575,7 +581,9 @@ class RarArchive:
     #: ``name.partN.rar`` sets. Taken from volume 1.
     old_volume_naming: bool = False
     #: SERVICE headers (``CMT``, ``QO``) whose extra-area walk dropped a record or
-    #: gave up, in file order, at most ``_MAX_DAMAGED_SERVICE_HEADERS`` of them.
+    #: gave up, in file order, at most ``_MAX_DAMAGED_SERVICE_HEADERS`` of them, plus
+    #: at most one ``QO`` entry per volume for copies that matched no header the walk
+    #: reached, which the cap does not count.
     #: They are not members, so nothing lists them and the reader's per-member
     #: diagnostics never see them — yet the same leniency applies to their headers,
     #: and the argument that leniency is not silent rests on a diagnostic being
@@ -810,7 +818,8 @@ def parse_rar_volumes(
             # field, so leaving this out made a damaged header past volume 1
             # silent — the archive opened clean and nothing said a header could
             # not be finished. The cap applies to the merged list for the same
-            # reason it applies to one volume's.
+            # reason it applies to one volume's, and passes QO unmatched-copies
+            # entries through as it does there.
             for damaged in part.damaged_service_headers:
                 if not _append_damaged_service_header(
                     merged.damaged_service_headers, damaged
@@ -902,9 +911,13 @@ def _append_damaged_service_header(
     another volume, and narrows it here rather than at the call sites, so nothing
     is built for a header the cap is about to turn away. The caller counts what
     this refuses: nothing is dropped silently, because the reader reports the
-    count alongside the headers it does describe.
+    count alongside the headers it does describe. A ``QO`` unmatched-copies entry
+    is always kept and never counted: the overflow message says each counted
+    header was not read to the end, which is not true of it.
     """
-    if len(headers) >= _MAX_DAMAGED_SERVICE_HEADERS:
+    if len(headers) >= _MAX_DAMAGED_SERVICE_HEADERS and not _is_qo_unmatched_copies(
+        source
+    ):
         return False
     headers.append(
         source
@@ -916,6 +929,13 @@ def _append_damaged_service_header(
         )
     )
     return True
+
+
+def _is_qo_unmatched_copies(source: RarMemberInfo | DamagedServiceHeader) -> bool:
+    return isinstance(source, DamagedServiceHeader) and any(
+        record == RAR5_QO_UNMATCHED_COPIES
+        for record, _, _ in source.skipped_header_records
+    )
 
 
 # The two RAR5 redirect types that are Windows reparse points. RAR is the one format
@@ -3303,8 +3323,10 @@ def _qo_unmatched_copies(
     ``rar`` writes one copy per FILE header it caches, so a copy that matches none is
     a damaged or crafted record, which a strict policy should be able to refuse. It
     rides on the ``MEMBER_HEADER_RECORD_SKIPPED`` channel of a damaged service header.
-    The caller asks only after a clean end: a walk that stopped early or was cut
-    leaves copies unreached for that reason alone.
+    The caller asks only after a clean end. A walk that was cut or stopped at a
+    damaged header leaves copies unreached for that reason alone. A damaged end block
+    stops nothing, but it already makes the archive corrupt, and a claim that the QO
+    record is crafted would then rest on a walk whose last header failed its check.
     """
     count = sum(1 for offset in qo_by_off if offset not in seen_file_offsets)
     if not count:
@@ -3572,19 +3594,16 @@ def _parse_rar5(
         # Unknown block — skip data area.
         _seek_after_packed(source, data_offset, add_size)
 
-    # Only a walk that read the end block whole has seen every header it would list,
-    # so only then does a copy it never reached say something about the QO record.
-    if (
-        end_block_seen
-        and end_block_damaged_at is None
-        and truncated is None
-        and damaged is None
-    ):
+    # A cut or a damaged header stops the walk early, so copies past it are unreached
+    # for that reason alone; both break out of the loop before ``end_block_seen`` is
+    # set, so that flag alone withholds the report for them. A damaged end block
+    # stops nothing, but the archive is already corrupt and the QO claim would rest
+    # on a header whose CRC failed, so it is withheld there too. The entry bypasses
+    # the cap (_is_qo_unmatched_copies).
+    if end_block_seen and end_block_damaged_at is None:
         unmatched = _qo_unmatched_copies(qo_by_off, seen_file_offsets)
-        if unmatched is not None and not _append_damaged_service_header(
-            damaged_service_headers, unmatched
-        ):
-            damaged_service_headers_omitted += 1
+        if unmatched is not None:
+            damaged_service_headers.append(unmatched)
 
     return RarArchive(
         version=5,

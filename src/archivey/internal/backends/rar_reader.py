@@ -3501,8 +3501,9 @@ class RarReader(BaseArchiveReader):
         member: ArchiveMember | None,
         member_id: int | None = None,
     ) -> None:
-        """Report what a RAR5 extra-area walk dropped, and why it stopped, and a
-        RAR 1.5-4 ``UOW`` owner header that held no owner.
+        """Report what a RAR5 extra-area walk dropped, and why it stopped, a
+        RAR 1.5-4 ``UOW`` owner header that held no owner, and a ``QO`` header whose
+        FILE copies matched no header the walk reached.
 
         ``member`` is ``None`` for a SERVICE header (``CMT``, ``QO``), which is not
         a listed member and so has nothing to attach to. It still comes through
@@ -3536,9 +3537,9 @@ class RarReader(BaseArchiveReader):
             elif record == RAR5_QO_UNMATCHED_COPIES:
                 message = (
                     f"This archive's {name} quick-open service header holds "
-                    f"{reason}, which rar does not write; they were not listed, "
-                    "as unrar does not list them, and the listing comes from the "
-                    "headers the walk read."
+                    f"{reason}. rar writes no copy that matches no header, so this "
+                    "record is damaged or crafted. The listing comes from the "
+                    "headers the walk read, which is what unrar lists too."
                 )
             elif record == RAR3_UOW_NAME:
                 message = (
@@ -3608,7 +3609,8 @@ class RarReader(BaseArchiveReader):
             )
 
     def _emit_service_header_diagnostics(self) -> None:
-        """Report the SERVICE headers (``CMT``, ``QO``) whose walk did not finish.
+        """Report the SERVICE headers (``CMT``, ``QO``) whose walk did not finish,
+        and a ``QO`` header whose copies matched no header the walk reached.
 
         Emitted after the members, so the two kinds are not interleaved in file
         order: a strict policy raises at emit time, so it refuses on a member's
@@ -3617,8 +3619,8 @@ class RarReader(BaseArchiveReader):
         order would need each header's offset, which ``DamagedServiceHeader``
         deliberately does not keep.
 
-        The parser caps how many it keeps, so the count of the rest is reported
-        too: a cap that silently swallowed the remainder would reopen the hole this
+        The parser caps how many unfinished headers it keeps, so the count of the
+        rest is reported too: a cap that silently swallowed the remainder would reopen the hole this
         reporting exists to close.
         """
         for damaged in self._archive.damaged_service_headers:

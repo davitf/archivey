@@ -378,9 +378,13 @@ included — it does not leave FILE after the old QO.
    and the listing stays as the walk found it. `rar` writes one copy per header it
    caches, so a leftover copy means a damaged or crafted QO, and a strict policy
    can refuse it. A walk that was cut or stopped at a damaged header leaves copies
-   unreached for that reason alone, so it reports nothing. The report goes on the
-   damaged-service-header channel (`_qo_unmatched_copies`), so it counts toward
-   that channel's cap like any other.
+   unreached for that reason alone, so it reports nothing. A damaged end block with
+   only zeros after it stops nothing, but it already makes the archive corrupt, and
+   the claim would rest on a header whose CRC failed, so it reports nothing either.
+   The report goes on the damaged-service-header channel (`_qo_unmatched_copies`)
+   but stays out of that channel's cap: there is at most one per volume, it
+   retains nothing attacker-sized, and the cap's overflow message says each header
+   it counts was not read to the end, which is not true of this one.
 
 When `-qo+` copied every FILE, the first FILE after MAIN (or after `CMT`) is
 in the map and the chain is one seek to QO. UnRAR (`qopen.cpp`) does the same
@@ -1774,7 +1778,7 @@ python3 scripts/exploration/rar_decompressor_matrix.py      # §3 the decompress
 | QO listing serves stored reads and keeps the archive comment; unreadable QO falls back to the walk | `::test_qo_listing_stored_read_and_comment`, `::test_unreadable_qo_falls_back_to_file_walk` |
 | QO payload of non-FILE records parses in linear time; overlapping QO spans are refused | `::test_rar5_qo_non_file_records_parse_in_linear_time`, `::test_qo_overlapping_spans_are_rejected` |
 | AUTO still lists small files QO omitted; `rar a` rewrites QO; FILE after QO is still listed | `::test_auto_qo_lists_small_files_omitted_from_cache`, `::test_rar_a_rewrites_qo_and_lists_the_new_member`, `::test_file_header_after_qo_is_still_listed` |
-| A QO copy no header the walk reaches matches is reported on a clean end, not after a cut or without QO, and not listed, as in `unrar` | `::test_a_qo_copy_the_walk_never_reaches_is_reported`, `::test_unmatched_qo_copies_are_not_reported_without_a_clean_end`, `::test_unrar_lists_the_walk_not_an_unmatched_qo_copy` |
+| A QO copy no header the walk reaches matches is reported on a clean end, refused under `STRICT`, kept past the damaged-service-header cap, not reported after a cut, a damaged header, a damaged end block or without QO, and not listed, as in `unrar` | `::test_a_qo_copy_the_walk_never_reaches_is_reported`, `::test_an_intact_qo_reports_no_unmatched_copy`, `::test_an_unmatched_qo_copy_is_kept_past_the_damaged_header_cap`, `::test_unmatched_qo_copies_are_not_reported_without_a_clean_end`, `::test_unrar_lists_the_walk_not_an_unmatched_qo_copy` |
 | A malformed optional RAR5 extra record drops the record, not the archive; encryption stays fatal; a zeroed extra area does not retain one skip per byte; the extra area is placed by its declared size | `tests/test_rar_header_record_leniency.py` |
 | An unknown compression version is `UnsupportedFeatureError` on read, for both decompressors and the solid pass; a stored member reads | `tests/test_rar_unknown_compression.py` |
 | Bounded hostile parsing: the header-size vint, hostile packed sizes, hostile modes, out-of-range timestamps | `::test_rar5_header_size_vint_is_bounded`, `::test_load_vint_single_and_multi_byte`, `::test_rar5_hostile_packed_size_is_corruption`, `::test_rar_reader_masks_hostile_unix_mode`, `::test_rar5_out_of_range_windowstime_is_tolerated` |

@@ -30,11 +30,17 @@ from archivey.config import (
     RarDecompressor,
 )
 from archivey.cost import AccessCost
-from archivey.diagnostics import DiagnosticCode
+from archivey.diagnostics import (
+    Diagnostic,
+    DiagnosticCode,
+    DiagnosticPolicy,
+    MemberHeaderRecordContext,
+)
 from archivey.exceptions import (
     ArchiveyError,
     ArchiveyUsageError,
     CorruptionError,
+    DiagnosticRaisedError,
     EncryptionError,
     PackageNotInstalledError,
     ResourceLimitError,
@@ -44,6 +50,7 @@ from archivey.exceptions import (
 from archivey.internal.backends import rar_reader, rar_unrar
 from archivey.internal.backends.rar_parser import (
     RAR5_ID,
+    RAR5_QO_UNMATCHED_COPIES,
     RAR_ID,
     RarArchive,
     RarMemberInfo,
@@ -53,6 +60,7 @@ from archivey.internal.backends.rar_parser import (
     parse_rar_volumes,
 )
 from archivey.internal.external.cli import terminate_process
+from archivey.reader import ArchiveReader
 from archivey.terminal import display_path
 from archivey.types import (
     EXTRA_RAR_EXTRACT_VERSION,
@@ -5549,11 +5557,13 @@ def _qo_two_member_archive(tmp_path: Path) -> Path:
     )
 
 
-def _unmatched_copy_diagnostics(archive: object) -> list[object]:
+def _unmatched_copy_diagnostics(archive: ArchiveReader) -> list[Diagnostic]:
     return [
         d
-        for d in archive.diagnostics.retained  # type: ignore[attr-defined]
+        for d in archive.diagnostics.retained
         if d.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+        and isinstance(d.context, MemberHeaderRecordContext)
+        and d.context.record == RAR5_QO_UNMATCHED_COPIES
     ]
 
 
@@ -5562,8 +5572,6 @@ def test_a_qo_copy_the_walk_never_reaches_is_reported(tmp_path: Path) -> None:
     """A clean walk that never lands on a QO copy's ``header_offset`` leaves the
     listing as it is and reports the copy on the QO header, so a strict policy can
     refuse a damaged or crafted quick-open record."""
-    from archivey.internal.backends.rar_parser import RAR5_QO_UNMATCHED_COPIES
-
     path = _qo_two_member_archive(tmp_path)
     patched = tmp_path / "unmatched.rar"
     patched.write_bytes(_qo_with_unmatched_copy(path))
@@ -5577,9 +5585,26 @@ def test_a_qo_copy_the_walk_never_reaches_is_reported(tmp_path: Path) -> None:
         assert archive.read("a.txt") == b"a" * 200
         (diagnostic,) = _unmatched_copy_diagnostics(archive)
     context = diagnostic.context
-    assert context.record == RAR5_QO_UNMATCHED_COPIES
+    assert isinstance(context, MemberHeaderRecordContext)
     assert context.member_name == ""
-    assert "1 FILE header copy that matched no header" in diagnostic.message
+    assert context.member_id is None
+    assert diagnostic.message == (
+        "This archive's QO quick-open service header holds 1 FILE header copy "
+        "that matched no header the walk reached. rar writes no copy that matches "
+        "no header, so this record is damaged or crafted. The listing comes from "
+        "the headers the walk read, which is what unrar lists too."
+    )
+    with (
+        pytest.raises(DiagnosticRaisedError) as raised,
+        open_archive(
+            patched,
+            config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT),
+        ) as archive,
+    ):
+        archive.members()
+    assert raised.value.diagnostic.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+    assert isinstance(raised.value.diagnostic.context, MemberHeaderRecordContext)
+    assert raised.value.diagnostic.context.record == RAR5_QO_UNMATCHED_COPIES
 
 
 @requires_binary("rar")
@@ -5590,11 +5615,33 @@ def test_an_intact_qo_reports_no_unmatched_copy(tmp_path: Path) -> None:
 
 
 @requires_binary("rar")
+def test_an_unmatched_qo_copy_is_kept_past_the_damaged_header_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cap counts headers whose walk did not finish, and its overflow message
+    says so; the QO entry is not one, so neither the walk nor the volume merge
+    turns it away or counts it there."""
+    from archivey.internal.backends import rar_parser
+
+    monkeypatch.setattr(rar_parser, "_MAX_DAMAGED_SERVICE_HEADERS", 0)
+    data = _qo_with_unmatched_copy(_qo_two_member_archive(tmp_path))
+    archive = parse_rar_archive(io.BytesIO(data), use_qo=True)
+    (entry,) = archive.damaged_service_headers
+    assert entry.skipped_header_records[0][0] == RAR5_QO_UNMATCHED_COPIES
+    assert archive.damaged_service_headers_omitted == 0
+    merged: list[rar_parser.DamagedServiceHeader] = []
+    assert rar_parser._append_damaged_service_header(merged, entry)
+    assert merged == [entry]
+
+
+@requires_binary("rar")
 def test_unmatched_qo_copies_are_not_reported_without_a_clean_end(
     tmp_path: Path,
 ) -> None:
-    """A walk that was cut leaves copies unreached for that reason alone, and a walk
-    that did not use QO has no copies to leave."""
+    """A walk that was cut or stopped at a damaged header leaves copies unreached
+    for that reason alone; a damaged end block makes the archive corrupt already,
+    and the claim would rest on a header that failed its check; a walk that did not
+    use QO has no copies to leave."""
     data = _qo_with_unmatched_copy(_qo_two_member_archive(tmp_path))
     whole = parse_rar_archive(io.BytesIO(data), use_qo=True)
     assert len(whole.damaged_service_headers) == 1  # control
@@ -5604,6 +5651,26 @@ def test_unmatched_qo_copies_are_not_reported_without_a_clean_end(
     assert cut.truncated is not None  # the cut is inside the end block
     assert [m.filename for m in cut.members] == ["a.txt", "b.txt"]
     assert cut.damaged_service_headers == []
+
+    # a.txt is not in the patched QO, so the walk reads its own header, fails its
+    # CRC and stops there: both copies are unreached.
+    (a, _b) = no_qo.members
+    bad_header = bytearray(data)
+    bad_header[a.header_offset] ^= 0xFF
+    damaged = parse_rar_archive(io.BytesIO(bytes(bad_header)), use_qo=True)
+    assert damaged.damaged is not None
+    assert damaged.members == []
+    assert damaged.damaged_service_headers == []
+
+    # The end block is the last 8 bytes and nothing follows it, so the walk keeps
+    # the listing and records the damage.
+    assert data[-3] == 5  # precondition: ENDARC's type byte
+    bad_end = bytearray(data)
+    bad_end[-8] ^= 0xFF
+    end = parse_rar_archive(io.BytesIO(bytes(bad_end)), use_qo=True)
+    assert end.end_block_damaged_volumes
+    assert [m.filename for m in end.members] == ["a.txt", "b.txt"]
+    assert end.damaged_service_headers == []
 
 
 @requires_binary("rar")
