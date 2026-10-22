@@ -258,12 +258,17 @@ leave extracted files writable by others. They come from GNU tar, libarchive, In
 unrar and WinRAR, py7zr, rarfile, Apache Commons Compress, and Python's `tarfile` and `zipfile`.
 Each test builds the archive the advisory describes and checks that archivey refuses it, keeps it
 inside the destination, ends it with a typed error rather than a hang, or reads it as the format
-defines without allocating more than the archive's size pays for. Each test names the advisory it
-replays:
+defines without allocating more than the archive's size pays for. The decompression libraries
+archivey calls have published bugs too: in brotli, zlib, CPython's decompressors and pyppmd. Those
+bugs are the libraries' to fix, so the tests for them check archivey's side: how much output one
+call may produce, that a decoder that failed is not called again, which decoders run in a child
+process, and that archivey's own CRC-32 combining ends for any length. Each test names the advisory
+it replays:
 
 - [`tests/test_cve_regressions.py`](https://github.com/davitf/archivey/blob/main/tests/test_cve_regressions.py)
 - [`tests/test_cve_regressions_7z_rar.py`](https://github.com/davitf/archivey/blob/main/tests/test_cve_regressions_7z_rar.py)
 - [`tests/test_cve_regressions_libarchive.py`](https://github.com/davitf/archivey/blob/main/tests/test_cve_regressions_libarchive.py)
+- [`tests/test_cve_regressions_codecs.py`](https://github.com/davitf/archivey/blob/main/tests/test_cve_regressions_codecs.py)
 - [`tests/test_cve_parsing.py`](https://github.com/davitf/archivey/blob/main/tests/test_cve_parsing.py)
 
 ## Reporting a vulnerability
