@@ -61,12 +61,12 @@ _PPMD_MAX_REQUEST = (1 << 31) - 1
 # How PPMd avoids pyppmd's crash on corrupt input: pyppmd segfaults when asked to
 # decode after a corrupt stream has ended early, and a caller feeding it in pieces
 # cannot tell that state from a valid stream waiting for input (see ``ppmd_child``).
-# Every member therefore decodes in a child process, where a crash costs the member
-# only, unless ``process_isolation`` is ``NONE``. There, handed the whole member at
-# once, a short return is the end and little more is asked of pyppmd, so
-# ``PpmdDecoder`` holds compressed input until it has the whole member, or compressed
-# EOF, or ``DecoderLimits.max_ppmd_held_input``; past that it is fed in pieces,
-# a risk ``NONE`` accepts.
+# Handed the whole member at once, a short return is the end and little more is asked
+# of pyppmd, so ``PpmdDecoder`` holds compressed input until it has the whole member,
+# or compressed EOF, or ``DecoderLimits.max_ppmd_held_input``; past that it is fed in
+# pieces. That holds under every ``process_isolation``, which decides only where the
+# decode runs: in a child process, where a crash costs the member only, unless it is
+# ``NONE``, where a crash on a member fed in pieces takes down this process.
 
 _DEFAULT_MAX_HELD_INPUT = DecoderLimits().max_ppmd_held_input
 

@@ -3,11 +3,16 @@
 - **Status:** accepted (implementation pending, with the native-decoder isolation change)
 - **Date:** 2026-10-20
 - **Supersedes:** the in-process rule of the `ppmd-crash-isolation` change (2026-09-26,
-  PR #481): members up to `DecoderLimits.max_ppmd_held_input` (16 MiB of compressed
+  PR #481): members up to `DecoderLimits.max_ppmd_in_process_input` (16 MiB of compressed
   input) decoded in this process
 - **Provenance:** `openspec/changes/archive/2026-09-26-ppmd-crash-isolation/proposal.md`;
   `dev-docs/known-issues.md` §"Intermittent `pyppmd` native aborts on PPMd streams";
   `dev-docs/investigations/ppmd-native-investigation-results.md` §I, §K.3, §K.4
+- **Amended (2026-10-22, PR #1007):** `max_ppmd_in_process_input` is kept, renamed
+  `max_ppmd_held_input` with no alias. It still bounds the member that is held and
+  handed to pyppmd whole, under every `process_isolation` value, so the old name, which
+  tied it to decoding in this process, no longer fit. The text below keeps the old
+  spelling where it records what existed on 2026-10-20.
 
 ## Context
 
@@ -33,7 +38,7 @@ The reasons were:
 
 - **The discipline looked complete.** Every shape measured at the time ran clean under it,
   and valgrind reported no errors on archivey's own call sequences.
-- **A child per member was expensive.** The `max_ppmd_held_input` docstring
+- **A child per member was expensive.** The `max_ppmd_in_process_input` docstring
   (`src/archivey/config.py`, from PR #481) puts the PPMd child's start-up at about 75 ms
   and its pipe at about 450 MB/s, compressed input in and decoded output back. That
   start-up is small beside a 16 MiB member, which takes seconds at pyppmd's 2 to 8 MB/s,
@@ -123,7 +128,7 @@ children are recycled after a fixed number of members.
   the caller abandons stops early too, so each of these retires its child and the next
   member pays a fresh start: 12 to 18 ms, plus importing pyppmd. Confirming three
   candidate keys on a large PPMd member costs three fresh children.
-- `max_ppmd_held_input` loses its role under the default. Whether it is removed,
+- `max_ppmd_in_process_input` loses its role under the default. Whether it is removed,
   renamed or kept for `NONE` is a public-name change. It is decided with the isolation
   change, not here. `DecoderLimits.UNLIMITED` changes meaning with it: it sets the field to
   `None`, which today also guarantees that no child process starts, and under the new
@@ -131,8 +136,8 @@ children are recycled after a fixed number of members.
 - Every statement of the current rule changes with the implementation: the 16 MiB split,
   "a PPMd member over the threshold decodes in a child", and "a password check runs
   in-process", wherever it appears in `openspec/specs/`, `docs/`, `dev-docs/`, `src/` or
-  `tests/`. Grepping `max_ppmd_held_input` finds them. Examples on 2026-10-20:
-  - `openspec/specs/archive-reading/spec.md`: the `max_ppmd_held_input` SHALL rows
+  `tests/`. Grepping `max_ppmd_in_process_input` finds them. Examples on 2026-10-20:
+  - `openspec/specs/archive-reading/spec.md`: the `max_ppmd_in_process_input` SHALL rows
     (a member over it decodes in a child), its 16 MiB default and the matching scenario
     row;
   - `openspec/specs/format-zip/spec.md`: the bit-3 PPMd SHALL row and its scenario;
