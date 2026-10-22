@@ -21,7 +21,7 @@ import pytest
 from archivey import Verification, open_archive, open_stream
 from archivey.exceptions import CorruptionError, EncryptionError
 from archivey.types import ArchiveMember
-from tests.conftest import requires, requires_binary
+from tests.conftest import requires, requires_binary, run_7z
 
 _FIXTURES = Path(__file__).parent / "fixtures"
 _COLLISION = _FIXTURES / "zipcrypto" / "check_byte_collision.zip"
@@ -274,16 +274,10 @@ def test_rar5_password_check_is_key_before_the_crc() -> None:
 @requires("cryptography")
 @requires_binary("7z")
 def test_sevenzip_unconfirmed_folder_partial_read_is_none(tmp_path: Path) -> None:
-    import subprocess
-
     source = tmp_path / "a.txt"
     source.write_bytes(_DATA)
     archive = tmp_path / "a.7z"
-    subprocess.run(
-        ["7z", "a", "-t7z", "-pPW", str(archive), str(source)],
-        check=True,
-        capture_output=True,
-    )
+    run_7z(["a", "-t7z", "-pPW", str(archive), str(source)], check=True)
     with (
         open_archive(archive, password="PW") as reader,
         reader.open(_first_file(reader)) as stream,
