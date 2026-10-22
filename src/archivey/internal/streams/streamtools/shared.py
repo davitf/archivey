@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable
-from typing import BinaryIO
+from typing import BinaryIO, Self
 
 from archivey.internal.streams.streamtools.binaryio import (
     is_seekable,
@@ -115,7 +115,7 @@ class SharedSource:
         """Mark closed; the source it was built over stays open, as its owner's."""
         self._closed = True
 
-    def __enter__(self) -> SharedSource:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *args: object) -> None:

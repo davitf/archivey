@@ -39,6 +39,7 @@ import functools
 import hashlib
 import hmac
 import io
+import itertools
 import struct
 import zlib
 from collections.abc import Sequence
@@ -745,8 +746,7 @@ def parse_rar_volumes(
     if (
         len(volume_numbers) != len(volumes)
         or any(
-            later <= earlier
-            for earlier, later in zip(volume_numbers, volume_numbers[1:])
+            later <= earlier for earlier, later in itertools.pairwise(volume_numbers)
         )
         or volume_numbers[0] < 1
     ):
@@ -1481,8 +1481,7 @@ def load_vint(buf: bytes | bytearray | memoryview, pos: int) -> tuple[int, int]:
     if b < 0x80:
         return b, pos + 1
     limit = pos + 11
-    if limit > length:
-        limit = length
+    limit = min(limit, length)
     res = b & 0x7F
     ofs = 7
     pos += 1
@@ -1629,13 +1628,14 @@ def decode_rar3_cmt_text(raw: bytes, *, utf16: bool, encoding: str | None) -> st
     ``utf16`` is ``_RAR3_SUBHEAD_CMT_UNICODE`` from a ``CMT`` header's attribute field.
     With it, unrar converts ``CmtSize / 2`` units, so an odd trailing byte is
     dropped rather than shown as U+FFFD, and the text is cut at the first NUL
-    *character*: ASCII text in UTF-16LE is full of NUL bytes. Without it, the
-    payload is 8-bit text (:func:`_decode_comment_text`).
+    *character*: ASCII text in UTF-16LE is full of NUL bytes. A unit without its
+    partner stays as that unit (``surrogatepass``), as it does in a RAR3 Unicode name.
+    Without it, the payload is 8-bit text (:func:`_decode_comment_text`).
     """
     if not utf16:
         return _decode_comment_text(raw, encoding=encoding)
     even = raw[: len(raw) - len(raw) % 2]
-    return even.decode("utf-16le", "replace").split("\0", 1)[0]
+    return even.decode("utf-16le", "surrogatepass").split("\0", 1)[0]
 
 
 def _decode_comment_text(raw: bytes, *, encoding: str | None) -> str:
@@ -2999,7 +2999,13 @@ def _is_stored_rar5_cmt(member: RarMemberInfo) -> bool:
 
 
 def _decode_rar5_cmt_bytes(raw: bytes) -> str:
-    return raw.split(b"\0", 1)[0].decode("utf8", "replace")
+    """Decode a RAR5 comment: UTF-8 by the format, cut at the first NUL.
+
+    A byte that is not valid UTF-8 survives as a lone surrogate, as it does in a RAR5
+    name (``surrogateescape``), so the comment keeps every stored byte. RARLAB ``rar``
+    never writes one; only a crafted comment has it.
+    """
+    return raw.split(b"\0", 1)[0].decode("utf-8", "surrogateescape")
 
 
 def _parse_rar5_qo_payload(
@@ -3486,11 +3492,12 @@ def _parse_rar5(
                         needs_next_volume = True
                     seen_file_offsets.add(member.header_offset)
             elif block_type == _RAR5_SERVICE:
-                if member.skipped_header_records or member.header_walk_stop_reason:
-                    if not _append_damaged_service_header(
-                        damaged_service_headers, member
-                    ):
-                        damaged_service_headers_omitted += 1
+                if (
+                    member.skipped_header_records or member.header_walk_stop_reason
+                ) and not _append_damaged_service_header(
+                    damaged_service_headers, member
+                ):
+                    damaged_service_headers_omitted += 1
                 if _is_stored_rar5_cmt(member):
                     source.seek(data_offset)
                     # The packed size, as for any stored payload: the unpacked one
@@ -3873,8 +3880,10 @@ def _parse_rar5_file_block(
             (
                 RAR5_UNPLACED_BYTES,
                 None,
-                f"{unplaced_bytes} bytes between its fixed fields and its "
-                "declared extra area",
+                (
+                    f"{unplaced_bytes} bytes between its fixed fields and its "
+                    "declared extra area"
+                ),
             ),
         )
 
