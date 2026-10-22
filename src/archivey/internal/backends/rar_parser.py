@@ -124,9 +124,6 @@ RAR3_UOW_NO_NUL = "no NUL in its owner data"
 _MAX_DAMAGED_SERVICE_HEADERS = 16
 # BytesIO/file seek offsets must fit in a C ssize_t; hostile RAR5 vints can exceed that.
 _MAX_SEEK = (1 << 63) - 1
-# A stored comment is read in pieces of this size, so a declared size past the end of
-# the file fails there instead of in one allocation of the declared size.
-_COMMENT_READ_CHUNK = 1 << 20
 # Same default as ListingLimits.max_members. None is the explicit UNLIMITED opt-out.
 _DEFAULT_MAX_MEMBERS = ListingLimits().max_members
 _DEFAULT_MAX_METADATA_BYTES = ListingLimits().max_metadata_bytes
@@ -1167,22 +1164,28 @@ def _require_exact(stream: BinaryIO, n: int, what: str) -> bytes:
     return data
 
 
-def _read_stored_comment(stream: BinaryIO, n: int, what: str) -> bytes:
-    """A stored comment's ``n`` packed bytes, read in pieces.
+def _read_comment(
+    stream: BinaryIO, n: int, what: str, max_metadata_bytes: int | None
+) -> bytes:
+    """A comment's ``n`` packed bytes, refused before the read when ``n`` alone is
+    over ``max_metadata_bytes``.
 
-    A declared size past the end of the file raises ``CorruptionError`` there,
-    having held no more than the file, where one read of ``n`` would first ask for
-    all of it. What the comment then weighs is judged against ``max_metadata_bytes``
-    with its member's names (:func:`_append_member`), or, for the archive comment,
-    by ``RarReader._check_header_metadata_budget``.
+    The walks call it only for a span inside the file (:func:`_span_in_file`), so a
+    cut comment is reported as a cut and the read gets every byte it asks for. A
+    stored comment has no size cap of its own, and its packed bytes are what the
+    read holds, so they are weighed here, before the cost is paid (DR-9). The later
+    total weighs the comment too: for a member's comment, the ``_charge_metadata``
+    call in :func:`_parse_rar3`'s ``file_solid`` arm, which charges it to the member
+    it attaches to; for the archive comment, ``RarReader._check_header_metadata_budget``.
+    This check weighs the packed bytes and that total weighs the decoded text
+    (:func:`comment_metadata_bytes`), so this one is stricter wherever the text is
+    smaller than its packed bytes: a UTF-16LE comment, about half as many characters
+    as it packs, and one whose text stops at a NUL. Those bytes are held all the
+    same, as a compressed comment's packed bytes are weighed.
     """
-    parts: list[bytes] = []
-    left = n
-    while left > 0:
-        part = _require_exact(stream, min(left, _COMMENT_READ_CHUNK), what)
-        parts.append(part)
-        left -= len(part)
-    return b"".join(parts)
+    if max_metadata_bytes is not None and n > max_metadata_bytes:
+        raise metadata_limit_error(max_metadata_bytes, f"a RAR comment packs {n} bytes")
+    return _require_exact(stream, n, what)
 
 
 def _packed_span_end(data_offset: int, add_size: int) -> int:
@@ -1299,6 +1302,20 @@ def _data_past_end(source: BinaryIO) -> str | None:
         f"RAR archive is truncated: the last block's packed data ends at byte {pos}, "
         f"past the end of the file ({end} bytes)"
     )
+
+
+def _span_in_file(source: BinaryIO, data_offset: int, size: int) -> bool:
+    """Whether the ``size`` bytes at ``data_offset`` all lie inside the file.
+
+    The read position is kept. A comment whose data runs past the end is not read:
+    the walk skips its span as it skips any packed data, and the next header read
+    finds the cut (:func:`_data_past_end`), so the members before it still list.
+    """
+    end = _packed_span_end(data_offset, size)
+    here = source.tell()
+    file_end = source.seek(0, io.SEEK_END)
+    source.seek(here)
+    return end <= file_end
 
 
 def _encrypted_header_cut(start: int) -> str:
@@ -1628,13 +1645,14 @@ def decode_rar3_cmt_text(raw: bytes, *, utf16: bool, encoding: str | None) -> st
     ``utf16`` is ``_RAR3_SUBHEAD_CMT_UNICODE`` from a ``CMT`` header's attribute field.
     With it, unrar converts ``CmtSize / 2`` units, so an odd trailing byte is
     dropped rather than shown as U+FFFD, and the text is cut at the first NUL
-    *character*: ASCII text in UTF-16LE is full of NUL bytes. Without it, the
-    payload is 8-bit text (:func:`_decode_comment_text`).
+    *character*: ASCII text in UTF-16LE is full of NUL bytes. A unit without its
+    partner stays as that unit (``surrogatepass``), as it does in a RAR3 Unicode name.
+    Without it, the payload is 8-bit text (:func:`_decode_comment_text`).
     """
     if not utf16:
         return _decode_comment_text(raw, encoding=encoding)
     even = raw[: len(raw) - len(raw) % 2]
-    return even.decode("utf-16le", "replace").split("\0", 1)[0]
+    return even.decode("utf-16le", "surrogatepass").split("\0", 1)[0]
 
 
 def _decode_comment_text(raw: bytes, *, encoding: str | None) -> str:
@@ -2559,12 +2577,15 @@ def _parse_rar3(
                         and packed_size <= RAR3_MAX_COMMENT_SIZE
                     )
                 )
+                and _span_in_file(source, data_offset, packed_size)
             ):
                 # The span the walk skips below, so no byte is read both as
                 # comment data and as a later header, which let a stack of small
                 # CMT headers each re-read the rest of the archive.
                 source.seek(data_offset)
-                raw = _read_stored_comment(source, packed_size, "RAR3 comment")
+                raw = _read_comment(
+                    source, packed_size, "RAR3 comment", max_metadata_bytes
+                )
                 utf16 = bool(
                     member.mode is not None and member.mode & _RAR3_SUBHEAD_CMT_UNICODE
                 )
@@ -2998,7 +3019,13 @@ def _is_stored_rar5_cmt(member: RarMemberInfo) -> bool:
 
 
 def _decode_rar5_cmt_bytes(raw: bytes) -> str:
-    return raw.split(b"\0", 1)[0].decode("utf8", "replace")
+    """Decode a RAR5 comment: UTF-8 by the format, cut at the first NUL.
+
+    A byte that is not valid UTF-8 survives as a lone surrogate, as it does in a RAR5
+    name (``surrogateescape``), so the comment keeps every stored byte. RARLAB ``rar``
+    never writes one; only a crafted comment has it.
+    """
+    return raw.split(b"\0", 1)[0].decode("utf-8", "surrogateescape")
 
 
 def _parse_rar5_qo_payload(
@@ -3491,13 +3518,18 @@ def _parse_rar5(
                     damaged_service_headers, member
                 ):
                     damaged_service_headers_omitted += 1
-                if _is_stored_rar5_cmt(member):
+                if _is_stored_rar5_cmt(member) and _span_in_file(
+                    source, data_offset, member.compress_size
+                ):
                     source.seek(data_offset)
                     # The packed size, as for any stored payload: the unpacked one
                     # is only a claim, and bytes past the packed span belong to the
                     # next header.
-                    raw = _read_stored_comment(
-                        source, member.compress_size, "RAR5 comment"
+                    raw = _read_comment(
+                        source,
+                        member.compress_size,
+                        "RAR5 comment",
+                        max_metadata_bytes,
                     )
                     comment = _decode_rar5_cmt_bytes(raw)
             _seek_after_packed(source, data_offset, add_size)

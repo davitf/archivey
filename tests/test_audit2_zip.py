@@ -40,6 +40,7 @@ from archivey.exceptions import (
 from archivey.internal.streams.decompressor_stream import DataAfterEndError
 from tests.conftest import requires, requires_binary
 from tests.extract_util import open_and_extract
+from tests.streams_util import NonSeekableBytesIO
 
 
 @dataclass
@@ -379,6 +380,149 @@ def test_malformed_unicode_path_field_from_a_file_path(tmp_path: Path) -> None:
             DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
         ]
         assert ar.read(member) == b"hi"
+
+
+# ---------------------------------------------------------------------------------------
+# The Info-ZIP Unicode Comment extra field (0x6375) gives an unflagged member comment.
+# ---------------------------------------------------------------------------------------
+
+
+_UNICODE_COMMENT_STORED = "café".encode("cp437")  # b"caf\x82": not UTF-8
+_UNICODE_COMMENT_REAL = "café ü"
+
+
+def _unicode_comment_field(
+    stored: bytes = _UNICODE_COMMENT_STORED,
+    text: bytes = _UNICODE_COMMENT_REAL.encode(),
+    *,
+    version: int = 1,
+) -> bytes:
+    field = struct.pack("<BI", version, zlib.crc32(stored)) + text
+    return struct.pack("<HH", 0x6375, len(field)) + field
+
+
+def _unicode_comment_zip(
+    field: bytes, *, flags: int = 0, name: bytes = b"a.txt"
+) -> bytes:
+    entry = _Entry(
+        name, b"hi", extra=field, comment=_UNICODE_COMMENT_STORED, flags=flags
+    )
+    return _build_zip([entry])
+
+
+@pytest.mark.filterwarnings("error")
+@pytest.mark.parametrize("encoding", [None, "cp1252"])
+@pytest.mark.parametrize("pipe", [False, True], ids=["seekable", "pipe"])
+def test_unicode_comment_field_gives_the_member_comment(
+    encoding: str | None, pipe: bool
+) -> None:
+    # 7-Zip shows the field's text (`7z l -slt`: `Comment = café ü`); Info-ZIP unzip
+    # 6.00 prints the header bytes. The field's CRC covers the stored comment, so it is
+    # an in-band oracle that outranks a caller's encoding=, as the Unicode Path field
+    # does for a name.
+    blob = _unicode_comment_zip(_unicode_comment_field())
+    source: io.RawIOBase | io.BytesIO = (
+        NonSeekableBytesIO(blob) if pipe else io.BytesIO(blob)
+    )
+    with archivey.open_archive(source, encoding=encoding, streaming=pipe) as ar:
+        # A pipe pass fills the comment in when it reaches the directory, after the
+        # last member, so the member is checked once the pass is done.
+        (member,) = [member for member, _ in ar.stream_members()]
+        assert member.comment == _UNICODE_COMMENT_REAL
+        assert member.diagnostics == ()
+        # The field was used, so it is not listed as unparsed.
+        assert "zip.extra_fields" not in member.extra
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        pytest.param(_unicode_comment_field(stored=b"old"), id="crc_mismatch"),
+        pytest.param(_unicode_comment_field(version=2), id="unknown_version"),
+    ],
+)
+def test_unicode_comment_field_that_does_not_vouch_is_ignored(field: bytes) -> None:
+    with archivey.open_archive(io.BytesIO(_unicode_comment_zip(field))) as ar:
+        (member,) = ar.members()
+        assert member.comment == "café"  # the cp437 reading of the header bytes
+        assert member.diagnostics == ()
+        assert member.extra["zip.extra_fields"] == {0x6375: field[4:]}
+
+
+@pytest.mark.filterwarnings("error")
+@pytest.mark.parametrize(
+    ("field", "reason"),
+    [
+        pytest.param(
+            _unicode_comment_field(text=b"\xff"), "not valid UTF-8", id="invalid_utf8"
+        ),
+        pytest.param(_unicode_comment_field(text=b""), "no comment", id="empty"),
+        pytest.param(
+            struct.pack("<HH", 0x6375, 3) + b"\x01\x02\x03", "shorter", id="short"
+        ),
+    ],
+)
+def test_malformed_unicode_comment_field_is_dropped_with_a_diagnostic(
+    field: bytes, reason: str
+) -> None:
+    blob = _unicode_comment_zip(field)
+    with archivey.open_archive(io.BytesIO(blob)) as ar:
+        (member,) = ar.members()
+        assert member.comment == "café"
+        (diagnostic,) = member.diagnostics
+        assert diagnostic.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+        assert diagnostic.context.record == "unicode_comment"
+        assert diagnostic.context.record_id == 0x6375
+        assert reason in diagnostic.context.reason
+        assert ar.read(member) == b"hi"
+    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
+    with (
+        pytest.raises(DiagnosticRaisedError) as raised,
+        archivey.open_archive(io.BytesIO(blob), config=strict) as ar,
+    ):
+        ar.members()
+    assert raised.value.diagnostic.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+
+
+@pytest.mark.filterwarnings("error")
+@pytest.mark.parametrize(
+    "field",
+    [
+        pytest.param(_unicode_comment_field(), id="good"),
+        pytest.param(struct.pack("<HH", 0x6375, 3) + b"\x01\x02\x03", id="malformed"),
+    ],
+)
+def test_unicode_comment_field_under_a_refuted_flag_is_not_consulted(
+    field: bytes,
+) -> None:
+    # Bit 11 set over a name that is not UTF-8: the flag is refuted, so name and comment
+    # decode as unflagged ones, but neither Unicode field is read, because both fields
+    # are read only when bit 11 is clear. 7-Zip 23.01 does the same: `7z l -slt` lists
+    # this comment as the header bytes, not the field's `café ü`.
+    blob = _unicode_comment_zip(field, flags=0x800, name=b"caf\xe9.txt")
+    with archivey.open_archive(io.BytesIO(blob)) as ar:
+        (member,) = ar.members()
+        assert member.comment == "café"  # the cp437 reading of the header bytes
+        assert [d.code for d in member.diagnostics] == [
+            DiagnosticCode.MEMBER_NAME_ENCODING_INFERRED
+        ]
+        assert member.extra["zip.extra_fields"] == {0x6375: field[4:]}
+
+
+@pytest.mark.filterwarnings("error")
+def test_unicode_comment_field_of_a_flagged_comment_is_not_consulted() -> None:
+    # Bit 11 over a valid UTF-8 name covers the comment too, so its field is an unused
+    # record: a bad one costs nothing and says nothing, and a good one is not needed.
+    blob = _unicode_comment_zip(
+        struct.pack("<HH", 0x6375, 3) + b"\x01\x02\x03",
+        flags=0x800,
+        name="ünï.txt".encode(),
+    )
+    with archivey.open_archive(io.BytesIO(blob)) as ar:
+        (member,) = ar.members()
+        # Not valid UTF-8, so the flagged comment's cp437 fallback reads it.
+        assert member.comment == "café"
+        assert member.diagnostics == ()
 
 
 def _central_entry_lookalike() -> bytes:

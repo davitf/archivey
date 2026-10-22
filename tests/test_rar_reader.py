@@ -1717,6 +1717,10 @@ def test_rar3_service_comment_is_weighed_by_the_walk_as_it_attaches() -> None:
         pytest.param(
             "hi".encode("utf-16le") + b"\xff", 1, "hi", id="unicode-flag-odd-length"
         ),
+        # A unit without its partner stays as that unit, as in a RAR3 Unicode name.
+        pytest.param(
+            b"h\x00i\x00\x00\xd8 \x00", 1, "hi\ud800 ", id="unicode-flag-lone-surrogate"
+        ),
         # Without the flag the UTF-16LE bytes are 8-bit text up to the first NUL.
         pytest.param("caf\xe9".encode("utf-16le"), 0, "c", id="utf16-no-flag"),
     ],
