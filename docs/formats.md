@@ -1134,9 +1134,11 @@ file; with `format=`, a `.bz2` opens at once. Close the sending side when the fi
   because rapidgzip can end a cut file with no error. If rapidgzip returns nothing, the standard
   library reads the file instead. Otherwise the trailer at the end of the file is checked: in a
   file of one gzip member, against the checksum and length of all the data read; in a file of
-  several members, against the end of the data, which archivey reads back from rapidgzip a
-  second time. If the last member holds more than about 64 MiB, the standard library reads the whole
-  file again instead, which gives the right result but takes longer. A wrong length in a member
+  several members, against the end of the data. For that, archivey saves the checksum every
+  4 MiB as it reads and reads back at most 4 MiB from rapidgzip per check, whatever the size
+  of the last member. These checks hold for a read from the start to the end with no seek.
+  After a seek that skipped data, only the checks that need no second decode run, and a last
+  member that starts before the seek target is not checked. A wrong length in a member
   before the last is not caught, but every member's checksum still is, so the data is right.
   A cut file built on purpose can still read short with no error, if its last eight bytes are
   made to match the end of the data. So when you need certainty, set

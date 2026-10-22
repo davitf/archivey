@@ -35,6 +35,7 @@ from archivey.config import ArchiveyConfig
 from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import TruncatedError
 from archivey.internal.config import AcceleratorMode, StreamConfig
+from archivey.internal.hashing import crc32_combine
 from archivey.internal.streams import codecs
 from archivey.internal.streams.codecs import (
     Codec,
@@ -748,14 +749,9 @@ def test_every_cut_of_the_last_of_three_gzip_members_raises() -> None:
     assert differ == []
 
 
-@requires("rapidgzip")
-def test_a_cut_last_member_with_isize_forged_to_the_length_raises_after_a_skip() -> (
-    None
-):
-    """After a seek that skipped output there is no CRC-32 of it, and a file of one member
-    has its last four bytes compared with the length instead. In a file with a further
-    member, four bytes equal to the length must not stand in for a whole last member: the
-    last member's trailer is still checked."""
+def _cut_after_two_members(forged: int) -> bytes:
+    """Two members, then a third cut after its header, with its last four bytes forged
+    to ``forged``."""
     first = random.Random(6).randbytes(100_000)
     second = b"second member payload\n" * 45 + b"0123456789"
     assert len(second) == 1000
@@ -764,39 +760,65 @@ def test_a_cut_last_member_with_isize_forged_to_the_length_raises_after_a_skip()
         + gzip.compress(second, mtime=0)
         + gzip.compress(b"third", mtime=0)[:10]
     )
-    blob[-4:] = (len(first) + len(second)).to_bytes(4, "little")
+    blob[-4:] = forged.to_bytes(4, "little")
+    return bytes(blob)
 
-    def skip(s: BinaryIO) -> None:
-        s.seek(50_000)
 
-    off = _outcome(Codec.GZIP, bytes(blob), _OFF, skip)
-    assert off[1] is TruncatedError
-    _assert_same(_outcome(Codec.GZIP, bytes(blob), _ON, skip), off)
+def _skip_to_50000(s: BinaryIO) -> None:
+    s.seek(50_000)
 
 
 @requires("rapidgzip")
-@pytest.mark.parametrize("last_size", [50, 1000])
-def test_the_last_member_check_reads_back_little_more_than_the_last_member(
-    monkeypatch: pytest.MonkeyPatch, last_size: int
+@pytest.mark.parametrize("chunk", [-1, 100])
+def test_a_forged_last_trailer_hashed_since_a_skip_raises(chunk: int) -> None:
+    """After a seek that skipped output there is no CRC-32 of the whole output, but the
+    one kept since reading resumed still covers a last member that starts after the
+    seek target, however many reads it took. Four bytes that give a length must not
+    stand in for that member: its trailer is checked, and a cut file raises."""
+    blob = _cut_after_two_members(1000)  # the second member's length
+    off = _outcome(Codec.GZIP, blob, _OFF, _skip_to_50000, chunk)
+    assert off[1] is TruncatedError
+    _assert_same(_outcome(Codec.GZIP, blob, _ON, _skip_to_50000, chunk), off)
+
+
+@requires("rapidgzip")
+def test_a_forged_last_trailer_reaching_before_a_skip_is_not_checked(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The trailer's place is not known exactly, so several candidates give a length.
-    They are tried shortest first, and the first match ends the search: the read-back
-    is the last member's output and at most the shorter candidates before it, never
-    the longest candidate, which can reach back across the whole file."""
+    """The guarantee covers a read from start to end with no seek. After a seek skipped
+    output, a last-member trailer whose length reaches back before the seek target has
+    no CRC-32 kept for it, so only the cheap checks run: nothing is read back, nothing
+    goes to the standard library, and a cut file forged so reads short with no error
+    (with the accelerator off it raises)."""
     _require_the_accelerator_in_use()
-    first = random.Random(7).randbytes(300_000)
-    last = bytes(range(256)) * (last_size // 256) + bytes(last_size % 256)
-    blob = (
-        gzip.compress(first, mtime=0)
-        + gzip.compress(b"middle\n" * 9, mtime=0)
-        + gzip.compress(last, mtime=0)
-    )
+    blob = _cut_after_two_members(101_000)  # the length of the whole output
+    assert _outcome(Codec.GZIP, blob, _OFF, _skip_to_50000)[1] is TruncatedError
+    handovers = _handovers(monkeypatch)
     read_back = _read_backs(monkeypatch)
-    got, error = _outcome(Codec.GZIP, blob, _ON, _no_seek)
-    assert error is None
-    assert got == gzip.decompress(blob)
-    assert read_back[-1] == last_size
-    assert all(size < last_size for size in read_back[:-1])
+    got, error = _outcome(Codec.GZIP, blob, _ON, _skip_to_50000)
+    assert (len(got), error) == (51_000, None)
+    assert (handovers, read_back) == ([], [])
+
+
+@requires("rapidgzip")
+@pytest.mark.parametrize("target", [50_000, 84_160])
+def test_a_valid_concatenation_after_a_skip_needs_no_stdlib_handover(
+    monkeypatch: pytest.MonkeyPatch, target: int
+) -> None:
+    """A skip before the last member (its trailer checked against the CRC-32 kept since
+    the skip), or into it (not checked), reads a valid file with no handover."""
+    _require_the_accelerator_in_use()
+    blob = _valid_concatenation("three-members")
+    output = gzip.decompress(blob)
+    assert target < len(output)
+
+    def skip(s: BinaryIO) -> None:
+        s.seek(target)
+
+    handovers = _handovers(monkeypatch)
+    got, error = _outcome(Codec.GZIP, blob, _ON, skip)
+    assert (got, error) == (output[target:], None)
+    assert handovers == []
 
 
 def _handovers(monkeypatch: pytest.MonkeyPatch) -> list[object]:
@@ -819,24 +841,90 @@ def _read_backs(monkeypatch: pytest.MonkeyPatch) -> list[int]:
     """Record the length of each read-back of the last-member check."""
     read_back: list[int] = []
     check = codecs.gzip_codec._GzipTruncationCheckStream
-    original = check._output_crc_from
+    original = check._output_crc
 
-    def spy(self: object, start: int) -> int | None:
-        read_back.append(self._pos - start)  # type: ignore[attr-defined]
-        return original(self, start)  # type: ignore[arg-type]
+    def spy(self: object, start: int, stop: int, crc: int) -> int | None:
+        read_back.append(stop - start)
+        return original(self, start, stop, crc)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(check, "_output_crc_from", spy)
+    monkeypatch.setattr(check, "_output_crc", spy)
     return read_back
 
 
+@pytest.mark.parametrize(
+    ("a", "b"),
+    [
+        (b"", b""),
+        (b"", b"tail"),
+        (b"head", b""),
+        (b"x", b"y"),
+        (random.Random(11).randbytes(1000), random.Random(12).randbytes(4097)),
+    ],
+    ids=["both-empty", "empty-a", "empty-b", "one-byte-each", "random"],
+)
+def test_the_crc_of_a_suffix_comes_from_the_running_crc(a: bytes, b: bytes) -> None:
+    """The identity the last-member check rests on: the CRC-32 of the end ``B`` of the
+    output ``A + B`` from the CRC-32 of the whole and of ``A``, with no read of ``B``."""
+    assert zlib.crc32(b) == zlib.crc32(a + b) ^ crc32_combine(zlib.crc32(a), 0, len(b))
+
+
+@pytest.mark.parametrize("piece", [1, 7, 100, 1 << 12])
+def test_crc_checkpoints_hold_the_crc_of_each_prefix(
+    monkeypatch: pytest.MonkeyPatch, piece: int
+) -> None:
+    """Fed in pieces of any size, a re-read behind the frontier and a piece past a gap
+    included, the checkpoints hold the CRC-32 from ``start`` to each multiple of the
+    spacing, and the value the CRC-32 to the frontier."""
+    spacing = 64
+    monkeypatch.setattr(codecs.gzip_codec, "_CRC_CHECKPOINT_SPACING", spacing)
+    data = random.Random(13).randbytes(1000)
+    crc = codecs.gzip_codec._CheckpointedCrc(10)
+    for at in range(10, len(data), piece):
+        crc.feed(at, data[at : at + piece])
+        crc.feed(10, data[10:at])  # behind the frontier: counts nothing
+    crc.feed(len(data) + 5, b"past a gap")  # leaves the frontier where it was
+    assert (crc.frontier, crc.value) == (len(data), zlib.crc32(data[10:]))
+    assert crc.checkpoints == [
+        zlib.crc32(data[10:stop]) for stop in range(10, len(data) + 1, spacing)
+    ]
+
+
 @requires("rapidgzip")
-def test_a_forged_last_trailer_reads_back_no_more_than_the_ceiling(
+@pytest.mark.parametrize("last_size", [50, 1000])
+def test_the_last_member_check_reads_back_little_more_than_the_last_member(
+    monkeypatch: pytest.MonkeyPatch, last_size: int
+) -> None:
+    """The trailer's place is not known exactly, so several candidates give a length.
+    They are tried shortest first, and the first match ends the search. A last member
+    shorter than the way back to its checkpoint is read back itself: the read-back is
+    the last member's output and at most the shorter candidates before it."""
+    _require_the_accelerator_in_use()
+    first = random.Random(7).randbytes(300_000)
+    last = bytes(range(256)) * (last_size // 256) + bytes(last_size % 256)
+    blob = (
+        gzip.compress(first, mtime=0)
+        + gzip.compress(b"middle\n" * 9, mtime=0)
+        + gzip.compress(last, mtime=0)
+    )
+    read_back = _read_backs(monkeypatch)
+    got, error = _outcome(Codec.GZIP, blob, _ON, _no_seek)
+    assert error is None
+    assert got == gzip.decompress(blob)
+    assert read_back[-1] == last_size
+    assert all(size < last_size for size in read_back[:-1])
+
+
+@requires("rapidgzip")
+def test_a_forged_last_trailer_reads_back_no_more_than_the_checkpoint_spacing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A candidate's length comes from the file. A cut file whose last four bytes are
-    forged to a length just under the output's would have the whole output read back
-    before the standard library decodes it again; the ceiling stops the read-back first."""
+    forged to a length just under the output's would once have had the whole output
+    read back before the standard library decodes it again; with saved CRC-32s each
+    candidate costs a read-back shorter than their spacing, and the cut file raises."""
     _require_the_accelerator_in_use()
+    spacing = 1 << 16
+    monkeypatch.setattr(codecs.gzip_codec, "_CRC_CHECKPOINT_SPACING", spacing)
     first = random.Random(8).randbytes(300_000)
     blob = bytearray(
         gzip.compress(first, mtime=0)
@@ -844,30 +932,54 @@ def test_a_forged_last_trailer_reads_back_no_more_than_the_ceiling(
         + gzip.compress(b"third", mtime=0)[:10]
     )
     blob[-4:] = (len(first) - 1000).to_bytes(4, "little")
-    monkeypatch.setattr(codecs.gzip_codec, "_LAST_MEMBER_READ_BACK", 100_000)
     read_back = _read_backs(monkeypatch)
     off = _outcome(Codec.GZIP, bytes(blob), _OFF, _no_seek)
     assert off[1] is TruncatedError
     _assert_same(_outcome(Codec.GZIP, bytes(blob), _ON, _no_seek), off)
-    assert sum(read_back) <= 100_000
+    assert 1 <= len(read_back) <= 4
+    assert all(size < spacing for size in read_back)
 
 
 @requires("rapidgzip")
-def test_a_last_member_past_the_read_back_ceiling_goes_to_the_stdlib(
+def test_a_last_member_of_several_checkpoints_needs_no_stdlib_handover(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A valid file whose last member is longer than the ceiling is handed to the standard
-    library, which reads it whole with no error, without the read-back."""
+    """A last member longer than many checkpoint spacings is checked from the saved
+    CRC-32s, not handed to the standard library, and reads back less than one spacing."""
     _require_the_accelerator_in_use()
-    blob = _valid_concatenation("three-members")
-    last = len(b"last\n" * 3)
-    monkeypatch.setattr(codecs.gzip_codec, "_LAST_MEMBER_READ_BACK", last - 1)
+    spacing = 1 << 12
+    monkeypatch.setattr(codecs.gzip_codec, "_CRC_CHECKPOINT_SPACING", spacing)
+    blob = _valid_concatenation("large-last")
     handovers = _handovers(monkeypatch)
     read_back = _read_backs(monkeypatch)
     got, error = _outcome(Codec.GZIP, blob, _ON, _no_seek)
     assert (got, error) == (gzip.decompress(blob), None)
-    assert handovers != []
-    assert last not in read_back
+    assert handovers == []
+    assert all(size < spacing for size in read_back)
+
+
+@requires("rapidgzip")
+def test_a_last_member_over_64_mib_needs_no_stdlib_handover(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The check once had a 64 MiB ceiling, past which a valid file was decoded again by
+    the standard library. A last member over that size now reads with no handover."""
+    _require_the_accelerator_in_use()
+    block = random.Random(14).randbytes(1 << 16)
+    last = block * ((65 << 20) // len(block))
+    blob = gzip.compress(b"first\n" * 1000, mtime=0) + gzip.compress(
+        last, compresslevel=1, mtime=0
+    )
+    expected = zlib.crc32(last, zlib.crc32(b"first\n" * 1000))
+    handovers = _handovers(monkeypatch)
+    read_back = _read_backs(monkeypatch)
+    crc, size = 0, 0
+    with open_codec_stream(Codec.GZIP, io.BytesIO(blob), config=_config(_ON)) as s:
+        while block := s.read(1 << 20):
+            crc, size = zlib.crc32(block, crc), size + len(block)
+    assert (crc, size) == (expected, 6000 + len(last))
+    assert handovers == []
+    assert all(n < codecs.gzip_codec._CRC_CHECKPOINT_SPACING for n in read_back)
 
 
 @requires("rapidgzip")

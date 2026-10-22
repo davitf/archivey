@@ -637,21 +637,29 @@ the file has several members, not that the last one is whole: rapidgzip ends a l
 cut right after its header with no error, at the end of the file. So the accelerator SHALL
 also find the last member's trailer, the eight bytes that end the file but for zero
 padding, and SHALL accept the file only when they hold the CRC-32 and the length mod 2**32
-of the last that-many bytes of the output, read back from the accelerator. A wrong ISIZE
-or a cut on the last member, after any number of members before it and whatever its size,
-then gives the standard library's error. An empty last member (bgzip's end-of-file member)
-counts when zlib decodes it from a header in the 1 KiB before the end of the non-zero
-data, with only zeros after it. The read-back SHALL be bounded: at most 64 MiB of output
-in all, tried shortest candidate first; a candidate past that hands the read to the
-standard-library decoder, so a valid last member of more than 64 MiB costs a second
-decode of the whole file, and a damaged file at most 64 MiB of read-back before that
-decoder's verdict. Not excluded: a crafted cut whose last eight bytes are made
-the CRC-32 and length of the end of the output, which takes choosing four bytes of the
-content. A last member of 4 GiB or more of output does not match, as its length is
-wrapped, and is read by the standard-library decoder, at the cost of a second decode. When
-a seek has skipped output, there is no CRC-32 of it, and the last four bytes of the file
-stand in as the ISIZE of a file with no further member. In a file with a further member,
-the last member's trailer SHALL be checked as above whatever the last four bytes say.
+of the last that-many bytes of the output. A wrong ISIZE or a cut on the last member,
+after any number of members before it and whatever its size, then gives the standard
+library's error. An empty last member (bgzip's end-of-file member) counts when zlib
+decodes it from a header in the 1 KiB before the end of the non-zero data, with only
+zeros after it. That CRC-32 SHALL come from the running CRC-32 of the output, saved every
+4 MiB of output, as `C(A + B) ^ crc32_combine(C(A), 0, len(B))` for the last `len(B)`
+bytes `B`, with `C(A)` carried on from the checkpoint before it by a read-back from the
+accelerator: at most four candidates, tried shortest first, each a read-back of at most
+4 MiB, whatever the size of the last member or the length a forged trailer states. A
+valid file of any size is so decided with no handover to the standard-library decoder.
+Not excluded: a crafted cut whose last eight bytes are made the CRC-32 and length of the
+end of the output, which takes choosing four bytes of the content. A last member of 4 GiB
+or more of output does not match, as its length is wrapped, and is read by the
+standard-library decoder, at the cost of a second decode.
+
+These checks are guaranteed only for a read from start to end with no seek. When a seek
+short of the end has skipped output, only the checks that need no second decode SHALL
+run: there is no CRC-32 of the whole output, and the last four bytes of the file stand in
+as the ISIZE of a file with no further member. In a file with a further member, a CRC-32
+kept from where reading resumed SHALL check the last member's trailer as above whatever
+the last four bytes say, where it covers the candidate's output to the end; a candidate
+that reaches back before that point SHALL be accepted with no read-back and no handover.
+A seek that meets the end reads the output through first, so it gets the full check.
 
 #### Scenario: accelerator error parity
 
