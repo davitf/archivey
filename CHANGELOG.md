@@ -93,6 +93,13 @@ and each change will be listed here. No major changes are expected.
   Linux. PyPy isn't supported yet, but every change has to pass the full test suite on
   PyPy 3.11; the install page says what works there.
 
+### Changed
+
+- `DecoderLimits.max_ppmd_in_process_input` (0.2.0rc1) is now
+  `DecoderLimits.max_ppmd_held_input`, with no alias. The default (16 MiB) and the
+  behaviour are the same: it caps the PPMd input held whole for one member, whatever
+  `process_isolation` is set to.
+
 ### Removed
 
 - `crc32_digest`, public in 0.2.0rc1. To compare a CRC-32 from `member.hashes` with
@@ -115,6 +122,15 @@ the full table are in [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md).
 - [`SECURITY.md`](SECURITY.md) describes private vulnerability reporting through
   [GitHub Security Advisories](https://github.com/davitf/archivey/security/advisories/new).
   The threat model and its open items are in `dev-docs/threat-model.md`.
+- Extraction refuses a link whose target can't be looked up, for example because the
+  path passes the system's length limit. In 0.2.0rc1, a crafted TAR of deep directories
+  and symlinks (the technique of CPython's CVE-2025-4517) could create a link that
+  pointed outside the destination and write through it.
+- The test suite replays published vulnerabilities of other archive readers (GNU tar,
+  libarchive, Info-ZIP, 7-Zip, unrar and WinRAR, py7zr, rarfile, Apache Commons Compress,
+  `tarfile`, `zipfile`) against archivey. The
+  [security page](docs/security.md#known-attacks-on-other-archive-tools) lists the test
+  files.
 
 ## [0.2.0rc1] - 2026-10-18
 
