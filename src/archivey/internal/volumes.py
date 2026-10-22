@@ -90,15 +90,19 @@ _MAX_VOLUME_PART = 999_999
 # ``0.7z.\u066000`` (an Arabic-Indic zero, then two ASCII zeros) was a numbered part
 # (``\d{3,6}`` took all three) *and* an old-scheme RAR continuation (its
 # ``[^.0-9]`` took the Arabic-Indic zero as the letter), so the schemes overlapped.
+# ``re.ASCII`` does the same for ``re.IGNORECASE``, which otherwise folds ``\u0131``
+# and ``\u0130`` into ``i`` and ``\u017f`` into ``s`` and so read ``x.z\u0131p.001`` as
+# a ZIP volume.
 _NUMBERED_VOLUME_RE = re.compile(
-    r"^(?P<base>.+\.(?:7z|zip|exe))\.0*(?P<part>[0-9]{3,6})\Z", re.IGNORECASE
+    r"^(?P<base>.+\.(?:7z|zip|exe))\.0*(?P<part>[0-9]{3,6})\Z", re.IGNORECASE | re.ASCII
 )
 # WinRAR ``-v`` writes ``name.partN.rar``. An SFX first volume keeps the ``partN``
 # marker and changes only the last extension: ``name.part1.sfx`` (Linux rar) or
 # ``name.part1.exe`` (Windows), with later volumes still ``.partN.rar``. The stem
 # before ``.part`` is the set's base, so mixed extensions on one stem are one set.
 _RAR_PART_RE = re.compile(
-    r"^(?P<base>.+)\.part0*(?P<part>[0-9]{1,6})\.(?:rar|sfx|exe)\Z", re.IGNORECASE
+    r"^(?P<base>.+)\.part0*(?P<part>[0-9]{1,6})\.(?:rar|sfx|exe)\Z",
+    re.IGNORECASE | re.ASCII,
 )
 # Any old-scheme continuation name. WinRAR and unrar go ``.rar``, ``.r00`` … ``.r99``,
 # then ``.s00`` … ``.z99`` and on past ``z`` (``.{00``, ``.|00`` …): the next name adds

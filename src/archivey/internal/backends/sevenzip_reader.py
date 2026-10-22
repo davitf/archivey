@@ -227,7 +227,11 @@ def _is_windows_reparse_point(attrs: int | None) -> bool:
 
 # ``\Z``, not ``$``: ``$`` also matches before a final newline, which would strip the
 # suffix from ``name.7z\n`` and leave the newline in the member name.
-_SEVENZIP_STEM_SUFFIX_RE = re.compile(r"\.7z(?:\.[0-9]{3})?\Z", re.IGNORECASE)
+# The part suffix has ``_NUMBERED_VOLUME_RE``'s shape, so ``big.7z.0000001`` (from
+# ``split -d -a 7``) strips too. ``re.ASCII``: see that pattern.
+_SEVENZIP_STEM_SUFFIX_RE = re.compile(
+    r"\.7z(?:\.0*[0-9]{3,6})?\Z", re.IGNORECASE | re.ASCII
+)
 
 
 # The folder settles a wrong key inside the confirm prefix when a REJECTING_CODECS
