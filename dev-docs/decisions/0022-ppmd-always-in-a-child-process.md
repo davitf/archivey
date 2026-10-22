@@ -122,7 +122,10 @@ children are recycled after a fixed number of members.
   chunks takes one more per chunk. On top of that comes the cost of copying data through
   the pipe. The prototype measured
   0.5 to 0.8 ms per MiB of decoded output alone; the PR #481 docstring's 450 MB/s (about
-  2.2 ms per MiB) counts compressed input and decoded output together.
+  2.2 ms per MiB) counts compressed input and decoded output together. Measured on the
+  shipped pool (2026-10-22, `scripts/bench_process_isolation.py`), a non-solid PPMd member
+  costs about 1.5 to 2 ms more than in-process, not 30 µs; a solid folder is one decoder
+  and pays it once. `ProcessIsolation`'s docstring carries the current figures.
 - The pool saves a process start only after a clean finish. A password-confirmation probe
   stops at its budget (64 KiB of plaintext, 1 MiB of input) or on a wrong key, and a read
   the caller abandons stops early too, so each of these retires its child and the next

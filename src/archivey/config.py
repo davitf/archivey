@@ -108,10 +108,10 @@ class ProcessIsolation(Enum):
     mostly copying data between processes. Each decoder also costs about 0.6 to 1 ms (ZIP
     deflate and non-solid 7z LZMA2 members), and a PPMd decoder about 1.5 to 2 ms, as
     under ``KNOWN_CRASHES``; an archive of many small members pays mostly that. A solid
-    7z folder is one decoder. An idle process holds about 9 MB. Where no child process can be started (a
-    frozen application, archivey imported from a zip, a refused spawn), opening a decoder
-    raises :class:`~archivey.ResourceLimitError`; nothing is decoded in the caller's
-    process."""
+    7z folder is one decoder. An idle process holds about 9 MB. Where no child process
+    can be started (a frozen application, archivey imported from a zip, a refused
+    spawn), opening a decoder raises :class:`~archivey.ResourceLimitError`; nothing is
+    decoded in the caller's process."""
     NONE = "none"
     """No child process at all: every decoder runs in the caller's process.
 
