@@ -132,6 +132,12 @@ code, run your tests with `python -W error::DeprecationWarning`.
 The public API is what `archivey` and its public submodules export, as listed on the
 [API page](api.md). Anything under `archivey.internal` can change in any release.
 
+The same promise covers the `archivey` command's verbs, options and exit codes, as listed on
+the [command-line page](cli.md): a removed or renamed one keeps working for one more minor
+release and prints a deprecation warning. The text it prints for people to read, such as
+messages and summaries, may change in any minor release, so a script should rely on the exit
+code and the options rather than on that text.
+
 1.0 comes once early users have run archivey for a while and the API has held up. After that,
 breaking changes wait for 2.0. The larger open questions, such as a plugin interface for new
 formats, writing archives and an async API, would each add to the API rather than change the
