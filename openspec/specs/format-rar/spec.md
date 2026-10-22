@@ -132,21 +132,29 @@ name.
 
 ### Requirement: Decode RAR 1.5-4 comments in the order names use
 
-A RAR5 comment is UTF-8 by the format and SHALL ignore `encoding=`. A RAR 2.9-4 `CMT`
-SERVICE header with `SUBHEAD_FLAGS_CMT_UNICODE` set SHALL decode as UTF-16LE. Every other
-RAR 1.5-4 comment (an unflagged `CMT` or an old-style COMMENT subblock, each stored or
-compressed) records no code page. It SHALL be cut at the first NUL, as `unrar` reads it,
-and SHALL decode as strict UTF-8 when the bytes are valid UTF-8, else with the caller's
-`encoding=` when one was passed, else as windows-1252. A byte the chosen code page
-leaves undefined SHALL survive as a lone surrogate, as it does in a name. The system MUST
-NOT decode an 8-bit comment as UTF-16LE. A comment is not a name, so decoding it SHALL NOT
-emit `MEMBER_NAME_ENCODING_INFERRED`.
+A RAR5 comment is UTF-8 by the format and SHALL ignore `encoding=`; a byte that is not
+valid UTF-8 SHALL survive as a lone surrogate, as it does in a RAR5 name. A RAR 2.9-4
+`CMT` SERVICE header with `SUBHEAD_FLAGS_CMT_UNICODE` set SHALL decode as UTF-16LE, a
+surrogate unit without its partner kept as that unit, as in a RAR3 Unicode name. Every
+other RAR 1.5-4 comment (an unflagged `CMT` or an old-style COMMENT subblock, each stored
+or compressed) records no code page. It SHALL be cut at the first NUL, as `unrar` reads
+it, and SHALL decode as strict UTF-8 when the bytes are valid UTF-8, else with the
+caller's `encoding=` when one was passed, else as windows-1252. A byte the chosen code
+page leaves undefined SHALL survive as a lone surrogate, as it does in a name. The system
+MUST NOT decode an 8-bit comment as UTF-16LE. A comment is not a name, so decoding it
+SHALL NOT emit `MEMBER_NAME_ENCODING_INFERRED`.
 
 #### Scenario: An undecodable comment byte survives
 
 - **WHEN** an 8-bit comment holds `b"a\x98b"` and the archive is opened with
   `encoding="cp1251"`, which leaves 0x98 undefined
 - **THEN** the comment is `"a\udc98b"`, the same string a ZIP comment with those bytes gives
+
+#### Scenario: A RAR5 comment byte that is not UTF-8 survives
+
+- **WHEN** a RAR5 comment holds `b"caf\xe9 \xff ok"` and the archive is opened with
+  `encoding="cp1252"`
+- **THEN** the comment is `"caf\udce9 \udcff ok"`, never U+FFFD
 
 ### Requirement: Accept a non-zero archive start offset (SFX)
 

@@ -201,7 +201,7 @@ def test_unrar_reads_past_the_gap_from_the_volume_after_it(tmp_path: Path) -> No
     tests every member that starts there, and skips the one continued from the gap."""
     volumes = _write_set(tmp_path, "-m0", "-v51200b")
     per_volume = _volume_listing(volumes)
-    listed, touched = _expected(per_volume, 2)
+    _listed, touched = _expected(per_volume, 2)
     volumes[2].unlink()
     result = subprocess.run(
         ["unrar", "t", str(volumes[3])], capture_output=True, text=True, check=False

@@ -119,9 +119,11 @@ def test_the_listing_keeps_the_members_present_and_ends_truncated(
         assert isinstance(report.error, TruncatedError)
         assert f"volume {len(volumes) + 1} is missing" in str(report.error)
     if not streaming:
-        with open_archive(volumes[0]) as archive:
-            with pytest.raises(TruncatedError, match="expects another volume"):
-                archive.members()
+        with (
+            open_archive(volumes[0]) as archive,
+            pytest.raises(TruncatedError, match="expects another volume"),
+        ):
+            archive.members()
 
 
 @pytest.mark.parametrize("stem", sorted(_SETS))
@@ -153,9 +155,11 @@ def test_extract_all_writes_the_complete_members_then_raises(
     _needs("unrar")
     size, _ = _SETS[stem]
     dest = tmp_path / "out"
-    with open_archive(_volumes(stem)[0], config=_config("unrar")) as archive:
-        with pytest.raises(TruncatedError):
-            archive.extract_all(dest)
+    with (
+        open_archive(_volumes(stem)[0], config=_config("unrar")) as archive,
+        pytest.raises(TruncatedError),
+    ):
+        archive.extract_all(dest)
     for index, name in enumerate(_NAMES[:-1]):
         assert (dest / name).read_bytes() == _payload(index, size)
     assert not (dest / _NAMES[-1]).exists()

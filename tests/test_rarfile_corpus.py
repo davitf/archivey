@@ -63,9 +63,7 @@ def _is_primary_archive(path: Path) -> bool:
         return False
     # Mid-set volumes: *.partN.rar for N != 1
     lower = path.name.lower()
-    if ".part" in lower and not lower.endswith(".part1.rar"):
-        return False
-    return True
+    return not (".part" in lower and not lower.endswith(".part1.rar"))
 
 
 def _normalize_name(name: str) -> str:

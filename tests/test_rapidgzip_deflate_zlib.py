@@ -91,7 +91,7 @@ def _assert_stdlib_zlib(stream: object) -> None:
 
 def _read_exact(stream: object, n: int) -> bytes:
     """Gather exactly ``n`` bytes (stdlib decompressor reads may return short)."""
-    read = getattr(stream, "read")
+    read = stream.read
     buf = bytearray()
     while len(buf) < n:
         chunk = read(n - len(buf))
@@ -304,9 +304,11 @@ def test_corrupt_deflate_zlib_body_translates_to_corruption(
     # Clobber past any zlib/deflate header bytes.
     corrupt[10:40] = b"\x00" * 30
     on = StreamConfig(use_rapidgzip=AcceleratorMode.ON, seekable=True)
-    with open_codec_stream(codec, io.BytesIO(bytes(corrupt)), config=on) as stream:
-        with raises_corruption_not_truncation():
-            stream.read()
+    with (
+        open_codec_stream(codec, io.BytesIO(bytes(corrupt)), config=on) as stream,
+        raises_corruption_not_truncation(),
+    ):
+        stream.read()
 
 
 def test_standalone_zlib_midcut_raises_via_stdlib_under_auto() -> None:
@@ -316,9 +318,11 @@ def test_standalone_zlib_midcut_raises_via_stdlib_under_auto() -> None:
     cut = full[: max(len(full) // 2, 20)]
     # Default AUTO + no expected_decompressed_size → stdlib path.
     auto = StreamConfig(use_rapidgzip=AcceleratorMode.AUTO, seekable=True)
-    with open_codec_stream(Codec.ZLIB, io.BytesIO(cut), config=auto) as stream:
-        with pytest.raises(TruncatedError):
-            stream.read()
+    with (
+        open_codec_stream(Codec.ZLIB, io.BytesIO(cut), config=auto) as stream,
+        pytest.raises(TruncatedError),
+    ):
+        stream.read()
 
 
 def test_standalone_zlib_midcut_raises_with_expected_size_on_accelerator() -> None:
@@ -357,7 +361,7 @@ def test_verifying_stream_close_after_inner_read_error_is_quiet() -> None:
             super().__init__(b"partial")
             self._blown = False
 
-        def read(self, n: int = -1) -> bytes:  # noqa: ARG002
+        def read(self, n: int = -1) -> bytes:
             if self._blown:
                 raise RuntimeError("std::exception")
             self._blown = True
@@ -412,9 +416,11 @@ def test_standalone_zlib_midcut_raises_through_rapidgzip_on_without_size() -> No
     # Adler trailer).
     cut = full[: max(len(full) // 2, 20)]
     on = StreamConfig(use_rapidgzip=AcceleratorMode.ON, seekable=True)
-    with pytest.raises(CorruptionError):
-        with open_codec_stream(Codec.ZLIB, io.BytesIO(cut), config=on) as stream:
-            stream.read()
+    with (
+        pytest.raises(CorruptionError),
+        open_codec_stream(Codec.ZLIB, io.BytesIO(cut), config=on) as stream,
+    ):
+        stream.read()
 
 
 # --- Adler-32 under rapidgzip ---------------------------------------------------------
@@ -443,7 +449,7 @@ def _body_flip_the_stdlib_rejects(good: bytes) -> bytes:
     raise AssertionError("no rejected body flip found")
 
 
-def _on_zlib(data: bytes):  # noqa: ANN202 - the codec's stream type
+def _on_zlib(data: bytes):  # returns the codec's stream type
     pytest.importorskip("rapidgzip")
     on = StreamConfig(use_rapidgzip=AcceleratorMode.ON, seekable=True)
     return open_codec_stream(Codec.ZLIB, io.BytesIO(data), config=on)
@@ -517,8 +523,7 @@ def test_tar_zz_member_damage_raises_under_rapidgzip_on(tmp_path: Path) -> None:
     pytest.importorskip("rapidgzip")
     import tarfile
 
-    from archivey import AcceleratorMode as PublicMode
-    from archivey import ArchiveyConfig
+    from archivey import AcceleratorMode as PublicMode, ArchiveyConfig
 
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w") as tar:
@@ -530,16 +535,18 @@ def test_tar_zz_member_damage_raises_under_rapidgzip_on(tmp_path: Path) -> None:
     path.write_bytes(_flip(zlib.compress(buf.getvalue()), -1))
     config = ArchiveyConfig(use_rapidgzip=PublicMode.ON)
     for streaming in (False, True):
-        with raises_corruption_not_truncation():
-            with open_archive(path, streaming=streaming, config=config) as reader:
-                if streaming:
-                    for _, stream in reader.stream_members():
-                        if stream is not None:
-                            stream.read()
-                else:
-                    for member in reader.members():
-                        if member.is_file:
-                            reader.read(member)
+        with (
+            raises_corruption_not_truncation(),
+            open_archive(path, streaming=streaming, config=config) as reader,
+        ):
+            if streaming:
+                for _, stream in reader.stream_members():
+                    if stream is not None:
+                        stream.read()
+            else:
+                for member in reader.members():
+                    if member.is_file:
+                        reader.read(member)
 
 
 # --- 4.4 Bounded input ---------------------------------------------------------------

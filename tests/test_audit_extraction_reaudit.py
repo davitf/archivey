@@ -613,9 +613,11 @@ def test_a_filter_returning_a_non_member_gets_a_type_error_naming_the_filter(
 ) -> None:
     archive = _build_tar(tmp_path / "a.tar", [("f", "file", b"x")])
 
-    with archivey.open_archive(archive) as reader:
-        with pytest.raises(TypeError, match="filter"):
-            reader.extract_all(tmp_path / "out", filter=lambda member: True)
+    with (
+        archivey.open_archive(archive) as reader,
+        pytest.raises(TypeError, match="filter"),
+    ):
+        reader.extract_all(tmp_path / "out", filter=lambda member: True)
 
 
 # --- Directory sources --------------------------------------------------------------
@@ -1051,6 +1053,8 @@ def test_a_rar_hard_link_to_a_later_member_has_no_target(
         listed = {m.name: m for m in reader.members_report().members}
     assert listed["h"].link_target_member is None
     if not streaming:
-        with archivey.open_archive(archive) as reader:
-            with pytest.raises(LinkTargetNotFoundError):
-                reader.read("h")
+        with (
+            archivey.open_archive(archive) as reader,
+            pytest.raises(LinkTargetNotFoundError),
+        ):
+            reader.read("h")
