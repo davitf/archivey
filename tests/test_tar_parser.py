@@ -43,13 +43,15 @@ from archivey.internal.backends.tar_parser import (
     sparse_map_0_1,
     validate_sparse_map,
 )
-from tests.tar_build import END as _END
-from tests.tar_build import block as _block
-from tests.tar_build import data as _data
-from tests.tar_build import field as _field
-from tests.tar_build import octal as _octal
-from tests.tar_build import pax as _pax
-from tests.tar_build import pax_record as _rec
+from tests.tar_build import (
+    END as _END,
+    block as _block,
+    data as _data,
+    field as _field,
+    octal as _octal,
+    pax as _pax,
+    pax_record as _rec,
+)
 
 
 def _walk(
