@@ -1223,7 +1223,7 @@ class ListingLimits:
 class DecoderLimits:
     max_decoder_memory: int | None = 2 * 2**30
     max_key_derivation_rounds: int | None = 2**25
-    max_ppmd_in_process_input: int | None = 16 * 2**20
+    max_ppmd_held_input: int | None = 16 * 2**20
     UNLIMITED: ClassVar["DecoderLimits"]
 
 @dataclass(frozen=True)
@@ -1280,7 +1280,7 @@ decoder (a fault signal such as SIGSEGV, or the Windows status for the same faul
 surface as `CorruptionError`. A child killed by SIGKILL, or one that dies allocating the
 member's model, SHALL raise `ResourceLimitError`, as SHALL a member where no child process
 can be started. A child that ends any other way (another signal, a plain exit status)
-SHALL raise `ReadError`, which is not a verdict on the data. `max_ppmd_in_process_input`
+SHALL raise `ReadError`, which is not a verdict on the data. `max_ppmd_held_input`
 SHALL bound the compressed bytes of one PPMd member the process holds to hand to pyppmd
 whole, in the child or, under `process_isolation=NONE`, in-process; a larger member, and
 one whose size is known only once it has been read (a ZIP member with bit 3 set, read from
@@ -1341,9 +1341,9 @@ Callbacks hold no Archivey collector/reader/stream/backend/registry lock
 | Header-encrypted RAR5 set of four parts, one encryption record repeated, `max_key_derivation_rounds` one round short of key + PswCheck | `ResourceLimitError` at `open_archive`; at exactly key + PswCheck the set lists |
 | 7z PPMd member of 200 KB compressed, no child process possible | `ResourceLimitError` on the first read, naming `process_isolation` |
 | Same member; the child crashes / is killed by SIGKILL / by SIGTERM | `CorruptionError` / `ResourceLimitError` / `ReadError`, not `CorruptionError` |
-| Same member, `process_isolation=NONE`, `max_ppmd_in_process_input=1024` / default | In-process, fed in pieces / held and decoded whole |
+| Same member, `process_isolation=NONE`, `max_ppmd_held_input=1024` / default | In-process, fed in pieces / held and decoded whole |
 | Valid 7z PPMd member of 8 MiB (one random 1 MiB block, 8 times), default config | Held, decoded whole in a child, read in full |
-| Same member, `max_ppmd_in_process_input` of 1 MiB, in a child or with `process_isolation=NONE` | Fed in pieces, read in full |
+| Same member, `max_ppmd_held_input` of 1 MiB, in a child or with `process_isolation=NONE` | Fed in pieces, read in full |
 | `ArchiveyConfig(process_isolation="none")` | Holds `ProcessIsolation.NONE` |
 | `ArchiveyConfig(process_isolation=ProcessIsolation.NONE, use_rapidgzip=AcceleratorMode.ON)` | `ArchiveyUsageError` at construction |
 | Password list `["wrong", right]`, budget covering only the right candidate's derivations | `ResourceLimitError`, not `EncryptionError`; the list does not continue |

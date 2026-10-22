@@ -561,7 +561,7 @@ class DecoderLimits:
     did not choose may want ``2**24``, which still admits every
     archive the usual tools write."""
 
-    max_ppmd_in_process_input: int | None = 16 * 2**20
+    max_ppmd_held_input: int | None = 16 * 2**20
     """Largest PPMd member, in compressed bytes, held and handed to the decoder whole.
     16 MiB.
 
@@ -583,7 +583,7 @@ class DecoderLimits:
 DecoderLimits.UNLIMITED = DecoderLimits(
     max_decoder_memory=None,
     max_key_derivation_rounds=None,
-    max_ppmd_in_process_input=None,
+    max_ppmd_held_input=None,
 )
 
 

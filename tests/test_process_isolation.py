@@ -174,7 +174,7 @@ def test_a_ppmd_member_pyppmd_stopped_short_of_in_pieces_reads_under_every_value
     the new request; ``PpmdDecoder._native_decode``). Under the limit every setting
     hands it over whole, and with a 1 MiB limit it is fed in pieces, in the child or
     in this process; it reads in full either way."""
-    limits = None if feed == "whole" else DecoderLimits(max_ppmd_in_process_input=2**20)
+    limits = None if feed == "whole" else DecoderLimits(max_ppmd_held_input=2**20)
     importorskip("pyppmd")
     block = random.Random(8).randbytes(1 << 20)
     (tmp_path / "repeats.bin").write_bytes(block * 8)

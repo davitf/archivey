@@ -959,7 +959,7 @@ def test_archivey_ppmd7_overstated_unpack_size_raises_truncated_error(
                 variant=7,
                 unpack_size=len(payload) + {overstate},
                 pack_size=len(packed),
-                in_process_max_input={max_input},
+                max_held_input={max_input},
                 isolation=ProcessIsolation.NONE,
             )
             stream._decoder._open_native(in_child=False)
@@ -1012,7 +1012,7 @@ with PpmdDecompressorStream(
     variant=7,
     unpack_size=len(_PIECES_PAYLOAD),
     pack_size=len(packed),
-    in_process_max_input=0,
+    max_held_input=0,
     refuse_input_after_end=True,
     isolation=ProcessIsolation.{isolation},
 ) as stream:
@@ -1031,8 +1031,8 @@ def test_archivey_ppmd7_fed_in_pieces_decodes_in_full(
 ) -> None:
     """A valid member fed to pyppmd one stream chunk at a time decodes in full.
 
-    ``in_process_max_input=0`` makes the decoder feed pyppmd in pieces, as it does
-    for a member over ``DecoderLimits.max_ppmd_in_process_input``. pyppmd used to
+    ``max_held_input=0`` makes the decoder feed pyppmd in pieces, as it does
+    for a member over ``DecoderLimits.max_ppmd_held_input``. pyppmd used to
     return short at ``eof`` on the last piece, which read as a spent payload: the
     member raised ``TruncatedError`` 30 KiB short. ``refuse_input_after_end`` runs the
     7z end check on top. ``NONE`` runs pyppmd in this test's own child interpreter.
@@ -1075,7 +1075,7 @@ def test_archivey_ppmd7_fed_a_byte_at_a_time_never_resumes_a_parked_worker_empty
                 variant=7,
                 unpack_size=len(payload) + {overstate},
                 pack_size=len(packed),
-                in_process_max_input=0,
+                max_held_input=0,
                 isolation=ProcessIsolation.NONE,
             )
             decoder._open_native(in_child=False)
@@ -1140,7 +1140,7 @@ def test_archivey_ppmd7_truncated_in_pieces_sends_one_nul_and_no_empty_decode() 
                 variant=7,
                 unpack_size=len(_PIECES_PAYLOAD),
                 pack_size=len(packed),
-                in_process_max_input=0,
+                max_held_input=0,
                 isolation=ProcessIsolation.NONE,
             )
             stream._decoder._open_native(in_child=False)
@@ -1187,7 +1187,7 @@ def test_ppmd7_payload_spent_needs_complete_pack() -> None:
     """A short return at ``eof`` mid-pack is not the end: more input may follow.
 
     This is the chunked path, which a member takes only past
-    ``DecoderLimits.max_ppmd_in_process_input``, inside a child process: ``eof`` also rises on a
+    ``DecoderLimits.max_ppmd_held_input``, inside a child process: ``eof`` also rises on a
     valid stream whose compressed bytes end in zeros at a chunk boundary, so stopping
     here would cut valid members short.
     """
