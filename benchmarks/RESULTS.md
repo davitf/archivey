@@ -181,9 +181,10 @@ gap. It is not part of the harness runs above:
   DEFLATE member of 16 MiB or more compressed. A 32 MiB member (17 MB compressed)
   reads in 379 ms that way against 230 ms with the accelerator off. The process
   boundary is not the cause: rapidgzip called directly in the same process, outside
-  archivey (no archivey setting decodes in-process), also loses at 289 ms. A ZIP member reaches rapidgzip
-  as a Python file object rather than a path, so each of its reads and seeks calls
-  back into Python. This is the one case found where `AUTO` is slower than `OFF`.
+  archivey (no archivey setting decodes in-process), also loses at 289 ms. A ZIP
+  member reaches rapidgzip as a Python file object rather than a path, so each of its
+  reads and seeks calls back into Python. This is the one case found where `AUTO` is
+  slower than `OFF`.
 
 **The documented command fails its sanity ceiling on this host.**
 `targz_read_all_accel_on` measured 10.9–13.6× against its own stdlib pair, above
