@@ -229,7 +229,10 @@ short size, and a read after a seek past the end never returns bytes from offset
 mismatch the read SHALL be handed to the standard library decoder, whose verdict it then
 gives (`TruncatedError` for a cut, `CorruptionError` for a wrong ISIZE, a trailing-data
 report for appended bytes), except where a further gzip member follows the first: then the
-trailer records only the last member, and the backstop SHALL stand down. Before it compares
+trailer records only the last member, and the backstop SHALL stand down when that trailer
+holds the CRC-32 and the length of the end of the output (`compressed-streams`, *An
+accelerator preserves the error contract*). A further member alone SHALL NOT stand it down,
+since rapidgzip ends a last member cut right after its header with no error. Before it compares
 the length or stands down, the backstop SHALL check that rapidgzip's decode reached the end
 of the source; a decode that stopped short of it SHALL be handed to the standard library
 decoder the same way. A `1f 8b 08` in the file SHALL count as a further member only when
@@ -323,6 +326,9 @@ inside a DEFLATE block SHALL still surface as `CorruptionError`.
 | Truncated/corrupt container DEFLATE member (e.g. ZIP) | Container CRC mismatch → `CorruptionError`/`TruncatedError` via the verifying stage |
 | Valid concatenated multi-member gzip | Decompresses fully without false truncation |
 | A gzip member cut short and followed by a complete member, through rapidgzip, with the last trailer right or forged to match the bytes delivered | The error of the accelerator `OFF` |
+| Concatenated gzip or BGZF through rapidgzip whose last member is cut anywhere, right after its header included, or has a wrong ISIZE, however many members come before it | The bytes and the error of the accelerator `OFF` |
+| Valid concatenated gzip or BGZF through rapidgzip, an empty last member included, whatever the size of the last member | Read by rapidgzip to the end, with no handover to the standard library and a read-back of at most 4 MiB per trailer candidate; an empty last member whose header starts more than 1 KiB before the end of the non-zero data (a long `FNAME`) is handed over, with the same bytes and no error |
+| Concatenated gzip through rapidgzip whose last member is cut, with its last four bytes forged to the length, read after a seek that skipped output, the forged length starting before or after the seek target, or after a `SEEK_SET` to exactly the length of the output | `TruncatedError`, as with the accelerator `OFF`; a candidate starting before the seek target reads back the skipped part, up to 64 MiB in all, past which the standard library decides |
 | Cut or wrong-ISIZE one-member gzip through rapidgzip, after any seek, or with `1f 8b 08` in its body | The error of the accelerator `OFF`; after a seek short of the end that skipped output, then a read to the end, a wrong ISIZE hidden by four appended bytes equal to the length is the one exception |
 | Cut gzip whose last four bytes are forged to the length rapidgzip delivers: `seek(0, SEEK_END)`, or that seek, then `seek(0)` and a read | `TruncatedError`, as with the accelerator `OFF` |
 | Valid gzip with NUL padding, seek through rapidgzip | Lands and reads as with the accelerator `OFF` |

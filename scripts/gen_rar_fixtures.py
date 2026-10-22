@@ -199,6 +199,12 @@ _SEEK_RESPAWN: tuple[_File, ...] = (
     _File("tail.txt", b"tail-member\n"),
 )
 
+# ``-s2``: solid groups of two files, so ``c.txt`` starts a second solid stream (its
+# solid flag is clear) and ``d.txt`` continues it.
+_SOLID_GROUPS: tuple[_File, ...] = tuple(
+    _File(f"{name}.txt", f"member {name} text\n".encode() * 60) for name in "abcd"
+)
+
 
 def _touch_times(path: Path, *, mtime: str, atime: str) -> None:
     env = os.environ.copy()
@@ -749,6 +755,7 @@ def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
     # --- RAR5 ---
     build(rar5_bin, "basic_nonsolid__.rar", _BASIC, extra=("-m0",))
     build(rar5_bin, "basic_solid__.rar", _BASIC, extra=("-s", "-m3"))
+    build(rar5_bin, "solid_groups__.rar", _SOLID_GROUPS, extra=("-s2", "-m3"))
     build(
         rar5_bin,
         "seek_respawn_solid__.rar",

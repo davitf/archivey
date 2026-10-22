@@ -67,7 +67,8 @@ recommended = [
     "inflate64>=1.0.0",
     "backports.zstd>=1.0.0; python_version < '3.14'",
     # >=1.2.0: process(output_buffer_limit=) / can_accept_more_data (CVE-2025-6176).
-    "brotli>=1.2.0",
+    # >=1.2.1: decoder buffer overflow fix (CVE-2026-111497).
+    "brotli>=1.2.1",
     "lz4>=4.4.5",
     # AES block operations only (7z, RAR headers, WinZip AES ZIP); PBKDF2/SHA/HMAC are
     # stdlib. RAR5 BLAKE2sp is native on hashlib (internal/hashing/blake2sp.py) and needs
@@ -154,7 +155,7 @@ dev = [
     # Stdlib compression.zstd on 3.14+; backports only needed below that.
     "backports.zstd>=1.0.0; python_version < '3.14'",
     "lz4>=4.4.5",
-    "brotli>=1.2.0",
+    "brotli>=1.2.1",
     # pycdlib (the [iso] extra) is in the dev group like the other optional format libs, so
     # the ISO backend's tests run in the default dev env and the type checkers can resolve the
     # PyCdlibIO annotation. The core-only CI leg installs with --no-dev, so it stays absent
@@ -186,6 +187,9 @@ docs = [
     "mkdocs-autorefs>=1.2.0",
     "mkdocs-material>=9.6.0",
     "griffe-fieldz>=0.2.1",
+    # Writes llms.txt, llms-full.txt and a Markdown copy of each page for coding
+    # agents. Capped below 0.6: a 0.x release may change the output format.
+    "mkdocs-llmstxt>=0.5.1,<0.6",
 ]
 # Coverage-guided fuzz harness (Atheris / libFuzzer). CI-only: never a user-facing
 # runtime extra and never folded into `[all]` — see packaging-and-extras + threat-model O5.
