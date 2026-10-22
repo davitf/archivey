@@ -64,7 +64,7 @@ SourceSequence = Sequence[SourceItem]
 # handing back the wrong file's contents with no error. The completeness check cannot
 # catch it either: ``[1, 2]`` is exactly ``1..N``. ``.exe`` is format-agnostic (7-Zip
 # writes it for a 7z or ZIP payload), so this pattern is not kept in step with
-# ``is_zip_split_segment_name`` (still ``zip\.\d{3,}`` / ``.zNN``). A lone
+# ``is_zip_split_segment_name`` (still ``zip\.[0-9]{3,}`` / ``.zNN``). A lone
 # numbered part (``.7z.001`` / ``.zip.001`` / ``.exe.001``) is refused at
 # ``open_archive`` as an incomplete set, naming the missing parts — not as a ZIP
 # spanned-set error. Info-ZIP ``.zNN`` stays that ZIP refusal.
@@ -85,16 +85,19 @@ SourceSequence = Sequence[SourceItem]
 # The largest part the six-digit ``part`` groups below can hold.
 _MAX_VOLUME_PART = 999_999
 # This pattern and ``_RAR_PART_RE`` end in ``\Z``, not ``$``: ``$`` also matches before
-# a final newline, which would read ``name.7z.001\n`` as a volume name.
+# a final newline, which would read ``name.7z.001\n`` as a volume name. Digits are
+# ``[0-9]``, not ``\d``: on a ``str`` pattern ``\d`` matches any Unicode digit, so
+# ``0.7z.\u0660\u0660\u0660`` (Arabic-Indic zeros) was a numbered part *and* an
+# old-scheme RAR continuation, and the schemes stopped being disjoint.
 _NUMBERED_VOLUME_RE = re.compile(
-    r"^(?P<base>.+\.(?:7z|zip|exe))\.0*(?P<part>\d{3,6})\Z", re.IGNORECASE
+    r"^(?P<base>.+\.(?:7z|zip|exe))\.0*(?P<part>[0-9]{3,6})\Z", re.IGNORECASE
 )
 # WinRAR ``-v`` writes ``name.partN.rar``. An SFX first volume keeps the ``partN``
 # marker and changes only the last extension: ``name.part1.sfx`` (Linux rar) or
 # ``name.part1.exe`` (Windows), with later volumes still ``.partN.rar``. The stem
 # before ``.part`` is the set's base, so mixed extensions on one stem are one set.
 _RAR_PART_RE = re.compile(
-    r"^(?P<base>.+)\.part0*(?P<part>\d{1,6})\.(?:rar|sfx|exe)\Z", re.IGNORECASE
+    r"^(?P<base>.+)\.part0*(?P<part>[0-9]{1,6})\.(?:rar|sfx|exe)\Z", re.IGNORECASE
 )
 # Any old-scheme continuation name. WinRAR and unrar go ``.rar``, ``.r00`` … ``.r99``,
 # then ``.s00`` … ``.z99`` and on past ``z`` (``.{00``, ``.|00`` …): the next name adds
