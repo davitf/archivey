@@ -42,8 +42,8 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
         input takes one more call, and that call can crash it too, on members of any size. In a
         child process the crash becomes a `CorruptionError` for that member. Archivey reuses the
         processes, so each PPMd member costs about 1.4 to 2 ms more than decoding in your
-        process. A solid 7z folder is decoded as one, so it pays that once, plus about 0.1 to
-        0.35 ms for each member read from it.
+        process. A solid PPMd folder is decoded as one, so it pays that once, plus about 0.1
+        to 0.35 ms for each 4 KiB member read from it.
 
 - **Running out of memory raises `MemoryError`, not an `ArchiveyError`,** so it's never mistaken for
   a damaged archive. `DecoderLimits` caps the memory an archive can ask one decoder for, 2 GiB by
@@ -151,9 +151,9 @@ costs only the member being read:
 
 - **`ProcessIsolation.KNOWN_CRASHES`**, the default, isolates the decoders that have crashed on
   some input: rapidgzip and pyppmd. The decoders it leaves in your process cost nothing extra;
-  each PPMd member, or each solid 7z folder, costs about 1.4 to 2 ms more, and each member read
-  from a solid PPMd folder about 0.1 to 0.35 ms ([why every PPMd
-  member](#where-the-guarantees-stop)). Where no child process can start, such as in a frozen
+  each PPMd member, or each solid PPMd folder, costs about 1.4 to 2 ms more, and each 4 KiB
+  member read from a solid PPMd folder about 0.1 to 0.35 ms, with the copying of larger members
+  on top ([why every PPMd member](#where-the-guarantees-stop)). Where no child process can start, such as in a frozen
   application, a PPMd member raises `ResourceLimitError`, and rapidgzip gives way to the standard
   library's decoder with one warning.
 - **`ProcessIsolation.NATIVE_DECODERS`** also isolates zlib, bz2, lzma, zstd, lz4, brotli and
@@ -162,7 +162,8 @@ costs only the member being read:
   for xz, 1.4 to 2 times for gzip and deflate, and 2 to 6 times for zstd, mostly copying data
   between processes. Each member with a decoder of its own also costs about 0.6 to 1 ms (1.4 to
   2 ms for PPMd), which is most of the cost for an archive of many small members; a solid 7z
-  folder is one decoder, plus about 0.1 to 0.35 ms for each member read from it. Each process
+  folder is one decoder, plus about 0.1 to 0.3 ms for each 4 KiB member read from it, with the
+  copying of larger members on top. Each process
   holds about 9 MB while it waits to be reused. Where no child process can start, reading raises
   `ResourceLimitError`; nothing is decoded in your process instead.
   [`scripts/bench_process_isolation.py`](https://github.com/davitf/archivey/blob/main/scripts/bench_process_isolation.py)

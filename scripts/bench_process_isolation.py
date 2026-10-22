@@ -36,6 +36,8 @@ import zipfile
 from pathlib import Path
 
 _MIB = 1 << 20
+# Members in the many-member archives; the derived figures divide by it.
+_MEMBERS = 1024
 _MODES = ("none", "known_crashes", "native_decoders")
 
 
@@ -93,6 +95,14 @@ def _write_7z(
     return True
 
 
+def _zip_name(count: int) -> str:
+    return f"deflate-{count}x-8M.zip"
+
+
+def _7z_name(method: str, *, solid: bool) -> str:
+    return f"{method.lower()}-{'solid' if solid else 'nonsolid'}-{_MEMBERS}x4K.7z"
+
+
 def _build(root: Path) -> list[Path]:
     payload = _text(64 * _MIB)
     paths: list[Path] = []
@@ -111,21 +121,23 @@ def _build(root: Path) -> list[Path]:
         if mib <= 16:
             single(f"{mib:02d}M.bz2", bz2.compress(part, 9))
             single(f"{mib:02d}M.xz", lzma.compress(part))
-    for count in (1, 1024):
-        name = f"deflate-{count}x-8M.zip"
+    for count in (1, _MEMBERS):
+        name = _zip_name(count)
         each = 8 * _MIB // count
         with zipfile.ZipFile(root / name, "w", zipfile.ZIP_DEFLATED) as zf:
             for i in range(count):
                 zf.writestr(f"m{i:05}.txt", payload[i * each : (i + 1) * each])
         paths.append(root / name)
-    small = {f"m{i:05}.txt": payload[i * 4096 : (i + 1) * 4096] for i in range(1024)}
+    small = {
+        f"m{i:05}.txt": payload[i * 4096 : (i + 1) * 4096] for i in range(_MEMBERS)
+    }
     for method, solid in (
         ("LZMA2", False),
         ("LZMA2", True),
         ("PPMd", False),
         ("PPMd", True),
     ):
-        name = f"{method.lower()}-{'solid' if solid else 'nonsolid'}-1024x4K.7z"
+        name = _7z_name(method, solid=solid)
         if _write_7z(root / name, small, method, solid=solid):
             paths.append(root / name)
     return paths
@@ -195,27 +207,47 @@ def _extra(results: dict[str, list[float]], name: str, mode: int) -> float | Non
 def _print_derived(results: dict[str, list[float]]) -> None:
     """The per-decoder and per-member figures the docstrings quote, from paired rows:
     the extra time of the many-decoder archive minus that of its one-decoder pair, per
-    extra decoder; and a solid folder's extra time per member it reads."""
+    extra decoder; and a solid folder's extra time per member it reads. A row for a
+    codec the mode leaves in this process is marked as the control: its figure is the
+    noise between runs, and should be about zero."""
     print()
     pairs = (
-        ("ZIP deflate", "deflate-1024x-8M.zip", "deflate-1x-8M.zip"),
-        ("7z LZMA2", "lzma2-nonsolid-1024x4K.7z", "lzma2-solid-1024x4K.7z"),
-        ("7z PPMd", "ppmd-nonsolid-1024x4K.7z", "ppmd-solid-1024x4K.7z"),
+        ("ZIP deflate", "deflate", _zip_name(_MEMBERS), _zip_name(1)),
+        (
+            "7z LZMA2",
+            "lzma2",
+            _7z_name("LZMA2", solid=False),
+            _7z_name("LZMA2", solid=True),
+        ),
+        (
+            "7z PPMd",
+            "ppmd",
+            _7z_name("PPMd", solid=False),
+            _7z_name("PPMd", solid=True),
+        ),
     )
     for mode in (1, 2):
-        for label, many, one in pairs:
+
+        def note(codec: str, mode: int = mode) -> str:
+            isolated = _MODES[mode] == "native_decoders" or codec == "ppmd"
+            return "" if isolated else "  (control: not isolated in this mode)"
+
+        for label, codec, many, one in pairs:
             extra_many = _extra(results, many, mode)
             extra_one = _extra(results, one, mode)
             if extra_many is None or extra_one is None:
                 continue
-            per = (extra_many - extra_one) / 1023 * 1000
-            print(f"{_MODES[mode]:>16} {label:12} per decoder: {per:.2f} ms")
-        for method in ("lzma2", "ppmd"):
-            extra = _extra(results, f"{method}-solid-1024x4K.7z", mode)
+            per = (extra_many - extra_one) / (_MEMBERS - 1) * 1000
+            print(
+                f"{_MODES[mode]:>16} {label:12} per decoder: {per:.2f} ms{note(codec)}"
+            )
+        for label, codec, _many, one in pairs[1:]:
+            extra = _extra(results, one, mode)
             if extra is not None:
-                per = extra / 1024 * 1000
+                per = extra / _MEMBERS * 1000
                 print(
-                    f"{_MODES[mode]:>16} 7z {method} solid, per member read: {per:.2f} ms"
+                    f"{_MODES[mode]:>16} {label} solid, per 4 KiB member read: "
+                    f"{per:.2f} ms{note(codec)}"
                 )
 
 

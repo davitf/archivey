@@ -113,7 +113,7 @@ reached the caller: that member runs again once in a fresh child, and only a cra
 becomes its error. Once output has reached the caller, a rerun would have to restart the
 stream; whether it does is settled with the isolation change (PR #904). A member that
 crashes every time decodes twice before it reports. A crashed child is never reused, and
-children are recycled after a fixed number of members.
+children are recycled after a fixed number of decoders.
 
 ## Consequences
 
@@ -125,8 +125,10 @@ children are recycled after a fixed number of members.
   2.2 ms per MiB) counts compressed input and decoded output together. The 30 µs is the
   round trips alone. Measured end to end on the shipped pool (2026-10-22,
   `scripts/bench_process_isolation.py`), a non-solid PPMd member costs about 1.4 to 2 ms
-  more than in-process, so another term dominates (decoder construction is the likely one;
-  not traced). A solid folder is one decoder and pays that once.
+  more than in-process, so another term dominates. Part of it is the pool's own
+  recycling: a child is retired every 64 decoders (`MAX_DECODERS_PER_CHILD`), about
+  0.2 ms per decoder at the start cost below. The rest is not traced (decoder
+  construction is the likely term). A solid folder is one decoder and pays that once.
   `ProcessIsolation`'s docstring carries the current figures.
 - The pool saves a process start only after a clean finish. A password-confirmation probe
   stops at its budget (64 KiB of plaintext, 1 MiB of input) or on a wrong key, and a read
