@@ -28,8 +28,8 @@ and each change will be listed here. No major changes are expected.
   reads, streams and extracts members the same way for ZIP, TAR (plain or compressed),
   7z, RAR, ISO 9660, plain directories and single compressed files. The format is
   detected from the content, so a misnamed file still opens.
-- **Native readers.** archivey parses ZIP, TAR, 7z and RAR headers itself. ZIP, TAR and
-  the common 7z methods need no extra package; `[recommended]` adds the other codecs,
+- **Native readers.** archivey parses ZIP, TAR, 7z and RAR headers itself. The common
+  ZIP, TAR and 7z methods need no extra package; `[recommended]` adds the other codecs,
   encryption and ISO, and RAR data needs `unrar`, `rar` or `unar`. The
   [install page](docs/install.md) has the details.
 - **Encrypted archives** in ZIP, 7z and RAR, with one password or a list of candidates.
