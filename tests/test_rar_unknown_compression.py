@@ -37,7 +37,7 @@ from archivey.internal.backends.rar_unar import (
 from archivey.reader import ArchiveReader
 from archivey.types import ArchiveMember
 from tests.atheris_fuzz.crc_fixup import fixup_rar_header_crcs
-from tests.conftest import binary_refusal, requires_unrar_cli
+from tests.conftest import binary_refusal, requires_binary, requires_unrar_cli
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "rar"
 
@@ -459,7 +459,7 @@ def test_unar_refuses_only_the_unknown_members_solid_stream() -> None:
         assert policy.solid_pass_refusal(info) is None, info.filename
 
 
-@pytest.mark.skipif(shutil.which("unrar") is None, reason="needs the unrar CLI")
+@requires_unrar_cli()
 def test_unrar_stops_at_an_unknown_version_for_a_masked_read(tmp_path: Path) -> None:
     """The oracle. With the include mask archivey uses (``-n``), ``unrar p`` writes
     nothing for ``b.txt`` or for ``d.txt`` in the next solid group, and a
@@ -489,7 +489,7 @@ def test_unrar_stops_at_an_unknown_version_for_a_masked_read(tmp_path: Path) -> 
     assert unrar_p("-n./d.txt", "--", str(path)) == b""
 
 
-@pytest.mark.skipif(shutil.which("unar") is None, reason="needs the unar CLI")
+@requires_binary("unar")
 def test_unar_does_not_decode_the_stream_ahead_of_a_new_one(tmp_path: Path) -> None:
     """The oracle for ``unar``. With ``a.txt``'s packed data garbled, so nothing
     decodes it, ``unar -i`` still writes ``c.txt`` and ``d.txt`` whole and nothing
