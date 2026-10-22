@@ -60,7 +60,9 @@ full-mode command above. Each cell is the median of the three per-run values, an
 **Corpus:** 64 × 256 KiB members for ZIP, TAR, tar.gz, tar.bz2 and solid 7z/RAR
 (about 16 MiB), a 32 MiB gzip file, and for 7z/RAR listing a 10 000-member solid
 archive and a 1 000-member non-solid one. The payloads repeat a 4 KiB block, so
-they compress far past real data.
+they compress far past real data. Two exceptions: `rar_open_list` lists the
+committed `tests/fixtures/rar/basic_solid__.rar` (366 bytes, six entries) at every
+scale, and the cost model below builds its own archives.
 
 ### Wall time against the standard library and the listing peers
 
@@ -88,16 +90,22 @@ is faster.
 What the numbers show:
 
 - **The ZIP gap is per member, not in decompression.** archivey reads ZIP with its
-  own reader; `zipfile` is only the peer. The cost model below fits both sides at
-  the same data rate (364 against 390 MiB/s) but at 6 000 members per second
-  against `zipfile`'s 50 000. With 64 members of 256 KiB that per-member cost is
-  most of the 13 ms gap on `read_all`, and all of it on listing.
+  own reader; `zipfile` is only the peer. On the cost model's own ladder (below),
+  both sides decode at about the same rate (364 against 390 MiB/s), but archivey
+  handles 6 000 members per second against `zipfile`'s 50 000. With 64 members of
+  256 KiB that per-member cost is most of the 13 ms gap on `read_all`, and all of
+  it on listing.
 - **TAR follows the same pattern:** 13 000 members per second against `tarfile`'s
   38 000.
-- **The small listing rows are loud.** `zip_open_list`, `rar_open_list` and
-  `sevenzip_open_list` list 64 members, and their peers finish in under 1 ms, so
-  ratios of 2–9× are gaps of 1–2 ms. The 10 000-member rows show the per-member
-  ratio.
+- **The small listing rows are loud.** `zip_open_list` and `sevenzip_open_list`
+  list 64 members and `rar_open_list` six, and their peers finish in under 1 ms,
+  so ratios of 2–9× are gaps of 1–2 ms. The 10 000-member rows show the
+  per-member ratio.
+- **`.tar.gz` pays for reading through archivey's stream layers.** The
+  2026-10-20 diagnosis (not re-measured here): archivey feeds zlib about 1 600
+  times for 16 MiB, roughly 10 KiB of output per call, through the slice and
+  read-ahead layers, where `tarfile` makes a few large calls. The plain gzip row,
+  one stream with no TAR on top, stays near the 1.3× target.
 - **\* `zip_extract` has no reliable ratio on this host.** archivey's time held
   at 134–153 ms over six runs, but `zipfile`'s moved from 19 ms to 111 ms (the
   disk and page cache, not the code). Compare extraction against a peer only
@@ -105,18 +113,22 @@ What the numbers show:
 
 ### Cost per member and per byte
 
-From the first of the three runs (`benchmarks/cost_model.py`; not a gate). Reading
-is members per second through one `stream_members()` pass with the byte cost taken
-out. Throughput is the data rate once the per-member costs are taken out.
+From the first of the three runs (`benchmarks/cost_model.py`; not a gate). The
+cost model does not use the corpus above: it builds its own archives, fitted from
+2048 × 8 KiB and 64 × 256 KiB and checked against 512 × 16 KiB, 16 × 1 MiB and
+4 × 4 MiB, on data that compresses about 4:1. So its throughput does not apply to
+the 250:1 corpus rows above. Reading is members per second through one
+`stream_members()` pass with the byte cost taken out. Throughput is the data rate
+once the per-member costs are taken out.
 
 | format | side | open | reading | throughput |
 | --- | --- | ---: | ---: | ---: |
 | zip | archivey | 0.55 ms | 6k members/s | 364 MiB/s |
 | zip | zipfile | 0.10 ms | 50k members/s | 390 MiB/s |
-| tar | archivey | 0.39 ms | 13k members/s | no codec |
-| tar | tarfile | under 0.01 ms | 38k members/s | no codec |
+| tar | archivey \* | 0.39 ms | 13k members/s | no codec |
+| tar | tarfile \* | under 0.01 ms | 38k members/s | no codec |
 
-The TAR rows miss some of their large check rungs (16 × 1 MiB and 4 × 4 MiB read
+\* The TAR rows miss some of their large check rungs (16 × 1 MiB and 4 × 4 MiB read
 40–60% faster than the fit predicts) on both sides. With no codec, TAR's byte cost
 is a small remainder, so its rungs are expected to miss.
 
@@ -132,14 +144,31 @@ not the separate `indexed_bzip2` package. The stdlib peer reads in one forward p
 | tar.bz2 | 274.3 ms | 193.9 ms | 262.2 ms | 0.71× |
 | ZIP deflate, 64 members | 21.1 ms | 2 767 ms | — | **131×** slower |
 
-**rapidgzip now slows gzip and deflate down instead of speeding them up.** Since PR
-904, the default `ProcessIsolation.KNOWN_CRASHES` runs rapidgzip in a child
-process, and what archivey reads comes back through the process boundary. A
-separate check of the 32 MiB gzip file agrees: after a warm-up, seven alternating
-runs each gave a median of 62 ms with the accelerator off and 311 ms with it on.
-bzip2 still gains, because its decode costs far more than the copying. The figures this section quoted before (tar.gz
-2.57× and tar.bz2 2.97× faster than accelerator off) were measured in-process,
-before PR 904, and no longer hold. This is tracked internally.
+**These rows force the accelerator on below the size where it pays.** rapidgzip
+and its bzip2 decoder run in a child process (the default
+`ProcessIsolation.KNOWN_CRASHES`, since PR 904). `src/archivey/config.py` records
+the cost: about 45 ms per accelerated stream to start the child and open the stream,
+repaid at about 3.4 ms per MB of compressed DEFLATE input, so rapidgzip breaks even
+near 13 MB compressed. `use_rapidgzip` under `AUTO`, the default, therefore engages
+only from 16 MiB of known compressed input (`use_indexed_bzip2` from 1 MiB). These
+fixtures compress to far less than that, so `AUTO` stays on the stdlib for all of
+them. The ON rows show the start-up cost, not a slower default:
+
+- The ZIP row opens 64 streams: (2 767 − 21) ms ÷ 64 is 43 ms per member, the
+  recorded start-up cost.
+- tar.gz is one stream, and its 123 ms over accelerator-off is that start-up plus
+  the transfer.
+- bzip2 decodes slowly enough that even this small input repays the start-up.
+
+The figures this section quoted before (tar.gz 2.57× and tar.bz2 2.97× faster than
+accelerator off) were measured in-process, before PR 904. None of these rows reaches
+the size where `AUTO` turns the accelerator on, so this page has no current figure
+for that case.
+
+**The documented command fails its sanity ceiling on this host.**
+`targz_read_all_accel_on` measured 10.9–13.6× against its own stdlib pair, above
+the harness's 10× `WALL_RATIO_BUDGET`, so all three runs exited non-zero on that
+one case. The nightly on `main` measured the same case at 5.3× on 2026-10-21.
 
 At **ci** scale (tiny fixtures) the accelerator was already slower before PR 904,
 because indexing and thread-pool startup dominate.
@@ -197,7 +226,7 @@ extra pass through liblzma's LZMA2 chunk layer, not the bytes.
 | ZIP/TAR/gzip seek counts | within committed baseline bound (silent re-open churn) |
 | ZIP/TAR/gzip `read_all` bytes decoded | at most 1.1× the unpacked size (over-decode guard); under-decode is an integrity check |
 | solid 7z sequential | decode-once (also pinned in `test_measurement.py`) |
-| solid 7z random `read()` | ~32.5× re-decode (520 MiB for 16 MiB, n=64); gated at 1.5× the committed baseline |
+| solid 7z random `read()` | ~32.5× re-decode at realistic scale (520 MiB for 16 MiB, n=64), recorded only; at ci scale (16.5× in the committed baseline) PR CI gates it at 1.5× that baseline |
 | solid RAR decode-once | structural gate on committed `basic_solid__.rar` + unit test (`unrar`) |
 | encrypted RAR / ZIP AES / ZIP LZMA / in-ZIP accel | structural gate cases (T3); skip when `unrar` / `[crypto]` / `[seekable]` absent |
 | solid RAR random | smoke + seek baseline; byte re-decode not observable via unrar pipe (P9) |
@@ -241,9 +270,12 @@ was added by hand. Each row is an independent archivey/peer pair with its own
 archivey timing, so archivey's time for one archive and operation differs between
 the rows of different peers: by up to about 15% on the 3 ms RAR solid `list`
 pair, 8–9% on RAR solid `read_all` and RAR 10 000 `list`, and 5% or less
-elsewhere. The harness table above times the same 7z and RAR listings with its own
-loop (warm-up, interleaved medians), so its ratios differ from these by up to
-about 0.2× (1.35× there and 1.53× here for the 10 000-member 7z).
+elsewhere. The harness table above times the 7z and many / non-solid RAR listings
+on the same archives with its own loop (warm-up, interleaved medians), so its
+ratios differ from these: by up to about 0.25× (7z non-solid 1.21× there, 1.46×
+here; 7z 10 000 members 1.35× and 1.53×). Its `rar_open_list` row lists a
+different archive, the committed six-entry `basic_solid__.rar`, not the solid RAR
+here.
 
 **Read the method notes first:**
 
@@ -326,9 +358,9 @@ What the numbers show:
 
 The guide's old performance page, `docs/access-and-cost.md` (dropped when the
 guide was rewritten in #884), used to carry a Measured column from the
-`2026-07-23` nightly (`main` @ `89720de`). The column was removed first: those figures are
-the fastest-rotting claim on a published page, and re-running the same harness
-at the same `--scale realistic` did not reproduce the ZIP rows.
+`2026-07-23` nightly (`main` @ `89720de`). The column was removed: those
+figures are the fastest-rotting claim on a published page, and re-running the same
+harness at the same `--scale realistic` did not reproduce the ZIP rows.
 
 | Workload | published (`89720de`, nightly) | re-run (`532ae21`, container) |
 | --- | ---: | ---: |

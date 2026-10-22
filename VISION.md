@@ -93,7 +93,10 @@ path meets them today. Measured figures, with their host and commit, live in
 
 - **Decompression-dominated** common paths (large-member ZIP/TAR/gzip read):
   target **≤ 1.3×** the relevant stdlib peer; up to ~**2×** where safety or
-  correctness features justify it (e.g. extract with path/symlink guards).
+  correctness features justify it (e.g. extract with path/symlink guards). The
+  benchmark corpus measures ZIP and TAR `read_all` above the 2× allowance today,
+  but its members compress about 250:1, so the gap there is per-member cost
+  rather than decompression, and the band's own case is barely exercised.
 - **Metadata / listing** (open+list): aspirational peer ratios — ZIP/TAR at most
   **2–3×** vs `zipfile`/`tarfile`; native 7z/RAR **≈parity** (~1.25×) with
   `py7zr`/`rarfile`. TAR is within its band. The ZIP and 7z/RAR bands are **not
