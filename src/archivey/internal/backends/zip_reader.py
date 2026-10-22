@@ -1007,9 +1007,12 @@ class _ZipLocator:
     #: For a member whose size is unknown until a read (:func:`_wrapped_size`): the
     #: stored size and the bounds its real size lies in. ``None`` otherwise.
     size_unknown: _UnknownSize | None = None
-    #: Where the data starts, once an open has read and checked the local header
-    #: (:meth:`ZipReader._with_local_method`), so the open reads it once. ``None`` on a
-    #: listed member.
+    #: Per-open scratch: where the data starts, once an open has read and checked the
+    #: local header (:meth:`ZipReader._with_local_method`), so the open reads it once.
+    #: Listing never fills it, so it is ``None`` on every listed member. An open works
+    #: on a ``replace()`` copy carrying it, so a write to the listed locator
+    #: (``_apply_descriptor``) reaches an open only when it comes first: listing
+    #: writes stay ahead of every open.
     data_start: int | None = None
 
 
@@ -2794,7 +2797,7 @@ class ZipReader(BaseArchiveReader):
         Read only for a file or link, not WinZip AE-2, whose central CRC-32 is 0 over
         some data, so a listing reads no local header for any other entry. A local
         header that cannot be read gives ``None``: reading the member reports it
-        (``_local_data_region``).
+        (``_checked_local_header``).
         """
         if not 0 <= entry.header_offset < self._end.cd_start:
             return None
@@ -3086,13 +3089,34 @@ class ZipReader(BaseArchiveReader):
         reported (``MEMBER_LOCAL_METHOD_DIFFERS``, which ``STRICT`` refuses: a tool that
         trusts the directory decodes other bytes or fails). WinZip AES (method 99) on
         one side only is refused: its record is read from the central extra field, so
-        the two headers disagree on how the data is encrypted.
+        the two headers disagree on how the data is encrypted. So is AES on both sides
+        when the two AES records name different real methods: the pass decodes by the
+        local record, this read by the central one.
+
+        The local header is read and checked here, ahead of the codec and password
+        refusals in the open, on purpose: the check holds the overlap guard against a
+        zip bomb, so a member whose header fails it raises that ``CorruptionError``
+        even when its method is unsupported or no password was given.
         """
         try:
             header = self._checked_local_header(loc, member)
         except _LOCAL_HEADER_ERRORS as exc:
             self._reraise_member_error(exc, member.name)
         local_method = header.method
+        if local_method == loc.method == _WINZIP_AES_METHOD:
+            local_aes = parse_winzip_aes_extra(header.extra)
+            local_real = None if local_aes is None else local_aes.actual_method
+            central_real = None if loc.aes is None else loc.aes.actual_method
+            if local_real != central_real:
+                raise CorruptionError(
+                    f"ZIP member {quoted(member.name)}: its local WinZip AES record "
+                    f"names compression method {local_real} and its central directory "
+                    f"entry's {central_real}, so the two headers describe different "
+                    "data",
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    source_format=ArchiveFormat.ZIP,
+                )
         if local_method == loc.method:
             return replace(loc, data_start=header.data_start)
         if _WINZIP_AES_METHOD in (local_method, loc.method):

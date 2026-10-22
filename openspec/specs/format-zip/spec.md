@@ -264,9 +264,9 @@ the reversed pair, which only updates the members. A local header that stores an
 name than the directory entry SHALL NOT fail the member: the member takes the
 directory's name, and a file or link reports `MEMBER_LOCAL_NAME_DIFFERS`, as a file
 read reports it (the requirement on headers that disagree). Nor SHALL one that names
-another compression method, unless one of the two is WinZip AES (99): the pass decoded
-by the local method, as a file read decodes, and a file or link reports
-`MEMBER_LOCAL_METHOD_DIFFERS`. `extract_all` settles them as
+another compression method, unless one of the two is WinZip AES (99) or the two AES
+records name different real methods: the pass decoded by the local method, as a file
+read decodes, and a file or link reports `MEMBER_LOCAL_METHOD_DIFFERS`. `extract_all` settles them as
 `safe-extraction` states. A directory entry pointing at a local header an earlier
 entry already took SHALL end the pass with `CorruptionError`.
 
@@ -569,9 +569,15 @@ and SHALL report a code with `LocalHeaderContext`:
   has nothing else, so a file and a pipe read the same bytes, which the CRC-32 still
   checks. A file read reports when it opens the member (`field="method"`,
   `local_method`, `central_method`), once per member, a file or link only, as for the
-  name; the pass reports once it has read the directory. WinZip AES (method 99) in one
-  header only SHALL refuse the member: its record is read from the directory's extra
-  field, so the two headers disagree on the encryption.
+  name; the pass reports once it has read the directory. The listing keeps the
+  directory's method, as it keeps every field: `compression` and
+  `extra["zip.compress_type"]` name the directory's method, since a file read lists a
+  member before it reads any local header, and the diagnostic carries both. WinZip AES
+  (method 99) in one header only SHALL refuse the member, from a file and a pipe: its
+  record is read from the directory's extra field, so the two headers disagree on the
+  encryption. So SHALL method 99 in both headers when the two AES records name
+  different real methods: the pass would decode by the local record and a file read by
+  the directory's.
 - **A CRC-32 of 0** (`MEMBER_LOCAL_CRC_USED`, which `STRICT` reads: the data is still
   checked; maintainer ruling 2026-10-15). The directory stores 0 for a file or link of
   one byte or more, not WinZip AE-2 (whose HMAC checks the data, above), and the local
@@ -603,6 +609,9 @@ SHALL behave as a file read: the same members, data, reports and files on disk.
 | Local method stored, directory method deflate, over stored data (or deflate against stored or bzip2), from a file and a pipe | Reads the data; `MEMBER_LOCAL_METHOD_DIFFERS` (`field="method"`); `DiagnosticRaisedError` under `DiagnosticPolicy.STRICT` |
 | Local method stored over a deflated body, directory deflate | `CorruptionError` from a file and a pipe |
 | Directory method 99 (WinZip AES), local method 8 | `CorruptionError` from a file; from a pipe the local header says ZipCrypto, so `EncryptionError` |
+| Local method 99 (WinZip AES), directory method 8 | `CorruptionError` from a file, and from a pipe at the end of the pass |
+| Method 99 in both, local AES record naming stored, the directory's deflate | `CorruptionError` from a file, and from a pipe at the end of the pass |
+| Directory names stored over a deflated body the local header names | `compression` and `extra["zip.compress_type"]` say stored; the data reads deflated |
 
 ### Requirement: Report bytes after the end of a ZIP archive
 
