@@ -86,6 +86,8 @@ as long to list. [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md) has the full t
 - [`SECURITY.md`](SECURITY.md) describes how to report a vulnerability privately.
 - Extraction refuses a link whose target can't be looked up. In 0.2.0rc1, a crafted TAR
   (the technique of CPython's CVE-2025-4517) could write outside the destination.
+- `[recommended]` now requires brotli 1.2.1 or later, which fixes a buffer overflow in
+  brotli's decoder (CVE-2026-111497).
 - The test suite replays published vulnerabilities of other archive tools against
   archivey; the [security page](docs/security.md#known-attacks-on-other-archive-tools)
   lists them.
