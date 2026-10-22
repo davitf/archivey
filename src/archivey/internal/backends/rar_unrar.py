@@ -65,8 +65,8 @@ _RARLAB_BINARY_NAMES: tuple[str, ...] = ("unrar", "rar")
 # Bound the digit runs: unbounded ``\d+`` then ``int()`` raises ``ValueError``
 # past CPython's 4300-digit limit, and that must not cross ``open_archive``.
 # ``(?<![A-Za-z])`` so ``RAR`` does not match inside ``UNRAR``.
-_UNRAR_VERSION_RE = re.compile(r"(?<![A-Za-z])UNRAR\s+(\d{1,4})\.(\d{1,4})")
-_RAR_VERSION_RE = re.compile(r"(?<![A-Za-z])RAR\s+(\d{1,4})\.(\d{1,4})")
+_UNRAR_VERSION_RE = re.compile(r"(?<![A-Za-z])UNRAR\s+([0-9]{1,4})\.([0-9]{1,4})")
+_RAR_VERSION_RE = re.compile(r"(?<![A-Za-z])RAR\s+([0-9]{1,4})\.([0-9]{1,4})")
 _UNRAR_TOKEN_RE = re.compile(r"(?<![A-Za-z])UNRAR(?![A-Za-z])")
 _RAR_TOKEN_RE = re.compile(r"(?<![A-Za-z])RAR(?![A-Za-z])")
 
