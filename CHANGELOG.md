@@ -58,7 +58,8 @@ and each change will be listed here. No major changes are expected.
 - **The `archivey` command** lists, tests, extracts and prints archives from the shell.
   `uvx archivey-cli` runs it with the recommended extras.
 - Tested on Python 3.11 to 3.14 on Linux, macOS and Windows, and on free-threaded 3.13t.
-  PyPy isn't supported yet, though every change passes the test suite on PyPy 3.11.
+  PyPy 3.11 works and every change has to pass the test suite there, but it can't read
+  LZ4, PPMd or Deflate64 data; the install page lists the limits.
 
 ### Changed
 
