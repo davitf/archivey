@@ -11,7 +11,7 @@ from archivey.exceptions import (
     ArchiveyError,
     PackageNotInstalledError,
 )
-from archivey.internal.config import StreamConfig
+from archivey.internal.config import AcceleratorMode, StreamConfig
 from archivey.internal.streams.archive_stream import (
     ExceptionTranslator,
     RewindWarning,
@@ -74,8 +74,17 @@ class _DeflateFamilyCodec(StreamCodec):
         return self._open_stdlib(source, config)
 
     def check_accelerator(self, source: CodecSource, config: StreamConfig) -> None:
-        if self._use_accelerator(source, config):
+        if config.use_rapidgzip is not AcceleratorMode.ON:
+            return
+        if self._use_accelerator(source, config) and not self._leaves_to_stdlib(
+            source, config
+        ):
             _require_rapidgzip_child(self.codec.value)
+
+    def _leaves_to_stdlib(self, source: CodecSource, config: StreamConfig) -> bool:
+        """Whether an accelerated open hands ``source`` to the standard library before
+        starting a child, on a look at its first bytes. Default: never."""
+        return False
 
     def _open_stdlib(self, source: CodecSource, config: StreamConfig) -> BinaryIO:
         """The standard-library decoder, with the accelerator off and as its fallback."""

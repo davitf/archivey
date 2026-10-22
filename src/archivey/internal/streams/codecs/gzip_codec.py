@@ -884,11 +884,14 @@ class GzipCodec(_DeflateFamilyCodec):
     def _open_accelerated(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO | None:
-        if _gzip_header_refused(source, natives_for(config.process_isolation)):
+        if self._leaves_to_stdlib(source, config):
             # The standard-library engine raises zlib's own error on the first
             # read, as it does with the accelerator off.
             return None
         return super()._open_accelerated(source, params, config)
+
+    def _leaves_to_stdlib(self, source: CodecSource, config: StreamConfig) -> bool:
+        return _gzip_header_refused(source, natives_for(config.process_isolation))
 
     def _end_check(
         self,

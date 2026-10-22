@@ -1240,12 +1240,14 @@ def test_open_time_probe_starts_no_accelerator_process(
 
 
 @_ACCELERATED_CODECS
+@pytest.mark.parametrize("as_stream", [False, True], ids=["path", "stream"])
 def test_open_raises_for_an_accelerator_on_that_is_not_installed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     suffix: str,
     compress: Callable[[bytes], bytes],
     field: str,
+    as_stream: bool,
 ) -> None:
     # The probe decodes with the standard library but still resolves the accelerator,
     # so ON without rapidgzip fails at open (DR-15b), not on the first read.
@@ -1256,17 +1258,20 @@ def test_open_raises_for_an_accelerator_on_that_is_not_installed(
     )
     path = tmp_path / f"data{suffix}"
     path.write_bytes(compress(b"payload"))
+    source = io.BytesIO(path.read_bytes()) if as_stream else path
     with pytest.raises(PackageNotInstalledError):
-        open_archive(path, config=ArchiveyConfig(**{field: AcceleratorMode.ON}))
+        open_archive(source, config=ArchiveyConfig(**{field: AcceleratorMode.ON}))
 
 
 @_ACCELERATED_CODECS
+@pytest.mark.parametrize("as_stream", [False, True], ids=["path", "stream"])
 def test_open_raises_for_an_accelerator_on_with_no_child_process(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     suffix: str,
     compress: Callable[[bytes], bytes],
     field: str,
+    as_stream: bool,
 ) -> None:
     # ON where no rapidgzip child can run fails at open too, and starts nothing.
     from archivey.internal.streams.codecs import deps, rapidgzip_select
@@ -1277,8 +1282,61 @@ def test_open_raises_for_an_accelerator_on_with_no_child_process(
     )
     path = tmp_path / f"data{suffix}"
     path.write_bytes(compress(b"payload"))
+    source = io.BytesIO(path.read_bytes()) if as_stream else path
     with pytest.raises(ResourceLimitError, match="test says no"):
-        open_archive(path, config=ArchiveyConfig(**{field: AcceleratorMode.ON}))
+        open_archive(source, config=ArchiveyConfig(**{field: AcceleratorMode.ON}))
+
+
+@_ACCELERATED_CODECS
+def test_open_logs_no_accelerator_fallback_for_auto(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    suffix: str,
+    compress: Callable[[bytes], bytes],
+    field: str,
+) -> None:
+    # Open resolves only ON. AUTO is left to the read, which sees the size the
+    # registry fills in: a small file never wanted rapidgzip, so where no child can
+    # run, neither the open nor the read says it fell back.
+    from archivey.internal.streams.codecs import bzip2_codec, deps, rapidgzip_select
+
+    monkeypatch.setattr(deps, "rapidgzip", deps.LazyOptional("rapidgzip", present=True))
+    for module in (bzip2_codec, rapidgzip_select):
+        monkeypatch.setattr(
+            module, "rapidgzip_child_unavailable_reason", lambda: "test says no"
+        )
+    monkeypatch.setattr(rapidgzip_select, "_child_fallback_warned", set())
+    path = tmp_path / f"data{suffix}"
+    path.write_bytes(compress(b"payload"))
+    config = ArchiveyConfig(**{field: AcceleratorMode.AUTO})
+    with (
+        caplog.at_level(logging.WARNING),
+        open_archive(path, seekable_members=True, config=config) as ar,
+    ):
+        assert ar.read(ar.members()[0]) == b"payload"
+    assert "test says no" not in caplog.text
+
+
+def test_open_with_accelerator_on_reports_a_refused_gzip_header_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An ON open hands a gzip whose header zlib refuses to the standard library
+    # before it would start a child, so the damage is reported even where no child
+    # can run, as the read reports it.
+    from archivey.internal.streams.codecs import deps, rapidgzip_select
+
+    monkeypatch.setattr(deps, "rapidgzip", deps.LazyOptional("rapidgzip", present=True))
+    monkeypatch.setattr(
+        rapidgzip_select, "rapidgzip_child_unavailable_reason", lambda: "test says no"
+    )
+    data = bytearray(gzip.compress(b"payload", mtime=0))
+    data[3] |= 0x02  # FHCRC, with a CRC16 that cannot match
+    data[10:10] = b"\x00\x00"
+    path = tmp_path / "bad-header.gz"
+    path.write_bytes(bytes(data))
+    with pytest.raises(CorruptionError, match="header crc"):
+        open_archive(path, config=ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON))
 
 
 def test_open_time_probe_still_rejects_a_wrong_codec_with_the_accelerator_on(

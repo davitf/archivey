@@ -292,10 +292,15 @@ def _refuse_forward_only_accelerator(
     )
 
 
+def _accelerator_field(label: str) -> str:
+    """The config setting that turns rapidgzip on for a ``label`` stream."""
+    return "use_indexed_bzip2" if label == "bzip2" else "use_rapidgzip"
+
+
 def _no_child_reason(label: str) -> str:
     """The start of the ``ResourceLimitError`` message for a ``label`` stream whose
     rapidgzip child cannot run."""
-    field_name = "use_indexed_bzip2" if label == "bzip2" else "use_rapidgzip"
+    field_name = _accelerator_field(label)
     return (
         f"the rapidgzip accelerator runs in a child process, and none can be started "
         f"here to decode this {label} stream. Set {field_name}=AcceleratorMode.OFF to "
@@ -337,7 +342,7 @@ def _open_rapidgzip(
     the rest of the stream (``_StdlibOnAcceleratorError``).
     """
     bzip2 = label == "bzip2"
-    field_name = "use_indexed_bzip2" if bzip2 else "use_rapidgzip"
+    field_name = _accelerator_field(label)
     reason = _no_child_reason(label)
     _require_rapidgzip_child(label)
     try:

@@ -802,6 +802,8 @@ class Bzip2Codec(StreamCodec):
         return _stdlib_bzip2(source, config, single_stream=params.single_stream)
 
     def check_accelerator(self, source: CodecSource, config: StreamConfig) -> None:
+        if config.use_indexed_bzip2 is not AcceleratorMode.ON:
+            return
         if self._use_accelerator(config):
             _refuse_forward_only_accelerator(source, "use_indexed_bzip2", "bzip2")
             _require_rapidgzip_child("bzip2")

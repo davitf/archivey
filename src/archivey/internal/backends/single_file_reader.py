@@ -39,9 +39,8 @@ from archivey.internal.base_reader import (
     reject_start_offset,
 )
 from archivey.internal.config import (
-    AcceleratorMode,
-    StreamConfig,
     stream_config_from_archivey,
+    without_accelerators,
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.naming import (
@@ -139,15 +138,6 @@ class _IndexReportRecorder(DiagnosticCollector):
         )
 
 
-def _without_accelerators(config: StreamConfig) -> StreamConfig:
-    """``config`` decoding with the standard library, whatever its accelerators say."""
-    return replace(
-        config,
-        use_rapidgzip=AcceleratorMode.OFF,
-        use_indexed_bzip2=AcceleratorMode.OFF,
-    )
-
-
 def _infer_member_name(archive_name: str | None) -> str:
     """Infer the single member's name from the source filename (see the spec)."""
     return infer_member_name_from_archive(
@@ -227,7 +217,7 @@ class SingleFileReader(BaseArchiveReader):
         # open and 44 with the flag — a capability flag changing metadata. Accelerators
         # stay OFF: a probe reads no member data, so an accelerator's startup cost buys
         # nothing the native index does not already have.
-        self._metadata_config = _without_accelerators(
+        self._metadata_config = without_accelerators(
             stream_config_from_archivey(
                 self._config, streaming=False, seekable=self._seekable
             )
@@ -585,7 +575,7 @@ class SingleFileReader(BaseArchiveReader):
             except ArchiveyError as exc:
                 stamp(exc)
                 raise
-            config = _without_accelerators(config)
+            config = without_accelerators(config)
         if self._seek_index is not None:
             config = replace(config, seek_index=self._seek_index)
         raw = open_codec_stream(
