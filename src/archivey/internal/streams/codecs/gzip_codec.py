@@ -881,14 +881,10 @@ class GzipCodec(_DeflateFamilyCodec):
         # progress reaches REWIND_REDECODE_WARN_BYTES.
         return _stdlib_gzip(source, config)
 
-    def _open_accelerated(
-        self, source: CodecSource, params: CodecParams, config: StreamConfig
-    ) -> BinaryIO | None:
-        if _gzip_header_refused(source, natives_for(config.process_isolation)):
-            # The standard-library engine raises zlib's own error on the first
-            # read, as it does with the accelerator off.
-            return None
-        return super()._open_accelerated(source, params, config)
+    def _leaves_to_stdlib(self, source: CodecSource, config: StreamConfig) -> bool:
+        # The standard-library engine raises zlib's own error on the first read, as
+        # it does with the accelerator off.
+        return _gzip_header_refused(source, natives_for(config.process_isolation))
 
     def _end_check(
         self,
