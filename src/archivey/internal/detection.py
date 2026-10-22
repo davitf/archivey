@@ -963,6 +963,15 @@ def detect_format(
     confidence and ``detected_by="directory"``, matching ``open_archive``, which reads
     it as a directory archive. Nothing is read to decide that, so ``cost_receipt`` is
     the zero receipt (one pass, no bytes).
+
+    Raises:
+        FormatDetectionError: No format matches the source's contents or name.
+        TruncatedError: The path names part of a numbered split set with a gap.
+        DiagnosticRaisedError: A diagnostic that the :class:`~archivey.DiagnosticPolicy`
+            in the config raises on, recorded during detection.
+        ArchiveyUsageError: One argument has a type or value the call cannot use (then
+            also a ``TypeError`` or ``ValueError``).
+        FileNotFoundError: The path does not exist.
     """
     return detect_format_into(
         source, config=config, collector=None, follow_stub_volumes=follow_stub_volumes
