@@ -821,6 +821,8 @@ def test_a_name_that_differs_between_the_two_headers_takes_the_directory_name() 
         "field": "name",
         "local_raw_name_base64": "Yi50eHQ=",
         "local_crc32": None,
+        "local_method": None,
+        "central_method": None,
     }
 
 

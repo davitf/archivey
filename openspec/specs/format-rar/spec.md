@@ -679,7 +679,15 @@ SHALL raise `UnsupportedFeatureError` when its data is read, before any decompre
 runs, with either decompressor and in a solid pass. The versions it decodes are RAR5
 compression-info versions 0 and 1 and RAR 1.5-4 `UNP_VER` 13 to 29; outside them
 `unrar` reports "Unknown method" and writes nothing, which is not a truncation. A stored
-member reads whatever version it declares, as in `unrar`.
+member reads whatever version it declares, as in `unrar`. A later compressed member of
+the same solid stream (by the members' solid flags) SHALL raise `UnsupportedFeatureError`
+naming the unknown member, in the same way and with either decompressor, since decoding it
+means decoding that member first. With `unrar`, in an archive whose main header has the
+solid bit, every later member that `unrar` would decode SHALL raise it too, a later solid
+stream included: archivey addresses a member through an include mask, and with one
+`unrar` decodes the archive from its start. That message SHALL say so, and SHALL NOT
+say the archive needs the unknown member decoded. With `unar`, which reads a later stream
+on its own, a member of a later stream SHALL be read.
 
 #### Scenario: unsupported variant matrix
 
@@ -692,6 +700,8 @@ member reads whatever version it declares, as in `unrar`.
 | Compressed RAR5 member with compression-info version 2 or more | Listing succeeds; read raises `UnsupportedFeatureError` |
 | Compressed RAR 1.5-4 member with `UNP_VER` below 13 or above 29 | Listing succeeds; read raises `UnsupportedFeatureError` |
 | Stored member declaring an unknown version | Reads normally |
+| Solid archive, compressed member after one with an unknown version, same solid stream | Read raises `UnsupportedFeatureError` naming that member, with either decompressor |
+| Solid archive, member of a later solid stream after one with an unknown version | `unrar`: read raises `UnsupportedFeatureError` naming that member and the include mask; `unar`: reads normally |
 
 ### Requirement: Support multi-volume RAR sets
 

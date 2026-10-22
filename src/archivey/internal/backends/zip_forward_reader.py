@@ -45,8 +45,11 @@ from archivey.internal.backends.zip_aes import (
     ZIP_WRONG_PASSWORD_MSG,
     WinZipAesForwardStream,
     WinZipAesInfo,
+    aes_record_differences,
+    local_first,
     open_winzip_aes_forward,
     open_winzip_aes_member,
+    parse_winzip_aes_extra,
 )
 from archivey.internal.backends.zip_local_walk import (
     _CODEC_RETAIN,
@@ -68,6 +71,7 @@ from archivey.internal.backends.zip_parser import (
 from archivey.internal.backends.zip_reader import (
     _STRONG_ENCRYPTION_MSG,
     _UNCONFIRMED_PASSWORD_FAILURE,
+    _WINZIP_AES_METHOD,
     _ZIP_KEYED_SETTINGS_METHODS,
     _ZIP_MASK_COMPRESSED_PATCHED_DATA,
     _ZIP_MASK_LZMA_EOS_MARKER,
@@ -226,11 +230,25 @@ def _header_disagreements(
     them (no bit 3): a data descriptor's are checked by :func:`_contradicts`. The CRC
     counts only when a read checks it (``crc_used``: not WinZip AE-2). The method does
     not count: the data the pass decoded matched the CRC and size the directory gives,
-    so it is the data the directory describes, whichever codec produced it.
+    and a file read decodes by the local method too, reporting
+    ``MEMBER_LOCAL_METHOD_DIFFERS`` as the pass does. WinZip AES (method 99) on one side
+    only counts, as a file read refuses it: the two headers disagree on the encryption.
+    So do two AES records that differ in any field, or a missing or unparseable record
+    on one side (:func:`aes_record_differences`): the pass decoded by the local record, and a file
+    read refuses the member.
     """
     flags, crc = local.flags, local.crc
     compressed_size, file_size = local.compressed_size, local.file_size
     differ = []
+    if local.method != central.method and _WINZIP_AES_METHOD in (
+        local.method,
+        central.method,
+    ):
+        differ.append(f"compression method {local.method} against {central.method}")
+    elif local.method == central.method == _WINZIP_AES_METHOD:
+        differ.extend(
+            aes_record_differences(local.aes, parse_winzip_aes_extra(central.extra))
+        )
     encrypted = _is_encrypted_entry(flags, local.method)
     if encrypted != _is_encrypted_entry(central.flags, central.method):
         differ.append(
@@ -259,11 +277,9 @@ def _header_disagreements(
 
 
 def _header_error(member: ArchiveMember, differ: list[str]) -> CorruptionError:
-    # Which side of an "X against Y" pair is the local header's.
-    order = ", local first" if any(" against " in item for item in differ) else ""
     return CorruptionError(
         f"ZIP member {quoted(member.name)}: its local header and its central "
-        f"directory entry disagree ({', '.join(differ)}{order}); the data the "
+        f"directory entry disagree ({', '.join(differ)}{local_first(differ)}); the data the "
         "stream held for it was read as the local header describes it, and a read "
         "that follows the directory reads it differently",
         member_name=member.name,
@@ -2064,6 +2080,7 @@ class ZipForwardReader(ZipReader):
         # Members whose local header named them differently, by member id: the name
         # the local header gave.
         renamed: dict[int, bytes] = {}
+        remethoded: dict[int, int] = {}
         matched: set[int] = set()
         order: list[ArchiveMember] = []
         # Entries pointing at a local header an earlier entry already took (by
@@ -2103,6 +2120,10 @@ class ZipForwardReader(ZipReader):
                 # Reported once the member has the directory's name, below.
                 assert member._member_id is not None
                 renamed[member._member_id] = local_name
+            local_method = cast("_ZipLocator", member._raw).method
+            if central.method != local_method:
+                assert member._member_id is not None
+                remethoded[member._member_id] = local_method
             updates.append((member, central))
             # ``_raw`` still holds the local header's fields: the directory replaces
             # it only in ``_update_from_directory``, after this loop.
@@ -2133,6 +2154,25 @@ class ZipForwardReader(ZipReader):
                 # A file or link only, as from a file (``_report_local_name``).
                 self._report_local_name(
                     cast("_ZipLocator", member._raw), member, local_name
+                )
+            local_method = remethoded.get(cast("int", member._member_id))
+            if local_method is not None and _WINZIP_AES_METHOD not in (
+                local_method,
+                central.method,
+            ):
+                # The pass decoded by the local method, as a file read does
+                # (``_with_local_method``); a file or link only, as from a file. A
+                # file read reports once its local-header checks pass and before it
+                # decodes, so it reports a member whose data then fails on a CRC-32
+                # or size the directory contradicts, and so does the pass, which
+                # fails that member at the end. It reports nothing for a member those
+                # checks refuse: WinZip AES on one side, skipped here, and a central
+                # compressed size the overlap guard refuses, not skipped. The pass
+                # would have to rebuild the guard's bound (the next local header or
+                # the directory, per member) to tell those apart, so it reports
+                # them: a crafted-only difference (DR-5a), in the spec and zip.md.
+                self._report_local_method(
+                    cast("_ZipLocator", member._raw), member, local_method
                 )
         if any_missing:
             # A missing entry has a name too, and takes part in last-entry-wins as the
