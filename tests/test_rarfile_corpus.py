@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 
 from archivey import ArchiveFormat, MemberType, open_archive
-from tests.conftest import requires, requires_binary
+from tests.conftest import requires, requires_unrar_cli
 
 _ENV = "ARCHIVEY_RARFILE_TEST_FILES"
 
@@ -104,7 +104,7 @@ pytestmark = [
         reason=f"set {_ENV} to rarfile's test/files directory to run this corpus",
     ),
     requires("rarfile"),
-    requires_binary("unrar"),
+    requires_unrar_cli(),
 ]
 
 

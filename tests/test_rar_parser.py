@@ -33,7 +33,7 @@ from archivey.internal.backends.rar_parser import (
     rar5_hash_key,
 )
 from archivey.internal.backends.sevenzip_aes import SevenZipKeyCache
-from tests.conftest import requires, requires_binary
+from tests.conftest import requires, requires_binary, requires_unrar_cli
 from tests.corruption_util import raises_corruption_not_truncation
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "rar"
@@ -1023,7 +1023,7 @@ def test_a_rar4_file_header_skips_its_pack_size_without_long_block() -> None:
     assert archive.members[0].compress_size == 51
 
 
-@requires_binary("unrar")
+@requires_unrar_cli()
 def test_unrar_skips_a_rar4_file_headers_pack_size_without_long_block(
     tmp_path: Path,
 ) -> None:
