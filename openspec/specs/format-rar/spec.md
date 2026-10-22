@@ -139,21 +139,29 @@ name.
 
 ### Requirement: Decode RAR 1.5-4 comments in the order names use
 
-A RAR5 comment is UTF-8 by the format and SHALL ignore `encoding=`. A RAR 2.9-4 `CMT`
-SERVICE header with `SUBHEAD_FLAGS_CMT_UNICODE` set SHALL decode as UTF-16LE. Every other
-RAR 1.5-4 comment (an unflagged `CMT` or an old-style COMMENT subblock, each stored or
-compressed) records no code page. It SHALL be cut at the first NUL, as `unrar` reads it,
-and SHALL decode as strict UTF-8 when the bytes are valid UTF-8, else with the caller's
-`encoding=` when one was passed, else as windows-1252. A byte the chosen code page
-leaves undefined SHALL survive as a lone surrogate, as it does in a name. The system MUST
-NOT decode an 8-bit comment as UTF-16LE. A comment is not a name, so decoding it SHALL NOT
-emit `MEMBER_NAME_ENCODING_INFERRED`.
+A RAR5 comment is UTF-8 by the format and SHALL ignore `encoding=`; a byte that is not
+valid UTF-8 SHALL survive as a lone surrogate, as it does in a RAR5 name. A RAR 2.9-4
+`CMT` SERVICE header with `SUBHEAD_FLAGS_CMT_UNICODE` set SHALL decode as UTF-16LE, a
+surrogate unit without its partner kept as that unit, as in a RAR3 Unicode name. Every
+other RAR 1.5-4 comment (an unflagged `CMT` or an old-style COMMENT subblock, each stored
+or compressed) records no code page. It SHALL be cut at the first NUL, as `unrar` reads
+it, and SHALL decode as strict UTF-8 when the bytes are valid UTF-8, else with the
+caller's `encoding=` when one was passed, else as windows-1252. A byte the chosen code
+page leaves undefined SHALL survive as a lone surrogate, as it does in a name. The system
+MUST NOT decode an 8-bit comment as UTF-16LE. A comment is not a name, so decoding it
+SHALL NOT emit `MEMBER_NAME_ENCODING_INFERRED`.
 
 #### Scenario: An undecodable comment byte survives
 
 - **WHEN** an 8-bit comment holds `b"a\x98b"` and the archive is opened with
   `encoding="cp1251"`, which leaves 0x98 undefined
 - **THEN** the comment is `"a\udc98b"`, the same string a ZIP comment with those bytes gives
+
+#### Scenario: A RAR5 comment byte that is not UTF-8 survives
+
+- **WHEN** a RAR5 comment holds `b"caf\xe9 \xff ok"` and the archive is opened with
+  `encoding="cp1252"`
+- **THEN** the comment is `"caf\udce9 \udcff ok"`, never U+FFFD
 
 ### Requirement: Accept a non-zero archive start offset (SFX)
 
@@ -232,6 +240,7 @@ it. It recomputes the total rather than reusing the walk's, which is kept per li
 | RAR4 or RAR5 archive under `max_members` whose stored names weigh more than `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` at parse (`open_archive`), including `stream_members()` / `streaming=True` |
 | Volume set whose members are split across volumes, `max_metadata_bytes` at exactly what registration weighs | Opens and lists: a split member's name is weighed once |
 | RAR 1.5-4 member whose stored `CMT` comment, attached after the member was weighed, takes the total past `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` from the header walk at parse (`open_archive`); at exactly the total, opens and lists the comment |
+| RAR 1.5-4 or RAR5 `CMT` comment the walk reads (its bytes in the file, within the 256 KiB compressed cap, not encrypted or split) whose packed bytes alone are over `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` at parse, before its bytes are read |
 | Solid compressed `CMT` comments that each declare 1 byte over up to 256 KiB of packed data | Weighed by their packed bytes: `ResourceLimitError` naming `max_metadata_bytes` at parse once their sum passes it |
 
 ### Requirement: Expose RAR file-version history members
@@ -1304,9 +1313,10 @@ SHALL open and list the members whose headers precede that header. The cut SHALL
 reported as `TruncatedError`: as `members_report().error`, and raised by `members()` and
 `stream_members()` after the listed members. This SHALL hold for RAR 1.5-4 and RAR5, in
 both access modes, and for a RAR5 header cut inside its CRC or its size field. It is the
-same rule as a walk whose skip over packed data lands past the end of the file. In a
-multi-volume set the message SHALL name the volume, because its byte offset is within
-that volume.
+same rule as a walk whose skip over packed data lands past the end of the file, and a
+`CMT` comment whose data runs past the end, stored or compressed, is such packed data:
+the comment SHALL be `None` and the members before it SHALL still list. In a multi-volume
+set the message SHALL name the volume, because its byte offset is within that volume.
 
 Only a file that ends before the bytes a header declares is a cut. A declared size that
 is invalid while its bytes are present SHALL stay `CorruptionError` at open.
