@@ -8,6 +8,11 @@
 - **Provenance:** `openspec/changes/archive/2026-09-26-ppmd-crash-isolation/proposal.md`;
   `dev-docs/known-issues.md` §"Intermittent `pyppmd` native aborts on PPMd streams";
   `dev-docs/investigations/ppmd-native-investigation-results.md` §I, §K.3, §K.4
+- **Amended (2026-10-22, PR #1007):** `max_ppmd_in_process_input` is kept, renamed
+  `max_ppmd_held_input` with no alias. It still bounds the member that is held and
+  handed to pyppmd whole, under every `process_isolation` value, so the old name, which
+  tied it to decoding in this process, no longer fit. The text below keeps the old
+  spelling where it records what existed on 2026-10-20.
 
 ## Context
 

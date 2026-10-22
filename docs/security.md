@@ -219,7 +219,7 @@ in the repository measures what each limit costs in time and memory on your mach
   itself.
 - **`decoder_limits.max_key_derivation_rounds`**, default 2^25, caps the password-hashing work per
   open archive. It costs 0.2-0.7 µs per round, 7-25 s at the default.
-- **`decoder_limits.max_ppmd_in_process_input`**, default 16 MiB, caps the largest PPMd member
+- **`decoder_limits.max_ppmd_held_input`**, default 16 MiB, caps the largest PPMd member
   that's held and handed to the decoder whole. A larger one is fed in pieces, which pyppmd handles
   worse: it can stop a few KiB short of the end of a valid member. It costs up to twice the limit
   in memory while a PPMd member decodes, 32 MiB at the default.
