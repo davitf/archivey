@@ -149,12 +149,13 @@ run in a child process, one per stream, since PR 493, and its bzip2 decoder sinc
 PR 661 (PR 904 later made this part of the `ProcessIsolation.KNOWN_CRASHES` default
 and kept it). Each child costs a fixed start-up, which `src/archivey/config.py` puts
 at about 45 ms and a break-even near 13 MB of compressed DEFLATE input. The default
-setting, `AUTO`, engages the accelerator only when **both** hold: the caller asked
-for seekable streams (`seekable_members=True` on `open_archive`, `seekable=True` on
-`open_stream`), and the known compressed input is at least 16 MiB for
-`use_rapidgzip` or 1 MiB for `use_indexed_bzip2`. A default call asks for no seeking,
-so it stays on the stdlib whatever the size. These fixtures are also far below the
-thresholds, and the ON rows show start-up cost:
+setting, `AUTO`, needs the caller to ask for seekable streams (`seekable_members=True`
+on `open_archive`, `seekable=True` on `open_stream`), so a default call stays on the
+stdlib whatever the size. When the compressed size is known, `AUTO` also needs it to
+be at least 16 MiB for `use_rapidgzip` or 1 MiB for `use_indexed_bzip2`. The
+`AcceleratorMode.AUTO` docstring in `src/archivey/config.py` gives the full
+condition. These fixtures are far below the thresholds, and the ON rows show start-up
+cost:
 
 - The ZIP row opens 64 streams: (2 767 − 21) ms ÷ 64 is 43 ms per member.
 - tar.gz is one stream, and its 123 ms over accelerator-off is that start-up plus
@@ -176,9 +177,9 @@ gap. It is not part of the harness runs above:
   one-byte format check at open uses an accelerated stream, and the read starts
   another. A `.tar.gz` starts one.
 - **In-ZIP DEFLATE never gains, and `AUTO` can pick it.** With
-  `seekable_members=True`, the default `use_rapidgzip=AUTO` uses rapidgzip for a ZIP DEFLATE member of 16 MiB
-  or more compressed. A 32 MiB member (17 MB compressed) reads in 379 ms that way
-  against 230 ms with the accelerator off. The process boundary is not the cause:
+  `seekable_members=True`, the default `use_rapidgzip=AUTO` uses rapidgzip for a ZIP
+  DEFLATE member of 16 MiB or more compressed. A 32 MiB member (17 MB compressed)
+  reads in 379 ms that way against 230 ms with the accelerator off. The process boundary is not the cause:
   rapidgzip called directly in the same process, outside archivey (no archivey
   setting decodes in-process), also loses at 289 ms. A ZIP member reaches rapidgzip
   as a Python file object rather than a path, so each of its reads and seeks calls

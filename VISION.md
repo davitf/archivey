@@ -98,8 +98,8 @@ path meets them today. Measured figures, with their host and commit, live in
   but its members compress about 250:1, so the gap there is per-member cost
   rather than decompression, and the band's own case is barely exercised. The
   nightly also reports ZIP extract above 2× on its runner; the measurement host
-  in `RESULTS.md` gives no extract ratio, because the `zipfile` peer time swings
-  too much there.
+  in `RESULTS.md` gives no reliable extract ratio, because the `zipfile` peer
+  time swings too much there.
 - **Metadata / listing** (open+list): aspirational peer ratios — ZIP/TAR at most
   **2–3×** vs `zipfile`/`tarfile`; native 7z/RAR **≈parity** (~1.25×) with
   `py7zr`/`rarfile`. TAR is within its band. The ZIP and 7z/RAR bands are **not
