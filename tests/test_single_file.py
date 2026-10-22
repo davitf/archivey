@@ -19,6 +19,7 @@ import random
 import tarfile
 import zipfile
 import zlib
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -1188,3 +1189,54 @@ def test_corrupt_bz2_raises_whatever_the_accelerator_mode(
         open_archive(path, seekable_members=True, config=config) as ar,
     ):
         ar.read(ar.members()[0])
+
+
+@pytest.mark.parametrize(
+    ("suffix", "compress", "field"),
+    [
+        (".gz", gzip.compress, "use_rapidgzip"),
+        (".bz2", bz2.compress, "use_indexed_bzip2"),
+    ],
+)
+def test_open_time_probe_starts_no_accelerator_process(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    suffix: str,
+    compress: Callable[[bytes], bytes],
+    field: str,
+) -> None:
+    # The one-byte check at open decodes with the standard library: rapidgzip runs in a
+    # child process, and the probe used to start one that the member read then started
+    # again (about 30 ms each). An open and a full read start exactly one.
+    pytest.importorskip("rapidgzip", reason="needs the [seekable] extra")
+    from archivey.internal.streams.codecs import rapidgzip_select
+
+    started: list[object] = []
+    real = rapidgzip_select.RapidgzipChildStream
+
+    def counting(*args: object, **kwargs: object) -> object:
+        started.append(args)
+        return real(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(rapidgzip_select, "RapidgzipChildStream", counting)
+    payload = random.Random(5).randbytes(1 << 16) * 4
+    path = tmp_path / f"data{suffix}"
+    path.write_bytes(compress(payload))
+    config = ArchiveyConfig(**{field: AcceleratorMode.ON})
+    with open_archive(path, config=config) as ar:
+        assert started == []
+        assert ar.read(ar.members()[0]) == payload
+    assert len(started) == 1
+
+
+def test_open_time_probe_still_rejects_a_wrong_codec_with_the_accelerator_on(
+    tmp_path: Path,
+) -> None:
+    # The probe runs with the standard library, so a source that is not the claimed
+    # codec still fails at open, not on the first read.
+    pytest.importorskip("rapidgzip", reason="needs the [seekable] extra")
+    path = tmp_path / "zeros.gz"
+    path.write_bytes(b"\x00" * 40_000)
+    config = ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON)
+    with raises_corruption_not_truncation():
+        open_archive(path, format=ArchiveFormat.GZ, config=config)

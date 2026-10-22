@@ -263,10 +263,16 @@ class SingleFileReader(BaseArchiveReader):
 
         A non-seekable source is not probed: the read would consume a byte of the one
         pass the first ``open_member`` hands out, so it still fails on that read.
+
+        The probe never uses an accelerator: rapidgzip runs in a child process, and one
+        byte does not pay for starting one (about 30 ms) that the member read then starts
+        again.
         """
         if not self._seekable:
             return
-        with self._open_codec_stream(attribute_member=False) as probe:
+        with self._open_codec_stream(
+            attribute_member=False, accelerated=False
+        ) as probe:
             probe.read(1)
 
     def _build_member(self, archive_name: str | None) -> ArchiveMember:
@@ -522,11 +528,14 @@ class SingleFileReader(BaseArchiveReader):
     def _iter_members(self) -> Iterator[ArchiveMember]:
         yield self._member
 
-    def _open_codec_stream(self, *, attribute_member: bool = True) -> ArchiveStream:
+    def _open_codec_stream(
+        self, *, attribute_member: bool = True, accelerated: bool = True
+    ) -> ArchiveStream:
         """Open a fresh decompression stream over the source.
 
         ``attribute_member=False`` leaves ``member_name`` off errors the stream raises, for
-        the open-time probe that no caller asked for.
+        the open-time probe that no caller asked for. ``accelerated=False`` decodes with
+        the standard library whatever ``use_rapidgzip`` / ``use_indexed_bzip2`` say.
 
         A seekable stream source goes through a whole-source ``SharedSource`` view so
         concurrent / re-entrant opens never clobber the shared handle's position. A path
@@ -556,6 +565,12 @@ class SingleFileReader(BaseArchiveReader):
         else:
             codec_source = self._codec_input(src)
         config = self._codec_config
+        if not accelerated:
+            config = replace(
+                config,
+                use_rapidgzip=AcceleratorMode.OFF,
+                use_indexed_bzip2=AcceleratorMode.OFF,
+            )
         if self._seek_index is not None:
             config = replace(config, seek_index=self._seek_index)
         raw = open_codec_stream(
