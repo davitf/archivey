@@ -17,128 +17,70 @@ one line. How to write the entry: see
 First public release. This repository is a rewrite: the earlier v1 / alpha line
 (previously published from what is now
 [`davitf/archivey-old`](https://github.com/davitf/archivey-old)) is a separate codebase
-with no compatibility promise. Treat 0.2.0 as the first release of this library.
+with no compatibility promise.
 
 The public API is not frozen until 1.0: minor releases before then may still change it,
 and each change will be listed here. No major changes are expected.
 
 ### Added
 
-- **One interface for reading, streaming and extracting archives.** `open_archive()`
-  returns a reader that lists members, reads one member, or streams them all in one pass,
-  the same way for every format.
-- **Formats:** ZIP, TAR (plain and compressed: gzip, bzip2, xz, zstd, lz4, Unix
-  compress), 7z, RAR (1.5 through RAR5), ISO 9660 (Joliet, Rock Ridge, zisofs; needs
-  `pycdlib` 1.22 or later), plain directories, and single-file streams (gzip, bzip2, xz,
-  lzip, LZMA, zstd, lz4, zlib, Brotli, Unix compress). Self-extracting archives are read
-  behind their stub.
-- **Automatic format detection** from the file's content, with the extension as the last
-  signal, so a misnamed file still opens.
-- **Native readers.** archivey parses ZIP, TAR, 7z and RAR headers itself, without
-  `zipfile`, `tarfile` or any third-party package, so listing them needs no extra
-  install unless a TAR's compression is outside the standard library (zstd before Python
-  3.14, lz4). 7z data in the common methods (LZMA, LZMA2, Deflate, BZip2, Delta and the
-  executable filters, BCJ2 included) decodes with no extra package or external tool;
-  `[recommended]` adds PPMd, Deflate64, Brotli, LZ4, Zstandard before Python 3.14, and
-  AES. RAR data needs RARLAB `unrar` or `rar`, or `unar`.
-- **Encrypted archives:** ZipCrypto and WinZip AES in ZIP, AES in 7z (headers too),
-  and RAR3/RAR5 encryption, with one password or a list of candidates.
-- **Safe extraction by default.** `extract_all()` blocks path traversal, symlink and
-  hardlink escapes, special files and deceptive names, and caps total size, compression
-  ratio and entry count. Three policies (`STRICT`, `STANDARD`, `TRUSTED`) set how much
-  to allow.
-- **Extraction controls.** `overwrite=` decides what happens to a file already in the
-  destination (refuse, skip, replace, or rename to `name (N)`), `on_error=` whether one
-  failing member stops the rest, and `on_progress=` reports each member. `dry_run=True`
-  (`archivey x --dry-run` from the shell) runs the whole extraction into a temporary
-  folder that is deleted before the call returns, to show what would be written or
-  refused.
-- **Resource limits beyond extraction:** caps on listing size, decoder memory,
-  password key-derivation work and temporary spool files, all on `ArchiveyConfig`, and
-  all raising `ResourceLimitError`.
-- **Built for streaming.** `stream_members()` hands out each member as a stream, in
-  archive order and in one pass, so a solid 7z or RAR is decoded once and a large member
-  is read in chunks rather than held in memory. TAR, ZIP and the single-file formats
-  also read from a non-seekable source such as a pipe, and a compressed file from a pipe
-  the sender keeps open is decompressed from what has arrived. The documented access
-  costs say which operations re-read or re-decompress.
-- **Seeking in compressed files.** With `seekable_members=True`, a `.zst` seeks by frame
-  (reading the Seekable Zstandard seek table when present) and a gzip file by member or
-  BGZF block, instead of decompressing from the start.
-- **Crash isolation.** The native decoders seen to crash on hostile input, rapidgzip and
-  pyppmd, run in a child process, so a crash costs the member being read instead of your
-  process. `ArchiveyConfig.process_isolation` can put every native decoder there, or
-  none.
-- **Overlapping operations on one reader.** With `concurrent_operations=True`, random
-  reads, listing, `stream_members()` passes and `extract_all()` may overlap on one
-  reader, from one thread or several, in every format.
-- **Verified reads.** A member whose CRC or other checksum fails, or that ends short,
-  raises from `read()`, and a `stream_members()` pass goes on to the members after it
-  wherever the format lets it reach them. Codec errors map to one `ArchiveyError`
-  hierarchy, and non-fatal oddities are reported as structured diagnostics that
-  `DiagnosticPolicy.STRICT` turns into errors.
-- **Zero-dependency core.** ZIP, TAR, directories and the standard-library codecs need
-  no extra packages. `[recommended]` adds the other codecs, crypto and ISO;
-  `[seekable]` adds the rapidgzip accelerator; `[free-threaded]` is the GIL-safe set.
-  `format_availability()` says what the current install can read and what to add.
-- **The `archivey` command:** list, test, extract (with the same safety defaults) and
-  inspect archives from the shell, and `cat` a member, or a whole decompressed stream,
-  to stdout. `uvx archivey-cli` runs it with the recommended
-  extras, through the `archivey-cli` companion package.
-- **Path helpers in `archivey.paths`:** glob matchers to pass as `members=`,
-  `match_glob()` (`*` stays inside one folder, `**` matches any depth) and
-  `match_tar_glob()` (`tar`-style: `*` also matches `/`, and a folder's name selects
-  everything in it), and `numbered_name()`, the `name (N)` spelling that
-  `OverwritePolicy.RENAME` writes.
-- Tested on Python 3.11 to 3.14 on Linux, macOS and Windows, plus free-threaded 3.13t on
-  Linux. PyPy isn't supported yet, but every change has to pass the full test suite on
-  PyPy 3.11; the install page says what works there.
+- **One interface for every format.** `open_archive()` returns a reader that lists,
+  reads, streams and extracts members the same way for ZIP, TAR (plain or compressed),
+  7z, RAR, ISO 9660, plain directories and single compressed files. The format is
+  detected from the content, so a misnamed file still opens.
+- **Native readers.** archivey parses ZIP, TAR, 7z and RAR headers itself. ZIP, TAR and
+  the common 7z methods need no extra package; `[recommended]` adds the other codecs,
+  encryption and ISO, and RAR data needs `unrar`, `rar` or `unar`. The
+  [install page](docs/install.md) has the details.
+- **Encrypted archives** in ZIP, 7z and RAR, with one password or a list of candidates.
+- **Safe extraction by default.** `extract_all()` blocks path traversal, link escapes
+  and special files, and caps size, compression ratio and entry count, under three
+  policies (`STRICT`, `STANDARD`, `TRUSTED`). It can also report progress, choose what
+  happens to existing files, and do a dry run.
+- **Resource limits** on listing size, decoder memory, password key-derivation work and
+  temporary files.
+- **Built for streaming.** `stream_members()` reads every member in one pass, so a solid
+  7z or RAR is decoded once. TAR, ZIP and single compressed files also read from a pipe,
+  and zstd and gzip files can seek instead of decompressing from the start.
+- **Crash isolation.** The native decoders known to crash on hostile input run in a
+  child process, so a crash costs one member, not your process.
+- **Overlapping operations on one reader**, from one thread or several, with
+  `concurrent_operations=True`.
+- **Verified reads.** A failed checksum or a cut member raises an error, and non-fatal
+  oddities are reported as diagnostics that `DiagnosticPolicy.STRICT` turns into errors.
+- **The `archivey` command** lists, tests, extracts and prints archives from the shell.
+  `uvx archivey-cli` runs it with the recommended extras.
+- Tested on Python 3.11 to 3.14 on Linux, macOS and Windows, and on free-threaded 3.13t.
+  PyPy isn't supported yet, though every change passes the test suite on PyPy 3.11.
 
 ### Changed
 
 - **Breaking:** `DecoderLimits.max_ppmd_in_process_input` (0.2.0rc1) is now
-  `DecoderLimits.max_ppmd_held_input`, with no alias. The default (16 MiB) and the
-  behaviour are the same: it caps the PPMd input held whole for one member, whatever
-  `process_isolation` is set to.
+  `DecoderLimits.max_ppmd_held_input`, with no alias.
 
 ### Removed
 
-- **Breaking:** `crc32_digest`, public in 0.2.0rc1. To compare a CRC-32 from `member.hashes` with
-  your own, use `zlib.crc32(data).to_bytes(4, "big")`.
+- **Breaking:** `crc32_digest`, public in 0.2.0rc1. Use
+  `zlib.crc32(data).to_bytes(4, "big")` instead.
 
 ### Fixed
 
-- About 30 bugs found since 0.2.0rc1, most in reading damaged or crafted ZIP, RAR and 7z
-  archives, in dry runs, and under PyPy. A ZIP member whose local header names a
-  different compression method than the central directory is now decoded by the local
-  header's method, and reported as `MEMBER_LOCAL_METHOD_DIFFERS`.
+- About 30 bugs found since 0.2.0rc1, most in reading damaged or crafted archives.
 
 ### Performance
 
-archivey's time over the standard library's or reference reader's time (lower is
-better), from one benchmark run on 2026-10-21 at commit `de8a6565`. Details, method and
-the full table are in [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md).
-
-- Reading: a gzip file 0.9–1.1× (it varies between runs); every member of a `.tar.bz2`
-  1.2×, `.tar.gz` 1.7×, ZIP 1.9×, plain TAR 2.7×. Extracting a ZIP: 2.5×.
-- Listing: TAR 2.3×, ZIP 8.5×, 7z 1.5–2.3×, RAR 1.9–5.5×.
-- ZIP data reads at about the same rate as `zipfile` (about 370 MiB/s); the gap is per
-  member, about 6 000 members a second against `zipfile`'s 51 000.
+From one benchmark run on 2026-10-21 at commit `de8a6565`, archivey takes 0.9 to 2.7
+times as long as the standard library or reference reader to read, and 1.5 to 8.5 times
+as long to list. [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md) has the full table.
 
 ### Security
 
-- [`SECURITY.md`](SECURITY.md) describes private vulnerability reporting through
-  [GitHub Security Advisories](https://github.com/davitf/archivey/security/advisories/new).
-  The threat model and its open items are in `dev-docs/threat-model.md`.
-- Extraction refuses a link whose target can't be looked up, for example because the
-  path passes the system's length limit. In 0.2.0rc1, a crafted TAR of deep directories
-  and symlinks (the technique of CPython's CVE-2025-4517) could create a link that
-  pointed outside the destination and write through it.
-- The test suite replays published vulnerabilities of other archive readers (GNU tar,
-  libarchive, Info-ZIP, 7-Zip, unrar and WinRAR, py7zr, rarfile, Apache Commons Compress,
-  `tarfile`, `zipfile`) against archivey. The
-  [security page](docs/security.md#known-attacks-on-other-archive-tools) lists the test
-  files.
+- [`SECURITY.md`](SECURITY.md) describes how to report a vulnerability privately.
+- Extraction refuses a link whose target can't be looked up. In 0.2.0rc1, a crafted TAR
+  (the technique of CPython's CVE-2025-4517) could write outside the destination.
+- The test suite replays published vulnerabilities of other archive tools against
+  archivey; the [security page](docs/security.md#known-attacks-on-other-archive-tools)
+  lists them.
 
 ## [0.2.0rc1] - 2026-10-18
 
