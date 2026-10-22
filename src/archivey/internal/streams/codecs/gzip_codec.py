@@ -595,6 +595,7 @@ _GZIP_MIN_MEMBER = 18
 
 class GzipCodec(_DeflateFamilyCodec):
     codec = Codec.GZIP
+    checks_content = True
     stream_format = StreamFormat.GZIP
     magic = (MagicSignature(0, GZIP_MAGIC, ArchiveFormat.GZ),)
     # gzip is only a standalone stream format, never a 7z or ZIP coder, so no container

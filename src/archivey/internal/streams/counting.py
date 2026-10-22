@@ -44,6 +44,9 @@ class CountingReader(DelegatingStream):
     real decompression bomb.
     """
 
+    # Counts bytes and changes none of them: the verification level looks through.
+    forwards_verification = True
+
     def __init__(self, inner: BinaryIO) -> None:
         super().__init__(inner)
         self._bytes_read = 0
@@ -76,6 +79,9 @@ class OutputCountingStream(DelegatingStream):
     this feeds a shared :class:`~archivey.internal.measurement.ByteCounter` so folder-level
     and member-level wrappers can share one archive total when needed.
     """
+
+    # Counts bytes and changes none of them: the verification level looks through.
+    forwards_verification = True
 
     def __init__(self, inner: BinaryIO, counter: ByteCounter) -> None:
         super().__init__(inner)

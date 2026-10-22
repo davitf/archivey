@@ -79,9 +79,11 @@ byte, an HMAC stage, a password still in doubt.
 | `.xz`, `.zst`, `.lz4` | `STRUCTURE` for now (decision 6) |
 | `.br`, `.Z`, `.lzma` | `STRUCTURE` |
 
-`verifiable` can rise and never falls. It rises when another member confirms a
-password that was in doubt, and when a lazy stream from `stream_members()` opens its
-member at the first read and learns what the member carries.
+Once a stream is open, `verifiable` can rise and never falls: it rises when another
+member confirms a password that was in doubt. A lazy stream from `stream_members()`
+answers from what it knows before its first read opens the member, and settles then:
+its digest is known up front, but a password watch or an HMAC stage only appears when
+the member opens.
 
 **Rejected:** a static ceiling fixed at open. A lazy stream does not know its layers
 until it opens, and a confirmed password raises what a member can reach.
@@ -109,12 +111,13 @@ whether one can match.
   its digest has not been reached. The `check` callable it already takes answers the
   first half: `None` once confirmed.
 - **The WinZip AES stages** report a match once `_authenticated` is set.
-- **Pass-through wrappers** forward the query. `DelegatingStream` gets a class flag,
-  `forwards_verification`, default `False`. With it off, only "key in doubt" passes
-  through. A slice (a TAR member's data view) must not forward a codec check that
-  covers the whole archive, and doubt about a key is safe to pass on. Counting,
-  locking, the password watch, the ZipCrypto wrapper and the codec end-check wrappers
-  turn it on.
+- **Pass-through wrappers** forward the query. `ask_verification_proofs` reads a
+  `forwards_verification` class flag on a layer with no method of its own. Without it,
+  only "key in doubt" passes through: a slice (a TAR member's data view) must not
+  forward a codec check that covers the whole archive, and doubt about a key is safe
+  to pass on. The counting wrappers and the ZipCrypto wrapper set it. A
+  `BufferedReader` forwards its raw stream, which is how a decoder's input buffer over
+  a WinZip AES stage passes the HMAC on.
 - **The DecompressorStream** forwards only a whole-content match from its source.
   That is how an AE-2 member's HMAC, which runs below the decoder, reaches the member
   stream. An HMAC over the whole ciphertext covers every decoded byte.
@@ -156,7 +159,7 @@ level, with `verify()` kept as an open idea.
 
 | Risk | Mitigation |
 | --- | --- |
-| A wrapper between the watch and the public stream does not forward "key in doubt", so a weak-key member reports `KEY` | Doubt forwards through every `DelegatingStream` by default. A test matrix opens each weak-key case (ZipCrypto, WinZip AES on its 2-byte check, 7z with an exhausted confirm, RAR 3-4) by `open()` and by `stream_members()` and checks `NONE` after a partial read |
+| A wrapper between the watch and the public stream does not forward "key in doubt", so a weak-key member reports `KEY` | Doubt forwards through every layer with an `_inner`, flag or not. A test matrix opens each weak-key case (ZipCrypto, WinZip AES on its 2-byte check, 7z with an exhausted confirm, RAR 3-4) by `open()` and by `stream_members()` and checks `NONE` after a partial read |
 | A slice forwards a check that covers more than its member | Forwarding the end and content proofs is opt-in per class. Slices do not opt in |
 | The codec rule under-reports after seeks | Documented: a seek back to 0 and a read to the end reaches `CONTENT` |
 | Callers read `verified` as "the member is good" when `verifiable` is low | The docs lead with comparing the two |

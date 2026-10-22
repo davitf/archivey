@@ -10,7 +10,8 @@ Every public `ArchiveStream` SHALL expose two read-only properties of type
 - `verified`: the highest level the stream has proved. It SHALL NOT decrease, and a
   read that raises SHALL NOT raise it.
 - `verifiable`: the highest level a read from the start to the end can reach.
-  `verified` SHALL NOT exceed it. It MAY rise (a lazy stream opening its member, a
+  `verified` SHALL NOT exceed it. Before a lazy stream opens its member it describes
+  what the stream knows without opening it. Once the stream is open it MAY rise (a
   password confirmed by another member) and SHALL NOT fall.
 
 The levels mean:
