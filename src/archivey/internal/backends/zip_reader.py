@@ -255,6 +255,9 @@ _ZIP_EXTRA_STRONG_ENCRYPTION = 0x0017
 # Info-ZIP Unicode Path extra field: the name as UTF-8, tied to the header's name bytes
 # by their CRC-32 (`_unicode_path_name`).
 _ZIP_EXTRA_UNICODE_PATH = 0x7075
+# Info-ZIP Unicode Comment extra field: a member comment as UTF-8, tied to the
+# header's comment bytes by their CRC-32 (`_unicode_comment_text`).
+_ZIP_EXTRA_UNICODE_COMMENT = 0x6375
 _STRONG_ENCRYPTION_MSG = (
     "PKWARE Strong Encryption is not supported (only ZipCrypto and WinZip AES are)"
 )
@@ -2379,8 +2382,11 @@ class ZipReader(BaseArchiveReader):
         # on a 20 000-entry listing.
         host = entry.version_made_by >> 8
         is_unix = host == 3
-        # Permission bits only; None when no usable Unix mode was stored.
-        mode = stat.S_IMODE(full_mode) if (external_attr != 0 and is_unix) else None
+        # Permission bits only; None when no usable Unix mode was stored. A Unix host
+        # with a zero high word stored DOS attribute bits at most, which unzip 6.00
+        # also reads as "no Unix mode" (it falls back to the DOS bits), so the entry
+        # gets no mode rather than 000.
+        mode = stat.S_IMODE(full_mode) if (full_mode and is_unix) else None
 
         create_system = _CREATE_SYSTEM_BY_VALUE.get(host, CreateSystem.UNKNOWN)
         # Split once: the name, the times, the owner and the leftovers all read it.
@@ -2559,26 +2565,39 @@ class ZipReader(BaseArchiveReader):
         owner = _zip_owner(fields)
         if owner.ids is not None:
             member.uid, member.gid = owner.ids
+        unicode_comment = _NO_UNICODE_PATH
+        if entry.comment:
+            # APPNOTE puts the member comment under the name's UTF-8 flag, so a flag
+            # the name's bytes refute is not trusted for the comment either.
+            if entry.flags & _ZIP_MASK_UTF8 and decoded_name.declared_encoding is None:
+                member.comment = _decode_with_fallback(entry.comment)
+            else:
+                # A comment with bit 11 clear and an Info-ZIP Unicode Comment field
+                # (0x6375) whose CRC matches the stored bytes takes the field's text,
+                # ahead of the sniff and of encoding=, as 7-Zip does. The rule is the
+                # Unicode Path field's for a name: the field is read only when bit 11 is
+                # clear, so a flag the name refutes leaves both fields unread, as 7-Zip
+                # 23.01 does. A malformed field is dropped and reported below.
+                if entry.extra and not entry.flags & _ZIP_MASK_UTF8:
+                    unicode_comment = _unicode_comment_text(fields, entry.comment)
+                member.comment = (
+                    unicode_comment.name.decode("utf-8")
+                    if unicode_comment.name is not None
+                    else self._decode_unflagged_comment(entry.comment)
+                )
         if entry.extra:
             used_tags = list(time_tags)
             if owner.tag is not None:
                 used_tags.append(owner.tag)
             if decoded_name.unicode_path_used:
                 used_tags.append(_ZIP_EXTRA_UNICODE_PATH)
+            if unicode_comment.name is not None:
+                used_tags.append(_ZIP_EXTRA_UNICODE_COMMENT)
             unparsed = _unparsed_extra_fields(fields, used_tags)
             if unparsed is not None:
                 extra["zip.extra_fields"] = unparsed
         if _is_encrypted_entry(entry.flags, method):
             member.is_encrypted = True
-        if entry.comment:
-            # APPNOTE puts the member comment under the name's UTF-8 flag, so a flag
-            # the name's bytes refute is not trusted for the comment either.
-            member.comment = (
-                _decode_with_fallback(entry.comment)
-                if entry.flags & _ZIP_MASK_UTF8
-                and decoded_name.declared_encoding is None
-                else self._decode_unflagged_comment(entry.comment)
-            )
         member.create_system = create_system
         # Each report below names the member by its position in the walk, because
         # registration has not stamped `_member_id` yet and stamps that same position.
@@ -2630,6 +2649,27 @@ class ZipReader(BaseArchiveReader):
                     record="unicode_path",
                     record_id=_ZIP_EXTRA_UNICODE_PATH,
                     reason=unicode_extra_fault,
+                ),
+                member=member,
+                attach_to_member=True,
+                logger=logger,
+            )
+        if unicode_comment.fault is not None:
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
+                message=(
+                    f"The Unicode Comment extra field (0x6375) of ZIP member "
+                    f"{quoted(member.name)} is malformed and was dropped "
+                    f"({unicode_comment.fault}); the comment was decoded from the "
+                    f"header."
+                ),
+                context=MemberHeaderRecordContext(
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    member_id=index,
+                    record="unicode_comment",
+                    record_id=_ZIP_EXTRA_UNICODE_COMMENT,
+                    reason=unicode_comment.fault,
                 ),
                 member=member,
                 attach_to_member=True,
@@ -4081,11 +4121,12 @@ class ZipReader(BaseArchiveReader):
 
 
 class _UnicodePath(NamedTuple):
-    """What the first Info-ZIP Unicode Path extra field (0x7075) of a name says.
+    """What the first Info-ZIP Unicode extra field of a name or comment says: the
+    Unicode Path field (0x7075) or the Unicode Comment field (0x6375).
 
-    ``name`` is the UTF-8 name when the field names the member. ``fault`` says why a
-    field that should have named it could not, when it is malformed rather than merely
-    not about this name; the reader drops it and reports that.
+    ``name`` is the UTF-8 text when the field gives it. ``fault`` says why a field that
+    should have given it could not, when it is malformed rather than merely not about
+    these bytes; the reader drops it and reports that.
     """
 
     name: bytes | None = None
@@ -4098,41 +4139,60 @@ _NO_UNICODE_PATH = _UnicodePath()
 def _unicode_path_name(
     fields: Sequence[ExtraField], stored_name: bytes
 ) -> _UnicodePath:
-    """Read the Info-ZIP Unicode Path extra field (0x7075) of a name, if any.
+    """Read the Info-ZIP Unicode Path extra field (0x7075) of a name, if any."""
+    return _info_zip_unicode_field(
+        fields, _ZIP_EXTRA_UNICODE_PATH, stored_name, what="name"
+    )
 
-    The field is version 1, a CRC-32 of the header's name bytes, then the name as UTF-8.
-    The CRC ties it to ``stored_name``, so a tool that renamed the entry without
-    updating the field leaves a stale field that does not match. Only the first such
-    field counts, as in 7-Zip. A stale field and an unknown version are not about this
-    name and are ignored like any unknown record. A field too short for its version and
-    CRC, one the extra field's end cuts short, or one whose CRC matches but whose name
-    is empty or not UTF-8, is malformed: it names nothing, and the caller reports it as
-    a dropped record.
+
+def _unicode_comment_text(
+    fields: Sequence[ExtraField], stored_comment: bytes
+) -> _UnicodePath:
+    """Read the Info-ZIP Unicode Comment extra field (0x6375) of a member comment."""
+    return _info_zip_unicode_field(
+        fields, _ZIP_EXTRA_UNICODE_COMMENT, stored_comment, what="comment"
+    )
+
+
+def _info_zip_unicode_field(
+    fields: Sequence[ExtraField], tag: int, stored: bytes, *, what: str
+) -> _UnicodePath:
+    """Read the first Info-ZIP Unicode extra field ``tag`` about ``stored``.
+
+    Both fields (0x7075 for a name, 0x6375 for a member comment) are version 1, a
+    CRC-32 of the header's bytes, then the text as UTF-8. The CRC ties the field to
+    ``stored``, so a tool that changed the name or comment without updating the field
+    leaves a stale field that does not match. Only the first such field counts, as in
+    7-Zip. A stale field and an unknown version are not about these bytes and are
+    ignored like any unknown record. A field too short for its version and CRC, one
+    the extra field's end cuts short, or one whose CRC matches but whose text is empty
+    or not UTF-8, is malformed: it gives nothing, and the caller reports it as a
+    dropped record. ``what`` names the text in the fault (``name`` or ``comment``).
     """
     for extra_field in fields:
-        if extra_field.tag != _ZIP_EXTRA_UNICODE_PATH:
+        if extra_field.tag != tag:
             continue
         field = extra_field.data
         if len(field) < 5:
             return _UnicodePath(
-                fault=f"{len(field)} bytes, shorter than its version and name CRC"
+                fault=f"{len(field)} bytes, shorter than its version and {what} CRC"
             )
-        if field[0] != 1 or struct.unpack_from("<I", field, 1)[0] != zlib.crc32(
-            stored_name
-        ):
+        if field[0] != 1 or struct.unpack_from("<I", field, 1)[0] != zlib.crc32(stored):
             return _NO_UNICODE_PATH
         if not extra_field.complete:
             return _UnicodePath(
                 fault="its CRC matches but the extra field ends inside it"
             )
-        name = field[5:]
-        if not name:
-            return _UnicodePath(fault="its CRC matches but it holds no name")
+        text = field[5:]
+        if not text:
+            return _UnicodePath(fault=f"its CRC matches but it holds no {what}")
         try:
-            name.decode("utf-8")
+            text.decode("utf-8")
         except UnicodeDecodeError:
-            return _UnicodePath(fault="its CRC matches but its name is not valid UTF-8")
-        return _UnicodePath(name=name)
+            return _UnicodePath(
+                fault=f"its CRC matches but its {what} is not valid UTF-8"
+            )
+        return _UnicodePath(name=text)
     return _NO_UNICODE_PATH
 
 
