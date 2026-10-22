@@ -193,6 +193,11 @@ where other users on the same machine can see it while it runs. If you set
 (archivey decrypts an encrypted one itself if `cryptography` is installed, and raises
 `PackageNotInstalledError` if it isn't), and the rest raise `UnsupportedFeatureError`.
 
+The same goes for the optional packages. The `[recommended]` extra sets minimum versions,
+such as brotli 1.2.1 for a decoder buffer overflow that version fixed, but archivey uses a package
+that's already installed whatever its version. If one came from somewhere else, such as a system
+package, upgrade it, for example with `pip install -U brotli`.
+
 Every limit has a default that lets large legitimate archives through. A higher limit lets a
 malicious archive use more memory, disk space or processing time before it's stopped, so if you know
 what your archives look like, lower the limits to fit them. They're set in `ArchiveyConfig`, and

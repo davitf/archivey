@@ -114,9 +114,9 @@ is empty ([`single-file.md`](single-file.md) §2.2).
 `brotli.Decompressor` incrementally. It asks for output with `output_buffer_limit` and
 checks `can_accept_more_data()` before feeding more, so a `read(1)` does not make the
 library materialise a whole meta-block of up to 16 MiB. The limit is per block, with a
-floor around 32 KiB, not a byte cap. Those two calls exist from `brotli` 1.2.0, which is why
-that is the minimum: earlier versions have no way to bound one call's output
-(CVE-2025-6176).
+floor around 32 KiB, not a byte cap. Those two calls exist from `brotli` 1.2.0: earlier
+versions have no way to bound one call's output (CVE-2025-6176). The minimum is 1.2.1, which
+also fixes a decoder buffer overflow (CVE-2026-111497).
 
 A `brotli.error` is `CorruptionError`. A cut stream does not raise in the library: the
 decompressor simply never reports that it finished, so the engine arms a `TruncatedError`
@@ -221,7 +221,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Far magic before content probes (PR #270) | A bootable ISO's system area decoded as Brotli | Probes first |
 | Decode to the compressed block the walk stops at | Every measured false claim over 64 KiB failed within 256 bytes of it; the read is sequential and mostly a copy | Stopping signatures for `.pyc` and PFB (the pyc magic changes per CPython version); parsing the block's Huffman tables without decoding |
 | Require `brotli` 1.2.0 | `output_buffer_limit` bounds one call's output (CVE-2025-6176) | Older versions, which decoded a whole meta-block per call |
-| Require `brotli` 1.2.1 | Fixes a decoder buffer overflow (CVE-2026-111497) present from 1.0.3 through 1.2.0 | Staying on 1.2.0, which left the overflow reachable from a crafted stream |
+| Require `brotli` 1.2.1 | Fixes a decoder buffer overflow (CVE-2026-111497) present from 1.0.3 through 1.2.0. The floor binds an install of `[recommended]` only: a brotli that is already present is used whatever its version, so `docs/security.md` §Hardening tells users to upgrade it | Staying on 1.2.0, which left the overflow reachable from a crafted stream; a runtime version check, which no other Python codec has |
 | Replay from the start to tell bytes after the end from damage | The library gives the same error for both and loses the call's output; a replay costs nothing on a clean file | Feeding one byte at a time always, which is slow on every file; refusing bytes after the end, unlike every other codec |
 | `brotli`, not `brotlicffi` | `brotli` is the reference binding; `brotlicffi` helps only on PyPy | Supporting both |
 
