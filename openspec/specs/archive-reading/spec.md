@@ -1496,6 +1496,22 @@ read. The buffer SHALL NOT be refused for its size, because a member flagged as 
 reparse point may turn out to hold ordinary file content. The target parsed from a
 buffer SHALL be held to the same 4096-byte cap, measured in UTF-8.
 
+Data that runs on past the buffer its header declares (the byte after it exists) SHALL
+NOT be read as a link buffer, since Windows returns exactly the header and
+`ReparseDataLength` bytes. The member SHALL be treated as data that is not a link
+buffer: a file-shaped member is re-typed to a `FILE` holding that data, with
+`SYMLINK_TARGET_UNAVAILABLE(reason="reparse_data_unrecognized")`, and its checksum is
+checked when it is read; a directory-shaped member stays a link with no target, with the
+same reason. A read that ends one byte past the buffer and fails its check is damage
+instead (`reason="target_data_damaged"`). This holds for ZIP and 7z, and for a ZIP read
+from a pipe. The pipe pass gives the same answer when its own decode finds a failed
+check after that byte, and it knows the member's size from the directory even when it
+kept no part of a buffer over its bound. When `max_metadata_bytes` makes the pass drop
+the data it keeps for link targets, it keeps whether that data is no buffer as the file
+read reads it, and gives the same answer, except for an encrypted member nobody read,
+whose dropped ciphertext it does not decrypt: that member stays a link with no target
+(`reason="target_data_dropped"`).
+
 A member whose data outruns a declared size under the cap is corrupt, not over-long:
 where the backend verifies data against the declared size (ZIP always, 7z whenever
 checksums are verified), the read SHALL fail with `CorruptionError` on reaching that
@@ -1517,8 +1533,8 @@ outside this requirement: the header parser has already allocated them, and
 | Over-long target under `DiagnosticPolicy.STRICT` | Listing raises `DiagnosticRaisedError` |
 | Over-long target, `extract_all(on_error=CONTINUE)` | That link `FAILED` with `LinkTargetNotFoundError`; other members extract |
 | Reparse buffer whose target is over 4096 UTF-8 bytes | Refused as over-long |
-| Reparse buffer followed by more data | Only the declared buffer and one byte are read |
-| Reparse-flagged member whose data is not a buffer, any size | Re-typed to its fallback with all its content readable; only its header read while listing |
+| Reparse buffer followed by more data | Only the declared buffer and one byte are read; a file-shaped member is a `FILE` with `reason="reparse_data_unrecognized"`, and a read of it checks its CRC; a directory-shaped one stays a link with no target, with the same reason |
+| Reparse-flagged member whose data is not a buffer, any size | A file-shaped member is re-typed to its fallback with all its content readable; a directory-shaped one stays a link with no target; while listing, only the header, the payload it declares and one byte are read (the header and one byte when its tag is no link's) |
 
 ### Requirement: Each member is listed once per reader
 
