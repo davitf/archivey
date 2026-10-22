@@ -373,6 +373,13 @@ class StreamCodec:
     ) -> BinaryIO:
         raise NotImplementedError
 
+    def check_accelerator(self, source: CodecSource, config: StreamConfig) -> None:
+        """Raise what :meth:`open` with ``config`` raises before decoding because an
+        accelerator set to ``ON`` cannot run: its package is absent, ``source`` cannot
+        seek, or no child process can run it. Starts no process and reads nothing.
+        Default: the codec has no accelerator."""
+        return
+
     def translate(self, exc: Exception) -> ArchiveyError | None:
         """Map a raw decoder exception to an ``ArchiveyError`` subclass, or ``None``."""
         return None

@@ -30,6 +30,7 @@ from archivey.internal.streams.codecs.rapidgzip_select import (
     _rapidgzip_requirement,
     _rapidgzip_rewind_warning,
     _refuse_forward_only_accelerator,
+    _require_rapidgzip_child,
     _StdlibSeekContract,
     _translate_child_or_stdlib,
     _warn_if_auto_without_child,
@@ -71,6 +72,10 @@ class _DeflateFamilyCodec(StreamCodec):
             if stream is not None:
                 return stream
         return self._open_stdlib(source, config)
+
+    def check_accelerator(self, source: CodecSource, config: StreamConfig) -> None:
+        if self._use_accelerator(source, config):
+            _require_rapidgzip_child(self.codec.value)
 
     def _open_stdlib(self, source: CodecSource, config: StreamConfig) -> BinaryIO:
         """The standard-library decoder, with the accelerator off and as its fallback."""

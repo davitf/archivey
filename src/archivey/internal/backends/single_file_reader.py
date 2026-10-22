@@ -38,7 +38,11 @@ from archivey.internal.base_reader import (
     ReadBackend,
     reject_start_offset,
 )
-from archivey.internal.config import AcceleratorMode, stream_config_from_archivey
+from archivey.internal.config import (
+    AcceleratorMode,
+    StreamConfig,
+    stream_config_from_archivey,
+)
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.naming import (
     COMPRESSED_TAR_SHORT_SUFFIXES,
@@ -135,6 +139,15 @@ class _IndexReportRecorder(DiagnosticCollector):
         )
 
 
+def _without_accelerators(config: StreamConfig) -> StreamConfig:
+    """``config`` decoding with the standard library, whatever its accelerators say."""
+    return replace(
+        config,
+        use_rapidgzip=AcceleratorMode.OFF,
+        use_indexed_bzip2=AcceleratorMode.OFF,
+    )
+
+
 def _infer_member_name(archive_name: str | None) -> str:
     """Infer the single member's name from the source filename (see the spec)."""
     return infer_member_name_from_archive(
@@ -214,12 +227,10 @@ class SingleFileReader(BaseArchiveReader):
         # open and 44 with the flag — a capability flag changing metadata. Accelerators
         # stay OFF: a probe reads no member data, so an accelerator's startup cost buys
         # nothing the native index does not already have.
-        self._metadata_config = replace(
+        self._metadata_config = _without_accelerators(
             stream_config_from_archivey(
                 self._config, streaming=False, seekable=self._seekable
-            ),
-            use_rapidgzip=AcceleratorMode.OFF,
-            use_indexed_bzip2=AcceleratorMode.OFF,
+            )
         )
 
         # The compressed-source header, read at most once and cached (only the gzip metadata
@@ -256,17 +267,18 @@ class SingleFileReader(BaseArchiveReader):
         Constructing a codec stream checks nothing, because every codec checks its header
         on the first read. One byte is the whole guarantee; a corrupt tail still fails on
         read. An empty result is a valid empty stream: each decoder raises on input too
-        short to hold its own header, and the accelerated bzip2 path hands an empty result
-        to the stdlib engine to confirm it. The probe stream is not cached; every
+        short to hold its own header. The probe stream is not cached; every
         ``_open_member`` builds a fresh one. The error names no member, since nobody asked
         for one yet.
 
         A non-seekable source is not probed: the read would consume a byte of the one
         pass the first ``open_member`` hands out, so it still fails on that read.
 
-        The probe never uses an accelerator: rapidgzip runs in a child process, and one
-        byte does not pay for starting one (about 30 ms) that the member read then starts
-        again.
+        The probe decodes with the standard library: rapidgzip runs in a child process,
+        and one byte does not pay for starting one (about 30 ms) that the member read then
+        starts again. The accelerator is still resolved here, without starting anything
+        (``StreamCodec.check_accelerator``), so ``ON`` with rapidgzip absent or no child
+        process possible fails at open.
         """
         if not self._seekable:
             return
@@ -566,11 +578,14 @@ class SingleFileReader(BaseArchiveReader):
             codec_source = self._codec_input(src)
         config = self._codec_config
         if not accelerated:
-            config = replace(
-                config,
-                use_rapidgzip=AcceleratorMode.OFF,
-                use_indexed_bzip2=AcceleratorMode.OFF,
-            )
+            # Still fail where the accelerated open would fail before decoding (ON with
+            # rapidgzip absent, or no child process possible), so the error stays at open.
+            try:
+                self._stream_codec.check_accelerator(codec_source, config)
+            except ArchiveyError as exc:
+                stamp(exc)
+                raise
+            config = _without_accelerators(config)
         if self._seek_index is not None:
             config = replace(config, seek_index=self._seek_index)
         raw = open_codec_stream(

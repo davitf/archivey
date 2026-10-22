@@ -146,7 +146,10 @@ that is not the codec its name or its detection claims fails at open rather than
 first read. It checks nothing further in: damage past the first byte still fails on the
 read. A valid empty stream opens and reads as `b""`. A pipe is not checked, because the
 byte would come out of its one pass. The cost is one decoded block, which matters only
-for bzip2 ([`bzip2.md`](bzip2.md) §2.2).
+for bzip2 ([`bzip2.md`](bzip2.md) §2.2). The byte is decoded with the standard library
+whatever `use_rapidgzip` / `use_indexed_bzip2` say, so no rapidgzip child starts at open;
+the accelerator is still resolved there (`StreamCodec.check_accelerator`), so `ON` with
+rapidgzip absent or no child process possible raises at open as before.
 
 What is filled in on the member, and where from:
 
@@ -432,6 +435,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Read the xz index and lzip trailers whenever the source is seekable (PR #232); narrowed by PR #732, below | Metadata must not depend on a flag about member-stream seeking | Gating them on `seekable_members` |
 | Do not peek another archive's member stream, stored ZIP entries and TAR members included (PR #732; davitf, 2026-10-10: fix later) | A seek to the end of a deflated member decompresses it twice, and `seek_is_expensive`, the signal detection already uses, covers member streams only as a group. A nested `.xz` or `.lz` loses `size` and the lzip `CRC32`; both are metadata, and the decoder still checks the index and trailers on read. Reopen with a per-stream cheap-seek signal, which would keep both for a stored ZIP entry or a TAR member | Keeping the peek for member streams whose seek is a slice, which needs that signal, shared with detection |
 | Decode one byte at open, on a seekable source (PR #461) | A file that is not the claimed codec fails where the caller opened it; otherwise a `.gz` full of zeros lists one member and fails only on the read | Checking nothing until the read; decoding more, which costs every open |
+| The open-time byte is decoded with the standard library; the accelerator is only resolved (PR #1018) | rapidgzip runs in a child process, about 30 ms to start, and the read started a second one, so a `.gz` paid for two children. Resolving still raises what an `ON` open must raise at open (DR-15b) | Probing through the accelerator; skipping the resolution, which moved a missing-package error to the first read |
 | Arm truncation at end of input and raise on the next read (PR #183) | The caller gets every byte before the cut from a sized `read(n)`, and the error cannot be missed by a caller who never calls `close()`. A `read()` of everything raises and returns nothing: a short payload returned as if whole is worse than none | Raising inside the decode, which drops the decoded prefix; raising from `close()` (ADR 0014) |
 | A truncation keeps raising after a seek back | The source did not change, so a second pass must not end cleanly | Clearing the error with the position (PR #491) |
 | An absolute 1 MiB threshold for the rewind report (PR #232) | Wall time follows bytes re-decoded, not the ratio to the jump | A relative threshold, which goes quiet on the worst case |

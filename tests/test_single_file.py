@@ -35,6 +35,8 @@ from archivey.cost import AccessCost, ListingCost
 from archivey.exceptions import (
     ArchiveyUsageError,
     CorruptionError,
+    PackageNotInstalledError,
+    ResourceLimitError,
     StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -1191,19 +1193,24 @@ def test_corrupt_bz2_raises_whatever_the_accelerator_mode(
         ar.read(ar.members()[0])
 
 
-@pytest.mark.parametrize(
+_ACCELERATED_CODECS = pytest.mark.parametrize(
     ("suffix", "compress", "field"),
     [
         (".gz", gzip.compress, "use_rapidgzip"),
         (".bz2", bz2.compress, "use_indexed_bzip2"),
     ],
 )
+
+
+@_ACCELERATED_CODECS
+@pytest.mark.parametrize("as_stream", [False, True], ids=["path", "stream"])
 def test_open_time_probe_starts_no_accelerator_process(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     suffix: str,
     compress: Callable[[bytes], bytes],
     field: str,
+    as_stream: bool,
 ) -> None:
     # The one-byte check at open decodes with the standard library: rapidgzip runs in a
     # child process, and the probe used to start one that the member read then started
@@ -1223,10 +1230,55 @@ def test_open_time_probe_starts_no_accelerator_process(
     path = tmp_path / f"data{suffix}"
     path.write_bytes(compress(payload))
     config = ArchiveyConfig(**{field: AcceleratorMode.ON})
-    with open_archive(path, config=config) as ar:
+    # A stream source shares one handle through views, a path source hands the codec
+    # the path: two different routes to the probe.
+    source = io.BytesIO(path.read_bytes()) if as_stream else path
+    with open_archive(source, config=config) as ar:
         assert started == []
         assert ar.read(ar.members()[0]) == payload
     assert len(started) == 1
+
+
+@_ACCELERATED_CODECS
+def test_open_raises_for_an_accelerator_on_that_is_not_installed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    suffix: str,
+    compress: Callable[[bytes], bytes],
+    field: str,
+) -> None:
+    # The probe decodes with the standard library but still resolves the accelerator,
+    # so ON without rapidgzip fails at open (DR-15b), not on the first read.
+    from archivey.internal.streams.codecs import deps
+
+    monkeypatch.setattr(
+        deps, "rapidgzip", deps.LazyOptional("rapidgzip", present=False)
+    )
+    path = tmp_path / f"data{suffix}"
+    path.write_bytes(compress(b"payload"))
+    with pytest.raises(PackageNotInstalledError):
+        open_archive(path, config=ArchiveyConfig(**{field: AcceleratorMode.ON}))
+
+
+@_ACCELERATED_CODECS
+def test_open_raises_for_an_accelerator_on_with_no_child_process(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    suffix: str,
+    compress: Callable[[bytes], bytes],
+    field: str,
+) -> None:
+    # ON where no rapidgzip child can run fails at open too, and starts nothing.
+    from archivey.internal.streams.codecs import deps, rapidgzip_select
+
+    monkeypatch.setattr(deps, "rapidgzip", deps.LazyOptional("rapidgzip", present=True))
+    monkeypatch.setattr(
+        rapidgzip_select, "rapidgzip_child_unavailable_reason", lambda: "test says no"
+    )
+    path = tmp_path / f"data{suffix}"
+    path.write_bytes(compress(b"payload"))
+    with pytest.raises(ResourceLimitError, match="test says no"):
+        open_archive(path, config=ArchiveyConfig(**{field: AcceleratorMode.ON}))
 
 
 def test_open_time_probe_still_rejects_a_wrong_codec_with_the_accelerator_on(

@@ -314,10 +314,13 @@ Validation depth is **one decoded byte, or a proof that one cannot exist**:
   every stdlib codec validates its header on first read and not at construction;
 - `read` returning empty is accepted as a valid empty stream only because every codec's
   decoder raises on a source too short to hold its own header (`unix-compress` included:
-  its decoder raises `TruncatedError` below the 3-byte header) and the accelerated bzip2
-  path confirms an empty result with the stdlib decoder. A codec whose decoder reads a
-  zero-byte input as an empty stream SHALL reject a source shorter than its minimum
-  header on length before it is admitted.
+  its decoder raises `TruncatedError` below the 3-byte header). A codec whose decoder
+  reads a zero-byte input as an empty stream SHALL reject a source shorter than its
+  minimum header on length before it is admitted.
+- the byte SHALL be decoded with the standard library, so the check starts no
+  accelerator child process; the accelerator SHALL still be resolved at open, so `ON`
+  with the accelerator's package absent or no child process possible raises from
+  `open_archive`.
 
 The check SHALL run after `open_archive` has recorded the format's provenance, so an
 open-time decode failure is stamped `format_unconfirmed` exactly as a read-time one
