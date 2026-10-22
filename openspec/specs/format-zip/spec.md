@@ -331,7 +331,7 @@ rules:
 
 | Field | Mapping |
 | --- | --- |
-| `mode` | `external_attr >> 16` only for Unix entries with non-zero attrs; otherwise `None` |
+| `mode` | The permission bits of `external_attr >> 16`, only for Unix entries whose high word is non-zero; otherwise `None` (a Unix entry with DOS attribute bits only has no mode, as unzip 6.00 reads it) |
 | timestamps | DOS `date_time` base (naive local wall-clock, 2s granularity, 1980 sentinel → `None`); NTFS extra `0x000A` UTC FILETIMEs override present fields; the access and modification times of a PKWARE Unix `0x000d` or Info-ZIP old Unix `0x5855` field override those, unless the blob holds an Extended Timestamp with data or the field follows a `0x7855` or `0x7875` (as unzip 6.00 reads them), the last such field winning; Extended Timestamp `0x5455` UTC Unix times override present fields |
 | `type` | Infer from Unix mode when available (a device, FIFO or socket mode is `OTHER` when the entry stores no data, `FILE` with `MEMBER_SPECIAL_FILE_HAS_DATA` when it does, `extra["special_file_type"]` whatever the type, a directory-marked or reparse-flagged entry over such a mode included); otherwise directory marker and symlink hints. The directory marker is a trailing `/` on the decoded name that `name` comes from, or a trailing `\` when the entry is DOS/Windows-origin, so the type is the same on every host OS and Python version. A directory marker with `file_size > 0`, or with `file_size == 0` and a body larger than an empty one of its method (0 stored, 2 deflated, 14 bzip2, 19 LZMA; any body for another method), stays `DIRECTORY` and emits `MEMBER_DIRECTORY_DATA_IGNORED` with both sizes; one declaring data carries its stored CRC-32 in `hashes` (the central directory's, or the local header's on a listing from local headers) and `open()` on it, or the stream `stream_members()` yields for it (from a pipe too, unless the entry is bit 3: see "Two shapes read differently from a pipe"), decodes and verifies the data like a file's, unless the CRC field is 0, in which case it carries no digest: where that CRC was the entry's only check (unencrypted, ZipCrypto) `DIGEST_UNVERIFIABLE` (`reason="no_integrity_anchor"`) is reported and the bytes are delivered unchecked, while a WinZip AES entry (AE-1 with a zeroed field, or AE-2, which stores 0 by design) is verified by its HMAC, with no digest and no report |
 | `uid`, `gid` | From the owner extra fields in blob order, as unzip 6.00 reads them: each `0x7875` (Info-ZIP new Unix, version 1, ids of 2, 4 or 8 bytes) or `0x7855` (Info-ZIP Unix type 2, exactly 4 bytes) decides afresh, readable or not, a `0x7855` after a `0x7875` being ignored; `0x000d` (PKWARE Unix) and `0x5855` (Info-ZIP old Unix) count only when neither came before, the last one holding ids winning. An empty `0x7855` or an 8-byte `0x000d` or `0x5855` holds no ids and is not damage. `stream_members()` yields `None` for both until the directory is read |
@@ -362,7 +362,8 @@ halts with `DiagnosticRaisedError`.
 
 | Case | Expected |
 | --- | --- |
-| Unix entry with non-zero `external_attr` | `member.mode = external_attr >> 16` |
+| Unix entry with non-zero `external_attr >> 16` | `member.mode` is its permission bits (`0o644 << 16` gives `0o644`) |
+| Unix entry whose `external_attr` holds only DOS bits (`0x20`) | `member.mode is None`, never `0` |
 | Non-Unix entry or missing attrs | `member.mode is None` |
 | Only an Info-ZIP old Unix `0x5855` field (macOS `ditto`) | `modified` and `accessed` are timezone-aware UTC from it |
 | A vendor extra field archivey does not read | `extra["zip.extra_fields"]` maps its tag to its data |
