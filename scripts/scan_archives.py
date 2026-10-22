@@ -46,7 +46,7 @@ relative root from the same directory); another spelling is refused. Without
 **Limits.** By default the scan turns off the limits that only count something (bytes,
 entries, ratio, members, metadata, key-derivation rounds, spool), so the columns show
 the true value rather than stopping at the cap. The two that protect the scanning
-machine, ``max_decoder_memory`` and ``max_ppmd_in_process_input``, stay at their
+machine, ``max_decoder_memory`` and ``max_ppmd_held_input``, stay at their
 defaults. ``--default-limits`` scans under the full default config instead.
 
 **Where a dry run says less than a real run.** Two of the divergences the dry run
