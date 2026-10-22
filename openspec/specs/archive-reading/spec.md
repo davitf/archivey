@@ -1533,7 +1533,7 @@ outside this requirement: the header parser has already allocated them, and
 | Over-long target, `extract_all(on_error=CONTINUE)` | That link `FAILED` with `LinkTargetNotFoundError`; other members extract |
 | Reparse buffer whose target is over 4096 UTF-8 bytes | Refused as over-long |
 | Reparse buffer followed by more data | Only the declared buffer and one byte are read; a file-shaped member is a `FILE` with `reason="reparse_data_unrecognized"`, and a read of it checks its CRC; a directory-shaped one stays a link with no target, with the same reason |
-| Reparse-flagged member whose data is not a buffer, any size | Re-typed to its fallback with all its content readable; only its header read while listing |
+| Reparse-flagged member whose data is not a buffer, any size | A file-shaped member is re-typed to its fallback with all its content readable; a directory-shaped one stays a link with no target; while listing, only the header, the payload it declares and one byte are read (the header and one byte when its tag is no link's) |
 
 ### Requirement: Each member is listed once per reader
 

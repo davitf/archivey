@@ -248,8 +248,9 @@ holds SHALL end the pass with `CorruptionError` before it is read. A local heade
 that does not parse SHALL fail its entry at the end of the pass with the parse error as
 its cause. A stub with no local header within `SFX_MAX`, the stream ending there on an
 end record, SHALL be read as the tail, so an archive with no local header behind a stub
-lists as from a file. A member flagged as a Windows reparse point whose data is not a
-reparse buffer stays a file. The cost receipt SHALL be `REQUIRES_SCANNING`, `DIRECT`,
+lists as from a file. A file-shaped member flagged as a Windows reparse point whose
+data is not a reparse buffer stays a file; a directory-shaped one stays a link with no
+target, as from a file. The cost receipt SHALL be `REQUIRES_SCANNING`, `DIRECT`,
 `FORWARD_ONLY`; `member_count` and `comment` SHALL be `None` and
 `members_report_if_available()` SHALL return `None` until the directory has been read.
 
@@ -294,10 +295,14 @@ list from a pipe too, however many small files it holds, except that a link whos
 data was dropped (below) is listed without its target. The pass SHALL hold at most
 `max_metadata_bytes` of that data, dropping the longest first; a link whose data was
 dropped SHALL be listed with `link_target` unset and `SYMLINK_TARGET_UNAVAILABLE` with
-reason `"target_data_dropped"`, and the rest of the listing SHALL stand, except under
-`DiagnosticPolicy.STRICT`, which refuses the archive on that integrity code. This
-differs from a file read only for a target at least as long as `max_metadata_bytes` of
-short members' data before it. The archive comment SHALL be weighed against
+reason `"target_data_dropped"`, unless the member is flagged as a reparse point and its
+dropped data is no buffer as a file read reads one, which is re-typed as from a file.
+The rest of the listing SHALL stand, except under `DiagnosticPolicy.STRICT`, which
+refuses the archive on that integrity code. This differs from a file read only for a
+target at least as long as `max_metadata_bytes` of short members' data before it, and
+for an encrypted reparse point nobody read, whose dropped ciphertext the pass does not
+decrypt: it stays a link with no target where a file read with the password may
+re-type it. The archive comment SHALL be weighed against
 `max_metadata_bytes` once the pass reads the end record, as a file read weighs it.
 
 #### Scenario: non-seekable read matrix

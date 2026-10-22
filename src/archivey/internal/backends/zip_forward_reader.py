@@ -1488,34 +1488,34 @@ class _UnverifiedData:
         return len(self.data)
 
 
-class _DroppedNoBuffer:
-    """What ``ZipForwardReader._hold`` leaves for dropped data that is no reparse
-    buffer as a file read reads one: the header, the payload it declares and one byte
-    (``_file_read_parses_no_buffer``).
-
-    A reparse point's answer is then decided without the bytes: the parse rejects the
-    data, so the member is a file, or a directory-shaped link with no target, as from
-    a file (``ZipForwardReader._link_target_opener``). For any other link the data is
-    lost as :attr:`why` says, ``_DROPPED`` or ``"damaged"``.
-    """
-
-    __slots__ = ("why",)
-
-    def __init__(self, why: str) -> None:
-        self.why = why
+#: What ``ZipForwardReader._hold`` leaves for dropped data that is no reparse buffer
+#: as a file read reads one: the header, the payload it declares and one byte
+#: (``_file_read_parses_no_buffer``). A reparse point's answer is then decided without
+#: the bytes: the parse rejects the data, so the member is a file, or a
+#: directory-shaped link with no target, as from a file
+#: (``ZipForwardReader._link_target_opener``). Any other link has lost its data as the
+#: reason each maps to says: dropped, or damaged for data that failed its check.
+_DROPPED_NO_BUFFER = "dropped, no buffer"
+_DAMAGED_NO_BUFFER = "damaged, no buffer"
+_NO_BUFFER_REASONS = {_DROPPED_NO_BUFFER: _DROPPED, _DAMAGED_NO_BUFFER: "damaged"}
 
 
-def _file_read_parses_no_buffer(data: bytes, *, verified: bool) -> bool:
+def _file_read_parses_no_buffer(data: bytes, *, check_failed: bool) -> bool:
     """Whether a file read of a reparse point holding ``data`` finds no link buffer.
 
-    The file read reads the header, the payload it declares and one byte. Data that
-    passed its check is whatever that much of it parses as. Data that failed it is no
-    buffer only when it runs on past that read, which then never meets the failed
-    check, and the parse rejects data longer than the buffer it declares; data ending
-    within that read is damage instead.
+    The file read reads the header, the payload it declares and one byte. Without
+    ``check_failed``, ``data`` is what ``_captured`` holds: the whole data, which
+    passed its check, or the start a file read reads of longer data
+    (``_PassData.reparse_prefix``, which keeps none of data that ended within it and
+    failed its check). Either way it holds every byte the file read parses, so that
+    parse decides, verified or not. With ``check_failed``, ``data`` is the whole data
+    of a member that failed its check (``_UnverifiedData``): it is no buffer only when
+    it runs on past that read, which then never meets the failed check, and the parse
+    rejects data longer than the buffer it declares; data ending within that read is
+    damage instead.
     """
     reach = REPARSE_HEADER_BYTES + reparse_payload_length(data) + 1
-    if not verified:
+    if check_failed:
         return len(data) > reach
     return parse_reparse_data(data[:reach]) is None
 
@@ -1750,15 +1750,9 @@ class ZipForwardReader(ZipReader):
         # (``_PassData.uncaptured``), so a link's missing target says why. Two values
         # carry bytes rather than a reason: the kept ciphertext and the data that failed
         # its check (``_UnverifiedData``). ``_hold`` replaces what it drops with
-        # ``_DROPPED``, ``"damaged"`` or a ``_DroppedNoBuffer``.
+        # ``_DROPPED``, ``"damaged"`` or one of ``_NO_BUFFER_REASONS``.
         self._uncaptured: dict[
-            int,
-            str
-            | int
-            | ArchiveyError
-            | _KeptCiphertext
-            | _UnverifiedData
-            | _DroppedNoBuffer,
+            int, str | int | ArchiveyError | _KeptCiphertext | _UnverifiedData
         ] = {}
         # Local header offset -> what the data descriptor after a bit-3 member's data
         # said (CRC, compressed size, size), for the directory to confirm at the end.
@@ -1950,9 +1944,10 @@ class ZipForwardReader(ZipReader):
 
         A drop keeps no bytes. It leaves the reason, and for data that a reparse
         buffer's parse would reject as the file read reads it, that verdict
-        (``_DroppedNoBuffer``), so a reparse point whose data the bound dropped is
+        (``_NO_BUFFER_REASONS``), so a reparse point whose data the bound dropped is
         still re-typed as from a file. The verdict costs one parse of at most the
-        dropped data, at the drop, and a one-slot object in place of the reason.
+        dropped data, at the drop, and nothing held: the verdict is a constant
+        reason string, as the plain reason is.
         """
         budget = self._config.listing_limits.max_metadata_bytes
         if budget is None:
@@ -1967,14 +1962,15 @@ class ZipForwardReader(ZipReader):
             was = self._uncaptured.get(dropped)
             # Data that failed its check stays damaged without its bytes, for a link
             # that is no reparse point; kept ciphertext is not decoded to decide.
-            why = "damaged" if isinstance(was, _UnverifiedData) else _DROPPED
             if isinstance(was, _UnverifiedData):
-                no_buffer = _file_read_parses_no_buffer(was.data, verified=False)
+                no_buffer = _file_read_parses_no_buffer(was.data, check_failed=True)
+                why = _DAMAGED_NO_BUFFER if no_buffer else "damaged"
             else:
                 no_buffer = kept is not None and _file_read_parses_no_buffer(
-                    kept, verified=True
+                    kept, check_failed=False
                 )
-            self._uncaptured[dropped] = _DroppedNoBuffer(why) if no_buffer else why
+                why = _DROPPED_NO_BUFFER if no_buffer else _DROPPED
+            self._uncaptured[dropped] = why
 
     # -- the directory -------------------------------------------------------------
 
@@ -2439,10 +2435,11 @@ class ZipForwardReader(ZipReader):
         member_id = member._member_id
         why = None if member_id is None else self._uncaptured.get(member_id)
         if (
-            isinstance(why, _DroppedNoBuffer)
+            isinstance(why, str)
+            and why in _NO_BUFFER_REASONS
             and cast("_ZipLocator", member._raw).reparse_fallback is None
         ):
-            why = why.why
+            why = _NO_BUFFER_REASONS[why]
         if (
             member.type is not MemberType.SYMLINK
             or member.link_target is not None
@@ -2491,12 +2488,12 @@ class ZipForwardReader(ZipReader):
             # The report names the member's size from the directory (checked above),
             # not this byte's.
             captured = _NOT_A_REPARSE_BUFFER
-        if isinstance(why, _DroppedNoBuffer):
+        if isinstance(why, str) and why in _NO_BUFFER_REASONS:
             # ``_hold`` dropped the data, having found it no buffer as the file read
             # reads one: the same stand-in gets the same answer.
             if cast("_ZipLocator", member._raw).reparse_fallback is not None:
                 captured = _NOT_A_REPARSE_BUFFER
-            why = why.why
+            why = _NO_BUFFER_REASONS[why]
         if isinstance(why, _UnverifiedData):
             if cast("_ZipLocator", member._raw).reparse_fallback is not None:
                 # What the file read reads of a reparse buffer: the header, the

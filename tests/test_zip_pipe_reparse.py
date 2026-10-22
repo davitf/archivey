@@ -634,3 +634,41 @@ def test_a_link_buffer_the_pass_dropped_stays_a_link_without_its_target() -> Non
         MemberType.SYMLINK,
         "target_data_dropped",
     )
+
+
+def test_dropped_ciphertext_of_an_unread_reparse_point_stays_a_link_from_a_pipe() -> (
+    None
+):
+    """The stated exception: the pass does not decrypt kept ciphertext to decide, so
+    an unread encrypted reparse point whose data runs past its buffer stays a link
+    with no target when the bound drops that ciphertext, where a file read with the
+    password reads it and makes it a file."""
+    buffer = _reparse_buffer(IO_REPARSE_TAG_SYMLINK, "C:\\target", "C:\\target")
+    content = buffer + b"P" * 3000
+    raw = bytearray(
+        build_zipcrypto_zip(b"secret", b"link", content, compression=zipfile.ZIP_STORED)
+    )
+    central = raw.rindex(b"PK\x01\x02")
+    struct.pack_into("<I", raw, central + 38, 0x20 | FILE_ATTRIBUTE_REPARSE_POINT)
+    data = bytes(raw)
+    config = archivey.ArchiveyConfig(
+        listing_limits=ListingLimits(max_metadata_bytes=2048)
+    )
+    with archivey.open_archive(
+        io.BytesIO(data), password="secret", config=config
+    ) as reader:
+        assert reader.members()[0].type is MemberType.FILE
+    with archivey.open_archive(
+        NonSeekableBytesIO(data), streaming=True, password="secret", config=config
+    ) as reader:
+        for _ in reader.stream_members():
+            pass
+        (member,) = reader.members_report().members
+        reasons = [
+            str(d.context.reason)
+            for d in reader.diagnostics.retained
+            if d.code is DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE
+        ]
+    assert member.type is MemberType.SYMLINK
+    assert member.link_target is None
+    assert reasons == ["target_data_dropped"]
