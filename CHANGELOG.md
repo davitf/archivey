@@ -95,14 +95,14 @@ and each change will be listed here. No major changes are expected.
 
 ### Changed
 
-- `DecoderLimits.max_ppmd_in_process_input` (0.2.0rc1) is now
+- **Breaking:** `DecoderLimits.max_ppmd_in_process_input` (0.2.0rc1) is now
   `DecoderLimits.max_ppmd_held_input`, with no alias. The default (16 MiB) and the
   behaviour are the same: it caps the PPMd input held whole for one member, whatever
   `process_isolation` is set to.
 
 ### Removed
 
-- `crc32_digest`, public in 0.2.0rc1. To compare a CRC-32 from `member.hashes` with
+- **Breaking:** `crc32_digest`, public in 0.2.0rc1. To compare a CRC-32 from `member.hashes` with
   your own, use `zlib.crc32(data).to_bytes(4, "big")`.
 
 ### Fixed
@@ -150,9 +150,9 @@ one of them a security fix.
 What goes in this file, from 0.2.0 on:
 
 - One line per new feature and per public API change (Added / Changed / Deprecated /
-  Removed).
+  Removed). A line that makes callers change their code starts with **Breaking:**.
 - Each security fix gets its own line under Security.
-- A Performance section, after Removed and before Security, gives the peer wall ratios
+- A Performance section, after Fixed and before Security, gives the peer wall ratios
   for the release with the run's date and commit, and links benchmarks/RESULTS.md for
   the host, method and analysis (dev-docs/release-checklist.md, section 2).
 - Other bug fixes share one line under Fixed, e.g. "Fixed N bugs in ZIP and RAR

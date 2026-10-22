@@ -35,7 +35,8 @@ Pull requests do not edit `CHANGELOG.md`; the release PR writes the whole entry.
 goes in it:
 
 - one line per new feature and per public API change (**Added** / **Changed** /
-  **Deprecated** / **Removed**);
+  **Deprecated** / **Removed**); a line that makes callers change their code starts
+  with `**Breaking:**`;
 - one line per security fix (**Security**);
 - one line summarizing all other bug fixes (**Fixed**), unless a fix changes behavior
   users rely on, which then gets its own line.
