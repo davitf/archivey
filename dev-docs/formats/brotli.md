@@ -14,7 +14,7 @@ behaviour and links the row.
 | --- | --- |
 | Read | Brotli as a one-member archive and inside `.tar.br` |
 | Write | **Not shipped** |
-| Backends | `brotli` 1.2.0 or later, from `[recommended]`, through its incremental `Decompressor` under `DecompressorStream` |
+| Backends | `brotli` 1.2.1 or later, from `[recommended]`, through its incremental `Decompressor` under `DecompressorStream` |
 | Seeking | A backward seek decodes again from the start |
 | Size | `None`. Brotli has no size field |
 | Digests | None. Brotli has no checksum |
@@ -221,6 +221,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Far magic before content probes (PR #270) | A bootable ISO's system area decoded as Brotli | Probes first |
 | Decode to the compressed block the walk stops at | Every measured false claim over 64 KiB failed within 256 bytes of it; the read is sequential and mostly a copy | Stopping signatures for `.pyc` and PFB (the pyc magic changes per CPython version); parsing the block's Huffman tables without decoding |
 | Require `brotli` 1.2.0 | `output_buffer_limit` bounds one call's output (CVE-2025-6176) | Older versions, which decoded a whole meta-block per call |
+| Require `brotli` 1.2.1 | Fixes a decoder buffer overflow (CVE-2026-111497) present from 1.0.3 through 1.2.0 | Staying on 1.2.0, which left the overflow reachable from a crafted stream |
 | Replay from the start to tell bytes after the end from damage | The library gives the same error for both and loses the call's output; a replay costs nothing on a clean file | Feeding one byte at a time always, which is slow on every file; refusing bytes after the end, unlike every other codec |
 | `brotli`, not `brotlicffi` | `brotli` is the reference binding; `brotlicffi` helps only on PyPy | Supporting both |
 

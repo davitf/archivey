@@ -90,7 +90,7 @@ requires-dist = [
     { name = "archivey", extras = ["recommended", "seekable"], marker = "extra == 'all'" },
     { name = "backports-zstd", marker = "python_full_version < '3.14' and extra == 'free-threaded'", specifier = ">=1.0.0" },
     { name = "backports-zstd", marker = "python_full_version < '3.14' and extra == 'recommended'", specifier = ">=1.0.0" },
-    { name = "brotli", marker = "extra == 'recommended'", specifier = ">=1.2.0" },
+    { name = "brotli", marker = "extra == 'recommended'", specifier = ">=1.2.1" },
     { name = "cryptography", marker = "python_full_version >= '3.14' and extra == 'free-threaded'", specifier = ">=45.0.0" },
     { name = "cryptography", marker = "extra == 'recommended'", specifier = ">=45.0.0" },
     { name = "inflate64", marker = "extra == 'recommended'", specifier = ">=1.0.0" },
@@ -108,7 +108,7 @@ provides-extras = ["recommended", "seekable", "free-threaded", "all"]
 [package.metadata.requires-dev]
 dev = [
     { name = "backports-zstd", marker = "python_full_version < '3.14'", specifier = ">=1.0.0" },
-    { name = "brotli", specifier = ">=1.2.0" },
+    { name = "brotli", specifier = ">=1.2.1" },
     { name = "coverage", extras = ["toml"], specifier = ">=7.6.0" },
     { name = "cryptography", specifier = ">=45.0.0" },
     { name = "fsspec", specifier = ">=2024.0.0" },
