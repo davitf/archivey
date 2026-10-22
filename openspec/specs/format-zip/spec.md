@@ -253,59 +253,57 @@ reparse buffer stays a file. The cost receipt SHALL be `REQUIRES_SCANNING`, `DIR
 `FORWARD_ONLY`; `member_count` and `comment` SHALL be `None` and
 `members_report_if_available()` SHALL return `None` until the directory has been read.
 
-Four things SHALL fail the member they name once the directory has been read: a size
-or CRC from a data descriptor that differs from the central entry; a local header whose
+Four things SHALL fail the member they name once the directory has been read: a size or
+CRC from a data descriptor that differs from the central entry; a local header whose
 CRC, sizes or encryption flag the central entry contradicts (a central CRC-32 of 0 over
 data against a non-zero local one is none: a file or link takes the local value, and a
-directory keeps no digest, as from a file); two same-name members whose directory
-order reverses their file order; and a directory entry with no local entry.
-`stream_members()` SHALL raise `CorruptionError` at the end of the pass for each but
-the reversed pair, which only updates the members. A local header that stores another
-name than the directory entry SHALL NOT fail the member: the member takes the
-directory's name, and a file or link reports `MEMBER_LOCAL_NAME_DIFFERS`, as a file
-read reports it (the requirement on headers that disagree). Nor SHALL one that names
-another compression method, unless one of the two is WinZip AES (99): the pass decoded
-by the local method, as a file read decodes, and a file or link reports
-`MEMBER_LOCAL_METHOD_DIFFERS`, as a file read reports it once the member's local
-header passes its checks, before the data is decoded: so also when the data then fails
-on a CRC or size the directory contradicts (a size the overlap guard refuses aside,
-below). Method 99 in
-both headers SHALL fail the member when the two AES records differ in any field
-(version, strength, real method) or one is missing or unparseable; the message names
-the fields, or the side that lacks a record. `extract_all` settles them as
-`safe-extraction` states. A directory entry pointing at a local header an earlier
-entry already took SHALL end the pass with `CorruptionError`.
+directory keeps no digest, as from a file); two same-name members whose directory order
+reverses their file order; and a directory entry with no local entry. `stream_members()`
+SHALL raise `CorruptionError` at the end of the pass for each but the reversed pair,
+which only updates the members. A local header that stores another name than the
+directory entry SHALL NOT fail the member: the member takes the directory's name, and a
+file or link reports `MEMBER_LOCAL_NAME_DIFFERS`, as a file read reports it (the
+requirement on headers that disagree). Nor SHALL one that names another compression
+method, unless one of the two is WinZip AES (99): the pass decoded by the local method,
+as a file read decodes, and a file or link reports `MEMBER_LOCAL_METHOD_DIFFERS`, as a
+file read reports it once the member's local header passes its checks, before the data
+is decoded: so also when the data then fails on a CRC or size the directory contradicts
+(a size the overlap guard refuses aside, below). Method 99 in both headers SHALL fail
+the member when the two AES records differ in any field (version, strength, real method)
+or one is missing or unparseable; the message names the fields, or the side that lacks a
+record. `extract_all` settles them as `safe-extraction` states. A directory entry
+pointing at a local header an earlier entry already took SHALL end the pass with
+`CorruptionError`.
 
 The pass MAY differ from a file read on crafted archives (DR-5a): the descriptor
 mismatch (a STORED member's, or a descriptor planted in the data of a bit-3 codec member
 the pass reads past) and the reversed pair fail a member the file read writes; bytes
 between a bit-3 codec member's end and its descriptor, refused from a file, are counted
 into the member; the first of several inconclusive password candidates wins; WinZip AES
-in the directory over another local method fails with `EncryptionError` where a file read
-raises `CorruptionError`; so does a local AES strength other than the directory's, and an
-AE-1 local record over an AE-2 one fails on its CRC-32 and a missing local record with
-`UnsupportedFeatureError`, each during the pass, where a file read raises
+in the directory over another local method fails with `EncryptionError` where a file
+read raises `CorruptionError`; so does a local AES strength other than the directory's,
+and an AE-1 local record over an AE-2 one fails on its CRC-32 and a missing local record
+with `UnsupportedFeatureError`, each during the pass, where a file read raises
 `CorruptionError` on the records; a member whose directory names another method and a
 compressed size the file read's overlap guard refuses reports
 `MEMBER_LOCAL_METHOD_DIFFERS` from the pass, which keeps no such bound, and nothing from
-a file (both raise `CorruptionError`; under `STRICT` the pass raises the report).
-It MAY also
-differ in these: a damaged bit-3 codec member can fail with another `CorruptionError`
-subclass, and ends the pass, losing the members after it, if its decode read more than 4
-MiB past the data's end; a bit-3 codec member whose stream runs on into its descriptor
-reads, where a file read raises `TruncatedError` at the stated compressed size; a bit-3
-LZMA member without the end-of-stream marker is refused where a file read reads it; a
-bit-3 member followed by bytes that are no ZIP record ends the pass
-(`UnsupportedFeatureError` when STORED) where a file read reads it; in
+a file (both raise `CorruptionError`; under `STRICT` the pass raises the report). It MAY
+also differ in these: a damaged bit-3 codec member can fail with another
+`CorruptionError` subclass, and ends the pass, losing the members after it, if its
+decode read more than 4 MiB past the data's end; a bit-3 codec member whose stream runs
+on into its descriptor reads, where a file read raises `TruncatedError` at the stated
+compressed size; a bit-3 LZMA member without the end-of-stream marker is refused where a
+file read reads it; a bit-3 member followed by bytes that are no ZIP record ends the
+pass (`UnsupportedFeatureError` when STORED) where a file read reads it; in
 `extract_all`, a link member the pass wrote as a file keeps the error its data read gave
 (no password: `EncryptionError`, where the file read reports `LinkTargetNotFoundError`);
 and an archive-wide refusal the directory or end record makes is raised by a file read
 before anything is written and by the pass after every member is written. A policy that
 raises on `MEMBER_LOCAL_NAME_DIFFERS`, `MEMBER_LOCAL_METHOD_DIFFERS` or
-`MEMBER_LOCAL_CRC_USED` is the same: a file
-read raises when it lists or opens the member, the pass once it has read the directory.
-A run that stops before the end of the pass, for these or any other reason, places no
-member (`safe-extraction`), so no link is left on disk as a file holding its target.
+`MEMBER_LOCAL_CRC_USED` is the same: a file read raises when it lists or opens the
+member, the pass once it has read the directory. A run that stops before the end of the
+pass, for these or any other reason, places no member (`safe-extraction`), so no link is
+left on disk as a file holding its target.
 
 The data the pass keeps of short members until the directory says which are links SHALL
 NOT be charged to the listing limits: an archive a file read lists within them SHALL

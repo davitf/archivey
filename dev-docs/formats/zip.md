@@ -636,16 +636,17 @@ a CRC or size the directory contradicts: a file read reports once the local head
 passes its checks, before it decodes, so it reports a member whose data then fails. A
 member the file read's overlap guard refuses on its central compressed size reports
 nothing from a file and still reports from the pass, which keeps no such bound
-(§"Where the pass and a file read differ"). WinZip AES is the exception: method 99 in one header only, or in
-both with AES records that differ in any field (version, strength, real method) or with
-one side's record missing or unparseable (`aes_record_differences`), is refused as a
-header disagreement, without the report. A file read refuses it too, by the same error
-except where the pass fails it mid-pass (§"Where the pass and a file read differ"). The
-listing keeps the directory's method in `compression` and `extra["zip.compress_type"]`,
-as it keeps every field.
+(§"Where the pass and a file read differ"). WinZip AES is the exception: method 99 in
+one header only, or in both with AES records that differ in any field (version,
+strength, real method) or with one side's record missing or unparseable
+(`aes_record_differences`), is refused as a header disagreement, without the report. A
+file read refuses it too, by the same error except where the pass fails it mid-pass
+(§"Where the pass and a file read differ"). The listing keeps the directory's method in
+`compression` and `extra["zip.compress_type"]`, as every listed field comes from the
+directory (a CRC-32 of 0 aside, §5).
 
 **Where the pass and a file read differ**, each pinned in
-`tests/test_zip_pipe_parity.py` (`_DIFFERS`) or the tests named in §8. The first four
+`tests/test_zip_pipe_parity.py` (`_DIFFERS`) or the tests named in §8. The first seven
 are shapes only crafted archives have (DR-5a). The next five come from staging the
 members before the directory is read, and DR-5a names each of them. The rest come from
 damage, from the directory's refusals the file read is to drop, or, for the last one
@@ -663,6 +664,31 @@ ordinary archive can reach:
   holds is refused (`CorruptionError`); the file read takes the sizes from the directory
   and reads the member
   (`test_zip_local_walk.py::test_an_unheld_local_size_reads_by_file`).
+- WinZip AES (method 99) in the directory with another method in the local header: a
+  file read refuses the member with `CorruptionError` (the AES record is the directory's,
+  so the two headers disagree on the encryption). The pass has the local header alone, so
+  it decodes by what that says, usually ZipCrypto, whose check byte the AES data fails:
+  `EncryptionError` (`test_audit_backup_scan.py::test_winzip_aes_in_the_directory_only_is_corruption`).
+  Only a crafted archive has this shape (DR-5a). The other direction, method 99 in the
+  local header only, raises `CorruptionError` from both reads (the pass at its end).
+- Method 99 in both headers with AES records that differ: a file read refuses the member
+  with `CorruptionError` naming the fields. The pass decodes by the local record, so it
+  fails the member at the end on the records only where that decode succeeds (a real
+  method that fits, AE-2 over AE-1, a missing central record). Otherwise it fails it
+  during the pass: another strength gives the wrong key, so `EncryptionError`; AE-1 over
+  AE-2 checks a CRC-32 the AE-2 entry leaves at 0, so a CRC-32 mismatch; a missing or
+  unparseable local record, `UnsupportedFeatureError`
+  (`test_audit_backup_scan.py::test_winzip_aes_records_that_differ_in_any_field_are_corruption`,
+  `::test_a_missing_winzip_aes_record_is_named`). Only a crafted archive has this shape.
+- A directory entry naming another compression method and a compressed size that runs
+  into the next local header or the directory: a file read's overlap guard refuses the
+  member while checking its local header, before `_with_local_method` reports, so it
+  raises `CorruptionError` with no `MEMBER_LOCAL_METHOD_DIFFERS`. The pass keeps no such
+  bound: it reports the method once it reads the directory and fails the member on the
+  sizes, so under `STRICT` it raises `DiagnosticRaisedError` there. Matching it would
+  mean rebuilding the guard's per-member bound (the next local header, or the
+  directory's start) in the pass, for a crafted-only shape (DR-5a)
+  (`test_audit_backup_scan.py::test_a_method_difference_beside_an_overlapping_size_differs_by_read`).
 - Under `on_error="stop"`, a member whose data fails as the pass stages it stops the
   run, though the directory may then not list or select it. A refusal of the local
   header's name by the universal checks or the name policy stops the run the same way
@@ -726,31 +752,6 @@ ordinary archive can reach:
 - A symlink whose target is behind `max_metadata_bytes` of short members' data no
   shorter than it is listed without its target (`target_data_dropped`); the file read
   lists it (§"What the pass keeps for link targets").
-- WinZip AES (method 99) in the directory with another method in the local header: a
-  file read refuses the member with `CorruptionError` (the AES record is the directory's,
-  so the two headers disagree on the encryption). The pass has the local header alone, so
-  it decodes by what that says, usually ZipCrypto, whose check byte the AES data fails:
-  `EncryptionError` (`test_audit_backup_scan.py::test_winzip_aes_in_the_directory_only_is_corruption`).
-  Only a crafted archive has this shape (DR-5a). The other direction, method 99 in the
-  local header only, raises `CorruptionError` from both reads (the pass at its end).
-- Method 99 in both headers with AES records that differ: a file read refuses the member
-  with `CorruptionError` naming the fields. The pass decodes by the local record, so it
-  fails the member at the end on the records only where that decode succeeds (a real
-  method that fits, AE-2 over AE-1, a missing central record). Otherwise it fails it
-  during the pass: another strength gives the wrong key, so `EncryptionError`; AE-1 over
-  AE-2 checks a CRC-32 the AE-2 entry leaves at 0, so a CRC-32 mismatch; a missing or
-  unparseable local record, `UnsupportedFeatureError`
-  (`test_audit_backup_scan.py::test_winzip_aes_records_that_differ_in_any_field_are_corruption`,
-  `::test_a_missing_winzip_aes_record_is_named`). Only a crafted archive has this shape.
-- A directory entry naming another compression method and a compressed size that runs
-  into the next local header or the directory: a file read's overlap guard refuses the
-  member while checking its local header, before `_with_local_method` reports, so it
-  raises `CorruptionError` with no `MEMBER_LOCAL_METHOD_DIFFERS`. The pass keeps no such
-  bound: it reports the method once it reads the directory and fails the member on the
-  sizes, so under `STRICT` it raises `DiagnosticRaisedError` there. Matching it would
-  mean rebuilding the guard's per-member bound (the next local header, or the
-  directory's start) in the pass, for a crafted-only shape (DR-5a)
-  (`test_audit_backup_scan.py::test_a_method_difference_beside_an_overlapping_size_differs_by_read`).
 
 ### 2.3 Member data
 

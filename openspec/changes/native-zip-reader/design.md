@@ -544,9 +544,9 @@ it, and the file read as the directory does, so where the two headers differ the
 read reads other data or fails the member. The method does not count, nor the CRC of a
 WinZip AE-2 member, which no read checks: data that matched the CRC and size the
 directory gives is the data it describes, and a file read decodes by the local method
-too, reporting `MEMBER_LOCAL_METHOD_DIFFERS` as the pass does (2026-10-21). A local name that
-is not UTF-8 under the UTF-8 flag is read as unflagged for the pass, and the name check
-fails the member, as the file read fails it. Each is a member-scoped failure of the
+too, reporting `MEMBER_LOCAL_METHOD_DIFFERS` as the pass does (2026-10-21). A local name
+that is not UTF-8 under the UTF-8 flag is read as unflagged for the pass, and the name
+check fails the member, as the file read fails it. Each is a member-scoped failure of the
 member it names, handled as `safe-extraction` handles any other (the `OnError`
 requirement):
 
