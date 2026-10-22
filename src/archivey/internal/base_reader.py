@@ -14,7 +14,7 @@ from collections.abc import (
     Iterator,
     Mapping,
     Sequence,
-    Set,
+    Set as AbstractSet,
 )
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
@@ -83,8 +83,7 @@ from archivey.internal.enum_args import coerce_enum, coerce_enum_collection
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
 from archivey.internal.format_provenance import FormatProvenance
 from archivey.internal.listing_limits import ListingLimitTracker
-from archivey.internal.logs import backends as logger
-from archivey.internal.logs import integrity as integrity_logger
+from archivey.internal.logs import backends as logger, integrity as integrity_logger
 from archivey.internal.measurement import (
     ByteCounter,
     IoStats,
@@ -2637,7 +2636,7 @@ class BaseArchiveReader(ArchiveReader):
         else:
             index[member.name] = [held, member]
 
-    def _unindex_members(self, name: str, gone: Set[int]) -> None:
+    def _unindex_members(self, name: str, gone: AbstractSet[int]) -> None:
         """Take the members whose ``id()`` is in ``gone`` out of ``name``'s entry.
 
         By identity: a duplicate can compare equal to the member being removed. ``gone``
@@ -3282,7 +3281,7 @@ class BaseArchiveReader(ArchiveReader):
                     if stream is not None:
                         try:
                             stream.close()
-                        except Exception as close_exc:  # noqa: BLE001 - attach, don't replace
+                        except Exception as close_exc:
                             # Don't replace the in-flight open/register error.
                             if pending is not None:
                                 pending.add_note(
@@ -3872,7 +3871,7 @@ class _TranslatedErrorBoundary:
     chained via ``from``.
     """
 
-    __slots__ = ("_reader", "_member_name", "_stamp_encryption")
+    __slots__ = ("_member_name", "_reader", "_stamp_encryption")
 
     def __init__(
         self,

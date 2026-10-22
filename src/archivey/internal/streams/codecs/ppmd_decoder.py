@@ -61,14 +61,14 @@ _PPMD_MAX_REQUEST = (1 << 31) - 1
 # How PPMd avoids pyppmd's crash on corrupt input: pyppmd segfaults when asked to
 # decode after a corrupt stream has ended early, and a caller feeding it in pieces
 # cannot tell that state from a valid stream waiting for input (see ``ppmd_child``).
-# Every member therefore decodes in a child process, where a crash costs the member
-# only, unless ``process_isolation`` is ``NONE``. There, handed the whole member at
-# once, a short return is the end and little more is asked of pyppmd, so
-# ``PpmdDecoder`` holds compressed input until it has the whole member, or compressed
-# EOF, or ``DecoderLimits.max_ppmd_in_process_input``; past that it is fed in pieces,
-# a risk ``NONE`` accepts.
+# Handed the whole member at once, a short return is the end and little more is asked
+# of pyppmd, so ``PpmdDecoder`` holds compressed input until it has the whole member,
+# or compressed EOF, or ``DecoderLimits.max_ppmd_held_input``; past that it is fed in
+# pieces. That holds under every ``process_isolation``, which decides only where the
+# decode runs: in a child process, where a crash costs the member only, unless it is
+# ``NONE``, where a crash on a member fed in pieces takes down this process.
 
-_DEFAULT_IN_PROCESS_MAX_INPUT = DecoderLimits().max_ppmd_in_process_input
+_DEFAULT_MAX_HELD_INPUT = DecoderLimits().max_ppmd_held_input
 
 # Input after a member's declared output that a ``refuse_input_after_end`` decoder
 # collects before its end check: room for an end mark and its range-coder flush.
@@ -182,7 +182,7 @@ class PpmdDecoder(BaseDecoder):
         restore_method: int = 0,
         unpack_size: int | None = None,
         pack_size: int | None = None,
-        in_process_max_input: int | None = _DEFAULT_IN_PROCESS_MAX_INPUT,
+        max_held_input: int | None = _DEFAULT_MAX_HELD_INPUT,
         refuse_input_after_end: bool = False,
         input_runs_on: bool = False,
         isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
@@ -234,14 +234,14 @@ class PpmdDecoder(BaseDecoder):
         # none can start, unless ``isolation`` is ``NONE``.
         self._isolation = isolation
         self._in_child = isolation is not ProcessIsolation.NONE
-        # ``DecoderLimits.max_ppmd_in_process_input``: a member up to it is handed to
+        # ``DecoderLimits.max_ppmd_held_input``: a member up to it is handed to
         # pyppmd whole, one past it in pieces, under every ``isolation`` (which decides
         # only where the decode runs). ``None``: held whole whenever the size is known.
-        self._in_process_max_input = in_process_max_input
+        self._max_held_input = max_held_input
         # Compressed input held back from pyppmd until the whole member is here, or
-        # compressed EOF, or ``in_process_max_input`` is passed, in-process; until the
-        # first input in a child. ``None`` once handed over: from then on ``_decomp``
-        # exists and the rest of this class works as a plain chunked decoder.
+        # compressed EOF, or ``max_held_input`` is passed. ``None`` once handed
+        # over: from then on ``_decomp`` exists and the rest of this class works as
+        # a plain chunked decoder.
         self._held: bytearray | None = bytearray()
         # Set by ``flush`` when it hands the held input over: the stream keeps pulling
         # output through ``feed(b"")`` until this decoder has none left
@@ -315,7 +315,7 @@ class PpmdDecoder(BaseDecoder):
             restore_method=self._restore_method,
             unpack_size=self._unpack_size,
             pack_size=self._pack_size,
-            in_process_max_input=self._in_process_max_input,
+            max_held_input=self._max_held_input,
             refuse_input_after_end=self._refuse_input_after_end,
             input_runs_on=self._input_runs_on,
             isolation=self._isolation,
@@ -501,7 +501,7 @@ class PpmdDecoder(BaseDecoder):
             self._fed_compressed += len(chunk)
         if self._held is not None:
             self._held += chunk
-            limit = self._in_process_max_input
+            limit = self._max_held_input
             if self._input_runs_on:
                 # No size to hold it to: fed in pieces from the first input.
                 if not self._held:
@@ -706,11 +706,15 @@ class PpmdDecoder(BaseDecoder):
         # at its end mark, so any post-eof pull is trailing garbage (measured: +N bytes
         # on compressible payloads). Corrupt-but-declared-complete sized packs can still
         # fill toward ``unpack_size`` here — container CRC is the backstop.
-        if max_length > 0 and self._pack_complete() is True and not self._exhausted:
-            if not getattr(self._native, "needs_input", False):
-                drained = self._drain_empty_chunked(max_length)
-                out += drained
-                self._produced += len(drained)
+        if (
+            max_length > 0
+            and self._pack_complete() is True
+            and not self._exhausted
+            and not getattr(self._native, "needs_input", False)
+        ):
+            drained = self._drain_empty_chunked(max_length)
+            out += drained
+            self._produced += len(drained)
         if not self.finished:
             self._pending_error = TruncatedError("File is truncated")
         self._maybe_check_end()
@@ -787,7 +791,8 @@ class PpmdDecoder(BaseDecoder):
                 # the worker hit its budget and exited, so it will not be resumed.
                 if decomp.decode(b"\0", 1):
                     return
-        except Exception:  # noqa: BLE001 - teardown hygiene; never raise from close()/__del__
+        except Exception:  # noqa: BLE001, S110
+            # Teardown hygiene; never raise from close()/__del__.
             pass
 
     def spoil_child(self) -> None:
@@ -832,7 +837,7 @@ def PpmdDecompressorStream(
     restore_method: int = 0,
     unpack_size: int | None = None,
     pack_size: int | None = None,
-    in_process_max_input: int | None = _DEFAULT_IN_PROCESS_MAX_INPUT,
+    max_held_input: int | None = _DEFAULT_MAX_HELD_INPUT,
     refuse_input_after_end: bool = False,
     input_runs_on: bool = False,
     collector: DiagnosticCollector | None = None,
@@ -856,7 +861,7 @@ def PpmdDecompressorStream(
             restore_method=restore_method,
             unpack_size=unpack_size,
             pack_size=pack_size,
-            in_process_max_input=in_process_max_input,
+            max_held_input=max_held_input,
             refuse_input_after_end=refuse_input_after_end,
             input_runs_on=input_runs_on,
             isolation=isolation,

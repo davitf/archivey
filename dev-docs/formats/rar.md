@@ -774,8 +774,21 @@ compressed. A `CMT` is read from the span the walk skips after its header, which
 PACK_SIZE whether or not LONG_BLOCK is set, as `unrar` reads it. So no byte is read both
 as comment data and as a later header; a read that could overlap the next headers would
 let a stack of 35-byte `CMT` headers each re-read the rest of the archive (DR-9a). A
-`CMT` whose PACK_SIZE runs past the end of the file is a `CorruptionError`, with
-LONG_BLOCK set or clear.
+`CMT` whose PACK_SIZE runs past the end of the file is a cut, with LONG_BLOCK set or
+clear, and so is a RAR5 `CMT` whose data does: the comment is not read and stays `None`,
+the walk skips its span as it skips any packed data, and the members before it list,
+then `TruncatedError` (DR-2). `unrar` 7.00 lists those members and reports "Unexpected
+end of archive". Until this was fixed the comment read raised `CorruptionError` out of
+the walk at open, which discarded the members already listed. The comment gets no
+diagnostic of its own: the archive-level `TruncatedError` already says the file is
+damaged, and a withheld comment is one of the things a cut file lacks. That differs from
+a damaged service header on an otherwise clean archive, which has no archive-level error
+and so carries a diagnostic of its own (§6). A comment the walk reads (its bytes in the
+file, within the 256 KiB compressed cap, not encrypted or split) whose packed bytes alone
+are over `listing_limits.max_metadata_bytes` is refused with `ResourceLimitError` before
+it is read (DR-9); a cut comment is a cut as above, and one the walk skips is not
+weighed: a stored comment has no size cap of its own, and the read holds every packed
+byte, so a 1 KiB budget used to hold the whole comment before refusing.
 
 **Metadata mapping.** Everything comes out of the native parser; there is no library in
 between to blame or to defer to.
@@ -800,10 +813,14 @@ between to blame or to defer to.
 | `comment` | RAR3 CMT SERVICE when the solid flag is set (attaches to the preceding member) and RAR 1.5 / 2.x FILE COMMENT subblocks. Stored comments decode natively; compressed ones (old-style or `CMT`) decode through RARLAB `unrar` when available | No member comment block, a RAR5 `CMT` (archive-only, below), a compressed comment without `unrar` / with an invalid CRC, or an encrypted comment (known limitation, §5) |
 
 **Archive comments are `ArchiveInfo.comment`.** RAR5 `CMT` is archive-only — it never
-becomes a member comment. RAR3 `CMT` without the solid flag is the archive comment;
-with it, the preceding member (row above). RAR 1.5 / 2.x COMMENT subblocks on MAIN are
-the archive comment. Stored archive comments decode natively; a compressed one
-(old-style or `CMT`) without `unrar` stays `None` and listing still succeeds.
+becomes a member comment. It is UTF-8 by the format, so `encoding=` does not apply, and
+a byte that is not valid UTF-8 survives as a lone surrogate, as in a RAR5 name. `rar`
+7.00 never stores one: it writes a comment file's undecodable byte as U+FFFE followed by
+U+E000 plus the byte, which is valid UTF-8, and `unrar l` prints `??` for the pair. RAR3
+`CMT` without the solid flag is the archive comment; with it, the preceding member (row
+above). RAR 1.5 / 2.x COMMENT subblocks on MAIN are the archive comment. Stored archive
+comments decode natively; a compressed one (old-style or `CMT`) without `unrar` stays
+`None` and listing still succeeds.
 
 **A RAR5 file copy is a `FILE`.** `rar -oi` stores a second identical file as a
 redirect of type 5 (`FILE_COPY`; `unrar lt` says "File reference") naming an earlier
@@ -1742,6 +1759,7 @@ python3 scripts/exploration/rar_decompressor_matrix.py      # §3 the decompress
 | Stored names over `max_metadata_bytes` refuse at open (RAR4, RAR5, and a volume set weighing a split member's name once) | `tests/test_listing_limits.py::test_rar5_open_weighs_names_against_max_metadata_bytes`, `::test_rar4_open_weighs_names_against_max_metadata_bytes`, `::test_rar5_volume_set_weighs_names_across_volumes`, `::test_rar4_volume_set_counts_a_split_name_once` |
 | Compressed RAR 1.5-4 comments (old-style subblocks and `CMT` headers) over `max_metadata_bytes` (member and archive comments, each weighed by the larger of its declared size and its packed bytes, summed with the names) refuse at open before any decode | `::test_rar3_compressed_comments_over_metadata_budget_refused_before_decode`, `::test_rar3_compressed_comments_within_metadata_budget_are_decoded`, `::test_rar3_compressed_archive_comment_counts_toward_budget` |
 | A compressed RAR 2.9-4 `CMT` comment is decoded by the selected program and `None` without one; its CRC32 and unicode bit are honoured; one declaring more than 256 KiB, or packing more than that, is dropped unread; a SALT-flagged one spawns nothing; its packed bytes count toward the budget when larger than its declared size | `::test_rar3_compressed_service_comment_is_read`, `::test_rar3_compressed_service_comment_without_a_decompressor_is_none`, `::test_rar3_compressed_service_comment_checks_crc32_and_unicode_flag`, `::test_rar3_compressed_service_comment_counts_toward_budget`, `::test_rar3_compressed_member_service_comment_is_weighed_as_it_attaches`, `::test_rar3_compressed_service_comment_over_rar_maximum_is_dropped`, `::test_rar3_compressed_service_comment_at_rar_maximum_is_decoded`, `::test_rar3_compressed_service_comment_with_oversized_packed_data_is_dropped`, `::test_rar3_compressed_service_comments_weighed_by_packed_bytes`, `::test_rar3_salted_compressed_service_comment_is_not_decoded` |
+| A `CMT` comment whose data runs past the end of the file, stored or compressed, is a cut: RAR 1.5-4 and RAR5 list the members before it, then `TruncatedError`, and the comment is `None`, as `unrar` lists them; a `CMT` the walk reads (its bytes in the file, within the 256 KiB compressed cap, not encrypted or split) whose packed bytes alone are over `max_metadata_bytes` is refused before it is read | `tests/test_rar_parser.py::test_a_rar3_stored_comment_past_the_end_of_the_file_is_a_cut`, `::test_a_rar3_comment_past_the_end_of_the_file_keeps_the_members_before_it`, `::test_a_rar3_compressed_comment_past_the_end_of_the_file_is_a_cut`, `::test_a_rar5_comment_past_the_end_of_the_file_keeps_the_members_before_it`, `::test_unrar_lists_the_member_before_a_rar3_comment_cut`, `::test_unrar_lists_the_member_before_a_rar5_comment_cut`, `::test_a_comment_over_the_metadata_budget_is_refused_before_it_is_read` |
 | RAR3 non-BMP name recovery from the 8-bit field | `::test_fix_rar3_astral_truncation`, `::test_rar3_non_bmp_filename_not_truncated` |
 | Listing without QO is a header-to-header walk; with QO, FILE headers already in it are not read (§1.1) | `::test_listing_without_qo_walks_header_to_header`, `::test_listing_with_qo_does_not_seek_per_member`, `::test_listing_qo_skip_count_does_not_scale_with_member_count` |
 | QO listing matches the FILE-header walk field-for-field | `::test_qo_listing_matches_file_walk_on_corpus`, `::test_qo_listing_matches_file_walk_live` |

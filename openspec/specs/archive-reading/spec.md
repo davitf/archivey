@@ -771,7 +771,9 @@ that is not a `bool` SHALL raise `ArchiveyUsageError` at the call.
 `members` is a selector (names/identities or predicate), not a transform. Streams
 are lazy: unselected/unread members are not opened/decompressed and do not request
 passwords. Yields the original mutable `ArchiveMember` so late-bound fields stay
-visible.
+visible. A yielded stream whose deferred open fails on its first read (a wrong password,
+an unsupported method) SHALL raise the same error object on every later read and SHALL
+NOT try the open again.
 
 Symlink targets stored as member data (ZIP, 7z, RAR3/4) are the one exception, and only
 while `read_link_targets` is `True` (see "Link targets stored as member data are read
@@ -1221,7 +1223,7 @@ class ListingLimits:
 class DecoderLimits:
     max_decoder_memory: int | None = 2 * 2**30
     max_key_derivation_rounds: int | None = 2**25
-    max_ppmd_in_process_input: int | None = 16 * 2**20
+    max_ppmd_held_input: int | None = 16 * 2**20
     UNLIMITED: ClassVar["DecoderLimits"]
 
 @dataclass(frozen=True)
@@ -1278,7 +1280,7 @@ decoder (a fault signal such as SIGSEGV, or the Windows status for the same faul
 surface as `CorruptionError`. A child killed by SIGKILL, or one that dies allocating the
 member's model, SHALL raise `ResourceLimitError`, as SHALL a member where no child process
 can be started. A child that ends any other way (another signal, a plain exit status)
-SHALL raise `ReadError`, which is not a verdict on the data. `max_ppmd_in_process_input`
+SHALL raise `ReadError`, which is not a verdict on the data. `max_ppmd_held_input`
 SHALL bound the compressed bytes of one PPMd member the process holds to hand to pyppmd
 whole, in the child or, under `process_isolation=NONE`, in-process; a larger member, and
 one whose size is known only once it has been read (a ZIP member with bit 3 set, read from
@@ -1339,7 +1341,7 @@ Callbacks hold no Archivey collector/reader/stream/backend/registry lock
 | Header-encrypted RAR5 set of four parts, one encryption record repeated, `max_key_derivation_rounds` one round short of key + PswCheck | `ResourceLimitError` at `open_archive`; at exactly key + PswCheck the set lists |
 | 7z PPMd member of 200 KB compressed, no child process possible | `ResourceLimitError` on the first read, naming `process_isolation` |
 | Same member; the child crashes / is killed by SIGKILL / by SIGTERM | `CorruptionError` / `ResourceLimitError` / `ReadError`, not `CorruptionError` |
-| Same member, `process_isolation=NONE`, `max_ppmd_in_process_input=1024` / default | In-process, fed in pieces / held and decoded whole |
+| Same member, `process_isolation=NONE`, `max_ppmd_held_input=1024` / default | In-process, fed in pieces / held and decoded whole |
 | Valid 7z PPMd member of 8 MiB that pyppmd fed in pieces stops short of, default config | Held, decoded whole in a child, read in full |
 | `ArchiveyConfig(process_isolation="none")` | Holds `ProcessIsolation.NONE` |
 | `ArchiveyConfig(process_isolation=ProcessIsolation.NONE, use_rapidgzip=AcceleratorMode.ON)` | `ArchiveyUsageError` at construction |

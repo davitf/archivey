@@ -203,6 +203,13 @@ class ArchiveStream(ReadOnlyIOStream):
         # stream of no member.
         self._member_name = member_name
         self._open_fn: Callable[[], BinaryIO] | None = open_fn
+        # The error a failed lazy open raised, and its traceback: a retry raises it
+        # again instead of calling ``open_fn`` a second time.
+        self._open_error: Exception | None = None
+        self._open_error_tb: TracebackType | None = None
+        # The type of a ``BaseException`` (``KeyboardInterrupt``) that stopped the lazy
+        # open. Not the stream's error, so it is not raised again; a retry names it.
+        self._open_interrupted_by: type[BaseException] | None = None
         self._translate = translate
         self._stamp = stamp if stamp is not None else _noop_stamp
         self._inner: BinaryIO | None = None
@@ -294,7 +301,7 @@ class ArchiveStream(ReadOnlyIOStream):
             self._ensure_open()
 
     @property
-    def name(self) -> str:  # pyrefly: ignore[bad-override]  # base is Never; a member stream has a name
+    def name(self) -> str:  # pyrefly: ignore[bad-override]  # ty: ignore[invalid-property-type-override]  # base is Never; a member stream has a name
         """The member's name inside its archive, or raise ``AttributeError``.
 
         A member stream carries the name its archive gives it, as ``zipfile``'s
@@ -359,13 +366,24 @@ class ArchiveStream(ReadOnlyIOStream):
             if self._inner is not None:
                 return self._inner
             if self._open_fn is None:
-                # Another caller claimed open and failed, or close raced us.
                 if self.closed:
                     raise ValueError("I/O operation on closed file.")
+                failed = self._open_error
+                if failed is not None:
+                    # The open already failed: this is the same open, so it fails
+                    # the same way, as a member's content verdict does (``_fail``).
+                    raise failed.with_traceback(self._open_error_tb)
+                interrupted = self._open_interrupted_by
+                if interrupted is not None:
+                    raise ArchiveyUsageError(
+                        "Cannot open this member stream: an earlier attempt to open "
+                        f"it was interrupted ({interrupted.__name__})."
+                    )
+                # Another caller claimed the open and has not finished it.
                 raise ArchiveyUsageError(
-                    "Cannot open this member stream: it is already being opened by "
-                    "another caller, or a previous open attempt failed. Concurrent "
-                    "operations on a single stream object require caller synchronization."
+                    "Cannot open this member stream: another caller is opening it. "
+                    "Concurrent operations on a single stream object require caller "
+                    "synchronization."
                 )
             open_fn = self._open_fn
             self._open_fn = None  # claim: only one caller proceeds to open_fn
@@ -379,17 +397,32 @@ class ArchiveStream(ReadOnlyIOStream):
                 opened = self._collapse_nested(opened)
         except Exception as e:  # noqa: BLE001 - re-raised via the translator
             # _open_fn stays None (claimed above) so a retry raises rather than
-            # re-entering a half-open backend.
-            self._fail(e)
+            # re-entering a half-open backend. It raises what this open raised.
+            self._fail_open(e)
+        except BaseException as e:
+            # KeyboardInterrupt, SystemExit and the like propagate as they are (DR-15a).
+            with self._open_lock:
+                self._open_interrupted_by = type(e)
+            raise
         with self._open_lock:
             if self.closed:
                 try:
                     opened.close()
-                except Exception:  # noqa: BLE001 - best-effort; stream already closing
+                except Exception:  # noqa: BLE001, S110 - best-effort; stream already closing
                     pass
                 raise ValueError("I/O operation on closed file.")
             self._inner = opened
             return self._inner
+
+    def _fail_open(self, e: Exception) -> NoReturn:
+        """``_fail`` for a lazy open, remembering the error for a retry to raise."""
+        try:
+            self._fail(e)
+        except Exception as raised:
+            with self._open_lock:
+                self._open_error = raised
+                self._open_error_tb = raised.__traceback__
+            raise
 
     def _collapse_nested(self, nested: ArchiveStream) -> BinaryIO:
         """Reduce a nested ``ArchiveStream`` to a bytes stream for this handle.
@@ -697,7 +730,7 @@ class ArchiveStream(ReadOnlyIOStream):
         if before is not None:
             try:
                 self._maybe_warn_rewind(before, after)
-            except Exception:  # noqa: BLE001 - the seek's own error propagates instead
+            except Exception:  # noqa: BLE001, S110 - the seek's own error propagates instead
                 pass
 
     def _digest_intact(self) -> bool | None:
@@ -886,6 +919,13 @@ class ArchiveStream(ReadOnlyIOStream):
             # probe / force positioning).
         finally:
             super().close()
+            # A closed stream raises the closed-file error before it looks at the
+            # errors it kept. Their tracebacks refer to this stream, so keeping them
+            # would leave the stream for the cycle collector.
+            self._open_error = None
+            self._open_error_tb = None
+            self._verdict = None
+            self._verdict_tb = None
             on_close = self._on_close
             self._on_close = None
             teardown_exc: Exception | None = None

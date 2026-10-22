@@ -777,9 +777,11 @@ def test_old_scheme_set_with_a_gap_is_a_truncated_set(tmp_path: Path) -> None:
     Nothing is joined across the gap. ``tests/test_rar_volume_gaps.py`` has the rest."""
     paths = _write_old_scheme_rar4_set(tmp_path, "big", _OLD_SCHEME_PAYLOAD, 4)
     paths[2].unlink()
-    with pytest.raises(TruncatedError, match="volume 3 is missing"):
-        with open_archive(paths[0]) as archive:
-            list(archive.members())
+    with (
+        pytest.raises(TruncatedError, match="volume 3 is missing"),
+        open_archive(paths[0]) as archive,
+    ):
+        list(archive.members())
 
 
 @pytest.mark.parametrize(
@@ -1644,9 +1646,11 @@ def test_concatenated_file_emfile_is_translated(
         raise OSError(errno.EMFILE, "Too many open files")
 
     monkeypatch.setattr(volumes_mod, "open", emfile_open, raising=False)
-    with ConcatenatedFile([path]) as joined:
-        with pytest.raises(OpenError, match="file-descriptor limit") as caught:
-            joined.read()
+    with (
+        ConcatenatedFile([path]) as joined,
+        pytest.raises(OpenError, match="file-descriptor limit") as caught,
+    ):
+        joined.read()
     cause = caught.value.__cause__
     assert isinstance(cause, OSError)
     assert cause.errno == errno.EMFILE

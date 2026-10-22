@@ -151,9 +151,8 @@ def test_compressed_patched_data_member_is_refused() -> None:
     # output". Here the stored CRC is the one of the bytes returned, so no check
     # notices.
     blob = _patched_data_zip(b"patch-stream-bytes " * 20)
-    with zipfile.ZipFile(io.BytesIO(blob)) as zf:
-        with pytest.raises(NotImplementedError):
-            zf.read("a.txt")
+    with zipfile.ZipFile(io.BytesIO(blob)) as zf, pytest.raises(NotImplementedError):
+        zf.read("a.txt")
     with archivey.open_archive(io.BytesIO(blob)) as ar:
         member = ar.members()[0]
         with pytest.raises(UnsupportedFeatureError):

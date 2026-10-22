@@ -7,7 +7,7 @@ from __future__ import annotations
 import functools
 import io
 import os
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import BinaryIO, TypeVar
@@ -280,7 +280,7 @@ class _StdlibOnAcceleratorError(DelegatingStream):
         return data
 
     @contextmanager
-    def _typed_after_switch(self) -> Iterator[None]:
+    def _typed_after_switch(self) -> Generator[None, None, None]:
         """Raise the standard library's data error as the codec's typed error once
         switched; see the class docstring."""
         try:

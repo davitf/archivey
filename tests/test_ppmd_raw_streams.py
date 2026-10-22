@@ -544,6 +544,7 @@ def _run_ppmd_child(script: str, *, timeout: float = 60.0) -> None:
         timeout=timeout,
         env=env,
         cwd=str(_REPO_ROOT),
+        check=False,
     )
     stdout = proc.stdout or ""
     body_ok = any(line.strip() == "ok" for line in stdout.splitlines())
@@ -970,7 +971,7 @@ def test_ppmd7_payload_spent_needs_complete_pack() -> None:
     """A short return at ``eof`` mid-pack is not the end: more input may follow.
 
     This is the chunked path, which a member takes only past
-    ``DecoderLimits.max_ppmd_in_process_input``, inside a child process: ``eof`` also rises on a
+    ``DecoderLimits.max_ppmd_held_input``, inside a child process: ``eof`` also rises on a
     valid stream whose compressed bytes end in zeros at a chunk boundary, so stopping
     here would cut valid members short.
     """

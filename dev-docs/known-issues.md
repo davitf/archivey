@@ -248,7 +248,7 @@ the exact remaining `unpack_size` and never passes `-1`; refuses unsized PPMd7 a
 construction; decodes unsized PPMd8 in bounded 64 KiB requests; injects at most one capped
 NUL at the end; stops at a spent payload; and hands pyppmd the whole member in one
 `decode`, so a short return is the end. Two exceptions are fed in pieces: members over
-`DecoderLimits.max_ppmd_in_process_input` (16 MiB by default), and a ZIP member read from
+`DecoderLimits.max_ppmd_held_input` (16 MiB by default), and a ZIP member read from
 a stream that cannot seek, whose sizes follow its data, so its input runs on into the rest
 of the archive. Fed in pieces, pyppmd 1.3.1 can return short at a false `eof` with input
 unread, which reads as a spent payload: a valid member then raises `TruncatedError` a few
@@ -511,15 +511,24 @@ in-process reports its likely size with `__pypy__.add_memory_pressure`, as PyPy'
 
 A decoder's `close` also ends its liblzma decoders with `ffi.release` and cancels their
 pressure, because only the stream declares the real dictionary (up to 4 GiB uncapped).
-Pinned by `tests/test_decoder_memory_pressure.py`.
+Pinned by `tests/test_decoder_memory_pressure.py`: each estimate exactly, and 1,600 dropped
+xz decoders in a fresh interpreter, where the last 800 must add under 2 GiB through `/proc`.
+With the accounting, the growth levels off at whatever pressure PyPy lets build before a
+major collection. That level is large and varies: 800 drops reached 3,725 MiB in an xdist
+worker (PR #901) and 2,120 MiB in a fresh interpreter (PR #951), and both passed on a
+re-run. So the test checks that growth levels off, not how high. Without the accounting,
+growth is linear at 8 MiB per drop. The drops run in a child process because the worker
+reading was 1.76 times the fresh one, likely because PyPy's threshold scales with the heap
+the last collection left (inferred, not reproduced). Each CI run writes the curve to the
+job summary.
 
 **What remains.** A zstd frame can reserve up to `window_log_max` (2 GiB under the default
 `max_decoder_memory`) and nothing frees it before a collection, nor a brotli window over
 4 MiB: neither library can free its state early under PyPy, and reporting the cap would
 force a major collection per decoder. A caller who drops streams unclosed relies on the
-estimates alone. The PyPy CI job runs the pins above, including the dropped-xz growth
-measured through `/proc`; nothing measures the zstd or brotli windows, or what a caller who
-leaves streams unclosed really uses.
+estimates alone. The PyPy CI job runs the pins above; nothing measures the zstd or brotli
+windows, what a caller who leaves streams unclosed really uses, or what the same drops
+cost in a long-lived process with a large heap, the shape the ENOMEM failures had.
 
 **Upstream.** Not filed; PyPy documents that native memory needs
 `add_memory_pressure` from whoever allocates it.
