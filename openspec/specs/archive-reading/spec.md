@@ -771,7 +771,9 @@ that is not a `bool` SHALL raise `ArchiveyUsageError` at the call.
 `members` is a selector (names/identities or predicate), not a transform. Streams
 are lazy: unselected/unread members are not opened/decompressed and do not request
 passwords. Yields the original mutable `ArchiveMember` so late-bound fields stay
-visible.
+visible. A yielded stream whose deferred open fails on its first read (a wrong password,
+an unsupported method) SHALL raise the same error object on every later read and SHALL
+NOT try the open again.
 
 Symlink targets stored as member data (ZIP, 7z, RAR3/4) are the one exception, and only
 while `read_link_targets` is `True` (see "Link targets stored as member data are read
