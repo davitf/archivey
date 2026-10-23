@@ -750,8 +750,10 @@ Once 0.2.0 ships, DR-12a replaces this rule.
 **Rule.** Once 0.2.0 ships and until 1.0:
 - A patch release changes no public name or signature.
 - A minor release may remove or rename a public name, but the old spelling keeps working
-  for one minor release first and emits a `DeprecationWarning` naming the replacement.
-  The release after that removes it. This warning is about the caller's code, not about
+  for one minor release first and emits a `DeprecationWarning` naming the replacement,
+  with `stacklevel=2` so Python attributes it to the caller's line; at the default level
+  it is attributed to archivey and hidden from every caller. The release after that
+  removes it. This warning is about the caller's code, not about
   an archive, so the diagnostics-as-data rule (VISION, "queryable as data") does not
   govern it: there is no `Diagnostic` for a deprecated call.
 - A break that can't be phased in that way (the same call gives a different result, an
@@ -759,8 +761,8 @@ Once 0.2.0 ships, DR-12a replaces this rule.
   **Breaking:**. The GitHub release mirrors the changelog.
 - The `archivey` command's verbs, options and exit codes are public names under the
   same rule (maintainer, 2026-10-22). The command prints its own deprecation notice
-  for an old spelling: Python shows a `DeprecationWarning` raised inside a library
-  only when the caller asks for it. The text it prints for people may change in a
+  for an old spelling: a command-line user has no Python call site to attribute a
+  `DeprecationWarning` to. The text it prints for people may change in a
   minor release. A minor release may add a verb, which then wins over a file of that
   name; `archivey list <path>` and `./<path>` always reach the file (`cli` spec).
 - `archivey.internal` is not public and changes freely.

@@ -125,9 +125,10 @@ may change:
   with **Breaking:** in that release's entry in the
   [changelog](https://github.com/davitf/archivey/blob/main/CHANGELOG.md).
 
-Python doesn't show a `DeprecationWarning` from a library by default, so the changelog's
-"Deprecated" section is the place to look before upgrading. To find deprecated calls in your own
-code, run your tests with `python -W error::DeprecationWarning -m pytest`.
+Python shows a `DeprecationWarning` by default only when the deprecated call is in your
+top-level script, so the changelog's "Deprecated" section is the place to look before upgrading.
+To find deprecated calls anywhere in your code, run your tests with
+`pytest -W error::DeprecationWarning`.
 
 The public API is what `archivey` and its public submodules export, as listed on the
 [API page](api.md). Anything under `archivey.internal` can change in any release.
