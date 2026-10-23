@@ -57,6 +57,12 @@ the date in that heading.)
   gh pr list --state merged --base main --search "merged:>$(git log -1 --format=%cI "$PREV" 2>/dev/null || echo 2020-01-01)" --limit 100
   ```
 
+- [ ] Run `uv run python scripts/release.py notes`. Its last line says whether this can
+  be a patch release, from the public API at `PREV` against `HEAD`
+  (`scripts/api_surface.py`) and the merged pull requests labelled `needs-minor`. A `+`
+  line it prints is an **Added** item, a `-` line is **Removed**, and a `-` and `+` pair
+  for the same name is **Changed** (or **Deprecated**, or a **Breaking:** line).
+
 - [ ] Write the entry under `## [Unreleased]`. `release.py start` (§6) moves it under
   a dated `## [X.Y.Z]` heading and writes the compare links.
 
