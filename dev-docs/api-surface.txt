@@ -1,5 +1,6 @@
 # The public API surface, written by scripts/api_surface.py --write.
 # tests/test_api_surface.py fails when this file is stale. Do not edit it by hand.
+module archivey
 constant archivey.ARCHIVE_INTEGRITY_CODES: frozenset
 item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING
 item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.ARCHIVE_TRAILING_DATA
@@ -523,6 +524,7 @@ function archivey.list_supported_formats() -> list[ArchiveFormat]
 function archivey.open_archive(source: OpenSourceInput, *, format: ArchiveFormat | str | None = None, streaming: bool = False, seekable_members: bool = False, concurrent_operations: bool = False, password: PasswordInput = None, encoding: str | None = None, config: ArchiveyConfig | None = None) -> ForwardArchiveReader
 function archivey.open_stream(source: str | Path | BinaryIO, *, format: StreamFormat | ArchiveFormat | str | None = None, seekable: bool = False, config: ArchiveyConfig | None = None) -> ArchiveStream
 function archivey.sanitize_names(member: ArchiveMember) -> ArchiveMember
+module archivey.detection_cost
 constant archivey.detection_cost.BALANCED_BUDGET = DetectionBudget(...)
 class archivey.detection_cost.DetectionBudget()
 init archivey.detection_cost.DetectionBudget(max_prefix_bytes: int, max_far_bytes: int, max_scan_bytes: int, max_decode_input: int, max_decode_output: int, completion_window_bytes: int) -> None
@@ -558,6 +560,7 @@ enum archivey.detection_cost.TierSkipReason
 value archivey.detection_cost.TierSkipReason.NOT_ENABLED_BY_POLICY = 'not_enabled_by_policy'
 value archivey.detection_cost.TierSkipReason.CAPABILITY_UNAVAILABLE = 'capability_unavailable'
 value archivey.detection_cost.TierSkipReason.BUDGET_EXHAUSTED = 'budget_exhausted'
+module archivey.diagnostics
 reexport archivey.diagnostics.ARCHIVE_INTEGRITY_CODES = archivey.ARCHIVE_INTEGRITY_CODES
 class archivey.diagnostics.ArchiveEofContext(_JsonSafeContext)
 init archivey.diagnostics.ArchiveEofContext(kind: Literal['archive_eof'] = 'archive_eof', archive_name: str | None = None, format: str = '', expected_marker: str = '', expected_bytes: int = 0, observed_bytes: int = 0, observed_kind: Literal['absent', 'short', 'nonzero'] = 'absent') -> None
@@ -871,9 +874,11 @@ method archivey.diagnostics.UnusedArgumentContext.to_dict(self) -> dict[str, obj
 function archivey.diagnostics.format_path_name(path: str | Path | None) -> str | None
 function archivey.diagnostics.raw_name_to_base64(raw_name: bytes | None) -> str | None
 function archivey.diagnostics.validate_code_context(code: DiagnosticCode, context: DiagnosticContext) -> None
+module archivey.paths
 function archivey.paths.match_glob(*patterns: str, with_contents: bool = False) -> Callable[[ArchiveMember | str], bool]
 function archivey.paths.match_tar_glob(*patterns: str) -> Callable[[ArchiveMember | str], bool]
 function archivey.paths.numbered_name(name: str, n: int, *, is_dir: bool) -> str
+module archivey.terminal
 function archivey.terminal.display_path(path: str | os.PathLike[str]) -> str
 function archivey.terminal.escape_control_chars(text: str) -> str
 function archivey.terminal.quoted(text: str) -> str

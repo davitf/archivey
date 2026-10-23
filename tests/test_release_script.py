@@ -546,14 +546,41 @@ def test_next_release_version(
     assert release.next_release_version(tag, needs_minor) == expected
 
 
-@pytest.mark.parametrize("needs_minor", [False, True])
-def test_next_release_after_a_pre_release_is_the_one_it_previewed(
-    needs_minor: bool,
-) -> None:
-    assert release.next_release_version("v0.3.0rc1", needs_minor) == "0.3.0"
-
-
-@pytest.mark.parametrize("tag", ["0.2.0", "v0.2", "v0.2.0.dev0", "v0.2.0-hotfix"])
-def test_next_release_version_refuses_other_tags(tag: str) -> None:
+@pytest.mark.parametrize(
+    "tag", ["0.2.0", "v0.2", "v0.2.0.dev0", "v0.2.0-hotfix", "v0.3.0rc1", "v0.2.1b2"]
+)
+def test_next_release_version_takes_only_final_tags(tag: str) -> None:
+    # notes measures from the last final tag, so a pre-release here is a caller's bug.
     with pytest.raises(release.ReleaseError):
         release.next_release_version(tag, False)
+
+
+def _fake_gh_output(monkeypatch: pytest.MonkeyPatch, outputs: dict[str, str]) -> None:
+    """Answer each ``gh <verb>`` call with the given stdout; git still runs for real."""
+    real_run = subprocess.run
+
+    def fake_run(cmd, *args, **kwargs):
+        if cmd[0] == "gh":
+            return subprocess.CompletedProcess(cmd, 0, stdout=outputs[cmd[1]])
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(release.subprocess, "run", fake_run)
+
+
+def test_missing_label_is_reported_not_raised(monkeypatch: pytest.MonkeyPatch) -> None:
+    # ``gh label list --json`` prints nothing at all when no label matches.
+    _fake_gh_output(monkeypatch, {"label": ""})
+    result = release._needs_minor_prs("HEAD")
+    assert isinstance(result, str)
+    assert "does not exist" in result
+
+
+def test_labelled_pull_requests_are_listed(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_gh_output(
+        monkeypatch,
+        {
+            "label": json.dumps([{"name": "needs-minor"}]),
+            "pr": json.dumps([{"number": 7, "title": "Refuse more names"}]),
+        },
+    )
+    assert release._needs_minor_prs("HEAD") == ["#7 Refuse more names"]

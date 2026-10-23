@@ -53,6 +53,7 @@ NEEDS_MINOR_LABEL = "needs-minor"
 
 #: The versions this script writes: a final release, a pre-release, or a ``.devN``.
 VERSION_RE = re.compile(r"^\d+\.\d+\.\d+((a|b|rc)\d+)?(\.dev\d+)?$")
+_FINAL_TAG_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 _PROJECT_VERSION_RE = re.compile(r'^(version = ")([^"]+)(")$', re.MULTILINE)
 _PIN_RE = re.compile(r'("archivey\[recommended\]==)([^"]+)(")')
 _UNRELEASED_RE = re.compile(r"^## \[Unreleased\][^\n]*\n", re.MULTILINE)
@@ -127,20 +128,17 @@ def next_dev_version(version: str) -> str:
 
 
 def next_release_version(previous_tag: str | None, needs_minor: bool) -> str:
-    """The release after ``previous_tag``: v0.2.0 -> 0.2.1, or 0.3.0 when it needs a minor.
+    """The release after the final tag ``previous_tag``: v0.2.0 -> 0.2.1, or 0.3.0.
 
-    After a pre-release the next release is the one it previewed: v0.3.0rc1 -> 0.3.0,
-    whatever changed. Before 1.0 a minor release is where breaking changes go, so nothing
-    here suggests a major release.
+    Before 1.0 a minor release is where breaking changes go, so nothing here suggests a
+    major release. ``cmd_notes`` passes the last final tag, never a pre-release.
     """
     if previous_tag is None:
         return "0.1.0"
-    match = re.match(r"^v(\d+)\.(\d+)\.(\d+)((?:a|b|rc)\d+)?$", previous_tag)
+    match = _FINAL_TAG_RE.match(previous_tag)
     if match is None:
-        raise ReleaseError(f"{previous_tag!r} is not a release tag like v0.2.0")
-    major, minor, patch = (int(part) for part in match.groups()[:3])
-    if match.group(4):
-        return f"{major}.{minor}.{patch}"
+        raise ReleaseError(f"{previous_tag!r} is not a final release tag like v0.2.0")
+    major, minor, patch = (int(part) for part in match.groups())
     if needs_minor:
         return f"{major}.{minor + 1}.0"
     return f"{major}.{minor}.{patch + 1}"
@@ -284,6 +282,15 @@ def _previous_tag() -> str | None:
         return None
 
 
+def _previous_final_tag() -> str | None:
+    """The newest ``vX.Y.Z`` tag reachable from ``HEAD``, skipping pre-releases."""
+    tags = _git("tag", "--list", "v*", "--merged", "HEAD", "--sort=-v:refname")
+    for tag in tags.splitlines():
+        if _FINAL_TAG_RE.match(tag):
+            return tag
+    return None
+
+
 def _require_clean_main() -> None:
     if _git("status", "--porcelain"):
         raise ReleaseError("the working tree has changes; commit or stash them first")
@@ -380,9 +387,9 @@ def _api_change(previous: str) -> tuple[str, str]:
     Both sides are written by this checkout's ``scripts/api_surface.py``, the old one from
     a temporary worktree of the tag, so a change in the script's format between releases
     does not show as an API change. Each side reads its own tree's ``docs/api.md`` for the
-    names of a module without ``__all__``. A change to the script's list of public
-    modules applies to both sides, so a module made public since the tag shows as
-    added.
+    names of a module without ``__all__``, and its own ``dev-docs/api-surface.txt`` for
+    the list of public modules, so a module made public since the tag shows as added.
+    A tag older than that file is measured with this checkout's list.
     """
     script = ROOT / "scripts" / "api_surface.py"
     with tempfile.TemporaryDirectory() as tmp:
@@ -406,11 +413,11 @@ def _api_change(previous: str) -> tuple[str, str]:
     return verdict, text.rstrip()
 
 
-def _needs_minor_prs(previous: str) -> list[str] | None:
-    """Merged pull requests since ``previous`` labelled ``needs-minor``.
+def _needs_minor_prs(previous: str) -> list[str] | str:
+    """Merged pull requests since ``previous`` labelled ``needs-minor``, or why not.
 
-    None when the list cannot be trusted: ``gh`` is missing or fails, or the label does
-    not exist, which ``gh pr list --label`` answers with an empty list.
+    A string says why the list cannot be trusted: ``gh`` is missing or fails, or the
+    label does not exist, which ``gh pr list --label`` answers with an empty list.
     """
     since = _git("log", "-1", "--format=%cI", previous)
     try:
@@ -419,18 +426,24 @@ def _needs_minor_prs(previous: str) -> list[str] | None:
              "--json", "name", "--limit", "100"],
             cwd=ROOT, check=True, stdout=subprocess.PIPE, text=True,
         ).stdout  # fmt: skip
-        if NEEDS_MINOR_LABEL not in {label["name"] for label in json.loads(labels)}:
-            print(f"The `{NEEDS_MINOR_LABEL}` label does not exist on the repository.")
-            return None
+        # With no match, ``gh label list --json`` prints nothing rather than ``[]``.
+        names = {label["name"] for label in json.loads(labels or "[]")}
+        if NEEDS_MINOR_LABEL not in names:
+            return (
+                f"The `{NEEDS_MINOR_LABEL}` label does not exist on the repository;"
+                " create it so pull requests can carry it."
+            )
         out = subprocess.run(
             ["gh", "pr", "list", "--state", "merged", "--base", "main",
              "--label", NEEDS_MINOR_LABEL, "--search", f"merged:>{since}",
              "--limit", "200", "--json", "number,title"],
             cwd=ROOT, check=True, stdout=subprocess.PIPE, text=True,
         ).stdout  # fmt: skip
-    except (OSError, subprocess.CalledProcessError):
-        return None
-    return [f"#{pr['number']} {pr['title']}" for pr in json.loads(out)]
+    except (OSError, subprocess.CalledProcessError, json.JSONDecodeError):
+        return (
+            f"Could not list the `{NEEDS_MINOR_LABEL}` pull requests (is `gh` set up?)."
+        )
+    return [f"#{pr['number']} {pr['title']}" for pr in json.loads(out or "[]")]
 
 
 def cmd_notes(_args: argparse.Namespace) -> None:
@@ -438,23 +451,24 @@ def cmd_notes(_args: argparse.Namespace) -> None:
     since = f"{previous}..HEAD" if previous else "HEAD"
     print(f"Merged since {previous or 'the first commit'}:\n")
     print(_git("log", "--first-parent", "--format=- %s", since))
-    if previous is None:
+    # Patch or minor is measured from the last final release: after 0.3.0rc1, the
+    # question is what 0.3.0 changes against 0.2.x.
+    final = _previous_final_tag()
+    if final is None:
         return
-    verdict, api_report = _api_change(previous)
-    print(f"\nPublic API since {previous}:\n{api_report}")
-    labelled = _needs_minor_prs(previous)
-    if labelled is None:
-        print(
-            f"\nCould not list the `{NEEDS_MINOR_LABEL}` pull requests (is `gh` set up?)."
-        )
+    verdict, api_report = _api_change(final)
+    print(f"\nPublic API since {final}:\n{api_report}")
+    labelled = _needs_minor_prs(final)
+    if isinstance(labelled, str):
+        print(f"\n{labelled}")
     elif labelled:
         print(f"\nMerged pull requests labelled `{NEEDS_MINOR_LABEL}`:")
         print("\n".join(f"- {pr}" for pr in labelled))
-    needs_minor = verdict == "minor" or bool(labelled)
-    version = next_release_version(previous, needs_minor)
+    needs_minor = verdict == "minor" or (isinstance(labelled, list) and bool(labelled))
+    version = next_release_version(final, needs_minor)
     if needs_minor:
         print(f"\nThis needs a minor release: {version}.")
-    elif labelled is None:
+    elif isinstance(labelled, str):
         print(
             f"\nThe API allows a patch release ({version}); check the labels by hand."
         )

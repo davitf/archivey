@@ -65,7 +65,6 @@ OPEN_ENUMS = frozenset(
     {
         "archivey.CompressionAlgorithm",
         "archivey.DiagnosticCode",
-        "archivey.diagnostics.DiagnosticCode",
     }
 )
 #: The literal type that lists every diagnostic code string, which grows with them.
@@ -326,6 +325,7 @@ def surface_lines() -> list[str]:
     lines: list[str] = []
     root = importlib.import_module("archivey")
     for module_name in PUBLIC_MODULES:
+        lines.append(f"module {module_name}")
         try:
             module = importlib.import_module(module_name)
         except ModuleNotFoundError:
@@ -423,10 +423,20 @@ def main(argv: list[str] | None = None) -> int:
         "--src", type=Path, help="import archivey from this src directory instead"
     )
     args = parser.parse_args(argv)
+    global API_PAGE, PUBLIC_MODULES
     if args.src is not None:
-        global API_PAGE
         sys.path.insert(0, str(args.src.resolve()))
         API_PAGE = args.src.resolve().parent / "docs" / "api.md"
+        # The measured tree's own list of public modules, when it has the file.
+        old_file = args.src.resolve().parent / "dev-docs" / "api-surface.txt"
+        if old_file.exists():
+            modules = [
+                line.split(" ", 1)[1]
+                for line in parse(old_file.read_text(encoding="utf-8"))
+                if line.startswith("module ")
+            ]
+            if modules:
+                PUBLIC_MODULES = tuple(modules)
     lines = surface_lines()
     text = render(lines)
     if args.compare_to is not None:

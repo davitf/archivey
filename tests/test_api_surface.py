@@ -108,6 +108,19 @@ def test_open_enums_are_pinned() -> None:
         "open-enum archivey.CompressionAlgorithm",
         "open-enum archivey.DiagnosticCode",
     ]
+    # An entry that renders no line (a re-exported name, a typo) would do nothing.
+    for name in api_surface.OPEN_ENUMS:
+        assert f"open-enum {name}" in lines
+    for name in api_surface.CODE_LITERALS:
+        assert any(line.startswith(f"code-literal {name} ") for line in lines)
+
+
+def test_surface_lists_the_public_modules() -> None:
+    # release.py reads these lines from the tag's file, so a module made public since
+    # then shows as added.
+    lines = api_surface.parse(api_surface.SURFACE_FILE.read_text(encoding="utf-8"))
+    modules = [line.split(" ", 1)[1] for line in lines if line.startswith("module ")]
+    assert modules == list(api_surface.PUBLIC_MODULES)
 
 
 def test_cli_lines_say_how_an_option_is_read() -> None:
