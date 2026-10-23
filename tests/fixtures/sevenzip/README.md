@@ -34,3 +34,14 @@ printf aaaa > a.txt && ln -s a.txt b_link && printf cccc > c.txt
 7z a -t7z -snl -pSECRET ../encrypted_link.7z a.txt b_link c.txt
 7z a -tzip -snl -pSECRET ../encrypted_link.zip a.txt b_link c.txt
 ```
+
+`solid_three_members.7z` holds `a.txt`, `b.txt` and `c.txt`, each its own name repeated ten
+times (50 bytes), in one LZMA2 folder, written by py7zr 1.1.4. Used by
+`tests/test_solid_open_log.py`, which runs on core-only and free-threaded legs where py7zr
+is not installed.
+
+```python
+with py7zr.SevenZipFile("solid_three_members.7z", "w") as z:
+    for name in ("a.txt", "b.txt", "c.txt"):
+        z.writestr((name * 10).encode(), name)
+```
