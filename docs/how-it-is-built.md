@@ -114,9 +114,8 @@ AI lets the maintainer build a better library, faster. It changes what is practi
 
 ## Versioning and stability
 
-Archivey follows [semantic versioning](https://semver.org/). The promise below starts with
-0.2.0; a pre-release such as 0.2.0rc1 carries none. Before 1.0, this is what each kind of release
-may change:
+Archivey follows [semantic versioning](https://semver.org/). Before 1.0, this is what each kind
+of release may change:
 
 - **A patch release (0.2.1)** fixes bugs. It doesn't change the public API.
 - **A minor release (0.3.0)** may change it. A removed or renamed name keeps working for one more

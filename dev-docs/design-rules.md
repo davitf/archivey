@@ -72,7 +72,7 @@ binds.
   **Environment trouble falls back; explicit requests fail loudly.** An `AUTO` choice
   falls back on environment trouble; an explicit request fails loudly.
 - [DR-12](#dr-12-before-the-first-release-remove-rather-than-keep). **Before the first
-  release, remove rather than keep.** Until 0.2.0 ships, a breaking cleanup goes in now.
+  release, remove rather than keep.** Applied until 0.2.0; DR-12a replaced it.
 - [DR-12a](#dr-12a-after-the-first-release-deprecate-before-removing). **After the first
   release, deprecate before removing.** A removal or rename warns for one minor release;
   a break that can't be phased in gets a **Breaking:** changelog line.
@@ -717,12 +717,11 @@ whatever the setting (ADR 0002 amendment, 2026-10-01).
 
 ### DR-12. Before the first release, remove rather than keep
 
-**Rule.** Until 0.2.0 ships, any breaking cleanup goes in now: deleting a name, renaming
+**Rule.** Before 0.2.0, any breaking cleanup went in at once: deleting a name, renaming
 a field, changing an exception's base class. If a public name has a single value, no
 caller, or an obvious two-line alternative, delete it. Offer "remove it" as an option on
-every API question. The maintainer still reviews every removal or rename of a public
-name, before 0.2.0 too: he is for the cleanup and wants to check it and know it happened
-(2026-10-09). Propose it, don't hold it back.
+every API question. The maintainer still reviewed every removal or rename of a public
+name: he was for the cleanup and wanted to check it and know it happened (2026-10-09).
 
 **Why.** Removing a public name after the release breaks callers. Adding it back later
 breaks no one ("no need to delay until after release", 2026-09-27).
@@ -743,11 +742,12 @@ removal.
 
 **Reopen if** a removed name is needed by a real caller; add it back then.
 
-Once 0.2.0 ships, DR-12a replaces this rule.
+0.2.0 shipped on 2026-10-23, and DR-12a replaced this rule. It stays as the record of
+the rulings above.
 
 ### DR-12a. After the first release, deprecate before removing
 
-**Rule.** Once 0.2.0 ships and until 1.0:
+**Rule.** From 0.2.0 until 1.0:
 - A patch release changes no public name or signature.
 - A minor release may remove or rename a public name, but the old spelling keeps working
   for one minor release first and emits a `DeprecationWarning` naming the replacement,
@@ -1121,7 +1121,8 @@ reaches him.
   copies did not survive "how hard is it to count?" (2026-10-07).
 - **Did a later change make this code redundant?** The gzip size-check fallback "was
   useful at first but became redundant" (2026-10-06).
-- **Is it a breaking change after release?** If yes, do it now (DR-12).
+- **Does it break callers?** Then it waits for a minor release, behind a deprecation
+  warning where one can phase it in (DR-12a).
 - **Could these bytes hide something?** (DR-3)
 - **Can the user still get what they need through a filter or an opt-in?**
 - **Is it actually simpler?** For a large design, ask for a fresh review before building
@@ -1135,15 +1136,15 @@ reaches him.
 ## What still goes to the maintainer
 
 - A **default limit value** or any number users will see as a default.
-- A **new public name**, or **removing or renaming** one, before 0.2.0 as well as after
-  (DR-12). Expect a yes; the point is that he checks and knows.
+- A **new public name**, or **removing or renaming** one, an `archivey` verb or option
+  included (DR-12a). Expect a yes; the point is that he checks and knows.
 - Accepting a **residual risk** in the threat model.
 - **Reversing** an earlier ruling. This needs a new argument, not a restatement (ADR 0019).
 - A **clash between consistency and the official tool** where the factors split.
 - Anything **outside the repo**: upstream bug reports (agents draft them, the maintainer
   files them), repository settings, publishing.
 - Merging a **tricky** pull request: a behaviour trade-off, a design reversal, removing
-  or renaming a public name (before 0.2.0 too), a very large diff, or anything an open
+  or renaming a public name (DR-12a), a very large diff, or anything an open
   decision touches. A straightforward one an agent may merge once its review approves and
   CI is green.
 
