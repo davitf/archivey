@@ -254,8 +254,11 @@ bytes. The outcome is the same on every platform. ADR
 - `STRICT` strips a trailing dot or space (`_strip_trailing_dot_space`), because Win32
   trims it silently and the reported path would differ from the real one. The rewrite is
   recorded as `ExtractionResult.presented_name`, the only record that survives a caller
-  filter rename. An all-dots segment has no portable spelling and is rejected.
-  `STANDARD` and `TRUSTED` keep the name.
+  filter rename. An all-dots segment has no portable spelling and is rejected, under
+  `STANDARD` too, since Win32 would merge `a/.../b` into `a/b`.
+  `STANDARD` and `TRUSTED` otherwise keep the name. Under `STRICT` and `STANDARD` the collision key
+  drops a trailing dot or space too, so `notes.` and `notes` collide on every platform, as
+  Win32 would merge them.
 - Two classes of character are percent-escaped (`_sanitize_portable_name`: `%XX`,
   literal `%` as `%25`), a deterministic and reversible spelling: non-UTF-8 bytes, and
   the characters Win32 refuses in a name, `<>"|?*` and the controls 0x01 to 0x1F.
@@ -267,11 +270,12 @@ bytes. The outcome is the same on every platform. ADR
   passes through (`foo\x` and `foo. /x` both become `foo/x`), and the first check saw
   only the stored spelling, so a `foo` symlink in the destination that leaves it was
   not checked on the path actually written.
-- `collision_key` casefolds and NFC-normalizes. The coordinator
-  (`_register_collision_key`, `_resolve_collision`, `_derive_free_name`) treats a
-  collision as an event: `OverwritePolicy` applies, `RENAME` writes `photo (1).jpg`, and
-  a `REPLACE` revises the clobbered member's result to `OVERWRITTEN` (`_mark_overwritten`)
-  so the merge is visible. `ExtractionReport.results` is the only record.
+- `collision_key` casefolds, NFC-normalizes and trims a trailing dot or space from each
+  segment. The coordinator (`_register_collision_key`, `_resolve_collision`,
+  `_derive_free_name`) treats a collision as an event: `OverwritePolicy` applies,
+  `RENAME` writes `photo (1).jpg`, and a `REPLACE` revises the clobbered member's
+  result to `OVERWRITTEN` (`_mark_overwritten`) so the merge is visible.
+  `ExtractionReport.results` is the only record.
   `abort_on={AbortOn.NAME_COLLISION}` makes any collision fatal;
   `abort_on={AbortOn.NAME_SANITIZED}` refuses any rewritten name.
 - A name the filter accepted but the filesystem refuses at write (`EILSEQ` on APFS,
@@ -815,7 +819,7 @@ checksum or tag the archive stores, and raises if one does not match. A verdict 
 deferred to `close()` (ADR
 [0014](decisions/0014-integrity-verdicts-from-reads-not-close.md)). A wrong password is
 never reported as success. Public:
-[errors-and-diagnostics.md §The integrity guarantee](../docs/errors-and-diagnostics.md#the-integrity-guarantee).
+[errors-and-diagnostics.md §Damaged archives](../docs/errors-and-diagnostics.md#damaged-archives).
 
 **Mechanism.**
 - `internal/streams/verify.py` `MemberVerifier`, fused into `ArchiveStream`, hashes
@@ -906,7 +910,7 @@ writes itself) is exercised against mutated and coverage-guided input.
    cost-within-budget assertion and the ZIP/RAR/7z hit validators, ZIP open and bounded
    member read on a seekable source and on a pipe, TAR open with header-checksum fix-up
    and a bounded member read, auto-detect open (SFX payload offset, single-file readers,
-   compressed tar, UDIF refusal), the BCJ2/ARM64/Delta/branch-filter decoders, and the
+   compressed tar, UDIF refusal), the BCJ2/ARM64/RISC-V/Delta/branch-filter decoders, and the
    standalone codecs.
    Four accelerator targets (`gzip_accel`, `zlib_accel`, `deflate_accel`,
    `bzip2_accel`) decode each input with the accelerator on and off and fail when the
@@ -1214,7 +1218,20 @@ state) at different output offsets, the index is wrong, and the stream drops eve
 the index gave and every point a decode counted from one, forgets a size the index gave,
 and emits `SEEK_INDEX_DEGRADED` (scan `decode_check`, type `SeekIndexContradicted`).
 A decode that reaches the end with another total than the index gave is the same
-contradiction; it catches a lie in the last unit, which no index point follows. Later
+contradiction; it catches a lie in the last unit, which no index point follows. So is a
+decoder that resumed at an index point and fails there before any output: a table whose
+sizes add up but put a frame start inside a frame. Only a verdict on the data counts
+there; an `OSError`, a `MemoryError`, a child decoder killed from outside or one that
+could not start propagates as it would anywhere. A `DecoderLimits` refusal of a window
+or dictionary the bytes at the point declare is a verdict: a lying point can land on
+bytes that parse as such a header, and the file then still reads from the start. An
+exception the stream does not know counts as a verdict too, on purpose: the decoder's
+errors arrive untranslated and differ by backend, and misreading one costs only the
+index, since the decode from the start raises it again unless it was specific to the
+resume. The stream cannot tell that failure from damaged data at an honest
+point, so damage there is reported as `SEEK_INDEX_DEGRADED` too and costs a decode of
+the prefix before the `CorruptionError`. That is the cost side of treating the index as
+an accelerator: the error is the same, only later. Later
 seeks use only the points found by a decode from the start, and a size query decodes to
 the end. A decode in progress that began at an index point restarts from such a point,
 so the read, seek or size query that found the lie returns the right bytes and the right
@@ -1233,15 +1250,18 @@ one output offset, nothing is proved (an empty lzip member makes that pair in an
 file): the decoded point is kept, and the check above catches the lie at the next unit
 start. A diagnostic for an ambiguous trailer walk was considered and not taken: an
 attacker who controls the trailers can avoid it. Public:
-[the integrity guarantee](../docs/errors-and-diagnostics.md#the-integrity-guarantee) and
+[the integrity guarantee](../docs/errors-and-diagnostics.md#damaged-archives) and
 [where the guarantees stop](../docs/security.md#where-the-guarantees-stop). Tests:
 `tests/test_seekable_streams.py::test_lzip_cold_seek_trusts_a_self_consistent_trailer_chain`,
 `::test_xz_cold_seek_trusts_a_self_consistent_block_index`,
 `tests/test_zstd_seekable.py::test_cold_seek_trusts_a_self_consistent_table`,
 `::test_a_forward_read_that_contradicts_the_table_drops_it`,
 `::test_a_seek_into_a_misplaced_frame_drops_the_table_when_the_decode_reaches_it`,
+`::test_a_point_where_the_decode_fails_drops_the_table`,
+`::test_an_error_that_is_no_verdict_on_the_data_keeps_the_table`,
 `tests/test_bgzf_seek.py::test_bgzf_cold_seek_trusts_the_block_sizes`,
-`::test_a_forward_read_that_contradicts_the_walk_drops_it`.
+`::test_a_forward_read_that_contradicts_the_walk_drops_it`,
+`::test_damage_at_an_honest_block_raises_after_the_walk_is_dropped`.
 
 ### Windows directory sources
 

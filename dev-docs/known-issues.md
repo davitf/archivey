@@ -185,7 +185,7 @@ of MB with every core decoding.
 **What remains.** Nothing runs rapidgzip in the caller's process. To know whether the
 isolation is still needed, `scripts/accelerator_crash_search.py` runs both decoders
 in-process on damaged input, in a process it watches, and reports each crash by its
-signature; `.github/workflows/accelerator-crash-search.yml` runs it weekly and on a
+signature; `.github/workflows/accelerator-crash-search.yml` runs it monthly and on a
 lockfile change, on Linux, macOS and Windows. A new signature (any bzip2 crash) turns the
 run red; a run with cut inputs that no longer finds this abort suggests it is fixed.
 

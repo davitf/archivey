@@ -187,7 +187,7 @@ minor release with a `DeprecationWarning`
 ([versioning and stability](docs/how-it-is-built.md#versioning-and-stability)). 1.0 is
 declared once early users have run archivey for a while and the API has held up.
 
-[How it is built](https://davitf.github.io/archivey/how-it-is-built/) tells users how
+[How it is built](https://archivey-dev.github.io/archivey/how-it-is-built/) tells users how
 changes are made and checked, and what that process does not promise.
 
 How these priorities have been applied, question by question, is collected as rules in

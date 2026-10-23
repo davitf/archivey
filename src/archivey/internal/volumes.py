@@ -172,7 +172,8 @@ _OLD_RAR_FIRST_VOLUME_SUFFIXES = (".rar", ".exe", ".sfx")
 # base. It accepts only ``.rar``, because ``next_rar_volume_name`` rewrites ``.exe``
 # and ``.sfx`` to ``.rar`` first.
 _UNRAR_PART_NAME_RE = re.compile(
-    r"(?P<head>.*\.part)(?P<num>[0-9]+)(?P<ext>\.rar)", re.IGNORECASE | re.DOTALL
+    r"(?P<head>.*\.part)(?P<num>[0-9]+)(?P<ext>\.rar)",
+    re.IGNORECASE | re.DOTALL | re.ASCII,
 )
 
 

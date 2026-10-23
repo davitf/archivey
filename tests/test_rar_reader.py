@@ -3344,6 +3344,7 @@ _RARLAB_RAR_BANNER = (
         (_RARLAB_BANNER.format(version="7.0"), (7, 0)),
         (_RARLAB_BANNER.format(version="7.11"), (7, 11)),
         ("UNRAR 7.00 (RARLAB)", (7, 0)),
+        ("UNRAR\t7.00 (RARLAB)", (7, 0)),
     ],
 )
 def test_parse_unrar_banner_accepts_rarlab_floor(
@@ -3352,6 +3353,14 @@ def test_parse_unrar_banner_accepts_rarlab_floor(
     parsed = rar_unrar._parse_unrar_banner(banner)
     assert parsed.is_rarlab is True
     assert parsed.version == version
+
+
+def test_parse_unrar_banner_version_on_the_next_line_is_not_read() -> None:
+    # The gap is ``[ \t]+``: a ``RAR`` token at the end of one line does not take a
+    # version from the start of the next.
+    parsed = rar_unrar._parse_unrar_banner("UNRAR\n7.00 (RARLAB) Alexander Roshal")
+    assert parsed.is_rarlab is True
+    assert parsed.version is None
 
 
 def test_parse_unrar_banner_old_rarlab_is_still_rarlab() -> None:

@@ -5,21 +5,21 @@ first sections cover what holds across formats; then each format has a section o
 the same order: what it needs, how it lists and reads, and its quirks.
 
 The maintainer handbook has more depth on
-[7z](https://github.com/davitf/archivey/blob/main/dev-docs/formats/7z.md),
-[ISO](https://github.com/davitf/archivey/blob/main/dev-docs/formats/iso.md),
-[RAR](https://github.com/davitf/archivey/blob/main/dev-docs/formats/rar.md),
-[TAR](https://github.com/davitf/archivey/blob/main/dev-docs/formats/tar.md) and
-[ZIP](https://github.com/davitf/archivey/blob/main/dev-docs/formats/zip.md), and on the single-file
+[7z](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/7z.md),
+[ISO](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/iso.md),
+[RAR](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/rar.md),
+[TAR](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/tar.md) and
+[ZIP](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/zip.md), and on the single-file
 compressors: what they share in
-[single-file.md](https://github.com/davitf/archivey/blob/main/dev-docs/formats/single-file.md), then
-[gzip](https://github.com/davitf/archivey/blob/main/dev-docs/formats/gzip.md),
-[bzip2](https://github.com/davitf/archivey/blob/main/dev-docs/formats/bzip2.md), [xz, lzip and LZMA
-Alone](https://github.com/davitf/archivey/blob/main/dev-docs/formats/xz.md), [zstd and
-LZ4](https://github.com/davitf/archivey/blob/main/dev-docs/formats/zstd-lz4.md),
-[Brotli](https://github.com/davitf/archivey/blob/main/dev-docs/formats/brotli.md) and
-[`.Z`](https://github.com/davitf/archivey/blob/main/dev-docs/formats/unix-compress.md), and on [disk
-images](https://github.com/davitf/archivey/blob/main/dev-docs/formats/dmg.md) and
-[directories](https://github.com/davitf/archivey/blob/main/dev-docs/formats/directory.md).
+[single-file.md](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/single-file.md), then
+[gzip](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/gzip.md),
+[bzip2](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/bzip2.md), [xz, lzip and LZMA
+Alone](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/xz.md), [zstd and
+LZ4](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/zstd-lz4.md),
+[Brotli](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/brotli.md) and
+[`.Z`](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/unix-compress.md), and on [disk
+images](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/dmg.md) and
+[directories](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/directory.md).
 
 ## Quick matrix
 
@@ -34,7 +34,7 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
   `.tar.Z`, `.tar.zst`, `.tar.lz4`, `.tar.br`): needs what its compressor needs (below).
   Listing: needs decompression. Members: solid. Reads from a pipe.
 - **7z:** core for LZMA, LZMA2, Deflate, BZip2, Delta and the executable filters (BCJ, BCJ2,
-  ARM64 and the others); `[recommended]` adds PPMd, Deflate64, Brotli, LZ4, AES, and Zstandard
+  ARM64, RISC-V and the others); `[recommended]` adds PPMd, Deflate64, Brotli, LZ4, AES, and Zstandard
   before Python 3.14. Listing: from its index. Members: solid, unless written without solid
   blocks (`7z -ms=off`). Needs a source that can seek.
 - **RAR:** listing and uncompressed members in core; compressed members need the `unrar`
@@ -53,7 +53,7 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
 [Install](install.md) lists what each extra installs. `archivey[recommended]` is the usual choice,
 and `archivey[all]` adds the `[seekable]` accelerator. At run time,
 [`format_availability()`](api.md#archivey.format_availability) says what the current install can
-read. The [library analysis](https://github.com/davitf/archivey/blob/main/dev-docs/library-analysis.md)
+read. The [library analysis](https://github.com/archivey-dev/archivey/blob/main/dev-docs/library-analysis.md)
 explains the choice of each compression library, and
 [Acknowledgements](acknowledgements.md) credits them.
 
@@ -617,6 +617,10 @@ On a compressed tar, the stream's own checksum adds three cases:
   read runs at roughly four fifths of the speed of the same file with no filter. The filter slows
   with branch density: on data where every word is a branch, it runs about 15 times slower than on
   real code.
+- **RISC-V** (a filter 7-Zip 24 added for RISC-V executables) reads on a core install, decoded in
+  pure Python like ARM64. On real RISC-V code a read runs at roughly half the speed of the same
+  file with no filter. The filter slows with branch density: on data where every word is a branch,
+  it runs about 15 times slower than on real code.
 - Bytes after a coder's stream are corruption, as in a ZIP member ([ZIP](#damaged-and-unusual-endings)),
   except that a Zstandard or LZ4 coder reads concatenated frames as one stream, so a further frame is
   content that counts against the declared size.

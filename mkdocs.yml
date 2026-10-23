@@ -1,6 +1,6 @@
 site_name: Archivey
 site_description: Read, stream, and safely extract archives behind one uniform interface.
-site_url: https://davitf.github.io/archivey/
+site_url: https://archivey-dev.github.io/archivey/
 
 nav:
   - Home: index.md

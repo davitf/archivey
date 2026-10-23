@@ -40,11 +40,11 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://davitf.github.io/archivey/"
-Documentation = "https://davitf.github.io/archivey/cli/"
-Source = "https://github.com/davitf/archivey"
-Changelog = "https://github.com/davitf/archivey/blob/main/CHANGELOG.md"
-Issues = "https://github.com/davitf/archivey/issues"
+Homepage = "https://archivey-dev.github.io/archivey/"
+Documentation = "https://archivey-dev.github.io/archivey/cli/"
+Source = "https://github.com/archivey-dev/archivey"
+Changelog = "https://github.com/archivey-dev/archivey/blob/main/CHANGELOG.md"
+Issues = "https://github.com/archivey-dev/archivey/issues"
 
 # `archivey-cli` is there so `uvx archivey-cli` works: uvx runs the command named after
 # the package. `archivey` is the name people type after `pipx install archivey-cli`.
