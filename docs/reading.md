@@ -49,7 +49,9 @@ used up even if you leave the loop early. Inside a `stream_members` loop, `open`
 you leave with `break` ends at once on CPython. One kept in a variable, or one an exception left,
 holds the archive until you close it, so use it in a `with` block when the loop can stop early:
 `with archive.stream_members() as members:` ends the pass at the end of the block, and `with
-iter(archive) as members:` does the same for a loop over members. With
+iter(archive) as members:` does the same for a loop over members. A pass or member stream that
+nothing refers to any more never blocks the next call, on any Python: when a call finds the archive
+held, archivey runs a garbage collection and tries once more before it raises. With
 [`concurrent_operations=True`](#several-members-at-once) they work, from any thread, on every format,
 and so does `extract_all`.
 Streams from the pass never seek.
@@ -65,8 +67,10 @@ When the pass reaches the index, archivey fills in the rest on the members you a
 Until then `member.member_state_final` is `False`. From a pipe, the pass reaches a ZIP's index only
 when the sender closes the pipe, so the loop doesn't finish while the sender keeps it open.
 
-A `.gz` from a pipe that the sender keeps open opens at once, but the read that reaches its end
-waits until the sender closes the pipe ([Single-file compressors](formats.md#single-file-compressors)).
+A compressed file or a compressed tar from a pipe that the sender keeps open is decompressed from
+what has arrived. A short one can still wait at open, and a read past its last byte waits for the
+sender to close the pipe ([Single-file compressors](formats.md#single-file-compressors) says
+where).
 
 ??? note "Why can't the others come from a pipe?"
     7z keeps its index at the end of the file, and reading an ISO means jumping between places in
@@ -118,6 +122,13 @@ need the member list at once, one builds it while the others wait. Each member s
 to one thread. Opening the archive once per thread is also safe, as long as each thread opens it
 from its own path or file: one file object belongs to one reader. Closing the reader closes the
 streams still open on it, so `close()` may wait for reads in other threads to finish.
+
+Without `concurrent_operations=True` the reader belongs to one thread. If another thread is inside
+a reader call, such as `members()`, `open()`, or a `stream_members()` or `extract_all()` pass,
+`close()` raises `ArchiveyUsageError` and the reader stays open. Otherwise the close goes ahead, and
+the next `read()` on a member stream it closed raises `ValueError`, as a closed file does. Once a
+`close()` has returned, calling it again does nothing; after one that raised, the reader is still
+open and you still have to close it.
 
 ## Why these aren't on by default
 

@@ -57,7 +57,7 @@ it, because every backward seek restarts decryption from the member's start.
 | Declared-seekable DEFLATE-family stream, `use_rapidgzip=ON`, size below threshold | rapidgzip still selected (threshold ignored) |
 | Declared-seekable bzip2 under `AUTO`, known size < `INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE` | rapidgzip not selected; stdlib backend used |
 | Declared-seekable bzip2, `use_indexed_bzip2=ON`, size below that threshold | rapidgzip still selected (threshold ignored) |
-| Declared-seekable gzip without accelerator, caller seeks backward | Seek re-decompresses from start and warns/names `[seekable]` accelerator |
+| Declared-seekable gzip without accelerator, caller seeks backward | Seek re-decompresses from the nearest member or BGZF block start before the target, else from the start; reports `STREAM_REWIND_REDECOMPRESSES`, naming the `[seekable]` accelerator, once the discarded progress reaches `REWIND_REDECODE_WARN_BYTES` |
 
 ### Requirement: XZ and lzip use format-native indexes
 
@@ -76,7 +76,7 @@ uncompressed offset.
 | Seekable lzip source opens | Trailer scan locates block boundaries |
 | Seek within lzip | Only required block range is decompressed |
 
-### Requirement: Gzip and bzip2 random access use rapidgzip only
+### Requirement: rapidgzip is the only gzip and bzip2 accelerator
 
 The system SHALL use `rapidgzip` as the only optional accelerator library for
 both gzip and bzip2: gzip through `rapidgzip.RapidgzipFile`, bzip2 through
@@ -87,8 +87,8 @@ rapidgzip-bundled decoder.
 
 When rapidgzip is unavailable or disabled, gzip and bzip2 SHALL use stdlib
 decoders; backward seek is serviced by re-decompressing from the start, or for gzip
-from the nearest member start it knows (next requirement), and MUST not degrade
-silently.
+from the nearest member or BGZF block start it knows (§"gzip member starts are seek
+points", §"BGZF members are walked without decoding"), and MUST not degrade silently.
 
 The system MUST NOT run any rapidgzip decoder in the caller's process. The bzip2 decoder
 SHALL run in a child process with the same rules as the DEFLATE family's (next
@@ -229,7 +229,10 @@ short size, and a read after a seek past the end never returns bytes from offset
 mismatch the read SHALL be handed to the standard library decoder, whose verdict it then
 gives (`TruncatedError` for a cut, `CorruptionError` for a wrong ISIZE, a trailing-data
 report for appended bytes), except where a further gzip member follows the first: then the
-trailer records only the last member, and the backstop SHALL stand down. Before it compares
+trailer records only the last member, and the backstop SHALL stand down when that trailer
+holds the CRC-32 and the length of the end of the output (`compressed-streams`, *An
+accelerator preserves the error contract*). A further member alone SHALL NOT stand it down,
+since rapidgzip ends a last member cut right after its header with no error. Before it compares
 the length or stands down, the backstop SHALL check that rapidgzip's decode reached the end
 of the source; a decode that stopped short of it SHALL be handed to the standard library
 decoder the same way. A `1f 8b 08` in the file SHALL count as a further member only when
@@ -323,6 +326,9 @@ inside a DEFLATE block SHALL still surface as `CorruptionError`.
 | Truncated/corrupt container DEFLATE member (e.g. ZIP) | Container CRC mismatch → `CorruptionError`/`TruncatedError` via the verifying stage |
 | Valid concatenated multi-member gzip | Decompresses fully without false truncation |
 | A gzip member cut short and followed by a complete member, through rapidgzip, with the last trailer right or forged to match the bytes delivered | The error of the accelerator `OFF` |
+| Concatenated gzip or BGZF through rapidgzip whose last member is cut anywhere, right after its header included, or has a wrong ISIZE, however many members come before it | The bytes and the error of the accelerator `OFF` |
+| Valid concatenated gzip or BGZF through rapidgzip, an empty last member included, whatever the size of the last member | Read by rapidgzip to the end, with no handover to the standard library and a read-back of at most 4 MiB per trailer candidate; an empty last member whose header starts more than 1 KiB before the end of the non-zero data (a long `FNAME`) is handed over, with the same bytes and no error |
+| Concatenated gzip through rapidgzip whose last member is cut, with its last four bytes forged to the length, read after a seek that skipped output, the forged length starting before or after the seek target, or after a `SEEK_SET` to exactly the length of the output | `TruncatedError`, as with the accelerator `OFF`; a candidate starting before the seek target reads back the skipped part, up to 64 MiB in all, past which the standard library decides |
 | Cut or wrong-ISIZE one-member gzip through rapidgzip, after any seek, or with `1f 8b 08` in its body | The error of the accelerator `OFF`; after a seek short of the end that skipped output, then a read to the end, a wrong ISIZE hidden by four appended bytes equal to the length is the one exception |
 | Cut gzip whose last four bytes are forged to the length rapidgzip delivers: `seek(0, SEEK_END)`, or that seek, then `seek(0)` and a read | `TruncatedError`, as with the accelerator `OFF` |
 | Valid gzip with NUL padding, seek through rapidgzip | Lands and reads as with the accelerator `OFF` |
@@ -404,6 +410,8 @@ SHALL be reported the same way.
 | No index at all | the origin | yes, once progress passes the threshold |
 | Single-block xz / one-member lzip / `.Z` with no CLEAR codes | the origin | yes, same as above |
 | Multi-block xz, multi-member lzip | the containing block | only when the progress since that block passes the threshold |
+| Multi-frame zstd; multi-member gzip or BGZF on the stdlib engine | the containing frame, member or block | as above |
+| One-frame zstd, zstd ZIP member (`single_stream`), one-member gzip on the stdlib engine | the origin | yes, once progress passes the threshold |
 | Accelerated gzip/bzip2, dense index | the containing block | as above |
 | Accelerated gzip/bzip2, sparse index | up to a block back | yes, once past the threshold |
 | Any codec, less progress discarded than the threshold | — | no |
@@ -417,7 +425,9 @@ brotli, lz4) reporting.
 The event SHALL live on the stream operation and cumulative owning-reader
 aggregate, never on `CostReceipt` or `ArchiveInfo`. Gzip/bzip2/deflate/zlib context names the
 `[seekable]` accelerator when a rapidgzip path was eligible; brotli, lz4, and zstd record no
-accelerator. Stdlib zstd SHALL rewind in place like other index-less codecs. When a
+accelerator. A zstd stream SHALL rewind in place: from the nearest frame start it knows
+(§"zstd frame starts are seek points"), or from the start when it has one frame or is a
+container member that is one frame (`single_stream`). When a
 deflate/zlib stream falls back to stdlib `zlib` (accelerator absent, `OFF`, or below the
 `AUTO` threshold), its rewind SHALL name the `[seekable]` accelerator, consistent with the
 gzip fallback.
@@ -439,7 +449,8 @@ first. See `diagnostics` for the general rule.
 | Rewind within one block of a multi-block `.xz` | No occurrence |
 | Rewind of fewer than `REWIND_REDECODE_WARN_BYTES` on any codec | No occurrence, unless `min_redecode_bytes` meets the threshold |
 | Rewind across a sparse gap in an engaged `rapidgzip` index | One occurrence naming the accelerator |
-| zstd stream rewinds via stdlib backend | Re-decompresses from start in place; one occurrence when above the threshold |
+| One-frame zstd stream rewinds | Re-decompresses from start in place; one occurrence when above the threshold |
+| Multi-frame zstd stream rewinds within one frame | Resumes at that frame's start; no occurrence unless the progress since that frame passes the threshold |
 | Stdlib-fallback zlib/deflate stream rewinds | One occurrence naming the `[seekable]` accelerator |
 | Stream with no seek-point table (stdlib LZMA Alone, brotli, lz4) | Resume point is the origin; one occurrence once progress passes the threshold |
 | `STORED` member seeks backward | No occurrence, at any distance |
@@ -475,6 +486,24 @@ size it reports stays exact. Thinning SHALL emit `SEEK_INDEX_DEGRADED` (failure
 type `SeekTableThinned`). The cap is structural rather than a config field
 because passing it costs seek speed, never a readable file.
 
+A point an index scan gave (the xz index, lzip trailers, the zstd seek table, the
+BGZF walk), and a point recorded by a decode that resumed at such a point, SHALL be
+marked as the index's. When two points name the same compressed offset with the same
+resume state but different decompressed offsets, and either is the index's, the index
+is wrong; so is it when a decode reaches the end with another total than the index
+gave. Only points the seek table holds SHALL be compared, so the check costs no more
+memory than the table. The stream SHALL then drop every point that is the index's,
+forget a size the index gave (or a decode that resumed at an index point reached), and
+emit
+`SEEK_INDEX_DEGRADED` (scan `decode_check`, failure type `SeekIndexContradicted`), once
+per stream. Later seeks SHALL resume only from points a decode from the origin found,
+and a later size query SHALL decode to the end. A decoder that resumed at an index
+point SHALL be restarted from such a point before the read, seek or size query that
+found the contradiction returns, so that operation returns the right bytes and
+position; the file SHALL NOT be refused. An index point and a decoded point at the
+same decompressed offset with different compressed offsets SHALL NOT raise: the
+decoded point is kept (an empty lzip member makes such a pair in an honest file).
+
 #### Scenario: seek-index degradation matrix
 
 | Case | Expected |
@@ -490,6 +519,9 @@ because passing it costs seek speed, never a readable file.
 | A forward read's per-stream xz scan finds more blocks than the cap | That stream's blocks thinned by spacing; `SEEK_INDEX_DEGRADED`; seeks read the right bytes |
 | Forward read records more points than the cap | Table thinned by spacing; `SEEK_INDEX_DEGRADED`; later seeks read the right bytes |
 | XZ blocks after a resume point decode to a size other than the stream index declares | `CorruptionError` |
+| A forward read finds a frame or member start at another output offset than the zstd seek table or BGZF walk gave it | `SEEK_INDEX_DEGRADED` (scan `decode_check`, `SeekIndexContradicted`); index points and size dropped; later seeks and the size match a read from the start |
+| The same, found by a decode that resumed at an index point | That read, seek or size query restarts from a decoded point and returns the right bytes |
+| Lzip file with an empty member; size query before or after a forward read | Every read right; no collision error, no diagnostic |
 
 ### Requirement: Unix-compress uses CLEAR seek points
 
@@ -555,8 +587,9 @@ A forward seek past the known points, a `SEEK_END`, or a size query SHALL read t
 *Seekable Zstandard* seek table when the source ends with one (skippable magic
 `0x184D2A5E`, footer magic `0x8F92EAB1`). Its frame sizes SHALL give the seek points and
 the total size, with no decoding. The table is trusted like the xz and lzip indexes
-(threat-model O17); its per-frame XXH64 checksums SHALL NOT be checked. A table over the
-seek-table cap SHALL be thinned and keep the exact total.
+(threat-model O17) until a decode contradicts it, which drops it (§"Recoverable
+seek-index degradation is diagnostic data"); its per-frame XXH64 checksums SHALL NOT be
+checked. A table over the seek-table cap SHALL be thinned and keep the exact total.
 
 #### Scenario: seek table matrix
 
@@ -565,6 +598,7 @@ seek-table cap SHALL be thinned and keep the exact total.
 | `seek(0, SEEK_END)` | Total from the table; only the table is read |
 | Seek into frame N | Decoding resumes at frame N's start |
 | Reserved descriptor bits set, a frame of 0 compressed bytes, or frame sizes that do not reach the table | `SEEK_INDEX_DEGRADED` (scan `zstd_seek_table`); reads decode from the start |
+| A frame's decompressed size is wrong; read from the start past the next frame, then seek back into the first | `SEEK_INDEX_DEGRADED` (scan `decode_check`); the seek returns the first frame's bytes; the size is the decoded one |
 | Zeros after the table | No table found, no diagnostic; reads decode from the start |
 
 ### Requirement: gzip member starts are seek points
@@ -584,20 +618,30 @@ points.
 
 ### Requirement: BGZF members are walked without decoding
 
-A forward seek past the known points, a `SEEK_END`, or a size query SHALL walk a BGZF
-file's members from the start, reading the file once front to back and inflating
-nothing: each member's `BC` extra subfield gives its size and its ISIZE its output. The
-walk SHALL stop quietly at the first member without one, keeping the points before it;
-the size is known only when it reaches the end of the file. The sizes are trusted like
-the xz and lzip indexes (threat-model O17). A file whose first member is not BGZF SHALL
-cost one read buffer's worth before the walk stops. A `.gzi` file is not read.
+A forward seek past the known points or a `SEEK_END` SHALL walk a BGZF file's members
+from the start, reading the file once front to back and inflating nothing: each member's
+`BC` extra subfield gives its size and its ISIZE its output. The walk SHALL stop quietly
+at the first member without one, keeping the points before it; the size is known only
+when it reaches the end of the file. The sizes are trusted like the xz and lzip indexes
+(threat-model O17) until a decode contradicts them, which drops the walk's points and
+size. A file whose first member is not BGZF SHALL cost one read buffer's worth before the
+walk stops. A `.gzi` file is not read.
+
+A size query (`try_get_size()`, `ArchiveStream.size`) SHALL NOT walk the file, because
+the walk reads all of it and a size query must be cheap. Before a walk or a read to the
+end, the size SHALL be `None`, as for plain gzip. After a walk that reached the end of
+the file, or a read to the end, the size query SHALL return the size.
 
 #### Scenario: BGZF walk matrix
 
 | Case | Expected |
 | --- | --- |
 | `seek(0, SEEK_END)` | Total from the walk; the file read once in large pieces, nothing inflated |
+| Size query on a new stream | `None`; no walk, at most one read buffer's worth read |
+| Size query after `seek(0, SEEK_END)`, a forward seek that walked, or a read to the end | The total |
 | Gzip file that is not BGZF | One read buffer's worth read; no points, no size |
 | Seek into block N | Decoding resumes at block N's start |
 | BGZF blocks, then a plain member | Points for the blocks; size from decoding to the end |
 | Walk over the seek-table cap | `SEEK_INDEX_DEGRADED` (scan `bgzf_blocks`, `SeekTableThinned`); exact total kept |
+| A member's `BSIZE` covers the next member too; size query, then a read from the start | Size first the walk's; the read is right; `SEEK_INDEX_DEGRADED` (scan `decode_check`); then size and seeks are the decode's |
+| The member hidden that way is the last data member | As above: the size query, then the read to the end, which reports once. A read to the end first: the decoded size, no walk, no report |

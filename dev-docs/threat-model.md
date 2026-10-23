@@ -49,7 +49,7 @@ Older references use register ids (`O1` to `O22`, `C1` to `C4`). The
 | Boundary | What crosses it | What holds there |
 | --- | --- | --- |
 | Source bytes to parsers | Archive structure | Pure-Python parsers for ZIP, 7z, RAR and TAR headers, `pycdlib` for ISO; every read a header field sizes goes through a bounded source ([resource use](#resource-use-is-bounded)) |
-| Parsers to decoders | Compressed streams, declared decoder parameters | `DecoderLimits` checked before allocation; crash-prone native decoders in a child process ([errors](#errors-are-typed-and-honest)) |
+| Parsers to decoders | Compressed streams, declared decoder parameters; on POSIX, a read-only descriptor of the archive file for a rapidgzip child that reads a member's byte range itself (the child's copy outlives the parent's handle, so the parent checks before each call that its own source is still open) | `DecoderLimits` checked before allocation; crash-prone native decoders in a child process ([errors](#errors-are-typed-and-honest)) |
 | archivey to external programs | Archive path, member selection, password | RARLAB `unrar` / `rar`, or `unar` under `"auto"`; fixed argv; a member name only inside an include-mask switch, or an entry index ([external programs](#external-programs-get-a-fixed-command-line)) |
 | archivey to the destination | Names, link targets, modes, data | `check_universal` and the extraction coordinator ([extraction](#extraction-stays-in-the-destination), [names](#names-are-safe-on-the-target-filesystem)) |
 | archivey to a terminal or log | Messages carrying archive-derived text | Escaped at construction ([terminal](#attacker-bytes-reaching-a-terminal-are-inert)) |
@@ -79,7 +79,12 @@ no member replaces the destination itself.
   (devices, FIFOs, sockets), and a non-directory member whose normalized name is
   `"."` or `""` (which would replace the destination root with a file). It resolves
   the parent and checks containment, and checks symlink targets lexically. A
-  rejection names the member as listed, not its disk spelling.
+  rejection names the member as listed, not its disk spelling. The resolution
+  (`resolve_or_raise_on_loop`) is archivey's own walk on POSIX, one link at a time as
+  the kernel goes: a component it cannot look at raises and the member is refused.
+  `os.path.realpath` and non-strict `Path.resolve()` keep such a component as a name
+  and go on, so a link chain whose expansion passes `PATH_MAX` (`ENAMETOOLONG`) looked
+  inside to them while the kernel followed it outside (CVE-2025-4517 in `tarfile`).
 - `internal/extraction.py` `ExtractionCoordinator._write_symlink` re-resolves a new
   symlink against the live tree after `os.symlink` and removes it if it escapes, which
   catches a chain staged by earlier members. That is the third layer after the lexical
@@ -127,7 +132,11 @@ which are safe to delete once no extraction is running.
 `test_replace_symlink_no_write_through`,
 `test_hardlink_replaces_a_destination_symlink_without_following_it`,
 `test_error_when_dest_is_a_file_never_deletes_it`,
-`test_dest_symlink_to_dir_is_followed_into_target`, `test_strict_strips_setuid`.
+`test_dest_symlink_to_dir_is_followed_into_target`, `test_strict_strips_setuid`,
+`test_resolve_or_raise_on_loop_raises_when_a_component_cannot_be_looked_up`.
+`tests/test_cve_regressions.py`: `test_cve_2025_4517_link_chain_past_path_max`,
+`test_name_that_leads_out`, `test_link_that_leads_out`, `test_tar_link_that_leads_out`,
+`test_link_planted_in_the_destination`.
 `tests/test_hardlink_target_rule.py`: `test_a_hardlink_to_a_refused_member_is_refused`,
 `test_a_hardlink_to_an_excluded_refused_member_is_refused`,
 `test_a_hardlink_to_a_selector_excluded_member_is_materialized`,
@@ -142,6 +151,10 @@ which are safe to delete once no extraction is running.
 `tests/test_property_safety.py` covers `normalize_member_name`, `check_universal` and
 `resolve_link_target_name` over arbitrary input, and the mutation harness asserts the
 destination is still a directory after every successful extract.
+`tests/test_cve_regressions_7z_rar.py` replays the traversal and link-chain advisories
+against py7zr and WinRAR as 7z and RAR5 archives (7z `S_IFLNK` attribute records and
+RAR5 redirect records, every policy, random and streaming), where the tests above use
+TAR.
 
 ### A later member cannot make an extracted symlink escape
 
@@ -561,8 +574,8 @@ left to the source, because the source bounds them only by the image: a Rock Rid
 entry's area must end inside its logical block, as pycdlib itself requires after its
 read and the Linux kernel requires, so a `CE` declaring 512 MiB in a sparse 600 MiB
 image is refused without the read (545 MiB peak before), and so is each further link of
-a `CE` chain, which pycdlib follows from 1.21 (a 256 MiB second link peaked at 256 MiB
-under default limits before); and a path table must end inside the image
+a `CE` chain, which pycdlib follows (a 256 MiB second link peaked at 256 MiB under
+default limits before); and a path table must end inside the image
 ([Listing](#listing) weighs it against `max_metadata_bytes` too). This bounds one read;
 how many records and continuation areas `pycdlib` builds from those reads is the listing
 budget's ([Listing](#listing)).
@@ -770,6 +783,8 @@ much before the ratio refuses it, where it wrote about 5 MiB before that floor e
 `::test_recorded_size_check_skips_members_the_run_does_not_decode`,
 `::test_forged_recorded_size_fails_only_its_member`;
 `tests/test_cross_os_extraction.py::test_link_limit_copies_trip_the_archive_wide_ratio`.
+`tests/test_cve_regressions_7z_rar.py::test_py7zr_cve_2026_55195_decompression_bomb`
+(7z, refused from the recorded sizes).
 
 #### RAR reads by glob-named member
 
@@ -905,19 +920,23 @@ writes itself) is exercised against mutated and coverage-guided input.
    `openspec/specs/testing-contract/spec.md`). `atheris` is in the `fuzz` dependency
    group only.
 
-pycdlib loops forever when corrupt directory records form a back-edge, in any namespace
-`open_fp` walks, UDF included, where it also allocates on every pass. A UDF File
-Identifier naming an ancestor's ICB grew memory by about 65 MB a second under default
-limits. `internal/backends/iso_reader.py`
-`_install_pycdlib_directory_cycle_guard` installs a queue, confined to `pycdlib`'s
-namespace, that drops a directory extent or UDF File Entry already scheduled; valid
-trees never revisit one.
+pycdlib before 1.22 looped forever when corrupt directory records formed a back-edge,
+in any namespace `open_fp` walks, UDF included, where it also allocated on every pass. A
+UDF File Identifier naming an ancestor's ICB grew memory by about 65 MB a second under
+default limits. From 1.22, the minimum archivey requires, pycdlib detects the loop and
+raises "ISO Directory Records form a loop" or "UDF File Entries form a loop", which
+archivey reports as `CorruptionError`. So a looping tree is refused at open, in any tree
+pycdlib walks.
 
 Disclosure goes through GitHub private vulnerability reporting ([`SECURITY.md`](../SECURITY.md)).
 OSS-Fuzz [waits until archivey has more users](#oss-fuzz).
 
 **Tests.** `tests/test_iso.py::test_pycdlib_directory_cycle_does_not_hang` (plain, Rock
 Ridge and Joliet), `::test_pycdlib_udf_directory_cycle_does_not_hang` (UDF).
+`tests/test_cve_regressions_7z_rar.py` replays published 7z and RAR reader advisories
+on hand-built headers: a COPY folder short of its size, a cyclic coder graph, huge
+declared counts (with an allocation bound), pack-stream counts that must parse in
+linear time, and RAR headers too small to hold their own fields.
 
 ### Directory sources changed concurrently
 
@@ -1004,7 +1023,12 @@ and tqdm's `desc` (escaped) is outside the sweep.
 `test_cli_does_not_escape_a_native_path`); `tests/test_cli.py::test_extract_escapes_*`,
 `test_extract_summary_escapes_*`, `test_hoist_escapes_*`, `test_info_escapes_*`,
 `test_missing_archive_name_is_escaped_once`. The cross-platform CLI tests use U+2028;
-the ANSI/CR spoof is Unix-only, since NTFS refuses control bytes in names.
+the ANSI/CR spoof tests extract under `TRUSTED`, which writes the raw bytes, so they
+are Unix-only, since NTFS refuses control bytes in names.
+`tests/test_cve_regressions_7z_rar.py::test_unrar_cve_2024_33899_escape_sequences_in_names`
+replays the unrar advisory over a RAR's member names through `list`, `test -v` and
+`extract`. It runs on every platform, because the default policy writes each control
+byte as `%XX` before the write.
 
 ### Detection is bounded and says when it guessed
 
@@ -1122,7 +1146,18 @@ nothing; the key-derivation budget allows about ten seconds; a late-CRC 7z folde
 folder size times candidates; a ZIP central directory whose comments are nothing but
 central header signatures lists at about 155 ns a byte (2.0 s for 13 MB, CPython 3.11),
 where an ordinary directory lists at about 5 ns, because each signature is checked for a
-swallowed entry ([ZIP §2.2](formats/zip.md#22-open-and-list)). A ZIP read from a pipe
+swallowed entry ([ZIP §2.2](formats/zip.md#22-open-and-list)). On declared seek demand,
+a forward seek past the known points, a `SEEK_END` or a size query reads a Seekable
+Zstandard seek table, and a forward seek past the known points or a `SEEK_END` walks a
+BGZF file's members. Both scans are linear but run one
+Python step per table entry or member, and the scan is paid before the table's final
+consistency check can raise. A table whose entries each name a one-byte frame, or a
+file of empty members, costs about 70-95 ns a byte, about 1.5 minutes a GB: a 4,000,000-entry table
+(36 MB) parses in 3.36 s, and 1,000,000 empty BGZF members (28 MB) walk in 1.95 s.
+Memory stays bounded, because the seek-point table is thinned at `MAX_SEEK_POINTS`
+([seekable-decompressor-streams](../openspec/specs/seekable-decompressor-streams/spec.md)
+§"zstd reads the Seekable Zstandard seek table", §"BGZF members are walked without
+decoding"). A ZIP read from a pipe
 consumes the stream once, and the entries its directory places in the bytes kept after
 its members consume those at most twice more, however many it names there
 ([Resource use is bounded](#resource-use-is-bounded)). A "work per output byte" limit
@@ -1168,19 +1203,45 @@ it, and avoiding that is the index's purpose. Decoding from the start before the
 cold seek would remove fast random access for every honest file, and xz's and lzip's
 own tools trust their indexes the same way.
 
-What the design still catches: a seek landing inside the misdescribed region resumes
-from a checked point before it and raises when the decode reaches the end of the lying
-unit (the member's trailer for lzip and BGZF, the stream end for xz, the start of the
-frame the table placed elsewhere for zstd); bytes returned before that are correct for their
-offsets. A seek past the lie followed by a read to the end is not
-caught, since every later unit is genuine. A diagnostic for an ambiguous trailer walk was
-considered and not taken: an attacker who controls the trailers can avoid it. Public:
+What the design still catches. For lzip, xz and a BGZF ISIZE that lies, a seek landing
+inside the misdescribed region resumes from a checked point before it and raises when
+the decode reaches the end of the lying unit (the member's trailer for lzip and BGZF, the
+stream end for xz); bytes returned before that are correct for their offsets. A zstd
+seek table, or a BGZF BSIZE, can misstate the output size of a unit whose data is
+genuine, so nothing raises there. Instead the stream compares each unit start a decode
+finds with the index. When the two put the same compressed offset (with the same resume
+state) at different output offsets, the index is wrong, and the stream drops every point
+the index gave and every point a decode counted from one, forgets a size the index gave,
+and emits `SEEK_INDEX_DEGRADED` (scan `decode_check`, type `SeekIndexContradicted`).
+A decode that reaches the end with another total than the index gave is the same
+contradiction; it catches a lie in the last unit, which no index point follows. Later
+seeks use only the points found by a decode from the start, and a size query decodes to
+the end. A decode in progress that began at an index point restarts from such a point,
+so the read, seek or size query that found the lie returns the right bytes and the right
+position. Ruled by davi on 2026-10-20: the index is only an accelerator, and a file that
+zstd or gzip decodes is not refused. A lie is caught once a decode passes the first unit
+start the index lists after it, or reaches the end. Not caught: a cold seek past the lie
+followed by a read to the end (every later unit is genuine, and the decode agrees with
+the index's shifted offsets); the bytes a decode returned, and a size the index gave,
+before the decode reached that unit start or the end; and, once a table over the cap
+has been thinned, a lie at a unit start the table no longer holds (the check compares
+only points the table holds, so it costs no more memory than the table), until the
+decode reaches a start the table kept or the end. A size asked only after a decode
+reached the end is the decoded one, and the index is then never read, so that order
+reports nothing. Where the index and a decode put two different compressed offsets at
+one output offset, nothing is proved (an empty lzip member makes that pair in an honest
+file): the decoded point is kept, and the check above catches the lie at the next unit
+start. A diagnostic for an ambiguous trailer walk was considered and not taken: an
+attacker who controls the trailers can avoid it. Public:
 [the integrity guarantee](../docs/errors-and-diagnostics.md#the-integrity-guarantee) and
 [where the guarantees stop](../docs/security.md#where-the-guarantees-stop). Tests:
 `tests/test_seekable_streams.py::test_lzip_cold_seek_trusts_a_self_consistent_trailer_chain`,
 `::test_xz_cold_seek_trusts_a_self_consistent_block_index`,
 `tests/test_zstd_seekable.py::test_cold_seek_trusts_a_self_consistent_table`,
-`tests/test_bgzf_seek.py::test_bgzf_cold_seek_trusts_the_block_sizes`.
+`::test_a_forward_read_that_contradicts_the_table_drops_it`,
+`::test_a_seek_into_a_misplaced_frame_drops_the_table_when_the_decode_reaches_it`,
+`tests/test_bgzf_seek.py::test_bgzf_cold_seek_trusts_the_block_sizes`,
+`::test_a_forward_read_that_contradicts_the_walk_drops_it`.
 
 ### Windows directory sources
 

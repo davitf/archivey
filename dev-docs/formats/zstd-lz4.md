@@ -132,8 +132,11 @@ compressed and decompressed size, under a 9-byte footer: frame count, a descript
 the magic `0x8F92EAB1`. A forward seek past the known points, `SEEK_END` or a size query
 reads that table (`codecs/zstd_seek_table.py`): every frame becomes a resume point and the
 total is the stream's size, with nothing decoded. The table is trusted, like the xz and lzip
-indexes (§5). Its optional per-frame checksums are the low 32 bits of XXH64, which the
-standard library lacks, so they are not checked; a frame's own content checksum still is.
+indexes (§5), until a decode finds a frame at another output offset than the table gives
+it, or reaches the end with another total: the stream then drops the table's points and
+size and reports `SEEK_INDEX_DEGRADED` (scan `decode_check`; threat-model O17). Its
+optional per-frame checksums are the low 32 bits of XXH64, which the standard library
+lacks, so they are not checked; a frame's own content checksum still is.
 A table with reserved descriptor bits set, or whose frames do not end where the table
 starts, emits `SEEK_INDEX_DEGRADED` (scan `zstd_seek_table`) and reads decode from the
 start. The table must end the file: zeros after it hide it, and the file then seeks like

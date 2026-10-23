@@ -112,10 +112,10 @@ decodes with it in this process, so having one installed does not by itself re-e
 GIL. rapidgzip decodes only in a child process, so the caller's process never imports it. A
 package that is installed but fails to import SHALL be treated as absent. So SHALL a package
 archivey does not use on the running interpreter because it misreads data or crashes there
-(today rapidgzip, lz4 and pyppmd under PyPy): its `MissingComponent` carries a `reason`, and
+(today rapidgzip, lz4, pyppmd and inflate64 under PyPy): its `MissingComponent` carries a `reason`, and
 every report of that component SHALL give the reason in place of the install advice, since
-installing the package would not help. lz4 and pyppmd lower format support, so both
-reporting channels carry them. rapidgzip is an accelerator and never lowers support, so it
+installing the package would not help. lz4, pyppmd and inflate64 lower format support, so
+both reporting channels carry them. rapidgzip is an accelerator and never lowers support, so it
 reaches only the `ON` refusal and the rewind report.
 
 The system SHALL keep `[all]` as the conventional superset; it MUST resolve to
@@ -154,7 +154,7 @@ NOT list `uncompresspy` in any user-facing extra or the `dev` group.
 | `pip install archivey[all]` | `[recommended]` + `[seekable]` |
 | ZIP member needs Deflate64 with no extras | `PackageNotInstalledError` naming `archivey[recommended]`, never a format-named extra |
 | Any optional package absent, compared across both channels | The hint in the raised error and the one reported by `format_availability()` are the same string |
-| lz4 or pyppmd installed, running under PyPy | Treated as absent; both channels give the reason archivey does not use it there, not install advice |
+| A package archivey does not use under PyPy that lowers format support (lz4, pyppmd, inflate64), installed, running under PyPy | Treated as absent; both channels give the reason archivey does not use it there, not install advice |
 | `pip install archivey[7z]` | Fails: the extra no longer exists |
 
 ### Requirement: RAR data uses RARLAB unrar only
@@ -355,6 +355,26 @@ Reason: Python packaging has no default extras, so `uvx archivey` runs the core 
 | `pipx install archivey-cli` then `archivey --version` | Command runs |
 | Root version bumped without the companion's version or pin | `tests/test_cli_companion_package.py` fails |
 | Tag `vX.Y.Z` where either built wheel has another version | `publish.yml` build job fails before upload |
+
+### Requirement: Source distributions hold only what a build needs
+
+The `archivey` sdist SHALL hold `src/`, `LICENSE`, `README.md`, `CHANGELOG.md`, and the
+files the build backend adds (`pyproject.toml`, `PKG-INFO`, the repository's
+`.gitignore`). The `archivey-cli` sdist SHALL hold its `LICENSE`, `README.md` and
+`pyproject.toml` plus the same generated files. Tests SHALL NOT be shipped in the sdist.
+
+Reason: without a list the build packs every tracked file (the 0.2.0rc1 sdist was about
+7.5 MB with design notes and tests). Many tests read files that exist only in a git
+checkout (`scripts/`, `review/`, `openspec/`, `.github/`), so the suite would not pass
+from an unpacked sdist; packagers who run tests use the git tag.
+
+#### Scenario: sdist contents
+
+| Case | Expected |
+| --- | --- |
+| Tag `vX.Y.Z`, either sdist holds a top-level entry not listed above | `publish.yml` build job fails before upload |
+| `only-include` in `pyproject.toml` changed without the `publish.yml` expectation | `tests/test_sdist_contents.py` fails |
+| Unpack the `archivey` sdist and build a wheel from it | Builds; no `tests/` directory |
 
 ### Requirement: Terminal-safe display helpers live in the public archivey.terminal module
 

@@ -75,7 +75,6 @@ from typing import TYPE_CHECKING, BinaryIO
 
 from archivey.config import (
     DEFAULT_ARCHIVEY_CONFIG,
-    AcceleratorMode,
     ProcessIsolation,
 )
 from archivey.detection import DetectedBy, DetectionConfidence, FormatInfo
@@ -99,6 +98,7 @@ from archivey.internal.detection_cost_receipt import MutableDetectionCostReceipt
 from archivey.internal.detection_workspace import (
     DETECTION_LIMIT,
     PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE,
+    CandidateView,
     PrefixWorkspace,
 )
 from archivey.internal.diagnostics_collector import (
@@ -170,8 +170,10 @@ _INNER_TAR_MAX_PROBE_BYTES = 1 << 20
 _PROBE_STOPPING_SIGNATURES: tuple[tuple[bytes, str], ...] = (
     (
         bytes.fromhex("d0cf11e0a1b11ae1"),
-        "an OLE compound file signature (.doc, .xls, .ppt, .msi, Thumbs.db), "
-        "which is not an archive format",
+        (
+            "an OLE compound file signature (.doc, .xls, .ppt, .msi, Thumbs.db), "
+            "which is not an archive format"
+        ),
     ),
 )
 
@@ -187,11 +189,14 @@ def _non_archive_signature(data: bytes) -> str | None:
 class _BoundedPeekReader(ReadOnlyIOStream):
     """A bounded, non-consuming reader over a ``peek_more`` callable.
 
-    ``peek_more(n)`` returns the candidate's first ``n`` bytes without consuming them
-    (idempotent, growing supersets — a workspace candidate view). Reads walk an
-    internal offset over successive peeks (caching the last buffer so growth stays
-    linear), letting a codec pull exactly as much compressed input as it needs and
-    never more than ``limit`` (one maximum compressor block).
+    ``peek_more(end, start)`` returns the candidate's bytes ``[start, end)`` without
+    consuming them (a workspace :class:`CandidateView`). The reader keeps what it has
+    peeked and asks only for the bytes past it, and the workspace takes only those
+    bytes from its source (``ArchiveSource.peek_arrived``'s ``start``), so the cost
+    stays linear in the bytes read, plus a fixed cost per peek, even when each peek
+    grows the prefix by a few bytes. Reads walk an internal offset over that buffer,
+    letting a codec pull exactly as much compressed input as it needs and never more
+    than ``limit`` (one maximum compressor block).
 
     Seekable within the bound so codecs that use seek during a probe (or need a
     repositionable view of the peeked prefix) can still run; seeking never pulls
@@ -212,14 +217,14 @@ class _BoundedPeekReader(ReadOnlyIOStream):
     """
 
     def __init__(
-        self, peek_more: Callable[[int], bytes], limit: int, *, arrived: bool = False
+        self, peek_more: CandidateView, limit: int, *, arrived: bool = False
     ) -> None:
         super().__init__()
         self._peek_more = peek_more
         self._limit = limit
         self._arrived = arrived
         self._offset = 0
-        self._buf = b""
+        self._buf = bytearray()
         # Set when a read asked for bytes past ``limit`` and the window was full, so the
         # bound (not the end of the source) cut the read short.
         self.hit_limit = False
@@ -252,23 +257,23 @@ class _BoundedPeekReader(ReadOnlyIOStream):
         past_limit = n < 0 or self._offset + n > self._limit
         end = self._limit if n < 0 else min(self._offset + n, self._limit)
         if end > len(self._buf):
-            self._buf = self._peek_more(end)  # a superset of the current buffer
+            self._buf += self._peek_more(end, len(self._buf))
             # Peek again while the view is short of what this read must return: a
             # drain wants all of it, and a sized read after a seek past the buffer
-            # wants a byte at the offset. A peek that does not grow the buffer is the
-            # end of the source.
+            # wants a byte at the offset. A peek that adds nothing is the end of the
+            # source.
             while (
                 self._arrived
                 and len(self._buf) < end
                 and (n < 0 or len(self._buf) <= self._offset)
             ):
-                grown = self._peek_more(end)
-                if len(grown) <= len(self._buf):
+                grown = self._peek_more(end, len(self._buf))
+                if not grown:
                     break
-                self._buf = grown
+                self._buf += grown
         if past_limit and len(self._buf) >= self._limit:
             self.hit_limit = True
-        chunk = self._buf[self._offset : end]
+        chunk = bytes(self._buf[self._offset : end])
         self._offset += len(chunk)
         return chunk
 
@@ -366,7 +371,7 @@ def _match_extension(
 
 def _probe_inner_tar(
     stream_format: StreamFormat,
-    peek_more: Callable[[int], bytes],
+    peek_more: CandidateView,
     workspace: PrefixWorkspace | None = None,
     *,
     view_arrived: bool = False,
@@ -406,7 +411,11 @@ def _probe_inner_tar(
     that cannot cover the probe (``BUDGET_EXHAUSTED``).
     """
     # Imported here rather than at module load to avoid a detection<->codecs import cycle.
-    from archivey.internal.config import DecoderLimits, StreamConfig
+    from archivey.internal.config import (
+        DecoderLimits,
+        StreamConfig,
+        without_accelerators,
+    )
     from archivey.internal.streams.codecs import (
         codec_for_stream_format,
         is_codec_available,
@@ -467,18 +476,18 @@ def _probe_inner_tar(
         with open_codec_stream(
             codec,
             codec_input,
-            config=StreamConfig(
-                streaming=True,
-                seekable=not view_arrived,
-                use_rapidgzip=AcceleratorMode.OFF,
-                use_indexed_bzip2=AcceleratorMode.OFF,
-                decoder_limits=DecoderLimits.UNLIMITED,
-                probe_read_bound=_INNER_TAR_PROBE_BYTES,
-                process_isolation=(
-                    workspace.isolation
-                    if workspace is not None
-                    else ProcessIsolation.KNOWN_CRASHES
-                ),
+            config=without_accelerators(
+                StreamConfig(
+                    streaming=True,
+                    seekable=not view_arrived,
+                    decoder_limits=DecoderLimits.UNLIMITED,
+                    probe_read_bound=_INNER_TAR_PROBE_BYTES,
+                    process_isolation=(
+                        workspace.isolation
+                        if workspace is not None
+                        else ProcessIsolation.KNOWN_CRASHES
+                    ),
+                )
             ),
         ) as stream:
             head = stream.read(_INNER_TAR_PROBE_BYTES)
@@ -632,7 +641,7 @@ def _resolve_single_file_or_tar(
     fmt: ArchiveFormat,
     base_confidence: DetectionConfidence,
     base_detected_by: DetectedBy,
-    peek_more: Callable[[int], bytes],
+    peek_more: CandidateView,
     *,
     ext_match: tuple[ArchiveFormat, str] | None = None,
     workspace: PrefixWorkspace | None = None,
@@ -652,17 +661,14 @@ def _resolve_single_file_or_tar(
     if (
         fmt.container == ContainerFormat.RAW_STREAM
         and fmt.stream != StreamFormat.UNCOMPRESSED
-    ):
-        if _probe_inner_tar(
-            fmt.stream, peek_more, workspace, view_arrived=view_arrived
-        ):
-            tar_fmt = ArchiveFormat(ContainerFormat.TAR, fmt.stream)
-            return FormatInfo(
-                tar_fmt,
-                DetectionConfidence.PROBABLE,
-                "content_probe",
-                corroborated=True,
-            )
+    ) and _probe_inner_tar(fmt.stream, peek_more, workspace, view_arrived=view_arrived):
+        tar_fmt = ArchiveFormat(ContainerFormat.TAR, fmt.stream)
+        return FormatInfo(
+            tar_fmt,
+            DetectionConfidence.PROBABLE,
+            "content_probe",
+            corroborated=True,
+        )
     corroborated = base_detected_by == "content_probe" and _extension_corroborates(
         ext_match, fmt
     )
@@ -960,6 +966,15 @@ def detect_format(
     confidence and ``detected_by="directory"``, matching ``open_archive``, which reads
     it as a directory archive. Nothing is read to decide that, so ``cost_receipt`` is
     the zero receipt (one pass, no bytes).
+
+    Raises:
+        FormatDetectionError: No format matches the source's contents or name.
+        TruncatedError: The path names part of a numbered split set with a gap.
+        DiagnosticRaisedError: A diagnostic that the :class:`~archivey.DiagnosticPolicy`
+            in the config raises on, recorded during detection.
+        ArchiveyUsageError: One argument has a type or value the call cannot use (then
+            also a ``TypeError`` or ``ValueError``).
+        FileNotFoundError: The path does not exist.
     """
     return detect_format_into(
         source, config=config, collector=None, follow_stub_volumes=follow_stub_volumes

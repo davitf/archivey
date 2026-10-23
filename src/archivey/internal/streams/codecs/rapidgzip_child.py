@@ -38,6 +38,7 @@ import os
 import subprocess
 import tempfile
 import weakref
+from collections.abc import Callable
 from pathlib import Path
 from typing import IO, BinaryIO
 
@@ -82,6 +83,8 @@ from archivey.internal.streams.codecs.rapidgzip_worker import (
     OPEN,
     OPEN_LIMIT,
     OPEN_PATH,
+    OPEN_RANGE,
+    OPEN_RANGE_ARGS,
     OPEN_STREAM,
     POINTS,
     POINTS_REPLY,
@@ -99,6 +102,7 @@ from archivey.internal.streams.codecs.rapidgzip_worker import (
 )
 from archivey.internal.streams.decompressor_stream import SeekPoint, truncated_message
 from archivey.internal.streams.streamtools import ReadOnlyIOStream
+from archivey.internal.streams.streamtools.slice import file_region
 
 _WORKER = Path(__file__).with_name("decoder_worker.py")
 
@@ -186,7 +190,9 @@ def _start_error(reason: str) -> RapidgzipChildStartError:
 def rapidgzip_child_unavailable_reason() -> str | None:
     """Why no Python child process can be started to run the worker script, or ``None``
     when one can (see :func:`~archivey.internal.streams.child_process.unavailable_reason`).
-    Under PyPy, where rapidgzip misreads valid streams, there is always a reason.
+    Under PyPy, where rapidgzip misreads valid streams, there is always a reason. There
+    ``deps.rapidgzip`` already reads as absent, so this arm is the backstop for a
+    ``deps.rapidgzip`` that reads as present.
     """
     pypy_reason = deps.unused_reason("rapidgzip")
     if pypy_reason:
@@ -227,7 +233,9 @@ _FROM_SOURCE = "_archivey_raised_by_callers_source"
 
 def from_callers_source(exc: BaseException) -> bool:
     """Whether ``exc`` came from the caller's own source, parked while a decoder read it
-    (the rapidgzip child's reads, or the in-process bzip2 decoder's).
+    (the rapidgzip child's reads, or the in-process bzip2 decoder's), or raised by a
+    file region's check before a call to the child (what reading that source would
+    have raised; see ``file_region``).
 
     Such an exception is raised to the caller as itself, so a translator must leave it
     alone, including one whose types (``EOFError``) it would map for a decoder.
@@ -384,8 +392,24 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         # before the next one.
         self._since_query = 0
         self._query_after = _MIN_QUERY_SPACING
+        # The checks of a file region (``file_region``): the child reads the file
+        # itself, so they run here, before each call.
+        self._region_checks: tuple[Callable[[], None], ...] = ()
+        pass_fds: tuple[int, ...] = ()
+        if isinstance(source, (str, os.PathLike)) or os.name != "posix":
+            region = None
+        else:
+            region = file_region(source)
         if isinstance(source, (str, os.PathLike)):
             open_kind, open_path = OPEN_PATH, os.fsencode(os.fspath(source))
+        elif region is not None:
+            # A byte range of a file on disk (a ZIP member): the child reads it with
+            # ``os.pread`` on an inherited descriptor, so no compressed byte crosses a
+            # pipe. POSIX only: ``pass_fds`` has no Windows form.
+            open_kind = OPEN_RANGE
+            open_path = OPEN_RANGE_ARGS.pack(region.fd, region.start, region.length)
+            self._region_checks = region.checks
+            pass_fds = (region.fd,)
         else:
             self._source = source
             open_kind, open_path = OPEN_STREAM, b""
@@ -404,7 +428,8 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         if bzip2:
             argv.append(BZIP2_ARG)
         try:
-            stderr = tempfile.TemporaryFile()
+            # The handle outlives this statement; its owner closes it.
+            stderr = tempfile.TemporaryFile()  # noqa: SIM115
         except OSError as exc:
             raise _start_error(str(exc)) from exc
         self._stderr = stderr
@@ -414,6 +439,7 @@ class RapidgzipChildStream(ReadOnlyIOStream):
                 _start_error,
                 stdin=subprocess.PIPE,
                 stderr=stderr,
+                pass_fds=pass_fds,
             )
         except RapidgzipChildStartError:
             stderr.close()
@@ -525,6 +551,14 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         self._raise_if_unusable()
         # Refused before anything is written, so the child is still in step.
         _check_arg(arg)
+        for check in self._region_checks:
+            try:
+                check()
+            except Exception as exc:
+                # What a read of the caller's source would have raised, so it reaches
+                # the caller as that read's error would (``_answer_source``).
+                mark_callers_source(exc)
+                raise
         try:
             frame = self._exchange(tag, arg, payload)
         except BaseException:
@@ -566,8 +600,10 @@ class RapidgzipChildStream(ReadOnlyIOStream):
     def _abandon(self) -> None:
         self._death = (
             ArchiveyUsageError,
-            "the rapidgzip decoder process was interrupted in the middle of a "
-            "request, and this stream cannot continue",
+            (
+                "the rapidgzip decoder process was interrupted in the middle of a "
+                "request, and this stream cannot continue"
+            ),
         )
         self._stop(kill=True)
 
@@ -580,9 +616,11 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         """
         self._death = (
             ReadError,
-            f"this {self._label} stream cannot continue: a read from its source "
-            f"failed ({exception_detail(fault)}), and the rapidgzip decoder process "
-            "took that for the end of its input",
+            (
+                f"this {self._label} stream cannot continue: a read from its source "
+                f"failed ({exception_detail(fault)}), and the rapidgzip decoder process "
+                "took that for the end of its input"
+            ),
         )
         self._stop(kill=True)
 
@@ -791,9 +829,11 @@ class RapidgzipChildStream(ReadOnlyIOStream):
             if self._death is None:
                 self._death = (
                     ReadError,
-                    f"this {self._label} stream cannot continue: a read failed, "
-                    f"and moving back to where it started failed too "
-                    f"({exception_detail(exc)})",
+                    (
+                        f"this {self._label} stream cannot continue: a read failed, "
+                        f"and moving back to where it started failed too "
+                        f"({exception_detail(exc)})"
+                    ),
                 )
                 self._stop(kill=True)
             return
@@ -956,7 +996,7 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         if self._death is None and self._proc is not None:
             try:
                 self._known_offsets = self._offsets(OFFSETS_AVAILABLE)
-            except Exception:  # noqa: BLE001 - the last index sent is still true
+            except Exception:  # noqa: BLE001, S110 - the last index sent is still true
                 pass
         return dict(self._known_offsets)
 

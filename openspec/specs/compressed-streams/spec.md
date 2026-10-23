@@ -546,7 +546,7 @@ codec SHALL add a `Decoder` and MUST NOT require a new stream subclass or a
 | Forward-only codec (zlib, brotli, ppmd, bcj, deflate64) | Implements `recreate`/`feed`/`flush`/`finished`; emits empty `points`; inherits no-op `build_index`; `pending_error` set only when the input ends incompletely |
 | Segmented boundary codec (lzip, xz stream start) | `feed` emits a `SeekPoint` at the boundary with the codec's own before/after placement; stream stores it |
 | Progressive enrichment (xz block index) | `feed` scans the completed stream's footer via retained `inner` and emits block `SeekPoint`s (carrying resume `state`); restores `inner` position |
-| One-shot / forward walk (xz, lzip backward scan; future BGZF forward walk) | `build_index` returns points + size; stream drives it demand-driven per `seekable-decompressor-streams` |
+| One-shot / forward walk (xz, lzip backward scan; BGZF forward walk) | `build_index` returns points + size; stream drives it demand-driven per `seekable-decompressor-streams`; a size query does not run a scan that reads the payload (the BGZF walk, `index_reads_whole_source`) |
 | Deferred truncation (unix-compress leftover bits; a DEFLATE-family or xz stream cut short) | `pending_error` set after `flush`; `read(n)` raises it on the next empty read, `read()` at once |
 | Stream that already raised its deferred error | Later reads with no buffered bytes, and `seek(0, SEEK_END)` without an index size, raise the same error; the decode publishes no size; a seek re-decodes from the nearest seek point |
 | A new codec is added | One `Decoder` added; no new stream subclass; no `SegmentedDecompressorStream` layer |
@@ -631,15 +631,36 @@ trailer, overlapping it or reaching back into the compressed data, leaves the re
 as a second occurrence, so it does not stand in for the trailer. Not excluded: a copy more
 than 56 bytes after the end of the real trailer, which needs rapidgzip to read past that
 many bytes that are not a further member without an error; rapidgzip 0.16 raises on ten or
-more. Two limitations remain, both of the further-member scan that decides a multi-member
-file (the CRC-32 of the whole output is not the last member's, so it finds no trailer
-there): the scan stands down at the first further member it confirms, so with three or
-more members a wrong ISIZE on the last one reads clean too; and a further member counts
-once zlib has decoded 64 KiB of its input without an error, so a large last member's wrong
-ISIZE is not seen either. These hold where the rapidgzip build does not compare the size
-itself; one that does (its own chunk decoder, as in the macOS wheels) raises, and the
-accelerator gives the standard library's error. When a seek has skipped output, there is
-no CRC-32 of it, and the last four bytes of the file stand in as the ISIZE.
+more. In a file of several members the CRC-32 of the whole output is not the last
+member's, so it finds no trailer there. A further member that zlib confirms says only that
+the file has several members, not that the last one is whole: rapidgzip ends a last member
+cut right after its header with no error, at the end of the file. So the accelerator SHALL
+also find the last member's trailer, the eight bytes that end the file but for zero
+padding, and SHALL accept the file only when they hold the CRC-32 and the length mod 2**32
+of the last that-many bytes of the output. A wrong ISIZE or a cut on the last member,
+after any number of members before it and whatever its size, then gives the standard
+library's error. An empty last member (bgzip's end-of-file member) counts when zlib
+decodes it from a header in the 1 KiB before the end of the non-zero data, with only
+zeros after it. That CRC-32 SHALL come from the running CRC-32 of the output, saved every
+4 MiB of output, as `C(A + B) ^ crc32_combine(C(A), 0, len(B))` for the last `len(B)`
+bytes `B`, with `C(A)` carried on from the checkpoint before it by a read-back from the
+accelerator: at most four candidates, tried shortest first, each a read-back of at most
+4 MiB, whatever the size of the last member or the length a forged trailer states. A
+valid file of any size is so decided with no handover to the standard-library decoder.
+Not excluded: a crafted cut whose last eight bytes are made the CRC-32 and length of the
+end of the output, which takes choosing four bytes of the content. A last member of 4 GiB
+or more of output does not match, as its length is wrapped, and is read by the
+standard-library decoder, at the cost of a second decode.
+
+When a seek short of the end has skipped output, there is no CRC-32 of the whole output,
+and the last four bytes of the file stand in as the ISIZE of a file with no further
+member. In a file with a further member, the last member's trailer SHALL still be checked
+as above whatever the last four bytes say, and no candidate SHALL be accepted unchecked: a
+CRC-32 kept from where reading resumed covers a candidate that starts after that point,
+and for one that starts before it the skipped part is read back from the accelerator.
+That read-back SHALL be bounded, at most 64 MiB of output in all; a candidate past it
+hands the read to the standard-library decoder, which gives the right result at the cost
+of a second decode.
 
 #### Scenario: accelerator error parity
 
@@ -709,12 +730,12 @@ without the setting. Under `NATIVE_DECODERS` the caller's process MUST NOT impor
 A child MAY be kept and reused for a later decoder only after a clean finish: the
 decoder ended with no error from the child and was closed normally, so a run of small
 members does not start a process per member. A child MUST NOT be reused after it
-reported an error, died, or was interrupted part-way through a reply. A PPMd child MUST
-NOT be reused after a member that did not decode to its declared end, whose check value
-did not match, or that was refused, nor after the decoder sent the one-symbol decode that
-stops a worker waiting on input, since pyppmd can corrupt its memory there without
-crashing at once. A child SHALL serve at most a fixed number of decoders (64) before it
-is ended.
+reported an error, died, or was interrupted part-way through a request or its reply. A
+PPMd child MUST NOT be reused after a member that did not decode to its declared end,
+whose check value did not match, or that was refused, nor after the decoder sent the
+one-symbol decode that stops a worker waiting on input, since pyppmd can corrupt its
+memory there without crashing at once. A child SHALL serve at most a fixed number of
+decoders (64) before it is ended.
 
 A crash or an error in a child that served earlier decoders MUST NOT be charged to the
 decoder at once, since an earlier member may have left damage that surfaces only now:
@@ -736,6 +757,7 @@ inherited decoder leaves the parent's child alone, and a call on one SHALL raise
 | --- | --- |
 | Two members of one archive read on two threads under `NATIVE_DECODERS` | Two children, decoding at the same time |
 | A ZIP of 1,000 small deflate members read one after another under `NATIVE_DECODERS` | Children reused; far fewer than 1,000 started |
+| A two-stream `.xz`, two-member gzip or two-frame zstd or lz4 file read under `NATIVE_DECODERS`, every finished decoder kept referenced | The first stream's child is back in the pool before the next stream's decoder takes one; at most one child is leased at a time |
 | 1,000 small valid PPMd members read one after another under `KNOWN_CRASHES` | Each in a child process; children reused |
 | A PPMd member that ends early (corrupt or cut) | Child process; that child is not reused |
 | Member A leaves its reused child damaged without crashing; member B's decode then crashes in that child | B re-runs in a fresh child and reads correctly; nothing is charged to B |
@@ -774,7 +796,7 @@ library with one warning.
 
 Under `NONE` no child process SHALL be started for decoding. PPMd SHALL decode
 in-process at any size, a ZIP member with bit 3 set read from a non-seekable source
-included: as in a child, a member up to `max_ppmd_in_process_input` is held and handed
+included: as in a child, a member up to `max_ppmd_held_input` is held and handed
 to pyppmd whole, and a larger one, or one whose size is not known, is fed to it in pieces,
 which can crash the process on corrupt input. That risk is the one `NONE` accepts. rapidgzip SHALL NOT be used: `use_rapidgzip=AUTO` and `use_indexed_bzip2=AUTO`
 SHALL decode with the standard library without the warning that a child that cannot
@@ -790,5 +812,5 @@ The system SHALL NOT bound the time a decoder takes under any value.
 | `NATIVE_DECODERS`, no child process can be started | `ResourceLimitError` naming `process_isolation`; nothing decoded in-process |
 | 7z PPMd member of 1 KB, default config, no child process can be started | `ResourceLimitError` naming `process_isolation` on the first read |
 | A decoder needs a fresh child part-way through a member, and none can start / the fresh child cannot allocate the PPMd model | `ResourceLimitError` naming `process_isolation` / `ResourceLimitError` "Decoder limit reached" |
-| 7z PPMd member of 200 KB compressed, `max_ppmd_in_process_input=1024`, `NONE` | Decoded in-process |
+| 7z PPMd member of 200 KB compressed, `max_ppmd_held_input=1024`, `NONE` | Decoded in-process |
 | gzip stream opened seekable, `use_rapidgzip=AUTO`, `NONE` | Standard library decoder; no warning |

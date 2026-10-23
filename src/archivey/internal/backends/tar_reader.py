@@ -106,8 +106,10 @@ from archivey.internal.base_reader import (
 from archivey.internal.config import stream_config_from_archivey
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
-from archivey.internal.logs import backends as backends_logger
-from archivey.internal.logs import integrity as integrity_logger
+from archivey.internal.logs import (
+    backends as backends_logger,
+    integrity as integrity_logger,
+)
 from archivey.internal.naming import (
     COMPRESSED_TAR_SHORT_SUFFIXES,
     emit_member_name_normalized,
@@ -620,9 +622,7 @@ class TarReader(BaseArchiveReader):
             else:
                 # A stream whose size is not known is counted, so the live
                 # decompression-ratio guard can see compressed bytes consumed.
-                codec_source = self._track_source_seeks(
-                    self._wrap_compressed_input(source)
-                )
+                codec_source = self._codec_input(source, track_seeks=True)
             stream = open_codec_stream(
                 codec,
                 codec_source,
@@ -654,7 +654,14 @@ class TarReader(BaseArchiveReader):
             # The walker reads 512-byte blocks: a buffer in front makes each one a copy
             # from memory, not a decoder call. It reads the codec once per read, so a
             # cut member's recoverable prefix comes before its TruncatedError.
-            self._owned_stream = ReadAheadStream(stream, _WALK_BUFFER)
+            self._owned_stream = ReadAheadStream(
+                stream,
+                _WALK_BUFFER,
+                # On a source that cannot seek, the codec reads what has arrived
+                # (_codec_input), and so does this buffer: a short tar on a pipe
+                # whose writer keeps it open opens, and its members read, at once.
+                fill_arrived=not source.seekable(),
+            )
             return self._owned_stream
         if streaming and not source.seekable():
             # The buffer fills from what has arrived, not a full 8 KiB, so a short

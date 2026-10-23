@@ -74,7 +74,7 @@ def _stdlib(codec: Codec, source: object) -> DecompressorStream:
 def _child(stream: object) -> RapidgzipChildStream:
     inner = stream
     while not isinstance(inner, RapidgzipChildStream):
-        inner = getattr(inner, "_inner")
+        inner = inner._inner
     return inner
 
 
@@ -250,7 +250,7 @@ def test_a_corrupt_member_found_after_a_resume_is_still_corrupt(tmp_path: Path) 
     data[-8] ^= 0xFF  # the CRC-32
     path = tmp_path / "crc.gz"
     path.write_bytes(bytes(data) + b"junk after the member")
-    expected, expected_error = _read_cut(path, Codec.GZIP, _OFF, "path")
+    _expected, expected_error = _read_cut(path, Codec.GZIP, _OFF, "path")
     got, error = _read_cut(path, Codec.GZIP, _ON, "path")
     assert expected_error is not None
     assert type(error) is type(expected_error)
@@ -282,10 +282,12 @@ def test_a_bytes_source_cut_stream_matches_too() -> None:
     whole = zlib.decompressobj(31)
     expected = whole.decompress(cut)
     got = bytearray()
-    with pytest.raises(TruncatedError):
-        with open_codec_stream(Codec.GZIP, io.BytesIO(cut), config=_ON) as stream:
-            while block := stream.read(1 << 20):
-                got += block
+    with (
+        pytest.raises(TruncatedError),
+        open_codec_stream(Codec.GZIP, io.BytesIO(cut), config=_ON) as stream,
+    ):
+        while block := stream.read(1 << 20):
+            got += block
     assert bytes(got) == expected
 
 
