@@ -55,7 +55,8 @@ def test_nested_views_compose_their_offsets_and_bounds(tmp_path: Path) -> None:
         assert region is not None
         assert (region.start, region.length) == (115, 50)
         # The bytes the region names are the bytes the view reads.
-        assert os.pread(region.fd, region.length, region.start) == outer.read()
+        expected = (tmp_path / "data.bin").read_bytes()[region.start :][: region.length]
+        assert expected == outer.read()
         # An inner bound shorter than the outer one wins.
         tail = SlicingStream(member, start=480, length=1000, owns_inner=False)
         tail_region = file_region(tail)
