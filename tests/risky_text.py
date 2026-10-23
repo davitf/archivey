@@ -1,5 +1,5 @@
 """Hypothesis strategies that draw the characters and names most likely to break
-name handling, often enough to come up in the CI profile's 100 derandomized examples.
+name handling, each risky class as a branch of its own so no run depends on luck.
 
 A plain ``st.text()`` alphabet or a ``from_regex`` with ``\\d`` reaches a Unicode digit or
 a fullwidth slash only by luck: ``0.7z.\\u066000`` broke the volume schemes in one run
@@ -125,7 +125,10 @@ def risky_text(min_size: int = 0, max_size: int = 16) -> st.SearchStrategy[str]:
 
 
 @st.composite
-def _swap_lookalike(draw: st.DrawFn, base: str) -> str:
+def with_lookalike(draw: st.DrawFn, names: st.SearchStrategy[str]) -> str:
+    """A name from ``names`` with one ASCII digit, separator, dot or letter swapped
+    for a Unicode lookalike (unchanged when the name holds none of them)."""
+    base = draw(names)
     positions = [i for i, ch in enumerate(base) if ch in LOOKALIKES]
     if not positions:
         return base
@@ -133,18 +136,9 @@ def _swap_lookalike(draw: st.DrawFn, base: str) -> str:
     return base[:i] + draw(st.sampled_from(LOOKALIKES[base[i]])) + base[i + 1 :]
 
 
-def with_lookalike(names: st.SearchStrategy[str]) -> st.SearchStrategy[str]:
-    """``names`` with one ASCII digit, separator, dot or letter swapped for a
-    Unicode lookalike (unchanged when the name holds none of them)."""
-    return names.flatmap(_swap_lookalike)
-
-
 @st.composite
-def _insert_risky(draw: st.DrawFn, base: str) -> str:
+def with_risky_char(draw: st.DrawFn, names: st.SearchStrategy[str]) -> str:
+    """A name from ``names`` with one risky character inserted at any position."""
+    base = draw(names)
     i = draw(st.integers(min_value=0, max_value=len(base)))
     return base[:i] + draw(risky_chars) + base[i:]
-
-
-def with_risky_char(names: st.SearchStrategy[str]) -> st.SearchStrategy[str]:
-    """``names`` with one risky character inserted at any position."""
-    return names.flatmap(_insert_risky)
