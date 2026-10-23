@@ -59,9 +59,9 @@ the date in that heading.)
 
 - [ ] Run `uv run python scripts/release.py notes`. Its last line says whether this can
   be a patch release, from the public API at `PREV` against `HEAD`
-  (`scripts/api_surface.py`) and the merged pull requests labelled `needs-minor`. Each
-  line it prints under "a patch release may not" is a **Changed**, **Deprecated** or
-  **Removed** line, or a **Breaking:** one.
+  (`scripts/api_surface.py`) and the merged pull requests labelled `needs-minor`. A `+`
+  line it prints is an **Added** item, a `-` line is **Removed**, and a `-` and `+` pair
+  for the same name is **Changed** (or **Deprecated**, or a **Breaking:** line).
 
 - [ ] Write the entry under `## [Unreleased]`. `release.py start` (§6) moves it under
   a dated `## [X.Y.Z]` heading and writes the compare links.

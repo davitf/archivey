@@ -99,3 +99,17 @@ def test_changed_signature_needs_a_minor() -> None:
 def test_removed_enum_value_needs_a_minor() -> None:
     new = [line for line in _OLD if line != "value archivey.DiagnosticCode.A = 'a'"]
     assert _classify(new) == (["- value archivey.DiagnosticCode.A = 'a'"], [])
+
+
+def test_open_enums_are_pinned() -> None:
+    # A patch release may add values to these. Adding one is a promise to callers.
+    lines = api_surface.parse(api_surface.SURFACE_FILE.read_text(encoding="utf-8"))
+    assert sorted(line for line in lines if line.startswith("open-enum ")) == [
+        "open-enum archivey.CompressionAlgorithm",
+        "open-enum archivey.DiagnosticCode",
+    ]
+
+
+def test_cli_lines_say_how_an_option_is_read() -> None:
+    lines = api_surface.parse(api_surface.SURFACE_FILE.read_text(encoding="utf-8"))
+    assert "cli-arg cat patterns [action=Store nargs='*']" in lines

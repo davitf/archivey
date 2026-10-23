@@ -28,7 +28,6 @@ import dataclasses
 import enum
 import importlib
 import inspect
-import re
 import sys
 import types
 import typing
@@ -37,6 +36,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SURFACE_FILE = ROOT / "dev-docs" / "api-surface.txt"
+#: The API page of the tree being measured; ``--src DIR`` reads ``DIR/../docs/api.md``.
 API_PAGE = ROOT / "docs" / "api.md"
 
 HEADER = (
@@ -46,6 +46,8 @@ HEADER = (
 
 #: The public submodules. A module with ``__all__`` exports that list; one without
 #: exports the names the API page documents under it (``::: archivey.module.Name``).
+#: A module or name the measured tree lacks is left out, so measuring an older tree
+#: reports it as added.
 PUBLIC_MODULES = (
     "archivey",
     "archivey.detection_cost",
@@ -54,27 +56,39 @@ PUBLIC_MODULES = (
     "archivey.terminal",
 )
 
-#: Enums a patch release may add values to (DR-12a): the diagnostic codes, and every
-#: public enum whose docstring calls its set of values open-ended.
-OPEN_ENUMS_ALWAYS = frozenset(
-    {"archivey.DiagnosticCode", "archivey.diagnostics.DiagnosticCode"}
+#: The enums a patch release may add values to: the diagnostic codes, and the enums
+#: whose docstring tells callers to treat the set as open-ended. The rule is in the
+#: stability policy (``docs/how-it-is-built.md`` §Versioning and stability and DR-12a in
+#: ``dev-docs/design-rules.md``, which PR #993 adds). Adding an enum here is a promise
+#: to callers, so ``tests/test_api_surface.py`` pins the set.
+OPEN_ENUMS = frozenset(
+    {
+        "archivey.CompressionAlgorithm",
+        "archivey.DiagnosticCode",
+        "archivey.diagnostics.DiagnosticCode",
+    }
 )
 #: The literal type that lists every diagnostic code string, which grows with them.
 CODE_LITERALS = frozenset({"archivey.diagnostics.DiagnosticCodeStr"})
 
 _SKIP_NAMES = frozenset({"__version__"})
-_ADDRESS_RE = re.compile(r" at 0x[0-9a-fA-F]+")
 
 
 # ── Formatting ───────────────────────────────────────────────────────────────────────
 
 
 def _fmt_type(tp: object) -> str:
-    """A type or annotation as stable text, the same on every supported Python."""
+    """A type or annotation as text that does not depend on the Python version.
+
+    It handles the shapes the public annotations use, and raises on any other, so a
+    new shape fails here rather than writing one interpreter's ``repr`` into the file.
+    """
     if isinstance(tp, str):
         return tp
     if tp is None or tp is type(None):
         return "None"
+    if tp is Ellipsis:
+        return "..."
     if isinstance(tp, typing.ForwardRef):
         return tp.__forward_arg__
     origin = typing.get_origin(tp)
@@ -91,7 +105,7 @@ def _fmt_type(tp: object) -> str:
         return f"{name}[{', '.join(_fmt_type(a) for a in args)}]"
     if isinstance(tp, type):
         return tp.__qualname__
-    return _ADDRESS_RE.sub("", repr(tp))
+    raise TypeError(f"api_surface cannot format the annotation {tp!r}; add its shape")
 
 
 def _fmt_value(value: object) -> str:
@@ -157,7 +171,8 @@ def _fmt_signature(func: object) -> str:
 def _documented_names(module: str) -> list[str]:
     prefix = f"::: {module}."
     names = []
-    for line in API_PAGE.read_text(encoding="utf-8").splitlines():
+    page = API_PAGE.read_text(encoding="utf-8") if API_PAGE.exists() else ""
+    for line in page.splitlines():
         if line.startswith(prefix):
             rest = line[len(prefix) :].strip()
             if rest and "." not in rest:
@@ -170,12 +185,6 @@ def _exported_names(module: types.ModuleType) -> list[str]:
     if names is None:
         names = _documented_names(module.__name__)
     return [n for n in names if n not in _SKIP_NAMES]
-
-
-def _is_open_enum(qualname: str, cls: type) -> bool:
-    if qualname in OPEN_ENUMS_ALWAYS:
-        return True
-    return "open-ended" in (inspect.getdoc(cls) or "")
 
 
 def _is_class_var(annotation: object) -> bool:
@@ -197,7 +206,7 @@ def _class_lines(qualname: str, cls: type) -> Iterator[str]:
     bases = ", ".join(_fmt_type(b) for b in cls.__bases__ if b is not object)
     yield f"class {qualname}({bases})"
     if issubclass(cls, enum.Enum):
-        tag = "open-enum" if _is_open_enum(qualname, cls) else "enum"
+        tag = "open-enum" if qualname in OPEN_ENUMS else "enum"
         yield f"{tag} {qualname}"
         for member in cls:
             yield f"value {qualname}.{member.name} = {member.value!r}"
@@ -266,6 +275,25 @@ def _name_lines(qualname: str, obj: object) -> Iterator[str]:
         yield f"constant {qualname} = {_fmt_value(obj)}"
 
 
+def _action_text(action: argparse.Action) -> str:
+    """What a script relies on in an option or argument: how it is read, and its values."""
+    kind = type(action).__name__.strip("_").removesuffix("Action") or "Store"
+    parts = [f"action={kind}"]
+    if action.nargs is not None:
+        parts.append(f"nargs={action.nargs!r}")
+    if action.type is not None:
+        parts.append(
+            f"type={getattr(action.type, '__name__', type(action.type).__name__)}"
+        )
+    if action.choices is not None:
+        parts.append("choices={" + ", ".join(sorted(map(str, action.choices))) + "}")
+    if action.required and action.option_strings:
+        parts.append("required")
+    if action.default not in (None, argparse.SUPPRESS):
+        parts.append(f"default={_fmt_value(action.default)}")
+    return " [" + " ".join(parts) + "]"
+
+
 def _cli_lines() -> Iterator[str]:
     import argparse as ap
 
@@ -284,12 +312,11 @@ def _cli_lines() -> Iterator[str]:
                     yield from options(f"{prefix}{verb} ", sub)
             elif action.option_strings:
                 flags = ", ".join(sorted(action.option_strings))
-                choices = ""
-                if action.choices is not None:
-                    choices = " {" + ", ".join(sorted(map(str, action.choices))) + "}"
-                yield f"cli-option {prefix.strip() or '(global)'} {flags}{choices}"
+                where = prefix.strip() or "(global)"
+                yield f"cli-option {where} {flags}{_action_text(action)}"
             elif action.dest != "help":
-                yield f"cli-arg {prefix.strip() or '(global)'} {action.dest}"
+                where = prefix.strip() or "(global)"
+                yield f"cli-arg {where} {action.dest}{_action_text(action)}"
 
     yield from options("", build_parser())
 
@@ -299,8 +326,13 @@ def surface_lines() -> list[str]:
     lines: list[str] = []
     root = importlib.import_module("archivey")
     for module_name in PUBLIC_MODULES:
-        module = importlib.import_module(module_name)
+        try:
+            module = importlib.import_module(module_name)
+        except ModuleNotFoundError:
+            continue
         for name in sorted(_exported_names(module)):
+            if not hasattr(module, name):
+                continue
             obj = getattr(module, name)
             qualname = f"{module_name}.{name}"
             if (
@@ -392,7 +424,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     if args.src is not None:
+        global API_PAGE
         sys.path.insert(0, str(args.src.resolve()))
+        API_PAGE = args.src.resolve().parent / "docs" / "api.md"
     lines = surface_lines()
     text = render(lines)
     if args.compare_to is not None:

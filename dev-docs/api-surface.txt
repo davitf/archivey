@@ -883,165 +883,165 @@ cli-exit EXIT_INTERRUPTED = 130
 cli-exit EXIT_OK = 0
 cli-exit EXIT_POLICY = 3
 cli-exit EXIT_USAGE = 2
-cli-option (global) --help, -h
-cli-option (global) --password
-cli-option (global) --verbose, -v
-cli-option (global) --hide-progress
-cli-option (global) --track-io
-cli-option (global) --probe-content
-cli-option (global) --salvage
-cli-option (global) --version
+cli-option (global) --help, -h [action=Help nargs=0]
+cli-option (global) --password [action=Store]
+cli-option (global) --verbose, -v [action=StoreTrue nargs=0 default=False]
+cli-option (global) --hide-progress [action=StoreTrue nargs=0 default=False]
+cli-option (global) --track-io [action=StoreTrue nargs=0 default=False]
+cli-option (global) --probe-content [action=StoreTrue nargs=0 default=False]
+cli-option (global) --salvage [action=StoreTrue nargs=0 default=False]
+cli-option (global) --version [action=StoreTrue nargs=0 default=False]
 cli-verb cat
-cli-option cat --help, -h
-cli-option cat --password
-cli-option cat --verbose, -v
-cli-option cat --hide-progress
-cli-option cat --track-io
-cli-option cat --probe-content
-cli-option cat --salvage
-cli-arg cat archive
-cli-option cat --outer
-cli-arg cat patterns
-cli-option cat --exclude
+cli-option cat --help, -h [action=Help nargs=0]
+cli-option cat --password [action=Store]
+cli-option cat --verbose, -v [action=StoreTrue nargs=0]
+cli-option cat --hide-progress [action=StoreTrue nargs=0]
+cli-option cat --track-io [action=StoreTrue nargs=0]
+cli-option cat --probe-content [action=StoreTrue nargs=0]
+cli-option cat --salvage [action=StoreTrue nargs=0]
+cli-arg cat archive [action=Store]
+cli-option cat --outer [action=StoreTrue nargs=0 default=False]
+cli-arg cat patterns [action=Store nargs='*']
+cli-option cat --exclude [action=Append default=[]]
 cli-verb convert
-cli-option convert --help, -h
-cli-option convert --password
-cli-option convert --verbose, -v
-cli-option convert --hide-progress
-cli-option convert --track-io
-cli-option convert --probe-content
-cli-option convert --salvage
-cli-arg convert archive
+cli-option convert --help, -h [action=Help nargs=0]
+cli-option convert --password [action=Store]
+cli-option convert --verbose, -v [action=StoreTrue nargs=0]
+cli-option convert --hide-progress [action=StoreTrue nargs=0]
+cli-option convert --track-io [action=StoreTrue nargs=0]
+cli-option convert --probe-content [action=StoreTrue nargs=0]
+cli-option convert --salvage [action=StoreTrue nargs=0]
+cli-arg convert archive [action=Store nargs='?']
 cli-verb create
-cli-option create --help, -h
-cli-option create --password
-cli-option create --verbose, -v
-cli-option create --hide-progress
-cli-option create --track-io
-cli-option create --probe-content
-cli-option create --salvage
-cli-arg create archive
+cli-option create --help, -h [action=Help nargs=0]
+cli-option create --password [action=Store]
+cli-option create --verbose, -v [action=StoreTrue nargs=0]
+cli-option create --hide-progress [action=StoreTrue nargs=0]
+cli-option create --track-io [action=StoreTrue nargs=0]
+cli-option create --probe-content [action=StoreTrue nargs=0]
+cli-option create --salvage [action=StoreTrue nargs=0]
+cli-arg create archive [action=Store nargs='?']
 cli-verb detect
-cli-option detect --help, -h
-cli-option detect --password
-cli-option detect --verbose, -v
-cli-option detect --hide-progress
-cli-option detect --track-io
-cli-option detect --probe-content
-cli-option detect --salvage
-cli-arg detect archive
+cli-option detect --help, -h [action=Help nargs=0]
+cli-option detect --password [action=Store]
+cli-option detect --verbose, -v [action=StoreTrue nargs=0]
+cli-option detect --hide-progress [action=StoreTrue nargs=0]
+cli-option detect --track-io [action=StoreTrue nargs=0]
+cli-option detect --probe-content [action=StoreTrue nargs=0]
+cli-option detect --salvage [action=StoreTrue nargs=0]
+cli-arg detect archive [action=Store]
 cli-verb extract
-cli-option extract --help, -h
-cli-option extract --password
-cli-option extract --verbose, -v
-cli-option extract --hide-progress
-cli-option extract --track-io
-cli-option extract --probe-content
-cli-option extract --salvage
-cli-arg extract archive
-cli-option extract --dest, -d
-cli-option extract --policy {standard, strict, trusted}
-cli-option extract --overwrite {error, rename, replace, skip}
-cli-option extract --stop-on-error
-cli-option extract --abort-on {blocked-member, name-collision, name-sanitized}
-cli-option extract --dry-run
-cli-option extract --outer
-cli-arg extract patterns
-cli-option extract --exclude
+cli-option extract --help, -h [action=Help nargs=0]
+cli-option extract --password [action=Store]
+cli-option extract --verbose, -v [action=StoreTrue nargs=0]
+cli-option extract --hide-progress [action=StoreTrue nargs=0]
+cli-option extract --track-io [action=StoreTrue nargs=0]
+cli-option extract --probe-content [action=StoreTrue nargs=0]
+cli-option extract --salvage [action=StoreTrue nargs=0]
+cli-arg extract archive [action=Store]
+cli-option extract --dest, -d [action=Store]
+cli-option extract --policy [action=Store type=fold choices={standard, strict, trusted} default='strict']
+cli-option extract --overwrite [action=Store type=fold choices={error, rename, replace, skip} default='rename']
+cli-option extract --stop-on-error [action=StoreTrue nargs=0 default=False]
+cli-option extract --abort-on [action=Append type=fold choices={blocked-member, name-collision, name-sanitized}]
+cli-option extract --dry-run [action=StoreTrue nargs=0 default=False]
+cli-option extract --outer [action=StoreTrue nargs=0 default=False]
+cli-arg extract patterns [action=Store nargs='*']
+cli-option extract --exclude [action=Append default=[]]
 cli-verb hash
-cli-option hash --help, -h
-cli-option hash --password
-cli-option hash --verbose, -v
-cli-option hash --hide-progress
-cli-option hash --track-io
-cli-option hash --probe-content
-cli-option hash --salvage
-cli-arg hash archive
+cli-option hash --help, -h [action=Help nargs=0]
+cli-option hash --password [action=Store]
+cli-option hash --verbose, -v [action=StoreTrue nargs=0]
+cli-option hash --hide-progress [action=StoreTrue nargs=0]
+cli-option hash --track-io [action=StoreTrue nargs=0]
+cli-option hash --probe-content [action=StoreTrue nargs=0]
+cli-option hash --salvage [action=StoreTrue nargs=0]
+cli-arg hash archive [action=Store nargs='?']
 cli-verb i
-cli-option i --help, -h
-cli-option i --password
-cli-option i --verbose, -v
-cli-option i --hide-progress
-cli-option i --track-io
-cli-option i --probe-content
-cli-option i --salvage
-cli-arg i archive
+cli-option i --help, -h [action=Help nargs=0]
+cli-option i --password [action=Store]
+cli-option i --verbose, -v [action=StoreTrue nargs=0]
+cli-option i --hide-progress [action=StoreTrue nargs=0]
+cli-option i --track-io [action=StoreTrue nargs=0]
+cli-option i --probe-content [action=StoreTrue nargs=0]
+cli-option i --salvage [action=StoreTrue nargs=0]
+cli-arg i archive [action=Store]
 cli-verb info
-cli-option info --help, -h
-cli-option info --password
-cli-option info --verbose, -v
-cli-option info --hide-progress
-cli-option info --track-io
-cli-option info --probe-content
-cli-option info --salvage
-cli-arg info archive
+cli-option info --help, -h [action=Help nargs=0]
+cli-option info --password [action=Store]
+cli-option info --verbose, -v [action=StoreTrue nargs=0]
+cli-option info --hide-progress [action=StoreTrue nargs=0]
+cli-option info --track-io [action=StoreTrue nargs=0]
+cli-option info --probe-content [action=StoreTrue nargs=0]
+cli-option info --salvage [action=StoreTrue nargs=0]
+cli-arg info archive [action=Store]
 cli-verb l
-cli-option l --help, -h
-cli-option l --password
-cli-option l --verbose, -v
-cli-option l --hide-progress
-cli-option l --track-io
-cli-option l --probe-content
-cli-option l --salvage
-cli-arg l archive
-cli-arg l patterns
-cli-option l --exclude
-cli-option l --digests
-cli-option l --long
-cli-option l --details
+cli-option l --help, -h [action=Help nargs=0]
+cli-option l --password [action=Store]
+cli-option l --verbose, -v [action=StoreTrue nargs=0]
+cli-option l --hide-progress [action=StoreTrue nargs=0]
+cli-option l --track-io [action=StoreTrue nargs=0]
+cli-option l --probe-content [action=StoreTrue nargs=0]
+cli-option l --salvage [action=StoreTrue nargs=0]
+cli-arg l archive [action=Store]
+cli-arg l patterns [action=Store nargs='*']
+cli-option l --exclude [action=Append default=[]]
+cli-option l --digests [action=StoreTrue nargs=0 default=False]
+cli-option l --long [action=StoreTrue nargs=0 default=False]
+cli-option l --details [action=StoreTrue nargs=0 default=False]
 cli-verb list
-cli-option list --help, -h
-cli-option list --password
-cli-option list --verbose, -v
-cli-option list --hide-progress
-cli-option list --track-io
-cli-option list --probe-content
-cli-option list --salvage
-cli-arg list archive
-cli-arg list patterns
-cli-option list --exclude
-cli-option list --digests
-cli-option list --long
-cli-option list --details
+cli-option list --help, -h [action=Help nargs=0]
+cli-option list --password [action=Store]
+cli-option list --verbose, -v [action=StoreTrue nargs=0]
+cli-option list --hide-progress [action=StoreTrue nargs=0]
+cli-option list --track-io [action=StoreTrue nargs=0]
+cli-option list --probe-content [action=StoreTrue nargs=0]
+cli-option list --salvage [action=StoreTrue nargs=0]
+cli-arg list archive [action=Store]
+cli-arg list patterns [action=Store nargs='*']
+cli-option list --exclude [action=Append default=[]]
+cli-option list --digests [action=StoreTrue nargs=0 default=False]
+cli-option list --long [action=StoreTrue nargs=0 default=False]
+cli-option list --details [action=StoreTrue nargs=0 default=False]
 cli-verb t
-cli-option t --help, -h
-cli-option t --password
-cli-option t --verbose, -v
-cli-option t --hide-progress
-cli-option t --track-io
-cli-option t --probe-content
-cli-option t --salvage
-cli-arg t archive
-cli-option t --outer
-cli-arg t patterns
-cli-option t --exclude
+cli-option t --help, -h [action=Help nargs=0]
+cli-option t --password [action=Store]
+cli-option t --verbose, -v [action=StoreTrue nargs=0]
+cli-option t --hide-progress [action=StoreTrue nargs=0]
+cli-option t --track-io [action=StoreTrue nargs=0]
+cli-option t --probe-content [action=StoreTrue nargs=0]
+cli-option t --salvage [action=StoreTrue nargs=0]
+cli-arg t archive [action=Store]
+cli-option t --outer [action=StoreTrue nargs=0 default=False]
+cli-arg t patterns [action=Store nargs='*']
+cli-option t --exclude [action=Append default=[]]
 cli-verb test
-cli-option test --help, -h
-cli-option test --password
-cli-option test --verbose, -v
-cli-option test --hide-progress
-cli-option test --track-io
-cli-option test --probe-content
-cli-option test --salvage
-cli-arg test archive
-cli-option test --outer
-cli-arg test patterns
-cli-option test --exclude
+cli-option test --help, -h [action=Help nargs=0]
+cli-option test --password [action=Store]
+cli-option test --verbose, -v [action=StoreTrue nargs=0]
+cli-option test --hide-progress [action=StoreTrue nargs=0]
+cli-option test --track-io [action=StoreTrue nargs=0]
+cli-option test --probe-content [action=StoreTrue nargs=0]
+cli-option test --salvage [action=StoreTrue nargs=0]
+cli-arg test archive [action=Store]
+cli-option test --outer [action=StoreTrue nargs=0 default=False]
+cli-arg test patterns [action=Store nargs='*']
+cli-option test --exclude [action=Append default=[]]
 cli-verb x
-cli-option x --help, -h
-cli-option x --password
-cli-option x --verbose, -v
-cli-option x --hide-progress
-cli-option x --track-io
-cli-option x --probe-content
-cli-option x --salvage
-cli-arg x archive
-cli-option x --dest, -d
-cli-option x --policy {standard, strict, trusted}
-cli-option x --overwrite {error, rename, replace, skip}
-cli-option x --stop-on-error
-cli-option x --abort-on {blocked-member, name-collision, name-sanitized}
-cli-option x --dry-run
-cli-option x --outer
-cli-arg x patterns
-cli-option x --exclude
+cli-option x --help, -h [action=Help nargs=0]
+cli-option x --password [action=Store]
+cli-option x --verbose, -v [action=StoreTrue nargs=0]
+cli-option x --hide-progress [action=StoreTrue nargs=0]
+cli-option x --track-io [action=StoreTrue nargs=0]
+cli-option x --probe-content [action=StoreTrue nargs=0]
+cli-option x --salvage [action=StoreTrue nargs=0]
+cli-arg x archive [action=Store]
+cli-option x --dest, -d [action=Store]
+cli-option x --policy [action=Store type=fold choices={standard, strict, trusted} default='strict']
+cli-option x --overwrite [action=Store type=fold choices={error, rename, replace, skip} default='rename']
+cli-option x --stop-on-error [action=StoreTrue nargs=0 default=False]
+cli-option x --abort-on [action=Append type=fold choices={blocked-member, name-collision, name-sanitized}]
+cli-option x --dry-run [action=StoreTrue nargs=0 default=False]
+cli-option x --outer [action=StoreTrue nargs=0 default=False]
+cli-arg x patterns [action=Store nargs='*']
+cli-option x --exclude [action=Append default=[]]

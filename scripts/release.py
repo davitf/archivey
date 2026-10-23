@@ -129,15 +129,18 @@ def next_dev_version(version: str) -> str:
 def next_release_version(previous_tag: str | None, needs_minor: bool) -> str:
     """The release after ``previous_tag``: v0.2.0 -> 0.2.1, or 0.3.0 when it needs a minor.
 
-    Before 1.0 a minor release is where breaking changes go, so nothing here suggests a
-    major release.
+    After a pre-release the next release is the one it previewed: v0.3.0rc1 -> 0.3.0,
+    whatever changed. Before 1.0 a minor release is where breaking changes go, so nothing
+    here suggests a major release.
     """
     if previous_tag is None:
         return "0.1.0"
-    match = re.match(r"^v?(\d+)\.(\d+)\.(\d+)", previous_tag)
+    match = re.match(r"^v(\d+)\.(\d+)\.(\d+)((?:a|b|rc)\d+)?$", previous_tag)
     if match is None:
-        raise ReleaseError(f"{previous_tag!r} is not a version tag")
-    major, minor, patch = (int(part) for part in match.groups())
+        raise ReleaseError(f"{previous_tag!r} is not a release tag like v0.2.0")
+    major, minor, patch = (int(part) for part in match.groups()[:3])
+    if match.group(4):
+        return f"{major}.{minor}.{patch}"
     if needs_minor:
         return f"{major}.{minor + 1}.0"
     return f"{major}.{minor}.{patch + 1}"
@@ -376,7 +379,10 @@ def _api_change(previous: str) -> tuple[str, str]:
 
     Both sides are written by this checkout's ``scripts/api_surface.py``, the old one from
     a temporary worktree of the tag, so a change in the script's format between releases
-    does not show as an API change.
+    does not show as an API change. Each side reads its own tree's ``docs/api.md`` for the
+    names of a module without ``__all__``. A change to the script's list of public
+    modules applies to both sides, so a module made public since the tag shows as
+    added.
     """
     script = ROOT / "scripts" / "api_surface.py"
     with tempfile.TemporaryDirectory() as tmp:
@@ -401,9 +407,21 @@ def _api_change(previous: str) -> tuple[str, str]:
 
 
 def _needs_minor_prs(previous: str) -> list[str] | None:
-    """Merged pull requests since ``previous`` labelled ``needs-minor``; None without ``gh``."""
+    """Merged pull requests since ``previous`` labelled ``needs-minor``.
+
+    None when the list cannot be trusted: ``gh`` is missing or fails, or the label does
+    not exist, which ``gh pr list --label`` answers with an empty list.
+    """
     since = _git("log", "-1", "--format=%cI", previous)
     try:
+        labels = subprocess.run(
+            ["gh", "label", "list", "--search", NEEDS_MINOR_LABEL,
+             "--json", "name", "--limit", "100"],
+            cwd=ROOT, check=True, stdout=subprocess.PIPE, text=True,
+        ).stdout  # fmt: skip
+        if NEEDS_MINOR_LABEL not in {label["name"] for label in json.loads(labels)}:
+            print(f"The `{NEEDS_MINOR_LABEL}` label does not exist on the repository.")
+            return None
         out = subprocess.run(
             ["gh", "pr", "list", "--state", "merged", "--base", "main",
              "--label", NEEDS_MINOR_LABEL, "--search", f"merged:>{since}",

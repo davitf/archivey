@@ -544,3 +544,16 @@ def test_next_release_version(
     tag: str | None, needs_minor: bool, expected: str
 ) -> None:
     assert release.next_release_version(tag, needs_minor) == expected
+
+
+@pytest.mark.parametrize("needs_minor", [False, True])
+def test_next_release_after_a_pre_release_is_the_one_it_previewed(
+    needs_minor: bool,
+) -> None:
+    assert release.next_release_version("v0.3.0rc1", needs_minor) == "0.3.0"
+
+
+@pytest.mark.parametrize("tag", ["0.2.0", "v0.2", "v0.2.0.dev0", "v0.2.0-hotfix"])
+def test_next_release_version_refuses_other_tags(tag: str) -> None:
+    with pytest.raises(release.ReleaseError):
+        release.next_release_version(tag, False)
