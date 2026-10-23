@@ -34,9 +34,13 @@ fails if the tag and either packaged version disagree.
 Pull requests do not edit `CHANGELOG.md`; the release PR writes the whole entry. What
 goes in it:
 
-- one line per new feature and per public API change (**Added** / **Changed** /
+- one line per new feature and per public API change, counting a renamed or removed
+  `archivey` verb or option and a changed exit code (**Added** / **Changed** /
   **Deprecated** / **Removed**); a line that makes callers change their code starts
-  with `**Breaking:**`;
+  with `**Breaking:**`. That covers a behaviour change that can't be shimmed, and a
+  removal that skipped the warning release under DR-12a's reopen clause;
+- in a minor release only, a name deprecated in the previous minor release is removed
+  now, with a **Removed** line. A patch release removes nothing (DR-12a);
 - one line per security fix (**Security**);
 - one line summarizing all other bug fixes (**Fixed**), unless a fix changes behavior
   users rely on, which then gets its own line.
@@ -56,6 +60,12 @@ the date in that heading.)
   # Optional PR-oriented view (GitHub CLI):
   gh pr list --state merged --base main --search "merged:>$(git log -1 --format=%cI "$PREV" 2>/dev/null || echo 2020-01-01)" --limit 100
   ```
+
+- [ ] Run `uv run python scripts/release.py notes`. Its last line says whether this can
+  be a patch release, from the public API at `PREV` against `HEAD`
+  (`scripts/api_surface.py`) and the merged pull requests labelled `needs-minor`. A `+`
+  line it prints is an **Added** item, a `-` line is **Removed**, and a `-` and `+` pair
+  for the same name is **Changed** (or **Deprecated**, or a **Breaking:** line).
 
 - [ ] Write the entry under `## [Unreleased]`. `release.py start` (§6) moves it under
   a dated `## [X.Y.Z]` heading and writes the compare links.

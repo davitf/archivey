@@ -992,6 +992,18 @@ and the reasons are part of the contract rather than an oversight:
 """
 
 
+_INFO_LOG_CODES: frozenset[DiagnosticCode] = frozenset(
+    {DiagnosticCode.STREAM_REWIND_REDECOMPRESSES}
+)
+"""Codes whose log record is INFO rather than WARNING (``logging`` spec).
+
+They report the caller's access pattern, not the archive: the reason
+``STREAM_REWIND_REDECOMPRESSES`` is out of :data:`ARCHIVE_INTEGRITY_CODES` too, and the
+reason the solid re-decode record on ``archivey.backends`` is INFO (maintainer,
+2026-10-23). The policy still collects, counts and raises them like any other code.
+"""
+
+
 # Codes that share a context kind with another code, and the context field that tells
 # them apart. The kind alone cannot reject a mismatched pairing for these, so
 # ``validate_code_context`` checks the field too. A code added to a shared kind needs a
@@ -1208,8 +1220,9 @@ class DiagnosticPolicy:
     - ``DiagnosticPolicy.STRICT`` is ``DiagnosticPolicy(raise_on=ARCHIVE_INTEGRITY_CODES)``:
       RAISE on the codes about the archive's own bytes, COLLECT on everything else. It is
       the recommended strict mode because it is version-stable in the way that matters:
-      new codes MAY be added in a minor release, and the set's membership is versioned
-      alongside the taxonomy, so each addition is a deliberate decision.
+      a patch release may add new codes but adds none to ``ARCHIVE_INTEGRITY_CODES``,
+      unless the new code reports damage archivey should already have caught. A minor
+      release may add to the set, and each addition is a deliberate decision.
     - ``DiagnosticPolicy.PEDANTIC`` is ``DiagnosticPolicy(raise_on=frozenset(DiagnosticCode))``:
       RAISE on every code, including the argument-hygiene and access-pattern ones.
       ``frozenset(DiagnosticCode)`` is every code of the installed version, so it raises

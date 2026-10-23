@@ -7,6 +7,7 @@ GitHub release notes. So the edits are pinned here, including on the real files.
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import json
 import subprocess
@@ -528,3 +529,153 @@ def test_tag_checks_the_gates_on_another_branch(
     assert "+ gh pr view hand-made --json headRefOid" in out
     for workflow in release.RELEASE_GATE_WORKFLOWS:
         assert f"+ gh run list --workflow {workflow} --branch hand-made" in out
+
+
+@pytest.mark.parametrize(
+    ("tag", "needs_minor", "expected"),
+    [
+        ("v0.2.0", False, "0.2.1"),
+        ("v0.2.0", True, "0.3.0"),
+        ("v0.3.4", True, "0.4.0"),
+        ("v1.2.3", False, "1.2.4"),
+        (None, False, "0.1.0"),
+    ],
+)
+def test_next_release_version(
+    tag: str | None, needs_minor: bool, expected: str
+) -> None:
+    assert release.next_release_version(tag, needs_minor) == expected
+
+
+@pytest.mark.parametrize(
+    "tag", ["0.2.0", "v0.2", "v0.2.0.dev0", "v0.2.0-hotfix", "v0.3.0rc1", "v0.2.1b2"]
+)
+def test_next_release_version_takes_only_final_tags(tag: str) -> None:
+    # notes measures from the last final tag, so a pre-release here is a caller's bug.
+    with pytest.raises(release.ReleaseError):
+        release.next_release_version(tag, False)
+
+
+def _fake_gh_output(monkeypatch: pytest.MonkeyPatch, outputs: dict[str, str]) -> None:
+    """Answer each ``gh <verb>`` call with the given stdout; git still runs for real."""
+    real_run = subprocess.run
+
+    def fake_run(cmd, *args, **kwargs):
+        if cmd[0] == "gh":
+            return subprocess.CompletedProcess(cmd, 0, stdout=outputs[cmd[1]])
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(release.subprocess, "run", fake_run)
+
+
+def test_missing_label_is_reported_not_raised(monkeypatch: pytest.MonkeyPatch) -> None:
+    # ``gh label list --json`` prints nothing at all when no label matches.
+    _fake_gh_output(monkeypatch, {"label": ""})
+    result = release._needs_minor_prs("HEAD")
+    assert isinstance(result, str)
+    assert "does not exist" in result
+
+
+def test_labelled_pull_requests_are_listed(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_gh_output(
+        monkeypatch,
+        {
+            "label": json.dumps([{"name": "needs-minor"}]),
+            "pr": json.dumps([{"number": 7, "title": "Refuse more names"}]),
+        },
+    )
+    assert release._needs_minor_prs("HEAD") == ["#7 Refuse more names"]
+
+
+def _notes(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    newest: str | None,
+    final: str | None,
+    verdict: str = "none",
+) -> str:
+    monkeypatch.setattr(release, "_git", lambda *args: "")
+    monkeypatch.setattr(release, "_previous_tag", lambda: newest)
+    monkeypatch.setattr(release, "_previous_final_tag", lambda: final)
+    monkeypatch.setattr(release, "_api_change", lambda tag: (verdict, "report"))
+    monkeypatch.setattr(release, "_needs_minor_prs", lambda tag: [])
+    release.cmd_notes(argparse.Namespace())
+    return capsys.readouterr().out
+
+
+def test_notes_never_suggests_a_version_behind_a_published_pre_release(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = _notes(monkeypatch, capsys, newest="v0.3.0rc1", final="v0.2.0")
+    assert "Public API since v0.2.0" in out
+    assert out.rstrip().endswith(
+        "This is a minor release, 0.3.0: v0.3.0rc1 is already out."
+    )
+
+
+def test_notes_says_why_it_stops_without_a_final_release(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = _notes(monkeypatch, capsys, newest="v0.2.0rc1", final=None)
+    assert "No final release yet" in out
+
+
+@pytest.mark.parametrize(
+    ("newest", "verdict", "labelled", "expected"),
+    [
+        ("v0.2.0", "none", [], "This can be a patch release, 0.2.1."),
+        ("v0.2.0", "patch", [], "This can be a patch release, 0.2.1."),
+        (
+            "v0.2.0",
+            "none",
+            "label missing",
+            "The API allows a patch release, 0.2.1; check the labels by hand.",
+        ),
+        (
+            "v0.2.0",
+            "minor",
+            [],
+            "This is a minor release, 0.3.0: the public API changed.",
+        ),
+        (
+            "v0.2.0",
+            "none",
+            ["#7 Refuse more names"],
+            "This is a minor release, 0.3.0: 1 merged pull request(s) are labelled.",
+        ),
+        (
+            "v0.3.0rc1",
+            "none",
+            "label missing",
+            "This is a minor release, 0.3.0: v0.3.0rc1 is already out.",
+        ),
+        (
+            "v0.2.1rc1",
+            "none",
+            [],
+            "This can be a patch release, 0.2.1.",
+        ),
+        (
+            "v0.2.1rc1",
+            "minor",
+            [],
+            "This is a minor release, 0.3.0: the public API changed.",
+        ),
+        (
+            "v0.2.2rc1",
+            "none",
+            [],
+            "This can be a patch release, 0.2.2: v0.2.2rc1 is already out.",
+        ),
+        (
+            "v1.0.0rc1",
+            "none",
+            [],
+            "This is a major release, 1.0.0: v1.0.0rc1 is already out.",
+        ),
+    ],
+)
+def test_next_release_line(
+    newest: str, verdict: str, labelled: list[str] | str, expected: str
+) -> None:
+    assert release.next_release_line("v0.2.0", newest, verdict, labelled) == expected
