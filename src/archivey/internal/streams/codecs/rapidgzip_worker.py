@@ -43,7 +43,9 @@ Parent to child:
   ``TELL_COMPRESSED`` (the reply's argument is rapidgzip's ``tell_compressed()``, in
   bits), ``OFFSETS`` (argument 0: ``available_block_offsets()``, 1: ``block_offsets()``;
   the reply's payload is the index as ``OFFSET_PAIR`` records, compressed bit offset
-  then decompressed offset, in the decoder's order).
+  then decompressed offset, in the decoder's order), ``RESET`` (close the stream and
+  wait for the next ``OPEN``; the reply's argument is 1 when this process can serve
+  another stream, 0 when it cannot and the parent should end it: see Memory).
 - ``SRC_DATA`` (payload: bytes read), ``SRC_VALUE`` (argument: a position),
   ``SRC_FAIL``: the answers to the child's ``SRC_*`` requests. ``SRC_FAIL`` means the
   parent's source raised; the parent keeps that exception and raises it to its caller.
@@ -56,12 +58,17 @@ Child to parent:
   ``SRC_TELL``: rapidgzip reading the parent's stream. They can arrive before the reply
   to any request, since rapidgzip's own threads read ahead in the background.
 
-The parent closes its end of the pipes to stop the child.
+The parent closes its end of the pipes to stop the child. A child whose stream ended
+cleanly can be ``RESET`` and given another ``OPEN``: the parent reuses children for the
+members of one archive (``RapidgzipChildPool`` in ``rapidgzip_child.py``).
 
 Memory. When ``OPEN`` carries a limit, the child watches its own peak resident memory
-once the source is open (``watch_memory``), and checks it again before each ``READ``
+once the source is open (``_MemoryWatch``), and checks it again before each ``READ``
 reply. When the peak has grown by more than the limit, the child exits at once with
-status ``MEMORY_LIMIT_EXIT``.
+status ``MEMORY_LIMIT_EXIT``. A ``RESET`` resets the peak to the current resident size
+(``_reset_peak``) so that the next stream's limit counts from there; where the peak
+cannot be reset (anywhere but Linux), the reply says this process cannot serve
+another stream.
 """
 
 from __future__ import annotations
@@ -89,6 +96,7 @@ ARG_MIN, ARG_MAX = shared.ARG_MIN, shared.ARG_MAX
 read_exact_or_none = shared.read_exact_or_none
 
 OPEN, READ, SEEK, RESUME, POINTS, TELL_COMPRESSED, OFFSETS = 1, 2, 3, 4, 5, 6, 7
+RESET = 8
 POINTS_REPLY = struct.Struct("<qqqq")
 OFFSET_PAIR = struct.Struct("<qq")
 OFFSETS_AVAILABLE, OFFSETS_COMPLETE = 0, 1
@@ -103,7 +111,7 @@ OPEN_PATH, OPEN_STREAM, OPEN_RANGE = 0, 1, 2
 OPEN_RANGE_ARGS = struct.Struct("<qqq")
 
 # The start of the OPEN payload: the memory limit in bytes, or NO_MEMORY_LIMIT. And the
-# exit status of a child that went over it. See ``watch_memory``.
+# exit status of a child that went over it. See ``_MemoryWatch``.
 OPEN_LIMIT = struct.Struct("<q")
 NO_MEMORY_LIMIT = -1
 MEMORY_LIMIT_EXIT = 86
@@ -284,22 +292,24 @@ def _points_around(stream: Any, offset: int) -> tuple[int, bytes]:
     return len(points), POINTS_REPLY.pack(*before, *after)
 
 
-def _serve(channel: _Channel, stream: Any, ceiling: int | None) -> None:
-    """Answer the parent's requests until it goes away. ``ceiling`` is from
-    ``watch_memory``: each ``READ`` and ``SEEK`` reply waits for one more check
-    against it."""
+def _serve(channel: _Channel, stream: Any, watch: _MemoryWatch) -> bool:
+    """Answer the parent's requests until it sends ``RESET`` (True) or goes away
+    (False). Each ``READ`` and ``SEEK`` reply waits for one more check against
+    ``watch``'s ceiling."""
     while True:
         tag, arg, payload = channel.requests.get()
         if tag == 0:
-            return
+            return False
+        if tag == RESET:
+            return True
         try:
             if tag == READ:
                 data = stream.read(arg)
-                check_memory(ceiling)
+                check_memory(watch.ceiling)
                 ok = channel.send(OK, len(data), data)
             elif tag == SEEK:
                 position = stream.seek(arg, payload[0] if payload else 0)
-                check_memory(ceiling)
+                check_memory(watch.ceiling)
                 ok = channel.send(OK, position)
             elif tag == RESUME:
                 offsets = stream.available_block_offsets().values()
@@ -323,7 +333,7 @@ def _serve(channel: _Channel, stream: Any, ceiling: int | None) -> None:
         except Exception as exc:  # noqa: BLE001 - reported to the parent, which raises
             ok = channel.send(ERR, 0, shared.error_payload(exc))
         if not ok:
-            return
+            return False
 
 
 def _peak_memory() -> int | None:
@@ -440,9 +450,8 @@ def check_memory(ceiling: int | None) -> None:
         os._exit(MEMORY_LIMIT_EXIT)
 
 
-def watch_memory(limit: int) -> int | None:
-    """End this process when its peak memory grows by more than ``limit`` bytes, and
-    return the ceiling that ``check_memory`` compares with.
+class _MemoryWatch:
+    """Ends this process when its peak memory grows by more than a limit during a stream.
 
     rapidgzip keeps decoded chunks in memory, and a chunk is as large as its output:
     a gzip file of 1 MB that decodes to 1 GiB held close to 1 GiB. No rapidgzip
@@ -450,7 +459,7 @@ def watch_memory(limit: int) -> int | None:
     reserves about 2 GB of address space before it decodes anything, and a decode
     under a smaller limit ends in a segmentation fault. So a thread checks the peak
     resident memory every ``_MEMORY_POLL_INTERVAL`` and exits with
-    ``MEMORY_LIMIT_EXIT`` when it has grown by more than ``limit`` since this call.
+    ``MEMORY_LIMIT_EXIT`` when it has grown by more than the limit since :meth:`arm`.
     ``_serve`` checks again before each ``READ`` and ``SEEK`` reply, so a watching
     thread that waits for a processor delays the stop by one request at most. The
     parent then reads the rest of the stream with the standard library, which decodes
@@ -458,20 +467,48 @@ def watch_memory(limit: int) -> int | None:
     The peak can pass the limit by what the decoder allocates between two checks:
     measured on four cores, about 17 MB.
 
-    Where the peak cannot be read, nothing is watched, and this returns ``None``.
+    Where the peak cannot be read, nothing is watched.
     """
-    start = _peak_memory()
-    if start is None:
-        return None
-    ceiling = start + limit
 
-    def watch() -> None:
+    def __init__(self) -> None:
+        # What ``check_memory`` compares with; ``None`` between streams.
+        self.ceiling: int | None = None
+        self._thread: threading.Thread | None = None
+
+    def arm(self, limit: int) -> None:
+        """Watch from now on, with ``limit`` bytes of growth allowed."""
+        start = _peak_memory()
+        if start is None:
+            return
+        self.ceiling = start + limit
+        if self._thread is None:
+            self._thread = threading.Thread(target=self._watch, daemon=True)
+            self._thread.start()
+
+    def disarm(self) -> None:
+        self.ceiling = None
+
+    def _watch(self) -> None:
         while True:
-            check_memory(ceiling)
+            check_memory(self.ceiling)
             time.sleep(_MEMORY_POLL_INTERVAL)
 
-    threading.Thread(target=watch, daemon=True).start()
-    return ceiling
+
+def _reset_peak() -> bool:
+    """Reset this process's peak memory to its current resident size, so that the next
+    stream's limit counts from there. False where it cannot be reset.
+
+    Only Linux can: writing 5 to ``/proc/self/clear_refs`` resets ``VmHWM``. The other
+    systems' peak (``ru_maxrss``, ``PeakWorkingSetSize``) only grows.
+    """
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        with open("/proc/self/clear_refs", "wb") as refs:
+            refs.write(b"5")
+    except OSError:
+        return False
+    return True
 
 
 def _main(argv: list[str]) -> None:
@@ -479,50 +516,63 @@ def _main(argv: list[str]) -> None:
     # would kill the process with rapidgzip's threads running, which aborts it and
     # reads as a decoder crash).
     channel = _Channel()
-    tag, kind, payload = channel.requests.get()
-    if tag != OPEN:
-        return
-    try:
-        (limit,) = OPEN_LIMIT.unpack_from(payload)
-        payload = payload[OPEN_LIMIT.size :]
-        # import_module: rapidgzip has no type stubs, and the type checkers read this
-        # file as part of the package.
-        rapidgzip = importlib.import_module("rapidgzip")
-
-        # The import comes first: a failed import is a start failure, after which an
-        # AUTO open in the parent decodes the caller's source with the stdlib. That
-        # needs the source where the caller left it, so nothing may read it before the
-        # import succeeds (``_ParentSource`` reads only when rapidgzip asks).
-        if argv == [BZIP2_ARG]:
-            opener = getattr(rapidgzip, "IndexedBzip2File", None)
-            if opener is None:
-                raise ImportError("this rapidgzip has no IndexedBzip2File")
-        else:
-            opener = rapidgzip.open
-        source: object
-        if kind == OPEN_PATH:
-            source = os.fsdecode(payload)
-        elif kind == OPEN_RANGE:
-            source = _FileRange(*OPEN_RANGE_ARGS.unpack(payload))
-        else:
-            source = _ParentSource(channel)
-        stream = opener(source, parallelization=0)
-    except Exception as exc:  # noqa: BLE001 - reported to the parent, which raises
-        channel.send(ERR, 0, shared.error_payload(exc))
-        return
-    try:
-        # Started after the open, so the limit counts what the decode holds and not the
-        # interpreter and rapidgzip's start-up.
-        ceiling = None if limit == NO_MEMORY_LIMIT else watch_memory(limit)
-        if channel.send(OK):
-            _serve(channel, stream, ceiling)
-    finally:
-        # close(), not join_threads(), stops rapidgzip's threads; one still running
-        # when the interpreter finalizes aborts the process.
+    watch = _MemoryWatch()
+    opener: Any = None
+    while True:
+        tag, kind, payload = channel.requests.get()
+        if tag != OPEN:
+            return
         try:
-            stream.close()
-        except Exception:  # noqa: BLE001, S110 - the process is ending either way
-            pass
+            (limit,) = OPEN_LIMIT.unpack_from(payload)
+            payload = payload[OPEN_LIMIT.size :]
+            if opener is None:
+                opener = _load_opener(argv)
+            source: object
+            if kind == OPEN_PATH:
+                source = os.fsdecode(payload)
+            elif kind == OPEN_RANGE:
+                source = _FileRange(*OPEN_RANGE_ARGS.unpack(payload))
+            else:
+                source = _ParentSource(channel)
+            stream = opener(source, parallelization=0)
+        except Exception as exc:  # noqa: BLE001 - reported to the parent, which raises
+            channel.send(ERR, 0, shared.error_payload(exc))
+            return
+        try:
+            # Armed after the open, so the limit counts what the decode holds and not
+            # the interpreter and rapidgzip's start-up.
+            if limit != NO_MEMORY_LIMIT:
+                watch.arm(limit)
+            reset = channel.send(OK) and _serve(channel, stream, watch)
+        finally:
+            watch.disarm()
+            # close(), not join_threads(), stops rapidgzip's threads; one still running
+            # when the interpreter finalizes aborts the process.
+            try:
+                stream.close()
+            except Exception:  # noqa: BLE001, S110 - the process may be ending
+                pass
+        if not reset or not channel.send(OK, 1 if _reset_peak() else 0):
+            return
+
+
+def _load_opener(argv: list[str]) -> Any:
+    """rapidgzip's opener for ``argv``: ``IndexedBzip2File`` or ``rapidgzip.open``.
+
+    The import comes before the source is touched: a failed import is a start
+    failure, after which an AUTO open in the parent decodes the caller's source with
+    the stdlib. That needs the source where the caller left it, so nothing may read it
+    before the import succeeds (``_ParentSource`` reads only when rapidgzip asks).
+    """
+    # import_module: rapidgzip has no type stubs, and the type checkers read this
+    # file as part of the package.
+    rapidgzip = importlib.import_module("rapidgzip")
+    if argv == [BZIP2_ARG]:
+        opener = getattr(rapidgzip, "IndexedBzip2File", None)
+        if opener is None:
+            raise ImportError("this rapidgzip has no IndexedBzip2File")
+        return opener
+    return rapidgzip.open
 
 
 def run(argv: list[str]) -> None:

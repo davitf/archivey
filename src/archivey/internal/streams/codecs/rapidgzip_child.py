@@ -37,6 +37,7 @@ import io
 import os
 import subprocess
 import tempfile
+import threading
 import weakref
 from collections.abc import Callable
 from pathlib import Path
@@ -89,6 +90,7 @@ from archivey.internal.streams.codecs.rapidgzip_worker import (
     POINTS,
     POINTS_REPLY,
     READ,
+    RESET,
     RESUME,
     SEEK,
     SRC_DATA,
@@ -294,9 +296,11 @@ _STDERR_LINE_LIMIT = 64 << 10
 _WHAT = b"what():"
 
 
-def _scan_stderr(stderr: IO[bytes]) -> tuple[bool, str]:
+def _scan_stderr(stderr: IO[bytes], start: int = 0) -> tuple[bool, str]:
     """Whether the child's stderr holds rapidgzip's truncation abort, and the text of
     its C++ ``what():`` line (``": <text>"``, or an empty string when there is none).
+    ``start``: where the current stream's output begins (a reused child wrote the
+    earlier streams' output before it).
 
     The last ``what():`` is taken: ``std::terminate`` writes it as the child dies, and
     output written earlier may hold the same text for another reason.
@@ -304,7 +308,7 @@ def _scan_stderr(stderr: IO[bytes]) -> tuple[bool, str]:
     truncated, reason = False, ""
     carry = b""
     try:
-        stderr.seek(0)
+        stderr.seek(start)
         scanned = 0
         while scanned < _STDERR_SCAN_LIMIT:
             piece = stderr.readline(_STDERR_LINE_LIMIT)
@@ -322,6 +326,112 @@ def _scan_stderr(stderr: IO[bytes]) -> tuple[bool, str]:
     return truncated, reason
 
 
+# The most idle children one pool keeps for each decoder (gzip family, bzip2). Members
+# are mostly read one after another, so one is reused in turn; more serve only threads
+# reading members at once.
+_MAX_IDLE = 2
+
+
+class RapidgzipChildPool:
+    """Idle rapidgzip children for the members of one archive file.
+
+    A child serves one stream at a time. When a stream of a file region closes cleanly,
+    its child is ``RESET`` and kept here, and the next member of the same file takes it,
+    which skips the tens of milliseconds a start costs. The child holds a copy of the
+    file's descriptor from its start (``pass_fds``), so it can only serve that file.
+    The pool belongs to the region's ``owner`` (``FileRegion``): its idle children are
+    ended when the owner closes (``ArchiveSource.on_close``) or is collected, so no
+    child outlives the archive. A child is kept only after a stream that raised
+    nothing, and only where its memory peak can be reset (Linux: see ``RESET`` in
+    ``rapidgzip_worker.py``).
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        # A process made by ``fork`` inherits the pool with the pipes, which belong to
+        # its parent: it must neither use nor end those children (``_owned``).
+        self._pid = os.getpid()
+        # (bzip2, fd) -> idle (process, stderr file) pairs.
+        self._idle: dict[
+            tuple[bool, int], list[tuple[subprocess.Popen[bytes], IO[bytes]]]
+        ] = {}
+        self._closed = False
+
+    def take(
+        self, bzip2: bool, fd: int
+    ) -> tuple[subprocess.Popen[bytes], IO[bytes]] | None:
+        """An idle child for this decoder and descriptor, or ``None``."""
+        if not self._owned():
+            return None
+        with self._lock:
+            idle = self._idle.get((bzip2, fd))
+            while idle:
+                proc, stderr = idle.pop()
+                if proc.poll() is None:
+                    return proc, stderr
+                _reap(proc, stderr)
+        return None
+
+    def give(
+        self, bzip2: bool, fd: int, proc: subprocess.Popen[bytes], stderr: IO[bytes]
+    ) -> bool:
+        """Keep an idle child. False when the pool is closed or full: the caller ends
+        it."""
+        if not self._owned():
+            return False
+        with self._lock:
+            idle = self._idle.setdefault((bzip2, fd), [])
+            if self._closed or len(idle) >= _MAX_IDLE:
+                return False
+            idle.append((proc, stderr))
+        return True
+
+    def close(self) -> None:
+        """End every idle child; later ``give`` calls are refused. Never raises."""
+        with self._lock:
+            self._closed = True
+            idle, self._idle = self._idle, {}
+        if not self._owned():
+            return
+        for children in idle.values():
+            for proc, stderr in children:
+                _reap(proc, stderr)
+
+    def idle_count(self) -> int:
+        with self._lock:
+            return sum(len(children) for children in self._idle.values())
+
+    def _owned(self) -> bool:
+        return self._pid == os.getpid()
+
+
+_pools_lock = threading.Lock()
+_pools: weakref.WeakKeyDictionary[object, RapidgzipChildPool] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def child_pool(owner: object) -> RapidgzipChildPool | None:
+    """The pool of ``owner`` (a ``FileRegion.owner``), made on first use.
+
+    ``None`` unless ``owner`` is an open ``ArchiveSource``, which says when it closes
+    (``on_close``): a bare file object the caller handed in does not, so its children
+    would outlive it.
+    """
+    on_close = getattr(owner, "on_close", None)
+    if on_close is None or getattr(owner, "closed", True):
+        return None
+    with _pools_lock:
+        pool = _pools.get(owner)
+        if pool is not None:
+            return pool
+        pool = RapidgzipChildPool()
+        _pools[owner] = pool
+        weakref.finalize(owner, pool.close)
+    on_close(pool.close)
+    return pool
+
+
 class RapidgzipChildStream(ReadOnlyIOStream):
     """A seekable stream of rapidgzip's decoded output, decoded in a child process.
 
@@ -335,10 +445,13 @@ class RapidgzipChildStream(ReadOnlyIOStream):
     DEFLATE checkpoints (``resume_point`` is always ``None``), and the bzip2 takeover
     finds its blocks through :meth:`available_block_offsets` instead.
     ``max_memory`` is ``DecoderLimits.max_decoder_memory``: the child is ended when its
-    memory grows by more than that many bytes after the open (``watch_memory`` in the
+    memory grows by more than that many bytes after the open (``_MemoryWatch`` in the
     worker), and every later call raises ``ResourceLimitError``. ``None`` sets no
     limit. It has no default, so every caller decides.
     """
+
+    # Read by close(), which also runs on an instance whose __init__ never started.
+    _pool: RapidgzipChildPool | None = None
 
     def __init__(
         self,
@@ -374,6 +487,12 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         # ended there, so a later death may be that, and is not a verdict on the data.
         self._source_fault: Exception | None = None
         self._source: BinaryIO | None = None
+        # The pool this stream's child goes back to when it closes cleanly, and the
+        # descriptor the child holds (``RapidgzipChildPool``). ``_tainted``: something
+        # went wrong, so the child is ended instead.
+        self._pool: RapidgzipChildPool | None = None
+        self._pool_fd = -1
+        self._tainted = False
         # Whether the child's death was a crash on the data (``crashed_on_data``).
         self._crashed = False
         # Where a standard-library decoder can take over (``resume_point``): index
@@ -427,24 +546,22 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         argv.append(RAPIDGZIP_ARG)
         if bzip2:
             argv.append(BZIP2_ARG)
-        try:
-            # The handle outlives this statement; its owner closes it.
-            stderr = tempfile.TemporaryFile()  # noqa: SIM115
-        except OSError as exc:
-            raise _start_error(str(exc)) from exc
-        self._stderr = stderr
-        try:
-            self._proc = spawn(
-                argv,
-                _start_error,
-                stdin=subprocess.PIPE,
-                stderr=stderr,
-                pass_fds=pass_fds,
-            )
-        except RapidgzipChildStartError:
-            stderr.close()
-            raise
-        self._finalizer = weakref.finalize(self, _reap, self._proc, stderr)
+        reused = None
+        if region is not None:
+            self._pool = child_pool(region.owner)
+            self._pool_fd = region.fd
+            if self._pool is not None:
+                reused = self._pool.take(bzip2, region.fd)
+        proc, stderr = reused if reused is not None else self._spawn(argv, pass_fds)
+        self._proc, self._stderr = proc, stderr
+        # A reused child's stderr already holds what it wrote for earlier streams.
+        self._stderr_start = 0
+        if reused is not None:
+            try:
+                self._stderr_start = stderr.seek(0, io.SEEK_END)
+            except (OSError, ValueError):
+                pass
+        self._finalizer = weakref.finalize(self, _reap, proc, stderr)
         try:
             self._call(OPEN, open_kind, open_payload)
         except ImportError as exc:
@@ -455,6 +572,29 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         except BaseException:
             self.close()
             raise
+
+    @staticmethod
+    def _spawn(
+        argv: list[str], pass_fds: tuple[int, ...]
+    ) -> tuple[subprocess.Popen[bytes], IO[bytes]]:
+        """Start a child; return it and its stderr file."""
+        try:
+            # The handle outlives this statement; its owner closes it.
+            stderr = tempfile.TemporaryFile()  # noqa: SIM115
+        except OSError as exc:
+            raise _start_error(str(exc)) from exc
+        try:
+            proc = spawn(
+                argv,
+                _start_error,
+                stdin=subprocess.PIPE,
+                stderr=stderr,
+                pass_fds=pass_fds,
+            )
+        except RapidgzipChildStartError:
+            stderr.close()
+            raise
+        return proc, stderr
 
     # --- the channel ----------------------------------------------------------------
 
@@ -555,6 +695,7 @@ class RapidgzipChildStream(ReadOnlyIOStream):
             try:
                 check()
             except Exception as exc:
+                self._tainted = True
                 # What a read of the caller's source would have raised, so it reaches
                 # the caller as that read's error would (``_answer_source``).
                 mark_callers_source(exc)
@@ -580,6 +721,7 @@ class RapidgzipChildStream(ReadOnlyIOStream):
             raise parked
         reply, value, data = frame
         if reply == ERR:
+            self._tainted = True
             raise _reported_error(data)
         return value, data
 
@@ -635,6 +777,33 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         if finalizer.detach() is not None:
             _reap(proc, stderr, kill=kill)
 
+    def _release_to_pool(self) -> bool:
+        """Hand a clean child back to its pool (``RapidgzipChildPool``). False when it
+        is not reusable, and the caller ends it."""
+        pool = self._pool
+        if pool is None:
+            return False
+        proc, stderr = self._proc, self._stderr
+        if (
+            proc is None
+            or stderr is None
+            or self._tainted
+            or self._source_fault is not None
+            or self._death is not None
+            or self._pos is None
+        ):
+            return False
+        frame = self._exchange(RESET, 0, b"")
+        if frame is None or frame[0] != OK or frame[1] != 1:
+            return False
+        finalizer = self._finalizer
+        self._finalizer = self._proc = None
+        if finalizer is None or finalizer.detach() is None:
+            return True  # already reaped
+        if not pool.give(self._bzip2, self._pool_fd, proc, stderr):
+            _reap(proc, stderr)
+        return True
+
     def _child_died(self, *, caused_by_source: Exception | None) -> Exception:
         """Reap a child that has gone away; record and return the error that reports it."""
         proc = self._proc
@@ -643,7 +812,7 @@ class RapidgzipChildStream(ReadOnlyIOStream):
             returncode = proc.wait(timeout=REAP_TIMEOUT)
         except subprocess.TimeoutExpired:
             returncode = None  # it closed its pipes and did not exit; ended below
-        truncated, reason = _scan_stderr(self._stderr)
+        truncated, reason = _scan_stderr(self._stderr, self._stderr_start)
         self._stop(kill=returncode is None)
         how = describe_exit(returncode)
         label = self._label
@@ -1013,7 +1182,13 @@ class RapidgzipChildStream(ReadOnlyIOStream):
     def close(self) -> None:
         if self.closed:
             return
-        self._stop()
+        try:
+            released = self._release_to_pool()
+        except BaseException:
+            self._stop(kill=True)
+            raise
+        if not released:
+            self._stop()
         self._source = None
         self._drop_buffer()
         super().close()

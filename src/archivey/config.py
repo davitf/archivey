@@ -678,7 +678,10 @@ class ArchiveyConfig:
 
     rapidgzip runs in a child Python process, one per open stream, because it aborts the
     process on a stream that ends early; that costs about 45 ms per stream to start and
-    open, which is why the ``AUTO`` threshold is 16 MiB. Where no child can be started
+    open, which is why the ``AUTO`` threshold is 16 MiB. On Linux, the members of one
+    archive file on disk reuse children: a member whose stream closed without an error
+    hands its child to the next one, which skips the start. Those children end when the
+    archive closes. Where no child can be started
     (a frozen application, archivey imported from a zip, or a spawn or temporary file
     the operating system refuses), ``AUTO`` uses the standard library, logging one
     warning per process on the ``archivey.streams`` logger, and ``ON`` raises

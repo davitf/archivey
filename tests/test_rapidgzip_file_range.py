@@ -11,6 +11,8 @@ from __future__ import annotations
 import io
 import os
 import random
+import subprocess
+import sys
 import threading
 import zipfile
 from pathlib import Path
@@ -20,7 +22,7 @@ import pytest
 from archivey import AcceleratorMode, ArchiveyConfig, open_archive
 from archivey.exceptions import ArchiveyError
 from archivey.internal.source import ArchiveSource
-from archivey.internal.streams.codecs import rapidgzip_child
+from archivey.internal.streams.codecs import rapidgzip_child, rapidgzip_worker
 from archivey.internal.streams.codecs.rapidgzip_worker import OPEN, OPEN_RANGE
 from archivey.internal.streams.streamtools import SharedView, SlicingStream
 from archivey.internal.streams.streamtools.slice import file_region
@@ -211,3 +213,119 @@ def test_a_damaged_member_raises_as_the_stdlib_does(tmp_path: Path) -> None:
             stream.read()
         errors.append(type(excinfo.value))
     assert errors[0] is errors[1]
+
+
+# --- reuse: one archive's members share rapidgzip children ------------------------------
+
+linux_only = pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="a child is reused only where its memory peak can be reset (Linux)",
+)
+
+
+def _zip_members(tmp_path: Path, names: list[str], data: bytes = _DATA) -> Path:
+    path = tmp_path / "members.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        for name in names:
+            zf.writestr(name, data, compress_type=zipfile.ZIP_DEFLATED)
+    return path
+
+
+def _count_spawns(monkeypatch: pytest.MonkeyPatch) -> list[subprocess.Popen[bytes]]:
+    started: list[subprocess.Popen[bytes]] = []
+    spawn = rapidgzip_child.spawn
+
+    def spy(*args, **kwargs):  # type: ignore[no-untyped-def]
+        proc = spawn(*args, **kwargs)
+        started.append(proc)
+        return proc
+
+    monkeypatch.setattr(rapidgzip_child, "spawn", spy)
+    return started
+
+
+@posix_only
+@linux_only
+def test_the_members_of_one_archive_share_a_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("rapidgzip")
+    started = _count_spawns(monkeypatch)
+    path = _zip_members(tmp_path, ["a.bin", "b.bin", "c.bin"])
+    with open_archive(path, config=_ON, seekable_members=True) as r:
+        for name in ("a.bin", "b.bin", "c.bin"):
+            with r.open(name) as stream:
+                stream.seek(250_000)
+                assert stream.read(1000) == _DATA[250_000:251_000]
+                stream.seek(0)
+                assert stream.read() == _DATA
+        assert len(started) == 1
+        assert started[0].poll() is None
+    # The archive's close ends its idle children.
+    assert started[0].wait(timeout=10) is not None
+
+
+@posix_only
+@linux_only
+def test_two_members_read_at_once_get_two_children(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("rapidgzip")
+    started = _count_spawns(monkeypatch)
+    path = _zip_members(tmp_path, ["a.bin", "b.bin", "c.bin"])
+    with open_archive(
+        path, config=_ON, seekable_members=True, concurrent_operations=True
+    ) as r:
+        with r.open("a.bin") as a, r.open("b.bin") as b:
+            assert a.read(10) == b.read(10) == _DATA[:10]
+            assert a.read() == b.read() == _DATA[10:]
+        with r.open("c.bin") as c:
+            assert c.read() == _DATA
+        assert len(started) == 2
+    for proc in started:
+        assert proc.wait(timeout=10) is not None
+
+
+@posix_only
+@linux_only
+def test_a_child_that_failed_on_a_member_is_not_reused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("rapidgzip")
+    text = b"".join(b"line %d of some text\n" % i for i in range(40_000))
+    path = tmp_path / "members.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("a.txt", text, compress_type=zipfile.ZIP_DEFLATED)
+        zf.writestr("b.bin", _DATA, compress_type=zipfile.ZIP_DEFLATED)
+        info = zf.getinfo("a.txt")
+    data = bytearray(path.read_bytes())
+    # A run of ones inside the compressed text: the decoder itself rejects it (an
+    # invalid block type), and the standard library takes over from the child.
+    at = info.header_offset + 30 + len("a.txt") + 2000
+    data[at : at + 64] = b"\xff" * 64
+    path.write_bytes(bytes(data))
+    started = _count_spawns(monkeypatch)
+    with open_archive(path, config=_ON, seekable_members=True) as r:
+        with r.open("a.txt") as a, pytest.raises(ArchiveyError):
+            a.read()
+        assert started[0].wait(timeout=10) is not None
+        with r.open("b.bin") as b:
+            assert b.read() == _DATA
+        assert len(started) == 2
+
+
+@linux_only
+def test_the_memory_peak_resets_between_streams() -> None:
+    # What lets a reused child measure each stream's memory from its own start.
+    peak = rapidgzip_worker._peak_memory()
+    assert peak is not None
+    held = bytearray(256 << 20)
+    held[::4096] = b"\x01" * len(held[::4096])  # touch every page
+    grown = rapidgzip_worker._peak_memory()
+    assert grown is not None
+    assert grown > peak + (128 << 20)
+    del held
+    assert rapidgzip_worker._reset_peak()
+    after = rapidgzip_worker._peak_memory()
+    assert after is not None
+    assert after < grown - (128 << 20)
