@@ -1,9 +1,9 @@
-"""No ``str`` regex in ``src`` uses ``\\d`` or ``\\w`` without ``re.ASCII``.
+"""No ``str`` regex in ``src`` uses ``\\d``, ``\\w`` or ``\\s`` without ``re.ASCII``.
 
-On a ``str`` pattern ``\\d`` matches any Unicode digit and ``\\w`` any Unicode letter, so
-``0.7z.\\u066000`` (Arabic-Indic zeros) read as a numbered volume. Archive formats and
-tool banners use ASCII digits; write ``[0-9]`` / ``[A-Za-z0-9_]``, or pass ``re.ASCII``
-when Unicode really is meant to be refused. ``bytes`` patterns are ASCII already.
+On a ``str`` pattern ``\\d`` matches any Unicode digit, ``\\w`` any Unicode letter and
+``\\s`` any Unicode space, so ``0.7z.\\u066000`` (Arabic-Indic zeros) read as a numbered
+volume. Archive formats and tool banners use ASCII; write ``[0-9]``, ``[A-Za-z0-9_]``
+or ``[ \\t]``, or pass ``re.ASCII``. ``bytes`` patterns are ASCII already.
 """
 
 from __future__ import annotations
@@ -25,8 +25,8 @@ _RE_FUNCS = {
     "findall",
     "finditer",
 }
-# ``\d`` / ``\w`` not preceded by another backslash (``\\d`` is a literal ``\d``).
-_UNICODE_CLASS = re.compile(r"(?<!\\)(?:\\\\)*\\[dwDW]")
+# ``\d`` / ``\w`` / ``\s`` not preceded by another backslash (``\\d`` is a literal ``\d``).
+_UNICODE_CLASS = re.compile(r"(?<!\\)(?:\\\\)*\\[dswDSW]")
 
 
 def _has_ascii_flag(node: ast.Call) -> bool:
@@ -75,9 +75,9 @@ def _offenders() -> list[str]:
     return found
 
 
-def test_src_str_regexes_match_ascii_digits_only() -> None:
+def test_src_str_regexes_use_ascii_classes_only() -> None:
     offenders = _offenders()
     assert not offenders, (
-        "str regexes using \\d or \\w without re.ASCII (write [0-9] / "
-        "[A-Za-z0-9_] instead):\n" + "\n".join(offenders)
+        "str regexes using \\d, \\w or \\s without re.ASCII (write [0-9] / "
+        "[A-Za-z0-9_] / [ \\t] instead):\n" + "\n".join(offenders)
     )
