@@ -176,14 +176,19 @@ def next_release_line(
     if floor is not None and _version_key(floor) > _version_key(version):
         version = floor
         reasons.append(f"{newest} is already out")
-    if (
-        _version_key(version)[:2]
-        != _version_key(next_release_version(final, False))[:2]
-    ):
-        return f"This is a minor release, {version}: {'; '.join(reasons)}."
+    base = _version_key(next_release_version(final, False))
+    chosen = _version_key(version)
+    kind = (
+        "major" if chosen[0] > base[0] else "minor" if chosen[1] > base[1] else "patch"
+    )
+    why = f": {'; '.join(reasons)}" if reasons else ""
+    if kind != "patch":
+        return f"This is a {kind} release, {version}{why}."
     if isinstance(labelled, str):
-        return f"The API allows a patch release, {version}; check the labels by hand."
-    return f"This can be a patch release: {version}."
+        return (
+            f"The API allows a patch release, {version}{why}; check the labels by hand."
+        )
+    return f"This can be a patch release, {version}{why}."
 
 
 def _link_section_start(text: str) -> int:

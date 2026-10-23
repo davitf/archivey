@@ -623,8 +623,8 @@ def test_notes_says_why_it_stops_without_a_final_release(
 @pytest.mark.parametrize(
     ("newest", "verdict", "labelled", "expected"),
     [
-        ("v0.2.0", "none", [], "This can be a patch release: 0.2.1."),
-        ("v0.2.0", "patch", [], "This can be a patch release: 0.2.1."),
+        ("v0.2.0", "none", [], "This can be a patch release, 0.2.1."),
+        ("v0.2.0", "patch", [], "This can be a patch release, 0.2.1."),
         (
             "v0.2.0",
             "none",
@@ -653,13 +653,25 @@ def test_notes_says_why_it_stops_without_a_final_release(
             "v0.2.1rc1",
             "none",
             [],
-            "This can be a patch release: 0.2.1.",
+            "This can be a patch release, 0.2.1.",
         ),
         (
             "v0.2.1rc1",
             "minor",
             [],
             "This is a minor release, 0.3.0: the public API changed.",
+        ),
+        (
+            "v0.2.2rc1",
+            "none",
+            [],
+            "This can be a patch release, 0.2.2: v0.2.2rc1 is already out.",
+        ),
+        (
+            "v1.0.0rc1",
+            "none",
+            [],
+            "This is a major release, 1.0.0: v1.0.0rc1 is already out.",
         ),
     ],
 )
