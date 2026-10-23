@@ -75,7 +75,6 @@ from typing import TYPE_CHECKING, BinaryIO
 
 from archivey.config import (
     DEFAULT_ARCHIVEY_CONFIG,
-    AcceleratorMode,
     ProcessIsolation,
 )
 from archivey.detection import DetectedBy, DetectionConfidence, FormatInfo
@@ -171,8 +170,10 @@ _INNER_TAR_MAX_PROBE_BYTES = 1 << 20
 _PROBE_STOPPING_SIGNATURES: tuple[tuple[bytes, str], ...] = (
     (
         bytes.fromhex("d0cf11e0a1b11ae1"),
-        "an OLE compound file signature (.doc, .xls, .ppt, .msi, Thumbs.db), "
-        "which is not an archive format",
+        (
+            "an OLE compound file signature (.doc, .xls, .ppt, .msi, Thumbs.db), "
+            "which is not an archive format"
+        ),
     ),
 )
 
@@ -410,7 +411,11 @@ def _probe_inner_tar(
     that cannot cover the probe (``BUDGET_EXHAUSTED``).
     """
     # Imported here rather than at module load to avoid a detection<->codecs import cycle.
-    from archivey.internal.config import DecoderLimits, StreamConfig
+    from archivey.internal.config import (
+        DecoderLimits,
+        StreamConfig,
+        without_accelerators,
+    )
     from archivey.internal.streams.codecs import (
         codec_for_stream_format,
         is_codec_available,
@@ -471,18 +476,18 @@ def _probe_inner_tar(
         with open_codec_stream(
             codec,
             codec_input,
-            config=StreamConfig(
-                streaming=True,
-                seekable=not view_arrived,
-                use_rapidgzip=AcceleratorMode.OFF,
-                use_indexed_bzip2=AcceleratorMode.OFF,
-                decoder_limits=DecoderLimits.UNLIMITED,
-                probe_read_bound=_INNER_TAR_PROBE_BYTES,
-                process_isolation=(
-                    workspace.isolation
-                    if workspace is not None
-                    else ProcessIsolation.KNOWN_CRASHES
-                ),
+            config=without_accelerators(
+                StreamConfig(
+                    streaming=True,
+                    seekable=not view_arrived,
+                    decoder_limits=DecoderLimits.UNLIMITED,
+                    probe_read_bound=_INNER_TAR_PROBE_BYTES,
+                    process_isolation=(
+                        workspace.isolation
+                        if workspace is not None
+                        else ProcessIsolation.KNOWN_CRASHES
+                    ),
+                )
             ),
         ) as stream:
             head = stream.read(_INNER_TAR_PROBE_BYTES)
@@ -656,17 +661,14 @@ def _resolve_single_file_or_tar(
     if (
         fmt.container == ContainerFormat.RAW_STREAM
         and fmt.stream != StreamFormat.UNCOMPRESSED
-    ):
-        if _probe_inner_tar(
-            fmt.stream, peek_more, workspace, view_arrived=view_arrived
-        ):
-            tar_fmt = ArchiveFormat(ContainerFormat.TAR, fmt.stream)
-            return FormatInfo(
-                tar_fmt,
-                DetectionConfidence.PROBABLE,
-                "content_probe",
-                corroborated=True,
-            )
+    ) and _probe_inner_tar(fmt.stream, peek_more, workspace, view_arrived=view_arrived):
+        tar_fmt = ArchiveFormat(ContainerFormat.TAR, fmt.stream)
+        return FormatInfo(
+            tar_fmt,
+            DetectionConfidence.PROBABLE,
+            "content_probe",
+            corroborated=True,
+        )
     corroborated = base_detected_by == "content_probe" and _extension_corroborates(
         ext_match, fmt
     )
@@ -964,6 +966,15 @@ def detect_format(
     confidence and ``detected_by="directory"``, matching ``open_archive``, which reads
     it as a directory archive. Nothing is read to decide that, so ``cost_receipt`` is
     the zero receipt (one pass, no bytes).
+
+    Raises:
+        FormatDetectionError: No format matches the source's contents or name.
+        TruncatedError: The path names part of a numbered split set with a gap.
+        DiagnosticRaisedError: A diagnostic that the :class:`~archivey.DiagnosticPolicy`
+            in the config raises on, recorded during detection.
+        ArchiveyUsageError: One argument has a type or value the call cannot use (then
+            also a ``TypeError`` or ``ValueError``).
+        FileNotFoundError: The path does not exist.
     """
     return detect_format_into(
         source, config=config, collector=None, follow_stub_volumes=follow_stub_volumes

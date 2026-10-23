@@ -893,7 +893,7 @@ def _cut_short(fp: BinaryIO, exc: Exception) -> TruncatedError | None:
 
 # Trailing ";1"/";42" version suffix on an ISO 9660 or Joliet file identifier. ``\Z``,
 # not ``$``: ``$`` also matches before a final newline, which would drop it from the name.
-_VERSION_SUFFIX = re.compile(r";(\d+)\Z")
+_VERSION_SUFFIX = re.compile(r";([0-9]+)\Z")
 
 # How many records under a Rock Ridge directory are searched for a file that also sits
 # in the Joliet tree, to find that directory's Joliet counterpart. Bounds the cost of a
@@ -1510,61 +1510,59 @@ class IsoReader(BaseArchiveReader):
         # Boundary outside the guard; an exception the translator does not recognize
         # (a genuine OSError from the handle) propagates unchanged.
         try:
-            with self._translated_errors():
-                with self._handle_guard():
-                    # Always the source, never ``open(str(path))``: a path pycdlib opened
-                    # for itself would have nothing of ours underneath it, and the
-                    # source is what bounds the reads pycdlib sizes from the image's own
-                    # headers. pycdlib clamps a *file*'s ``data_length`` to the image,
-                    # but not a *directory*'s: a root record declaring 4 GiB asks for 4
-                    # GiB inside ``open_fp``, from a file of any size. The source turns
-                    # that into a short read, which pycdlib reports as an invalid
-                    # directory record. When the file holds less than the image
-                    # declares, ``_cut_short`` makes that a ``TruncatedError``;
-                    # otherwise, as for a full-length image whose directory declares
-                    # too much, ``_translate_exception`` makes it a
-                    # ``CorruptionError``. pycdlib never closes a file object it was
-                    # handed (``_managing_fp`` is set only by ``open()``).
-                    # Kept for ``_data_inode``, which reads extents pycdlib has no
-                    # inode for through the same handle pycdlib reads from.
-                    self._iso_fp = self._track_source_seeks(source)
-                    limits = config.listing_limits
-                    budget = (
-                        None
-                        if limits.max_members is None
-                        and limits.max_metadata_bytes is None
-                        else _ParseBudget(limits)
-                    )
-                    token = _SYSTEM_USE_NOTES.set(self._system_use)
-                    budget_token = _PARSE_BUDGET.set(budget)
-                    try:
-                        self._iso.open_fp(self._iso_fp)
-                    except _PYCDLIB_ERRORS as exc:
-                        truncated = _cut_short(self._iso_fp, exc)
-                        if truncated is None:
-                            raise
-                        raise truncated from exc
-                    finally:
-                        _PARSE_BUDGET.reset(budget_token)
-                        _SYSTEM_USE_NOTES.reset(token)
-                    self._iso_opened = True
-                    # pycdlib measured the image the same way inside ``open_fp``.
-                    self._image_length = self._iso_fp.seek(0, 2)
+            with self._translated_errors(), self._handle_guard():
+                # Always the source, never ``open(str(path))``: a path pycdlib opened
+                # for itself would have nothing of ours underneath it, and the
+                # source is what bounds the reads pycdlib sizes from the image's own
+                # headers. pycdlib clamps a *file*'s ``data_length`` to the image,
+                # but not a *directory*'s: a root record declaring 4 GiB asks for 4
+                # GiB inside ``open_fp``, from a file of any size. The source turns
+                # that into a short read, which pycdlib reports as an invalid
+                # directory record. When the file holds less than the image
+                # declares, ``_cut_short`` makes that a ``TruncatedError``;
+                # otherwise, as for a full-length image whose directory declares
+                # too much, ``_translate_exception`` makes it a
+                # ``CorruptionError``. pycdlib never closes a file object it was
+                # handed (``_managing_fp`` is set only by ``open()``).
+                # Kept for ``_data_inode``, which reads extents pycdlib has no
+                # inode for through the same handle pycdlib reads from.
+                self._iso_fp = self._track_source_seeks(source)
+                limits = config.listing_limits
+                budget = (
+                    None
+                    if limits.max_members is None and limits.max_metadata_bytes is None
+                    else _ParseBudget(limits)
+                )
+                token = _SYSTEM_USE_NOTES.set(self._system_use)
+                budget_token = _PARSE_BUDGET.set(budget)
+                try:
+                    self._iso.open_fp(self._iso_fp)
+                except _PYCDLIB_ERRORS as exc:
+                    truncated = _cut_short(self._iso_fp, exc)
+                    if truncated is None:
+                        raise
+                    raise truncated from exc
+                finally:
+                    _PARSE_BUDGET.reset(budget_token)
+                    _SYSTEM_USE_NOTES.reset(token)
+                self._iso_opened = True
+                # pycdlib measured the image the same way inside ``open_fp``.
+                self._image_length = self._iso_fp.seek(0, 2)
 
-                    # Auto-select the richest namespace: Rock Ridge > Joliet > plain
-                    # ISO 9660. Inside the guard, not after it: these are pycdlib calls
-                    # on the image just opened, so a failure here is an image failure
-                    # and belongs to the same translation and the same release.
-                    if self._iso.has_rock_ridge():
-                        self._namespace = "rock_ridge"
-                        self._path_kw = "rr_path"
-                    elif self._iso.has_joliet():
-                        self._namespace = "joliet"
-                        self._path_kw = "joliet_path"
-                    else:
-                        self._namespace = "iso9660"
-                        self._path_kw = "iso_path"
-                    self._report_trailing_data()
+                # Auto-select the richest namespace: Rock Ridge > Joliet > plain
+                # ISO 9660. Inside the guard, not after it: these are pycdlib calls
+                # on the image just opened, so a failure here is an image failure
+                # and belongs to the same translation and the same release.
+                if self._iso.has_rock_ridge():
+                    self._namespace = "rock_ridge"
+                    self._path_kw = "rr_path"
+                elif self._iso.has_joliet():
+                    self._namespace = "joliet"
+                    self._path_kw = "joliet_path"
+                else:
+                    self._namespace = "iso9660"
+                    self._path_kw = "iso_path"
+                self._report_trailing_data()
         except BaseException:
             # No reader is returned for anyone to close, and the exception's traceback
             # keeps this frame alive for as long as the caller holds it (inventory/fuzz
@@ -2608,7 +2606,15 @@ class IsoReader(BaseArchiveReader):
             solid_block_count=None,
         )
         pvd = self._iso.pvd
-        volume_id = pvd.volume_identifier.decode("ascii", errors="replace").rstrip()
+        # The standard allows d-characters only, but writers store the -V text as it
+        # was given (xorriso: UTF-8). It records no charset, as a Rock Ridge name does
+        # not, so it decodes the way a byte name does: UTF-8, else encoding=, else
+        # surrogateescape. The Joliet copy is not read: xorriso turns its non-ASCII
+        # bytes into "_", and its 16 characters are half the primary's 32 bytes. Only
+        # the space padding the standard defines is removed, and before the decode, so
+        # a multi-byte encoding= never meets the padding and a label's own trailing
+        # character (a no-break space, say) stays.
+        volume_id = self._decode_bytes_name(pvd.volume_identifier.rstrip(b" "))
         info_extra = ArchiveInfoExtra({"iso.namespace": self._namespace})
         return ArchiveInfo(
             format=self._format,

@@ -16,7 +16,10 @@ An archive whose members are compressed together like this is called *solid*. Ev
 compressed TAR is solid, and so are most 7z archives, since 7-Zip creates solid archives by
 default. RAR archives are solid only when created with that option. On a solid archive,
 reading members by name can decompress the same data again and again. `stream_members`
-decompresses it once.
+decompresses it once. archivey tells you when this happens: on a solid 7z or RAR archive, the
+first open that decompresses data an earlier open already decompressed logs one INFO message
+on the `archivey.backends` logger. Reading the same member twice counts only the data before it in the archive. The message
+shows only if your application turns logging on.
 
 If your code needs to know whether an archive is solid, `archive.cost` tells you before you read
 anything. Its `access_cost` is `AccessCost.SOLID` when reaching a member means decompressing others
@@ -122,6 +125,13 @@ need the member list at once, one builds it while the others wait. Each member s
 to one thread. Opening the archive once per thread is also safe, as long as each thread opens it
 from its own path or file: one file object belongs to one reader. Closing the reader closes the
 streams still open on it, so `close()` may wait for reads in other threads to finish.
+
+Without `concurrent_operations=True` the reader belongs to one thread. If another thread is inside
+a reader call, such as `members()`, `open()`, or a `stream_members()` or `extract_all()` pass,
+`close()` raises `ArchiveyUsageError` and the reader stays open. Otherwise the close goes ahead, and
+the next `read()` on a member stream it closed raises `ValueError`, as a closed file does. Once a
+`close()` has returned, calling it again does nothing; after one that raised, the reader is still
+open and you still have to close it.
 
 ## Why these aren't on by default
 

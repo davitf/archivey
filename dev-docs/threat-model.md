@@ -49,7 +49,7 @@ Older references use register ids (`O1` to `O22`, `C1` to `C4`). The
 | Boundary | What crosses it | What holds there |
 | --- | --- | --- |
 | Source bytes to parsers | Archive structure | Pure-Python parsers for ZIP, 7z, RAR and TAR headers, `pycdlib` for ISO; every read a header field sizes goes through a bounded source ([resource use](#resource-use-is-bounded)) |
-| Parsers to decoders | Compressed streams, declared decoder parameters | `DecoderLimits` checked before allocation; crash-prone native decoders in a child process ([errors](#errors-are-typed-and-honest)) |
+| Parsers to decoders | Compressed streams, declared decoder parameters; on POSIX, a read-only descriptor of the archive file for a rapidgzip child that reads a member's byte range itself (the child's copy outlives the parent's handle, so the parent checks before each call that its own source is still open) | `DecoderLimits` checked before allocation; crash-prone native decoders in a child process ([errors](#errors-are-typed-and-honest)) |
 | archivey to external programs | Archive path, member selection, password | RARLAB `unrar` / `rar`, or `unar` under `"auto"`; fixed argv; a member name only inside an include-mask switch, or an entry index ([external programs](#external-programs-get-a-fixed-command-line)) |
 | archivey to the destination | Names, link targets, modes, data | `check_universal` and the extraction coordinator ([extraction](#extraction-stays-in-the-destination), [names](#names-are-safe-on-the-target-filesystem)) |
 | archivey to a terminal or log | Messages carrying archive-derived text | Escaped at construction ([terminal](#attacker-bytes-reaching-a-terminal-are-inert)) |
@@ -79,7 +79,12 @@ no member replaces the destination itself.
   (devices, FIFOs, sockets), and a non-directory member whose normalized name is
   `"."` or `""` (which would replace the destination root with a file). It resolves
   the parent and checks containment, and checks symlink targets lexically. A
-  rejection names the member as listed, not its disk spelling.
+  rejection names the member as listed, not its disk spelling. The resolution
+  (`resolve_or_raise_on_loop`) is archivey's own walk on POSIX, one link at a time as
+  the kernel goes: a component it cannot look at raises and the member is refused.
+  `os.path.realpath` and non-strict `Path.resolve()` keep such a component as a name
+  and go on, so a link chain whose expansion passes `PATH_MAX` (`ENAMETOOLONG`) looked
+  inside to them while the kernel followed it outside (CVE-2025-4517 in `tarfile`).
 - `internal/extraction.py` `ExtractionCoordinator._write_symlink` re-resolves a new
   symlink against the live tree after `os.symlink` and removes it if it escapes, which
   catches a chain staged by earlier members. That is the third layer after the lexical
@@ -127,7 +132,11 @@ which are safe to delete once no extraction is running.
 `test_replace_symlink_no_write_through`,
 `test_hardlink_replaces_a_destination_symlink_without_following_it`,
 `test_error_when_dest_is_a_file_never_deletes_it`,
-`test_dest_symlink_to_dir_is_followed_into_target`, `test_strict_strips_setuid`.
+`test_dest_symlink_to_dir_is_followed_into_target`, `test_strict_strips_setuid`,
+`test_resolve_or_raise_on_loop_raises_when_a_component_cannot_be_looked_up`.
+`tests/test_cve_regressions.py`: `test_cve_2025_4517_link_chain_past_path_max`,
+`test_name_that_leads_out`, `test_link_that_leads_out`, `test_tar_link_that_leads_out`,
+`test_link_planted_in_the_destination`.
 `tests/test_hardlink_target_rule.py`: `test_a_hardlink_to_a_refused_member_is_refused`,
 `test_a_hardlink_to_an_excluded_refused_member_is_refused`,
 `test_a_hardlink_to_a_selector_excluded_member_is_materialized`,
@@ -142,6 +151,10 @@ which are safe to delete once no extraction is running.
 `tests/test_property_safety.py` covers `normalize_member_name`, `check_universal` and
 `resolve_link_target_name` over arbitrary input, and the mutation harness asserts the
 destination is still a directory after every successful extract.
+`tests/test_cve_regressions_7z_rar.py` replays the traversal and link-chain advisories
+against py7zr and WinRAR as 7z and RAR5 archives (7z `S_IFLNK` attribute records and
+RAR5 redirect records, every policy, random and streaming), where the tests above use
+TAR.
 
 ### A later member cannot make an extracted symlink escape
 
@@ -241,8 +254,11 @@ bytes. The outcome is the same on every platform. ADR
 - `STRICT` strips a trailing dot or space (`_strip_trailing_dot_space`), because Win32
   trims it silently and the reported path would differ from the real one. The rewrite is
   recorded as `ExtractionResult.presented_name`, the only record that survives a caller
-  filter rename. An all-dots segment has no portable spelling and is rejected.
-  `STANDARD` and `TRUSTED` keep the name.
+  filter rename. An all-dots segment has no portable spelling and is rejected, under
+  `STANDARD` too, since Win32 would merge `a/.../b` into `a/b`.
+  `STANDARD` and `TRUSTED` otherwise keep the name. Under `STRICT` and `STANDARD` the collision key
+  drops a trailing dot or space too, so `notes.` and `notes` collide on every platform, as
+  Win32 would merge them.
 - Two classes of character are percent-escaped (`_sanitize_portable_name`: `%XX`,
   literal `%` as `%25`), a deterministic and reversible spelling: non-UTF-8 bytes, and
   the characters Win32 refuses in a name, `<>"|?*` and the controls 0x01 to 0x1F.
@@ -254,11 +270,12 @@ bytes. The outcome is the same on every platform. ADR
   passes through (`foo\x` and `foo. /x` both become `foo/x`), and the first check saw
   only the stored spelling, so a `foo` symlink in the destination that leaves it was
   not checked on the path actually written.
-- `collision_key` casefolds and NFC-normalizes. The coordinator
-  (`_register_collision_key`, `_resolve_collision`, `_derive_free_name`) treats a
-  collision as an event: `OverwritePolicy` applies, `RENAME` writes `photo (1).jpg`, and
-  a `REPLACE` revises the clobbered member's result to `OVERWRITTEN` (`_mark_overwritten`)
-  so the merge is visible. `ExtractionReport.results` is the only record.
+- `collision_key` casefolds, NFC-normalizes and trims a trailing dot or space from each
+  segment. The coordinator (`_register_collision_key`, `_resolve_collision`,
+  `_derive_free_name`) treats a collision as an event: `OverwritePolicy` applies,
+  `RENAME` writes `photo (1).jpg`, and a `REPLACE` revises the clobbered member's
+  result to `OVERWRITTEN` (`_mark_overwritten`) so the merge is visible.
+  `ExtractionReport.results` is the only record.
   `abort_on={AbortOn.NAME_COLLISION}` makes any collision fatal;
   `abort_on={AbortOn.NAME_SANITIZED}` refuses any rewritten name.
 - A name the filter accepted but the filesystem refuses at write (`EILSEQ` on APFS,
@@ -770,6 +787,8 @@ much before the ratio refuses it, where it wrote about 5 MiB before that floor e
 `::test_recorded_size_check_skips_members_the_run_does_not_decode`,
 `::test_forged_recorded_size_fails_only_its_member`;
 `tests/test_cross_os_extraction.py::test_link_limit_copies_trip_the_archive_wide_ratio`.
+`tests/test_cve_regressions_7z_rar.py::test_py7zr_cve_2026_55195_decompression_bomb`
+(7z, refused from the recorded sizes).
 
 #### RAR reads by glob-named member
 
@@ -918,6 +937,10 @@ OSS-Fuzz [waits until archivey has more users](#oss-fuzz).
 
 **Tests.** `tests/test_iso.py::test_pycdlib_directory_cycle_does_not_hang` (plain, Rock
 Ridge and Joliet), `::test_pycdlib_udf_directory_cycle_does_not_hang` (UDF).
+`tests/test_cve_regressions_7z_rar.py` replays published 7z and RAR reader advisories
+on hand-built headers: a COPY folder short of its size, a cyclic coder graph, huge
+declared counts (with an allocation bound), pack-stream counts that must parse in
+linear time, and RAR headers too small to hold their own fields.
 
 ### Directory sources changed concurrently
 
@@ -1004,7 +1027,12 @@ and tqdm's `desc` (escaped) is outside the sweep.
 `test_cli_does_not_escape_a_native_path`); `tests/test_cli.py::test_extract_escapes_*`,
 `test_extract_summary_escapes_*`, `test_hoist_escapes_*`, `test_info_escapes_*`,
 `test_missing_archive_name_is_escaped_once`. The cross-platform CLI tests use U+2028;
-the ANSI/CR spoof is Unix-only, since NTFS refuses control bytes in names.
+the ANSI/CR spoof tests extract under `TRUSTED`, which writes the raw bytes, so they
+are Unix-only, since NTFS refuses control bytes in names.
+`tests/test_cve_regressions_7z_rar.py::test_unrar_cve_2024_33899_escape_sequences_in_names`
+replays the unrar advisory over a RAR's member names through `list`, `test -v` and
+`extract`. It runs on every platform, because the default policy writes each control
+byte as `%XX` before the write.
 
 ### Detection is bounded and says when it guessed
 
