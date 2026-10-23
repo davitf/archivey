@@ -42,6 +42,11 @@ if TYPE_CHECKING:
 
 T = TypeVar("T")
 
+# Codes logged at INFO rather than WARNING. A rewind reports the caller's own access
+# pattern, not the archive (maintainer, 2026-10-23); the policy still collects, counts
+# and raises it like any other.
+_INFO_CODES = frozenset({DiagnosticCode.STREAM_REWIND_REDECOMPRESSES})
+
 
 @dataclass(frozen=True)
 class DiagnosticWatermark:
@@ -567,7 +572,8 @@ class DiagnosticCollector:
 
         try:
             if not ignored:
-                log.warning("%s", diagnostic.message)
+                level = logging.INFO if code in _INFO_CODES else logging.WARNING
+                log.log(level, "%s", diagnostic.message)
                 if self._on_diagnostic is not None:
                     try:
                         self._on_diagnostic(diagnostic)

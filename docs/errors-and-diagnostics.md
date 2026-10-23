@@ -188,7 +188,9 @@ members, and `max_retained_diagnostic_references` in `ArchiveyConfig` changes th
     take memory that the listing limits don't count. `counts` stays exact either way.
 
 Each diagnostic is also logged as a warning on a logger under `archivey`, such as
-`archivey.normalization`, so a script that calls `logging.basicConfig()` prints a line for each. To
+`archivey.normalization`, so a script that calls `logging.basicConfig()` prints a line for each.
+`STREAM_REWIND_REDECOMPRESSES` is logged at INFO instead: it reports how your code reads a
+compressed stream, not a problem with the archive. To
 handle them as they happen instead, pass a function as `on_diagnostic=` in
 `archivey.ArchiveyConfig`. Archivey calls it with each [`Diagnostic`][archivey.Diagnostic] as
 it's recorded, the same record the summaries keep. An exception it raises stops the operation and

@@ -48,7 +48,9 @@ table is illustrative: a logger missing from it is not a contract violation.
 Every WARNING advisory SHALL originate as a `Diagnostic`; logging MUST NOT be a
 second source of truth. For `COLLECT` and `RAISE`, the WARNING SHALL emit after
 counts/retention update and before callback/escalation. For `IGNORE`, no WARNING
-record SHALL emit.
+record SHALL emit. `STREAM_REWIND_REDECOMPRESSES` SHALL log at INFO instead of
+WARNING, in the same order: it reports the caller's access pattern, not the archive,
+and it is still collected, counted and escalated by policy.
 
 The record SHALL use the event's named `archivey.*` logger and expose
 `diagnostic_code` plus `diagnostic_occurrence_id` in `LogRecord.extra`. Human text
@@ -64,6 +66,7 @@ callback/escalation steps for that occurrence do not run.
 | Case | Expected |
 | --- | --- |
 | Diagnostic resolves to default `COLLECT` | Counts/retention update, then one WARNING with `diagnostic_code` and `diagnostic_occurrence_id` |
+| `STREAM_REWIND_REDECOMPRESSES` resolves to `COLLECT` | Counts/retention update, then one INFO record |
 | Diagnostic resolves to `IGNORE` | Exact count increments; no log record |
 | Application logging handler runs | No Archivey collector/reader/stream/backend/registry lock is held |
 | Logging handler raises | Handler exception propagates; callback/escalation for the occurrence do not run |
