@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import gzip
 import io
+import mmap
 import os
 import random
 import signal
@@ -254,7 +255,7 @@ def test_the_members_of_one_archive_share_a_child(
     pytest.importorskip("rapidgzip")
     started = _count_spawns(monkeypatch)
     path = _zip_members(tmp_path, ["a.bin", "b.bin", "c.bin"])
-    earlier = set(map(id, rapidgzip_child._pools.values()))
+    earlier = set(rapidgzip_child._pools.values())
     pools: list[rapidgzip_child.RapidgzipChildPool] = []
     with open_archive(path, config=_ON, seekable_members=True) as r:
         for name in ("a.bin", "b.bin", "c.bin"):
@@ -264,9 +265,7 @@ def test_the_members_of_one_archive_share_a_child(
                 stream.seek(0)
                 assert stream.read() == _DATA
             pools = [
-                pool
-                for pool in rapidgzip_child._pools.values()
-                if id(pool) not in earlier
+                pool for pool in rapidgzip_child._pools.values() if pool not in earlier
             ]
             assert len(pools) == 1
             assert pools[0].idle_count() == 1
@@ -392,18 +391,28 @@ def test_a_child_that_failed_on_a_member_is_not_reused(
 
 
 @linux_only
+def _resident(size: int) -> mmap.mmap:
+    """``size`` bytes that count as resident until closed. A map, not a ``bytearray``:
+    the kernel accounts for a map and its unmap at once, whatever Python's allocator
+    keeps."""
+    held = mmap.mmap(-1, size)
+    for at in range(0, size, mmap.PAGESIZE):
+        held[at] = 1
+    return held
+
+
+@linux_only
 def test_the_memory_peak_resets_between_streams() -> None:
     # What lets a reused child measure each stream's memory from its own start.
     # Reset first: this process's peak may be past anything the test allocates.
     assert rapidgzip_worker._reset_peak()
     peak = rapidgzip_worker._peak_memory()
     assert peak is not None
-    held = bytearray(256 << 20)
-    held[::4096] = b"\x01" * len(held[::4096])  # touch every page
+    held = _resident(256 << 20)
     grown = rapidgzip_worker._peak_memory()
     assert grown is not None
     assert grown > peak + (128 << 20)
-    del held
+    held.close()
     assert rapidgzip_worker._reset_peak()
     after = rapidgzip_worker._peak_memory()
     assert after is not None
@@ -415,23 +424,43 @@ def test_a_reused_child_counts_every_stream_from_its_first_open(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # What an earlier stream left resident counts against the next stream's limit,
-    # and a process that kept more than half a limit is not reused.
+    # and a process that kept more than a quarter of a limit is not reused.
     # No watcher thread: it would end the test process past the ceiling.
     monkeypatch.setattr(rapidgzip_worker._MemoryWatch, "_watch", lambda self: None)
     watch = rapidgzip_worker._MemoryWatch()
-    limit = 256 << 20
+    limit = 512 << 20
     assert rapidgzip_worker._reset_peak()  # as a fresh child's peak: what it holds
     watch.arm(limit)
     first = watch.ceiling
     assert first is not None
     watch.disarm()
-    held = bytearray(limit // 2 + (64 << 20))
-    held[::4096] = b"\x01" * len(held[::4096])  # touch every page
+    held = _resident(limit // rapidgzip_worker._REUSE_SHARE + (64 << 20))
     assert rapidgzip_worker._reset_peak()
     assert not watch.reusable()
     watch.arm(limit)
     assert watch.ceiling == first
     watch.disarm()
-    del held
+    held.close()
     assert rapidgzip_worker._reset_peak()
     assert watch.reusable()
+
+
+@posix_only
+@linux_only
+def test_a_child_is_retired_after_its_last_stream(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("rapidgzip")
+    monkeypatch.setattr(rapidgzip_child, "MAX_STREAMS_PER_CHILD", 2)
+    started = _count_spawns(monkeypatch)
+    path = _zip_members(tmp_path, ["a.bin", "b.bin", "c.bin"])
+    with open_archive(path, config=_ON, seekable_members=True) as r:
+        for name in ("a.bin", "b.bin"):
+            with r.open(name) as stream:
+                assert stream.read() == _DATA
+        assert len(started) == 1
+        # Its second stream was its last: it ends, and the third member starts another.
+        assert started[0].wait(timeout=10) is not None
+        with r.open("c.bin") as stream:
+            assert stream.read() == _DATA
+        assert len(started) == 2

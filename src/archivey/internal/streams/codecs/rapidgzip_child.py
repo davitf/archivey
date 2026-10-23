@@ -807,11 +807,18 @@ class RapidgzipChildStream(ReadOnlyIOStream):
             return False
         # Bounded: a child that does not answer is killed, and then not reused, so
         # close() cannot hang on it.
-        killed = threading.Event()
+        # One lock decides between the kill and the end of the wait, so a child is
+        # never both killed and pooled.
+        decided = threading.Lock()
+        done = killed = False
 
         def kill() -> None:
-            killed.set()
-            proc.kill()
+            nonlocal killed
+            with decided:
+                if done:
+                    return
+                killed = True
+                proc.kill()
 
         timer = threading.Timer(REAP_TIMEOUT, kill)
         timer.daemon = True
@@ -820,7 +827,9 @@ class RapidgzipChildStream(ReadOnlyIOStream):
             frame = self._exchange(RESET, 0, b"")
         finally:
             timer.cancel()
-        if killed.is_set() or frame is None or frame[0] != OK or frame[1] != 1:
+            with decided:
+                done = True
+        if killed or frame is None or frame[0] != OK or frame[1] != 1:
             return False
         finalizer = self._finalizer
         self._finalizer = self._proc = None

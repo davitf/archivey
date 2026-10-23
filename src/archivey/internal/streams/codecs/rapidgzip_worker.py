@@ -68,8 +68,8 @@ reply. When the peak has grown by more than the limit, the child exits at once w
 status ``MEMORY_LIMIT_EXIT``. A ``RESET`` resets the peak to the current resident size
 (``_reset_peak``); every stream's limit counts from the peak after the first open, so
 what an earlier stream left resident counts against the next. Where the peak cannot
-be reset (anywhere but Linux), or the process kept more than half a limit, the reply
-says it cannot serve another stream.
+be reset (anywhere but Linux), or the process kept more than a quarter of a limit, the
+reply says it cannot serve another stream.
 """
 
 from __future__ import annotations
@@ -451,6 +451,12 @@ def check_memory(ceiling: int | None) -> None:
         os._exit(MEMORY_LIMIT_EXIT)
 
 
+# A reused child's next stream may grow only what the earlier ones left of the limit.
+# Past a quarter kept, a fresh child (one process start) is the better deal: the next
+# stream would otherwise hit the limit sooner and be decoded twice.
+_REUSE_SHARE = 4
+
+
 class _MemoryWatch:
     """Ends this process when its peak memory grows by more than a limit during a stream.
 
@@ -474,7 +480,8 @@ class _MemoryWatch:
     peak after its first open. What an earlier stream left resident (rapidgzip's
     allocator keeps freed chunks: measured, a 200 MiB decode left about 200 MB) then
     counts against the next stream's limit, so a reused child holds no more than a
-    fresh one may. :meth:`reusable` ends a child that kept more than half a limit.
+    fresh one may. :meth:`reusable` ends a child that kept more than a quarter of a
+    limit, so the next stream has at least three quarters of it.
     """
 
     def __init__(self) -> None:
@@ -503,11 +510,12 @@ class _MemoryWatch:
 
     def reusable(self) -> bool:
         """Whether this process may serve another stream after ``RESET``: it holds at
-        most half of the last limit above the base. Call after ``_reset_peak``."""
+        most ``1 / _REUSE_SHARE`` of the last limit above the base. Call after
+        ``_reset_peak``."""
         if self._base is None or self._limit is None:
             return True
         now = _peak_memory()
-        return now is not None and now - self._base <= self._limit // 2
+        return now is not None and now - self._base <= self._limit // _REUSE_SHARE
 
     def _watch(self) -> None:
         while True:
