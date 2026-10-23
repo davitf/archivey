@@ -33,7 +33,7 @@ table is illustrative: a logger missing from it is not a contract violation.
 | `archivey.diagnostics` | Default logger for a diagnostic's WARNING projection. An emit site that names a subsystem logger (`archivey.streams`, `archivey.integrity`, …) logs the WARNING there instead, and most do |
 | `archivey.streams` | Stream-layer events: decompressor and member-stream diagnostics, and how a source's seekability was judged |
 | `archivey.integrity` | Digest verification, including an expected digest that cannot be checked |
-| `archivey.backends` | Backend-specific debug messages. There is one logger for all backends, not one per backend |
+| `archivey.backends` | Backend-specific messages, and the once-per-reader INFO record about re-decoding a solid block. There is one logger for all backends, not one per backend |
 
 #### Scenario: logger-hierarchy matrix
 
@@ -42,6 +42,7 @@ table is illustrative: a logger missing from it is not a contract violation.
 | Application configures no handlers on `archivey` or ancestors | No output by default; library installs no handler |
 | Magic bytes conflict with extension | `logging.WARNING` on `archivey.detection` |
 | Member-name normalization changes logical meaning relative to `raw_name` | Warning on `archivey.normalization` |
+| An `open()` or `read()` that decodes again bytes an earlier one on the same reader decoded, because each open decodes its member's solid block from the start (a 7z folder holding more than one member, a solid RAR read through `unrar`, or one solid stream of it read through `unar`); a member's own bytes do not count when the same member is read again | One `logging.INFO` record on `archivey.backends` per reader, giving the bytes decoded again and naming `stream_members()`; not a diagnostic, no `warnings.warn`. A compressed TAR keeps one decoder position across opens, so reading its members in archive order logs nothing, and its backward seeks report `STREAM_REWIND_REDECOMPRESSES` |
 
 ### Requirement: Warning logs are ordered projections of diagnostics
 
