@@ -1290,7 +1290,7 @@ move.
 | A damaged directory lists up to the damage, then the local headers past it; version needed above 6.3 reads; trailing bytes reported; one walk for listing then opening, one index pass when `member_count` comes first, a seekable streaming pass reads the directory then forward only; a listed member keeps no extra field |
 | `max_members` refused at open from the declared count, charged by the walk when the count lies |
 | The parser against stdlib on every fixture, ZIP64, stubs, disk fields |
-| A member's input ends with its stream: LZMA without an end marker and PPMd with junk or a declared size short of their data, DEFLATE and bzip2 with junk or a second stream, accelerators off and on, are `CorruptionError`; one zero byte after marker-less LZMA reads; a Zstd member's second frame is refused |
+| A member's input ends with its stream: LZMA without an end marker and PPMd with junk or a declared size short of their data, DEFLATE and bzip2 with junk or a second stream, accelerators off and on, are `CorruptionError`; one zero byte after marker-less LZMA reads; a Zstd member reads every frame |
 | AE-1/AE-2, wrong password, tampered ciphertext |
 | Bytes after the codec's end inside a member (zero, zeros, junk) raise for DEFLATE, Deflate64, BZip2, PPMd (in process and in a child) and Zstd, also under the accelerators (for DEFLATE on a seek to the end too); `7z t` fails on the same members |
 | A Zstd member's second frame reads as content and a skippable frame as nothing, and a seekable-format table gives its seek points; the shared framed decoder refuses a second stream where the codec is one stream |

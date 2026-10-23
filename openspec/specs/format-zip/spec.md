@@ -101,13 +101,12 @@ off; under ZipCrypto the password confirmation counts it as the candidate failin
 above. The exception is a Zstd member: RFC 8878 defines Zstd data as one or more
 frames, so every frame, skippable ones too, SHALL be read as a `.zst` file's are
 (`compressed-streams`), and only bytes after the last frame that start no frame SHALL
-raise. An LZMA member without the end-marker flag
-(general-purpose bit 1) and a PPMd member end at their declared size: their input
-SHALL end there too (after an end marker right at that size for LZMA, and after PPMd8's
-end mark, which a member SHALL carry), so a declared size short of the stream's data
-SHALL raise `CorruptionError`, not `TruncatedError`. One zero byte after LZMA data
-without an end marker reads, as 7-Zip's encoder sometimes flushes it past the
-decoder's last read.
+raise. An LZMA member without the end-marker flag (general-purpose bit 1) and a PPMd
+member end at their declared size: their input SHALL end there too (after an end marker
+right at that size for LZMA, and after PPMd8's end mark, which a member SHALL carry),
+so a declared size short of the stream's data SHALL raise `CorruptionError`, not
+`TruncatedError`. One zero byte after LZMA data without an end marker reads, as 7-Zip's
+encoder sometimes flushes it past the decoder's last read.
 
 #### Scenario: ZIP codec-layer decoding
 
