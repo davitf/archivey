@@ -707,18 +707,29 @@ def run_cases(
                 fixtures.zip_path, config=cfg_zip_on, seekable_members=True
             )
         )
+        # Two routes. With measurement on, the seek counter wraps the archive handle,
+        # so the child reads each member through the parent and every seek is counted
+        # (``file_region`` finds no file under the counter). Without it, on POSIX, the
+        # child reads the archive file itself: the route callers get, timed here.
+        wall, _ = timed_with_optional_warmup(
+            lambda: _op_read_all_unmeasured(
+                fixtures.zip_path, config=cfg_zip_on, seekable_members=True
+            )
+        )
         results.append(
             CaseResult(
                 "zip_read_all_accel_on",
                 "zip",
                 "read_all",
-                _m_wall,
+                wall,
                 bdec,
                 seeks,
                 unpacked_bytes=unpacked,
                 notes=(
                     "rapidgzip accelerator ON for in-ZIP deflate ([seekable]); count "
-                    "depends on the rapidgzip version, so the gate checks only ON > OFF"
+                    "depends on the rapidgzip version, so the gate checks only ON > OFF; "
+                    "counts are from the measured route (child reads through the "
+                    "parent), wall time from the unmeasured one (child reads the file)"
                 ),
             )
         )

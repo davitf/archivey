@@ -74,7 +74,12 @@ def test_the_views_archive_checks_are_kept(tmp_path: Path) -> None:
         )
         region = file_region(view)
         assert region is not None
-        assert region.checks == (check,)
+        assert region.checks[0] is check
+        # The last check is the file's own: the child's copy of the descriptor would
+        # still read after the caller closes it.
+        region.checks[-1]()
+    with pytest.raises(ValueError, match="closed file"):
+        region.checks[-1]()
 
 
 def test_streams_that_are_not_plain_files_have_no_region(tmp_path: Path) -> None:
@@ -147,27 +152,43 @@ def test_a_zip_member_is_read_from_the_file(
     assert kinds == [OPEN_RANGE]
 
 
+def _read_after_close(path: Path, config: ArchiveyConfig, what: str) -> Exception:
+    """Close the reader's archive handle, or the caller's file under it, while the
+    member stream stays open; then read on."""
+    with open(path, "rb") as f:
+        r = open_archive(f, config=config, seekable_members=True)
+        stream = r.open("data.bin")
+        try:
+            assert stream.read(10) == _DATA[:10]
+            if what == "archive":
+                # Not ``r.close()``: that closes the member stream first, and the read
+                # would fail on the stream's own closed check before reaching the child.
+                r._close_archive()  # type: ignore[attr-defined]
+            else:
+                f.close()
+            with pytest.raises(Exception) as excinfo:
+                stream.read(500_000)
+            return excinfo.value
+        finally:
+            stream.close()
+            r.close()
+
+
 @posix_only
-def test_a_member_read_after_the_archive_closes_raises(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("what", ["archive", "caller's file"])
+def test_a_member_read_after_a_close_raises_as_the_stdlib_does(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, what: str
 ) -> None:
     pytest.importorskip("rapidgzip")
-    kinds = _open_kinds(monkeypatch)
-    r = open_archive(
-        _zip(tmp_path, zipfile.ZIP_DEFLATED), config=_ON, seekable_members=True
+    path = _zip(tmp_path, zipfile.ZIP_DEFLATED)
+    expected = _read_after_close(
+        path, ArchiveyConfig(use_rapidgzip=AcceleratorMode.OFF), what
     )
-    stream = r.open("data.bin")
-    try:
-        assert stream.read(10) == _DATA[:10]
-        r.close()
-        # The child could still read the file; the parent's check stops it.
-        with pytest.raises((ValueError, ArchiveyError)):
-            stream.seek(400_000)
-            stream.read(10)
-    finally:
-        stream.close()
-        r.close()
+    kinds = _open_kinds(monkeypatch)
+    # The child could still read the file; the parent's checks stop it.
+    actual = _read_after_close(path, _ON, what)
     assert kinds == [OPEN_RANGE]
+    assert (type(actual), str(actual)) == (type(expected), str(expected))
 
 
 @posix_only

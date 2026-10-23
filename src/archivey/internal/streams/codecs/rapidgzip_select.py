@@ -325,9 +325,12 @@ def _open_rapidgzip(
     rapidgzip 0.16 aborts the process on a gzip, zlib or raw DEFLATE stream that ends
     early, so it never decodes one in this process: see ``rapidgzip_child``. Its bzip2
     decoder runs in a child too, as a precaution: no abort has been seen in it, but it
-    comes from the same library. A path source is opened by the child; a stream source is
-    read for the child here, so the caller's own exception from it still reaches the
-    caller.
+    comes from the same library. A path source is opened by the child. On POSIX, a stream
+    that is a byte range of a regular file (``file_region``: a ZIP member of an archive on
+    disk) is read by the child from an inherited descriptor; the parent still checks
+    before each call that the stream could be read, and raises what that read would. Any
+    other stream source is read for the child here, so the caller's own exception from
+    it still reaches the caller.
 
     Where no child can be started (the spawn or its temporary file refused: a process
     cap, no writable temporary directory, too many open files, a child that cannot

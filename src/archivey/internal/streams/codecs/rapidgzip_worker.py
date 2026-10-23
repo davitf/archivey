@@ -215,8 +215,10 @@ class _FileRange(io.RawIOBase):
     which leaves the descriptor's offset alone, so the parent's own handle on the same
     file is not moved. Never raises, for the reason ``_ParentSource`` gives: a failed
     read reads as the end of the range. The parent's standard-library takeover then
-    reads the same bytes itself and raises the real error. No ``fileno``, so rapidgzip
-    stays inside the range.
+    reads the same bytes itself and raises the real error. ``seek`` cannot raise either
+    (``_ParentSource`` answers a failed one with 0), so an unknown ``whence`` counts
+    from the start and a position before the start is the start. No ``fileno``, so
+    rapidgzip stays inside the range.
     """
 
     def __init__(self, fd: int, start: int, length: int) -> None:

@@ -390,8 +390,8 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         # before the next one.
         self._since_query = 0
         self._query_after = _MIN_QUERY_SPACING
-        # The archive checks of a file region (``file_region``): the child reads the
-        # file itself, so they run here, before each call.
+        # The checks of a file region (``file_region``): the child reads the file
+        # itself, so they run here, before each call.
         self._region_checks: tuple[Callable[[], None], ...] = ()
         pass_fds: tuple[int, ...] = ()
         if isinstance(source, (str, os.PathLike)) or os.name != "posix":
@@ -550,7 +550,13 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         # Refused before anything is written, so the child is still in step.
         _check_arg(arg)
         for check in self._region_checks:
-            check()
+            try:
+                check()
+            except Exception as exc:
+                # What a read of the caller's source would have raised, so it reaches
+                # the caller as that read's error would (``_answer_source``).
+                mark_callers_source(exc)
+                raise
         try:
             frame = self._exchange(tag, arg, payload)
         except BaseException:
