@@ -618,4 +618,4 @@ published, URL-reachable and absent from every menu.
 `scripts/check_docs_nav.py` enforces it, along with the rule that a published page
 must not link into unpublished material: prefer inlining the fact, and where the
 depth is genuinely worth keeping, link the file on GitHub with an absolute
-`https://github.com/davitf/archivey/blob/main/…` URL.
+`https://github.com/archivey-dev/archivey/blob/main/…` URL.

@@ -36,7 +36,8 @@ from archivey.exceptions import (
 from archivey.internal.streams.child_process import (
     describe_exit,
     is_crash,
-    outside_death,
+    mark_no_verdict,
+    outside_death_error,
     python_argv,
     reap,
     spawn,
@@ -553,8 +554,7 @@ class DecoderChild:
                 f"({describe_exit(returncode)})"
             )
         what = f"the {self.describe} exited unexpectedly ({describe_exit(returncode)})"
-        cls, message = outside_death(returncode, what)
-        return cls(message)
+        return outside_death_error(returncode, what)
 
     def call(
         self,
@@ -659,7 +659,9 @@ def isolation_error(
         if setting == "NATIVE_DECODERS"
         else "ProcessIsolation.NONE (not recommended for files you do not trust)"
     )
-    return ResourceLimitError(
+    error = ResourceLimitError(
         f"{reason}. process_isolation={setting} decodes this only in a child "
         f"process; use {instead} to decode it in this process."
     )
+    mark_no_verdict(error)
+    return error

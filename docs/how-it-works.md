@@ -35,8 +35,8 @@ included, can be read in a single forward pass with `stream_members()`.
 In archivey's tests, the ZIP, TAR, 7z and RAR parsers are checked against zipfile, tarfile, py7zr,
 rarfile and `unrar`, comparing both metadata and bytes. Archivey never imports zipfile, tarfile,
 py7zr or rarfile at run time. For each format's details, see the [format
-handbooks](https://github.com/davitf/archivey/tree/main/dev-docs/formats) and the [library
-analysis](https://github.com/davitf/archivey/blob/main/dev-docs/library-analysis.md), both written
+handbooks](https://github.com/archivey-dev/archivey/tree/main/dev-docs/formats) and the [library
+analysis](https://github.com/archivey-dev/archivey/blob/main/dev-docs/library-analysis.md), both written
 for people working on archivey itself.
 
 ## Decoding member data
@@ -60,7 +60,7 @@ RAR is the exception. No good library decodes it, so archivey decompresses RAR d
 external program, `unrar`, `rar` or `unar`, and reading its output through a pipe, as the rarfile
 library does. Archivey still reads the RAR structure with its own parser, and reads members stored
 without compression or encryption itself. The [decision
-record](https://github.com/davitf/archivey/blob/main/dev-docs/decisions/0002-native-rar-metadata-unrar-data.md)
+record](https://github.com/archivey-dev/archivey/blob/main/dev-docs/decisions/0002-native-rar-metadata-unrar-data.md)
 explains the choice.
 
 Compressed data can't be read starting from the middle, so a seek inside a member takes one of three

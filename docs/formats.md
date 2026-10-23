@@ -5,21 +5,21 @@ first sections cover what holds across formats; then each format has a section o
 the same order: what it needs, how it lists and reads, and its quirks.
 
 The maintainer handbook has more depth on
-[7z](https://github.com/davitf/archivey/blob/main/dev-docs/formats/7z.md),
-[ISO](https://github.com/davitf/archivey/blob/main/dev-docs/formats/iso.md),
-[RAR](https://github.com/davitf/archivey/blob/main/dev-docs/formats/rar.md),
-[TAR](https://github.com/davitf/archivey/blob/main/dev-docs/formats/tar.md) and
-[ZIP](https://github.com/davitf/archivey/blob/main/dev-docs/formats/zip.md), and on the single-file
+[7z](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/7z.md),
+[ISO](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/iso.md),
+[RAR](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/rar.md),
+[TAR](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/tar.md) and
+[ZIP](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/zip.md), and on the single-file
 compressors: what they share in
-[single-file.md](https://github.com/davitf/archivey/blob/main/dev-docs/formats/single-file.md), then
-[gzip](https://github.com/davitf/archivey/blob/main/dev-docs/formats/gzip.md),
-[bzip2](https://github.com/davitf/archivey/blob/main/dev-docs/formats/bzip2.md), [xz, lzip and LZMA
-Alone](https://github.com/davitf/archivey/blob/main/dev-docs/formats/xz.md), [zstd and
-LZ4](https://github.com/davitf/archivey/blob/main/dev-docs/formats/zstd-lz4.md),
-[Brotli](https://github.com/davitf/archivey/blob/main/dev-docs/formats/brotli.md) and
-[`.Z`](https://github.com/davitf/archivey/blob/main/dev-docs/formats/unix-compress.md), and on [disk
-images](https://github.com/davitf/archivey/blob/main/dev-docs/formats/dmg.md) and
-[directories](https://github.com/davitf/archivey/blob/main/dev-docs/formats/directory.md).
+[single-file.md](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/single-file.md), then
+[gzip](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/gzip.md),
+[bzip2](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/bzip2.md), [xz, lzip and LZMA
+Alone](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/xz.md), [zstd and
+LZ4](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/zstd-lz4.md),
+[Brotli](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/brotli.md) and
+[`.Z`](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/unix-compress.md), and on [disk
+images](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/dmg.md) and
+[directories](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/directory.md).
 
 ## Quick matrix
 
@@ -53,7 +53,7 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
 [Install](install.md) lists what each extra installs. `archivey[recommended]` is the usual choice,
 and `archivey[all]` adds the `[seekable]` accelerator. At run time,
 [`format_availability()`](api.md#archivey.format_availability) says what the current install can
-read. The [library analysis](https://github.com/davitf/archivey/blob/main/dev-docs/library-analysis.md)
+read. The [library analysis](https://github.com/archivey-dev/archivey/blob/main/dev-docs/library-analysis.md)
 explains the choice of each compression library, and
 [Acknowledgements](acknowledgements.md) credits them.
 

@@ -42,6 +42,9 @@ on:
       - "!LICENSE"
       - docs/api.md
       - review/problem-catalogue/**
+  # The merge queue. Path filters do not apply to merge_group, so every queued group runs
+  # the whole workflow, and the `CI gate` job below is the check the ruleset requires.
+  merge_group:
   workflow_dispatch:
 
 # Cancel an in-progress run when a newer commit arrives for the same PR/branch, so
@@ -751,3 +754,20 @@ jobs:
           path: benchmark-structural.json
       - name: Pytest structural gate + measurement unit tests
         run: uv run --no-sync pytest tests/test_benchmark_gate.py tests/test_measurement.py -q
+
+  # The one required check of the merge queue (ruleset on main). It runs only for a
+  # merge_group and fails when any job above failed or was cancelled; a matrix leg with
+  # continue-on-error does not count. On a pull request it is skipped, and the
+  # always-run pr-gate.yml reports the same name as passed, so a docs-only pull request,
+  # which never starts this workflow, can still join the queue. The queue run is the gate.
+  gate:
+    name: CI gate
+    if: ${{ always() && github.event_name == 'merge_group' }}
+    needs: [lint, test, unar-distro-packages, free-threaded-concurrency, pypy, benchmark]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every job passed
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+        run: exit 1
+      - run: echo "All CI jobs passed."
