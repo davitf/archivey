@@ -256,6 +256,11 @@ maintainer.
   int"), so `isinstance(value, bool)` drops it.
 - **Match the surrounding code.** Naming, structure, and idiom should read like the file
   you're editing.
+- **A `str` regex matches ASCII unless it means Unicode.** On a `str` pattern `\d`,
+  `\w`, `\s` and `\b` match Unicode digits, letters and spaces, and `re.IGNORECASE`
+  folds `ı`, `İ`, `ſ` and the Kelvin sign into ASCII letters: `0.7z.٠00` read as a
+  volume name. Write `[0-9]`, `[A-Za-z0-9_]` or `[ \t]`, or pass `re.ASCII`.
+  `tests/test_src_regex_ascii.py` enforces it.
 - **Type-checker suppressions must be justified, and are a last resort.** A bare
   `# type: ignore` that hides a *fixable* error is not allowed — it lets a real bug
   through and silently rots. Before suppressing, fix the type model (e.g. declaring the
