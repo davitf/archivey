@@ -394,6 +394,8 @@ def test_a_child_that_failed_on_a_member_is_not_reused(
 @linux_only
 def test_the_memory_peak_resets_between_streams() -> None:
     # What lets a reused child measure each stream's memory from its own start.
+    # Reset first: this process's peak may be past anything the test allocates.
+    assert rapidgzip_worker._reset_peak()
     peak = rapidgzip_worker._peak_memory()
     assert peak is not None
     held = bytearray(256 << 20)
@@ -418,6 +420,7 @@ def test_a_reused_child_counts_every_stream_from_its_first_open(
     monkeypatch.setattr(rapidgzip_worker._MemoryWatch, "_watch", lambda self: None)
     watch = rapidgzip_worker._MemoryWatch()
     limit = 256 << 20
+    assert rapidgzip_worker._reset_peak()  # as a fresh child's peak: what it holds
     watch.arm(limit)
     first = watch.ceiling
     assert first is not None

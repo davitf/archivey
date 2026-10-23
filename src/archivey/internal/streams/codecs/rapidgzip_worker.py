@@ -515,25 +515,30 @@ class _MemoryWatch:
             time.sleep(_MEMORY_POLL_INTERVAL)
 
 
-def _reset_peak() -> bool:
+def _reset_peak(refs: int | None = None) -> bool:
     """Reset this process's peak memory to its current resident size, so that a peak
     from an earlier stream does not count against the next one. False where it cannot
     be reset.
 
     Only Linux can: writing 5 to ``/proc/self/clear_refs`` resets ``VmHWM``. The other
-    systems' peak (``ru_maxrss``, ``PeakWorkingSetSize``) only grows.
+    systems' peak (``ru_maxrss``, ``PeakWorkingSetSize``) only grows. ``refs`` is a
+    descriptor of that file that ``decoder_worker.main`` opened; without one the file
+    is opened here, which a worker that is not root cannot do (see there).
     """
     if not sys.platform.startswith("linux"):
         return False
     try:
-        with open("/proc/self/clear_refs", "wb") as refs:
-            refs.write(b"5")
+        if refs is not None:
+            os.write(refs, b"5")
+            return True
+        with open("/proc/self/clear_refs", "wb") as file:
+            file.write(b"5")
     except OSError:
         return False
     return True
 
 
-def _main(argv: list[str]) -> None:
+def _main(argv: list[str], refs: int | None) -> None:
     # ``decoder_worker.prepare_child`` has run: no core dumps, and Ctrl-C ignored (it
     # would kill the process with rapidgzip's threads running, which aborts it and
     # reads as a decoder crash).
@@ -576,7 +581,7 @@ def _main(argv: list[str]) -> None:
                 pass
         if not reset:
             return
-        reusable = _reset_peak() and watch.reusable()
+        reusable = _reset_peak(refs) and watch.reusable()
         if not channel.send(OK, 1 if reusable else 0):
             return
 
@@ -600,15 +605,16 @@ def _load_opener(argv: list[str]) -> Any:
     return rapidgzip.open
 
 
-def run(argv: list[str]) -> None:
-    """Serve one rapidgzip stream (``argv``: ``[]`` or ``["bzip2"]``), then exit.
+def run(argv: list[str], refs: int | None = None) -> None:
+    """Serve rapidgzip streams (``argv``: ``[]`` or ``["bzip2"]``), then exit.
+    ``refs``: ``/proc/self/clear_refs``, opened before ``prepare_child``.
 
     Skips interpreter finalization, even after an exception: the pump thread may still
     be blocked on stdin, and a rapidgzip thread still running aborts the process.
     """
     status = 0
     try:
-        _main(argv)
+        _main(argv, refs)
     except BaseException as exc:  # noqa: BLE001 - reported on stderr; the exit must run
         status = 1
         sys.excepthook(type(exc), exc, exc.__traceback__)
