@@ -13,7 +13,7 @@
 
 ## Checklist
 
-- [ ] The change follows [CONTRIBUTING.md](https://github.com/davitf/archivey/blob/main/CONTRIBUTING.md): its coding and testing rules and its gates.
+- [ ] The change follows [CONTRIBUTING.md](https://github.com/archivey-dev/archivey/blob/main/CONTRIBUTING.md): its coding and testing rules and its gates.
 - [ ] A bug fix comes with a test that fails without the fix.
 - [ ] The user docs (`docs/`) and the specs (`openspec/`) match the new behaviour, or the change does not touch them.
 - [ ] `CHANGELOG.md` is unchanged. The release PR writes it.

@@ -50,7 +50,7 @@ whoever asks. Then read the diff yourself.
      [A dependency broke](#a-dependency-broke-or-stopped-shipping-wheels).
    - **The `3.15` prerelease leg or `3.15t`** (allowed to fail). Read it, but it blocks
      nothing; see [A new CPython](#a-new-cpython-release).
-3. For an agent: "CI failed on PR N in davitf/archivey. Read the failed job log, decide
+3. For an agent: "CI failed on PR N in archivey-dev/archivey. Read the failed job log, decide
    whether the PR caused it, and fix it or say why not. Follow `.claude/skills/steward`."
 
 ## A fuzz job found a crash
@@ -179,7 +179,7 @@ limit.
 2. For a bug, ask for what the bug-report form asks for if it is missing (version,
    `archivey info`, Python, OS, the archive or how to make it). Without a file that
    reproduces it, most archive bugs cannot be fixed.
-3. For a bug with a file: "Reproduce GitHub issue N in davitf/archivey, add the archive
+3. For a bug with a file: "Reproduce GitHub issue N in archivey-dev/archivey, add the archive
    (or a generated equivalent) as a test fixture, and fix it in a draft PR." Follow
    `.claude/skills/address-linear-issue` for the shape of the work.
 4. For a feature request, point at [`IDEAS.md`](IDEAS.md). If it is already there, add

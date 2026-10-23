@@ -40,11 +40,11 @@ classifiers = [
 # Shown in the PyPI sidebar. Without these the project page links nowhere, which is
 # most of why relative README links were the only navigation.
 [project.urls]
-Homepage = "https://davitf.github.io/archivey/"
-Documentation = "https://davitf.github.io/archivey/"
-Source = "https://github.com/davitf/archivey"
-Changelog = "https://github.com/davitf/archivey/blob/main/CHANGELOG.md"
-Issues = "https://github.com/davitf/archivey/issues"
+Homepage = "https://archivey-dev.github.io/archivey/"
+Documentation = "https://archivey-dev.github.io/archivey/"
+Source = "https://github.com/archivey-dev/archivey"
+Changelog = "https://github.com/archivey-dev/archivey/blob/main/CHANGELOG.md"
+Issues = "https://github.com/archivey-dev/archivey/issues"
 
 [project.scripts]
 archivey = "archivey.cli.main:main"
