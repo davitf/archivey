@@ -112,6 +112,44 @@ AI lets the maintainer build a better library, faster. It changes what is practi
 - **Measurement over memory.** Claims about speed, memory use and seeks are measured, and the
   benchmarks above catch a change that makes them worse.
 
+## Versioning and stability
+
+Archivey follows [semantic versioning](https://semver.org/). Before 1.0, this is what each kind
+of release may change:
+
+- **A patch release (0.2.1)** fixes bugs and makes improvements that need no change in your
+  code. It may read archives it used to refuse, report a new
+  [diagnostic code](errors-and-diagnostics.md), or add a value to an enum that says it is
+  open-ended, such as `CompressionAlgorithm`. It doesn't add, remove or change a function,
+  class, parameter or attribute. A new code that `DiagnosticPolicy.STRICT` raises waits for a
+  minor release, unless it reports damage archivey should already have caught.
+- **A minor release (0.3.0)** may change it. A removed or renamed name keeps working for one more
+  minor release first and emits a `DeprecationWarning` that names its replacement. A change that
+  can't be phased in that way, such as a different result for the same call, has a line starting
+  with **Breaking:** in that release's entry in the
+  [changelog](https://github.com/davitf/archivey/blob/main/CHANGELOG.md).
+
+Python shows a `DeprecationWarning` by default only when the deprecated call is in your
+top-level script, so the changelog's "Deprecated" section is the place to look before upgrading.
+To find deprecated calls anywhere in your code, run your tests with
+`pytest -W error::DeprecationWarning`.
+
+The public API is what `archivey` and its public submodules export, as listed on the
+[API page](api.md). Anything under `archivey.internal` can change in any release.
+
+The same promise covers the `archivey` command's verbs, options and exit codes, as listed on
+the [command-line page](cli.md): a removed or renamed one keeps working for one more minor
+release and prints a deprecation warning. The text it prints for people to read, such as
+messages and summaries, may change in any minor release, so a script should rely on the exit
+code and the options rather than on that text. A minor release may also add a verb, and from
+then on that word runs the verb rather than naming a file. A script that passes a path should
+write `archivey list <path>` or `./<path>`, which always reach the file.
+
+1.0 comes once early users have run archivey for a while and the API has held up. After that,
+breaking changes wait for 2.0. The larger open questions, such as a plugin interface for new
+formats, writing archives and an async API, would each add to the API rather than change the
+reading API that exists today.
+
 ## What this does not promise
 
 - The maintainer doesn't read every line. Agents do the line-by-line reading, and the maintainer

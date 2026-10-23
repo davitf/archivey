@@ -34,9 +34,13 @@ fails if the tag and either packaged version disagree.
 Pull requests do not edit `CHANGELOG.md`; the release PR writes the whole entry. What
 goes in it:
 
-- one line per new feature and per public API change (**Added** / **Changed** /
+- one line per new feature and per public API change, counting a renamed or removed
+  `archivey` verb or option and a changed exit code (**Added** / **Changed** /
   **Deprecated** / **Removed**); a line that makes callers change their code starts
-  with `**Breaking:**`;
+  with `**Breaking:**`. That covers a behaviour change that can't be shimmed, and a
+  removal that skipped the warning release under DR-12a's reopen clause;
+- in a minor release only, a name deprecated in the previous minor release is removed
+  now, with a **Removed** line. A patch release removes nothing (DR-12a);
 - one line per security fix (**Security**);
 - one line summarizing all other bug fixes (**Fixed**), unless a fix changes behavior
   users rely on, which then gets its own line.

@@ -31,7 +31,9 @@ Python library for reading, streaming, and safely extracting archives (ZIP, TAR,
   plus an `archivey` command for listing, testing and extracting from the shell.
 - Tested on Python 3.11 to 3.14 on Linux, and on 3.11 and 3.14 on macOS and Windows.
 
-The API is not frozen until 1.0, but no major changes are expected.
+The API is not frozen until 1.0, but no large changes are expected. Until then, a removed or
+renamed name warns for one minor release before it goes ([versioning and
+stability](https://davitf.github.io/archivey/how-it-is-built/#versioning-and-stability)).
 
 ## Install and use
 
