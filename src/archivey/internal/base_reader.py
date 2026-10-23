@@ -3354,8 +3354,9 @@ class BaseArchiveReader(ArchiveReader):
         start through ``run.offset + run.size``. Per run the reader keeps how far opens
         have decoded and how far they discarded (the largest ``offset``). This open
         decodes again the part of its discarded prefix that an earlier open decoded,
-        plus the part of its own member an earlier open decoded and discarded. Reading
-        the same member twice is not counted: a non-solid archive pays that too. On the
+        plus the part of its own member an earlier open decoded and discarded. A
+        member's own bytes do not count when the same member is read again, since a
+        non-solid archive pays that too; the prefix it decodes again does. On the
         first open that decodes anything again the record is INFO on
         ``archivey.backends``: the caller may have chosen the pattern, and
         ``reader.cost`` and the ``open()`` docstring already carry the cost.

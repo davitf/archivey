@@ -18,7 +18,7 @@ default. RAR archives are solid only when created with that option. On a solid a
 reading members by name can decompress the same data again and again. `stream_members`
 decompresses it once. archivey tells you when this happens: on a solid 7z or RAR archive, the
 first open that decompresses data an earlier open already decompressed logs one INFO message
-on the `archivey.backends` logger. Reading the same member twice does not count. The message
+on the `archivey.backends` logger. Reading the same member twice counts only the data before it in the archive. The message
 shows only if your application turns logging on.
 
 If your code needs to know whether an archive is solid, `archive.cost` tells you before you read

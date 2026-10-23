@@ -83,7 +83,7 @@ def test_an_open_that_decodes_a_7z_folder_again_logs_once(
         assert len(_records(caplog)) == 1
 
 
-def test_reading_the_same_member_again_does_not_log(
+def test_reading_the_first_member_again_does_not_log(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.INFO, logger=_LOGGER)
@@ -104,6 +104,8 @@ def test_reading_the_same_member_again_does_not_log(
         ("b.txt", "a.txt", 50),
         # c decoded a and b; b decodes a and itself again.
         ("c.txt", "b.txt", 100),
+        # A member's own bytes do not count when it is read again; its prefix does.
+        ("b.txt", "b.txt", 50),
     ],
 )
 def test_an_earlier_member_counts_the_bytes_decoded_again(

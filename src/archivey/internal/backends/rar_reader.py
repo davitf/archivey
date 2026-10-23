@@ -4126,7 +4126,10 @@ class RarReader(BaseArchiveReader):
         """Each compressed member's :class:`SolidRun` under ``unar``, by ``id``.
 
         The key is the archive index of the member that starts the solid stream, and
-        the offset counts the earlier compressed members of that stream. Built once.
+        the offset counts the earlier compressed entries of that stream. Streams are
+        cut on :func:`uses_no_dictionary` alone, as ``unar_dictionary_costs`` cuts
+        them, so a compressed entry that is not a payload file (a RAR3/4 symlink
+        target) still starts a stream and counts toward the offset. Built once.
         """
         runs = self._unar_runs
         if runs is not None:
@@ -4136,16 +4139,13 @@ class RarReader(BaseArchiveReader):
         offset = 0
         for index, member in enumerate(self._members):
             raw = member._raw
-            if (
-                not isinstance(raw, RarMemberInfo)
-                or not raw.is_payload_file()
-                or uses_no_dictionary(raw)
-            ):
+            if not isinstance(raw, RarMemberInfo) or uses_no_dictionary(raw):
                 continue
             if not raw.file_solid or start < 0:
                 start, offset = index, 0
-            size = _member_stream_size(member)
-            runs[id(member)] = SolidRun(start, offset, size)
+            size = raw.file_size
+            if raw.is_payload_file():
+                runs[id(member)] = SolidRun(start, offset, size)
             offset += size
         self._unar_runs = runs
         return runs
