@@ -31,7 +31,7 @@ gate = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = gate
 _spec.loader.exec_module(gate)
 
-REPO = "davitf/archivey"
+REPO = "archivey-dev/archivey"
 SHA = "a" * 40
 # A head pushed after the round read `SHA`.
 LATER = "b" * 40
@@ -366,8 +366,9 @@ def test_every_finished_round_counts_and_records_what_it_read(name: str) -> None
     history = gate.read_history([first_line])
     assert history.rounds == 1
     assert "Two nits left." in answer.comment
-    assert "https://github.com/davitf/archivey/blob/main/dev-docs/review-loop.md" in (
-        answer.comment
+    assert (
+        "https://github.com/archivey-dev/archivey/blob/main/dev-docs/review-loop.md"
+        in (answer.comment)
     )
 
 

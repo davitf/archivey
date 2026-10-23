@@ -18,7 +18,7 @@ If you are on an older release, please try to reproduce against the latest
 before reporting. Older-version reports are still useful for impact assessment;
 fixes normally land on current `main` first.
 
-This policy applies to **this** repository (`davitf/archivey`, the v2 library).
+This policy applies to **this** repository (`archivey-dev/archivey`, the v2 library).
 The previous implementation lives at [`davitf/archivey-old`](https://github.com/davitf/archivey-old)
 and is not covered here.
 
@@ -29,7 +29,7 @@ GitHub issue for exploitable bugs, malicious archives, or proof-of-concept
 payloads.
 
 **Preferred path:** use
-[GitHub private vulnerability reporting](https://github.com/davitf/archivey/security/advisories/new)
+[GitHub private vulnerability reporting](https://github.com/archivey-dev/archivey/security/advisories/new)
 (Security → Advisories → Report a vulnerability).
 
 If that flow is unavailable, email the maintainer at
@@ -65,7 +65,7 @@ In scope (non-exhaustive):
 - Failure to translate corrupt/truncated input into typed `ArchiveyError`s on
   the defended (non-accelerator) parse path
 
-The [known and accepted limits](https://davitf.github.io/archivey/security/#where-the-guarantees-stop)
+The [known and accepted limits](https://archivey-dev.github.io/archivey/security/#where-the-guarantees-stop)
 (a crash inside an in-process native decoder, untranslated `MemoryError`, no CPU or
 time bound, accelerators on by default, a crafted `.xz`/`.lz` index after a seek, and
 the Windows directory-source gap) are documented trade-offs, not vulnerabilities. A
@@ -88,7 +88,7 @@ line) in your deployment's trust boundary, and extracting to a
 scratch directory before promoting — lives in the user guide, next to the policies it
 qualifies:
 
-- [Security](https://davitf.github.io/archivey/security/) — what archivey relies on,
+- [Security](https://archivey-dev.github.io/archivey/security/) — what archivey relies on,
   where its guarantees stop, the limits, and hardening
 - [`dev-docs/threat-model.md`](dev-docs/threat-model.md) — the threat model:
   attackers, trust boundaries, defended properties and accepted non-guarantees
