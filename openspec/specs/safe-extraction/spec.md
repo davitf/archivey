@@ -1467,8 +1467,10 @@ keyed off `ExtractionPolicy`, so the same archive yields the same logical outcom
 rules compose with — and never bypass — the non-bypassable path-safety constraints.
 
 **Collision determinism (O2).** Under `STRICT` and `STANDARD`, the coordinator SHALL track
-a `casefold(NFC(path))` key per written destination and treat a second member resolving to
-the same key as an existing destination on **all** platforms. The key is taken on where
+a `casefold(NFC(path))` key per written destination, with a trailing dot or space dropped
+from each segment that has other characters (Win32 trims it, so `foo.` and `foo` are one
+file there), and treat a second member resolving to the same key as an existing
+destination on **all** platforms. The key is taken on where
 the entry physically lands (its parent resolved), so a member written through a
 directory symlink the archive created (`s/f` with `s -> d`) collides with `d/f`. A
 member whose destination holds an entry that no member of this run claimed by key, but that
@@ -1523,7 +1525,8 @@ legitimate archive, so under `STRICT` each path segment's trailing dot/space SHA
 every platform,
 collision-tracked as above, and recorded as `ExtractionResult.presented_name`; a
 segment that is entirely dots/spaces (e.g. `...`) has no portable spelling and SHALL be
-rejected. `STANDARD` and `TRUSTED` SHALL keep the trailing dot/space faithful (written if
+rejected under `STRICT` and `STANDARD` (Win32 would merge `a/.../b` into `a/b`).
+`STANDARD` and `TRUSTED` SHALL otherwise keep the trailing dot/space faithful (written if
 the OS allows).
 
 **Separators.** Under `STRICT` and `STANDARD`, a `\` that a member name keeps as a
@@ -1577,7 +1580,7 @@ rewritten name then collides and is renamed).
 | `longfilename.txt`, then `LONGFI~1.TXT`, on a Windows volume with 8.3 names | Second is a collision event with the first (same file identity); under `REPLACE` the first is revised to `OVERWRITTEN` | Local OS behavior (the second meets a file already there) |
 | NFC `café` and NFD `café` | Treated as a collision on all platforms | Local OS behavior |
 | Member named `NUL` / `COM1` / `COM¹` / `CONIN$` | Rejected on all platforms (typed error) | Written if the OS allows |
-| Trailing dot/space (`foo.`, `foo `) | `STRICT` strips to portable spelling (`foo`), `presented_name="foo."`, `rewrites == {PORTABLE_NAME}`; `STANDARD` keeps faithful | Written if the OS allows |
+| Trailing dot/space (`foo.`, `foo `) | `STRICT` strips to portable spelling (`foo`), `presented_name="foo."`, `rewrites == {PORTABLE_NAME}`; `STANDARD` keeps faithful; either way `foo.` beside `foo` is a collision event on all platforms | Written if the OS allows |
 | Segment of only dots/spaces (`.../x`) | Rejected on all platforms (no portable spelling) | Written if the OS allows |
 | Name containing `:` (`file:hidden`) | Rejected on all platforms | Local OS behavior (NTFS ADS) |
 | TAR name `a\b` | Written as directory `a` and file `b`; `presented_name="a\b"` | Local OS behavior (a file `a\b` on POSIX) |

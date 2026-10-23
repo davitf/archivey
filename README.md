@@ -89,3 +89,4 @@ how changes are made and checked, and what the process does not promise.
 - **[CONTRIBUTING.md](https://github.com/davitf/archivey/blob/main/CONTRIBUTING.md)** — coding / testing standards
 - **[VISION.md](https://github.com/davitf/archivey/blob/main/VISION.md)** — priorities and trade-offs; authoritative contracts live in `openspec/specs/`
 - **[SECURITY.md](https://github.com/davitf/archivey/blob/main/SECURITY.md)** — private vulnerability reporting
+- **[Issues](https://github.com/davitf/archivey/issues/new/choose)** — bug reports and feature requests, each with its own form

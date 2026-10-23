@@ -91,7 +91,10 @@ Everything about that boundary is a consequence:
 - **A member stream is a pipe**, so a rewind on a named `unrar` open is a respawn and a
   full re-decode (solid: from the archive start), reported as `STREAM_REWIND_REDECOMPRESSES`
   once the solid prefix plus discarded member progress meets the 1 MiB floor. The unnamed
-  ALL-pipe used by `stream_members()` stays forward-only (§2.3, §5).
+  ALL-pipe used by `stream_members()` stays forward-only (§2.3, §5). Opening a member of
+  a solid archive by name decodes again what an earlier open decoded of its solid prefix
+  (the archive's for `unrar`, the member's solid stream for `unar`), which logs one INFO
+  record per reader on `archivey.backends` (`_solid_run`); it is not a diagnostic.
 - **Identity of the binary costs a process.** `find_rarlab_unrar` looks up `unrar`
   first, then `rar`, runs the candidate with only `-cfg-` (so `~/.unrarrc` cannot inject
   `-idq` and empty the banner), and sniffs the banner.
@@ -297,8 +300,7 @@ padded with zeros up to it, and one that overshoots carries none. `tinyvol_hp.pa
 `tinyvol_cut.part1-3` (`-v1500b`, 1 500 bytes) has 77; `tinyvol`, `tinyvol_m3` and
 `tinyvol_cut_solid` overshoot (917, 917, 923 bytes) and have none. So the zero rule is
 what keeps an untouched padded set clean. The 9 zero bytes at the end of
-`tinyvol_rnn.rar` (RAR 1.5-4) are inside its end block, not after it. Tests:
-`tests/test_rar_trailing_data.py`.
+`tinyvol_rnn.rar` (RAR 1.5-4) are inside its end block, not after it.
 
 *Ordering with a cut.* When the merged listing is also truncated (a later volume cut),
 the reader raises `TruncatedError` before it reaches this diagnostic, as it does for the
@@ -477,8 +479,7 @@ extracting the link raises the fault. A RAR5 redirect needs no such check, since
 target is a header field covered by the header CRC.
 
 The RARLAB writer produces only the encrypted case in practice — it stores every
-symlink target M0, which is why `target_data_compressed` has no fixture (§8) and the
-four rows are pinned by patching the parsed header instead.
+symlink target M0, which is why `target_data_compressed` has no fixture.
 
 **Solidity is archive-wide and its blocks are invisible.** RAR exposes no per-solid-block
 boundaries, so `ArchiveInfo.is_solid` is one flag and `CostReceipt.solid_block_count` is
@@ -742,7 +743,7 @@ shared way (`a%FFq.txt` under `STRICT`/`STANDARD`, the raw byte under `TRUSTED`)
 used to decode with `replace`, so `a\xffq.txt` and `a\xfeq.txt` both listed as
 `a\ufffdq.txt` and the second superseded the first. `unrar` 7.00 reads both names as
 `a` (it stops at the first bad byte), and each still reads its own bytes, because the
-mask is built from the stored bytes (§2.3; `tests/test_rar_undecodable_names.py`). A
+mask is built from the stored bytes (§2.3). A
 RAR 1.5-4 name with only the 8-bit bytes records no code page, so it is decoded like an
 unflagged ZIP name: strict UTF-8 first, with or without the Unicode flag, then
 `encoding=` when the caller passed one, otherwise cp437 for a member whose host is
@@ -935,7 +936,6 @@ flag. `unrar` decodes every compressed member ahead of it to reach those bytes, 
 why a stored member read through `unrar` is charged the window ahead of it (§7,
 "A stored member of a solid archive"). `stored_solid_member__.rar` is that shape: a
 compressed `first.txt`, then a stored `second.bin` with the flag set.
-`test_stored_slice_matches_unrar` checks the slice against `unrar p`.
 
 **The argv is constructed defensively, because the member name is attacker-controlled.**
 `unrar p -inul -cfg- [-ver] (-p | -p-) [-n./<member>] -- <archive>`:
@@ -945,7 +945,7 @@ compressed `first.txt`, then a stored `second.bin` with the flag set.
   compressed member read as truncated. `--` is RARLAB's documented end-of-switches marker;
   measured on `unrar` 7.00 and `rar` 7.00. An `@` prefix needs no guard in this position:
   `unrar` reads the first non-switch argument as the archive, and only later file-name
-  arguments as list-files (also measured on 7.00, and pinned below).
+  arguments as list-files (also measured on 7.00).
 
 - **The member is never positional.** It is the value of the `-n` include mask, prefixed
   `./`. Passed positionally, a member literally named `-inul` is parsed by `unrar` as a
@@ -975,9 +975,7 @@ compressed `first.txt`, then a stored `second.bin` with the flag set.
   up to the last `/../`), and how the mask is compared (`CmpName` with
   `MATCH_WILDSUBPATH`, including the rule that a trailing `.` in the mask may stand for
   nothing). `unrar_member_view` gives the name `unrar` reads, `unrar_mask_view` the
-  mask, and `unrar_mask_selects` the comparison. `tests/test_rar_unrar_names.py`
-  checks every step against `unrar` 7.00 by building archives whose names exercise it
-  and comparing the members `unrar` emits with the prediction.
+  mask, and `unrar_mask_selects` the comparison.
 - **Every read sizes a skip past the members its mask selects before the target**, not
   only a glob read: two members with the same name, two names `unrar` reads alike, and
   a mask that names a directory holding earlier members all emit more than the target.
@@ -1130,9 +1128,7 @@ symlink, so `unrar` links its target file there; archivey writes the symlink eve
 as GNU tar does. The base reader never looks forward for a hard link's target, so
 random access and a streaming pass agree with each other and with `unrar`, as TAR does
 (`tar.md`). `unar` differs: it writes every RAR hard link as a
-symlink to the target name, which is why a forward one appears to work there. The six
-shapes are pinned against `unrar` by
-`tests/test_audit_extraction_reaudit.py::test_rar_hard_links_extract_as_unrar_does_in_both_modes`.
+symlink to the target name, which is why a forward one appears to work there.
 
 **A listing cut part-way extracts its prefix, then raises.** `extract_all` writes the
 members listed before the damage, runs the hard-link second pass over them, and raises
@@ -1219,9 +1215,7 @@ correctly and then corrupts a reused `bytearray` seed so the next of the 0x4000�
 rounds matches WinRAR. Seed ≤ 64 bytes (a password of 28 UTF-16 code units plus the
 8-byte salt) never hits it. Ported from `rarfile` 4.3 `Rar3Sha1`. The committed `-hp`
 fixtures use `header_password` (UTF-16LE plus salt is 38 bytes), so listing them never
-reaches the mutation; `tests/test_rar_parser.py` pins it instead (the digest of the original
-bytes, the seed mutated afterwards, and a long-password string-to-key checked against
-`rarfile`).
+reaches the mutation.
 
 **The writer being trialware is also why the corpus fixtures are committed.** The declarative corpus builds each entry
 in every format it declares, and eight entries declare `rar`. All eight ran **nowhere**:
@@ -1297,7 +1291,7 @@ RAR-specific only. General extraction and name hazards are §2.4.
   member existed. Closed by `_decode_rar3_unicode_name`: overrun returns `None` and the
   caller falls back to the 8-bit field; every output unit costs a `std_name` or `encdata`
   byte, so amplification is impossible by construction (shipped decode of that ceiling
-  vector is microseconds). Pinned in §8.
+  vector is microseconds).
 - **Variable-length integers are a CPU bomb, not a memory one.** The input chooses how many
   continuation bytes to supply, so a decoder that re-copies its accumulated bytes each
   iteration is quadratic in a length the attacker picks — a few megabytes of `0x80` burned CPU
@@ -1322,13 +1316,12 @@ RAR-specific only. General extraction and name hazards are §2.4.
   wrong for RAR5; the only correct predictor is `unrar`'s own semantic rule — print
   regular-file data, skip directories, links and copies — which `is_payload_file()`
   re-implements. Per-member digest verification is the backstop, so a desync surfaces as a
-  checksum failure rather than as silent wrong data. Both generations of the
-  `symlinks_solid__` pair, and RAR5 hardlinks, are pinned in §8. The `__rar4`
+  checksum failure rather than as silent wrong data. The `__rar4`
   archive is RAR3-family (`-ma4`); only its stored link members declare extract
   version 20 (RAR 2.0). The RARLAB writer stores those targets M0 — it does not
   produce a compressed (LZ-data) RAR3 symlink target, which is why that case is
   not in the fixtures. `FILE_COPY` (RAR5 redirect type 5) is pinned with
-  archives `rar -oi` writes at test time (`tests/test_audit2_rar.py`). Residual is
+  archives `rar -oi` writes at test time. Residual is
   unfixtured existing kinds — Windows symlink, Windows junction — and future kinds
   whose emission `is_payload_file()` gets wrong (tracked internally). A later reader must
   not conclude the current kinds are all pinned.
@@ -1401,7 +1394,7 @@ RAR-specific only. General extraction and name hazards are §2.4.
 | The parser holds each member list to `max_members` and `max_metadata_bytes` as it appends | The table is built at open, so both bounds belong at parse. `max_metadata_bytes` was first left out of the parser on the reasoning that follows, and added once the 2026-10-10 code sweep showed the gap it left (tracked internally): an archive under `max_members` whose names are long keeps them all until registration, up to 64 KiB per RAR 1.5-4 name and 2 MiB per RAR5 header, times `max_members`. `_append_member` now adds `header_metadata_bytes` (name and raw name, RAR5 redirection target, comment, a compressed one by declared or packed size, whichever is larger) to a running total kept on the list (`_MemberList`), the same per-list rule as the count: per volume, then for the merged set, where a split member's later parts merge and are not weighed again. The weight is registration's for the same fields, with the stored name standing for the normalized one, so an archive whose names normalization leaves alone opens under any cap its listing fits. The original reasoning: Measured retained/wire is ~9×, dominated by the fixed `RarMemberInfo` object, which `max_members` already caps **for the members**; a damaged SERVICE header is retained too and is not a member, so it has its own bound (`_MAX_DAMAGED_SERVICE_HEADERS`) rather than being counted here — measured, 200 000 damaged 17-byte SERVICE headers in a 3.4 MB file retained 80 MB under no bound at all, and counting them as members would refuse an archive `unrar` lists; names are within ~4× of the header bytes (RAR3 UCS-4 worst case), typically ~1:1. A parse-time byte budget would guard the minor term, and a fixed header-bytes ceiling would reject archives `ListingLimits` permits — the `_MAX_ARCHIVE_MEMBERS` bug this exists to fix. The one listing path with real expansion is per-member compressed comments, which unpack in the reader after parse, where no parse-time guard can see them (§4) | A parser-local header-bytes constant; one running total shared by every volume, which weighs a split member's name once per volume |
 | A malformed **optional** RAR5 extra record drops the record, not the archive | The extra area is a list of optional records, and the walk has always ignored a record type it does not implement. A type it *does* implement but cannot parse is the same amount of missing information, so refusing every member that parsed — over a checksum record — was an inconsistency rather than a posture. `unrar` 7.00 lists such an archive; measured on a one-byte edit to a BLAKE2sp record's `xsize`. Each branch commits its value on its own last statement, so a dropped record leaves its field **absent, never wrong**. Not silent: `MEMBER_HEADER_RECORD_SKIPPED`, which is in `ARCHIVE_INTEGRITY_CODES`, so `DiagnosticPolicy.STRICT` still refuses. **The line is a record's framing against its body** (davitf, on #371): a body the reader cannot parse costs one record and leaves the next record's offset known, so the walk goes on; a size vint it cannot use costs every later record, so the walk stops and says so. Unusable means unreadable, running past the header, or **below one byte** — a body opens with its type vint, so one byte (a type, no payload) is the smallest legal record and a declared size of zero names nothing while still advancing the cursor. That last case is what made one attacker byte cost one retained record. **`unrar` 7.00 is not the oracle here.** Measured on `encryption__.rar` with only the first member's extras corrupted and the second as a control, all four shapes behave alike: `unrar l` exits 0 and lists both members, but the corrupted member loses its encryption marker *and* its timestamp, while the second is untouched. The lost timestamp is the tell — that TIME record sits after the injected junk, so losing it shows unrar abandoned the rest of the extra area rather than skipping one record. It does that even for a record whose framing is sound and whose body merely will not parse (`01 80`), which is where **archivey is now more lenient than unrar**: the next record's offset is known, so we drop that one record and recover the TIME and CRYPT records unrar throws away. Its listing is wrong — plaintext, exit 0 — but not silently wrong end to end: `unrar t` on the same member reports `checksum error` and exits nonzero, because it cannot actually decrypt. So the damage is per-member and surfaces on extraction, which is why the oracle argument covers a malformed record body and stops there. The skip list is also capped (`_MAX_SKIPPED_HEADER_RECORDS`, 16 — arbitrary; the format's own bound is six, one per FILE extra type) for the records that *are* framed correctly, since one of those costs two attacker bytes apiece. It bounds only the expensive path, not record count: 2 MiB of well-formed records of an unimplemented type is a million ignored records in 0.49 s, linear in the input and not amplified. `max_members` cannot see any of this — it is one member. After the cap the extra-area walk stops, reported once via `list_truncated` on the diagnostic's context rather than once per record — a capped listing must not read as a complete one, since how far to trust the member's metadata turns on whether the header was read to the end. CRC-32 on the enclosing header is an integrity check, not an authenticity one; the cap is the hostile-input bound. Same leniency-vs-refusal question [`tar.md`](tar.md) §7 asks about tar's stdlib EOF handling — answered here for one record type, not there | Keeping the refusal; dropping the record silently, which would make the archive look intact; leaving the skip list unbounded |
 | The RAR5 **encryption** record stays fatal | The sole exception to the row above. Dropping it leaves `file_encryption` unset, and a member with no encryption parameters is presented as plaintext — a wrong answer rather than a missing one, which is the failure class this library ranks worst. A member whose encryption parameters cannot be read is not a member that can be presented. **A member whose extra-area walk stopped early fails closed and lists as encrypted**, since the walk may have stopped in front of the record and "not encrypted" would be the same wrong answer reached by omission — measured, four crafted prefixes reach it and the cheapest is one byte. That is the one place the no-absent-parameters rule gives way. **"Encrypted" and "could not tell" stay separate inside the backend** (`RarMemberInfo.encryption_unknown`), because they are acted on differently: the fail-closed answer is what the *member* reports, while the archive-level flag stays the aggregate of members *known* to be encrypted. Conflating them let one damaged member report a wholly plaintext archive as encrypted, which also hands the caller's password to every `unrar` spawn for it and relabels an empty read as a wrong password. The cost of failing closed is **one extra pass** over an already-damaged member: a stored member is normally sliced from the source with no binary at all, and a cut-short one is sliced only after its bytes have been checked, because they would be ciphertext presented as plaintext if the record never reached was the encryption record. The first version of this branch routed such a member to `unrar` instead, on the belief that `unrar` settles the question. **It does not**, and that is worth stating because it is the obvious wrong inference. Measured on unrar 7.00 with one `00` byte prepended to each fixture's extra area: `unrar l` drops the encrypted marker, so it reached the same wrong conclusion from the same damaged header. What separated the two runs was **which digest survived**, which is the writer's choice and not ours — RAR5 keeps CRC32 in the fixed header and BLAKE2sp in the extra area, so the cut destroys one and not the other. `blake2sp.rar`'s member carries BLAKE2sp, lost it, and unrar returned the bytes at exit 0 marked unverified (`?`); `encryption__.rar`'s members carry CRC32, kept it, and unrar checked the ciphertext against it, failed, emitted **zero bytes and exited 3** (archivey surfaces that as `TruncatedError`; the undamaged sibling still reads). Had that encrypted member used BLAKE2sp, unrar would have handed back ciphertext at exit 0 with nothing said. So unrar's rule is "return the bytes unless a surviving digest says no", and **archivey holds the same surviving digest**. Ruled by davitf: apply that test here, and refuse when no digest survived — *"I think it matches how we deal with encrypted stored members where we're not sure the password is correct"*, which is the ZipCrypto stored path (`_open_stored_confirmed`). So the bytes are verified against the surviving digest **before** any of them is returned and the member reads on any install, `unrar` or not; with no digest left it is unreadable and the refusal names the **cut-short header**, not the missing package — measured, reporting `PackageNotInstalledError` there named a way out rather than the cause, for a member that reads fine on `main`. The check is up front rather than at EOF for ZipCrypto's reason: nothing in a stored member's framing rejects wrong bytes incrementally, so a caller that stops reading early would never reach the end-of-stream verdict. It costs one extra pass over an already-damaged member and nothing on the happy path. An encrypted member's digests are key-tweaked whenever the writer sets that flag and are the plaintext digest when it does not, so ciphertext matches neither — measured on a stored `-ppassword` fixture, refused, and on the plaintext `-m0` one, read correctly with no binaries on `PATH`. The diagnostic also names which of the four faults ended the walk, since it is the only thing explaining why the member reads as encrypted. **All of that is the sliceable member**; a cut-short member that needs `unrar` (compressed, solid, split, spanned) is decoded by it as before, with any surviving digest checked at end of stream and nothing checking one that has none — unchanged, still reported encrypted, still carrying the diagnostic. **SERVICE headers (`CMT`, `QO`) get the same walk and are not members**, so nothing listed them and nothing reported them: a cut-short `CMT` had its payload sliced and decoded into `ArchiveInfo.comment` with no diagnostic at all, which is the one place the leniency-is-not-silent argument did not hold. Both slice gates now refuse on `encryption_unknown` and the reader emits from `RarArchive.damaged_service_headers`, in every volume — the volume merge is field by field, so a new field is silent past volume 1 until it is added there. That list is retained per damaged header and nothing lists a SERVICE header, so it is capped and the remainder reported as a count (see the `max_members` row). The diagnostics do not call the header a member: it is in no listing, so naming `CMT` as one sent a reader looking for something that is not there and never mentioned the comment it had withheld. Note the walk allows one byte of trailing padding (as rarfile does), so a one-byte extra area is never walked — grafting one to build a repro changes nothing | Skipping it for consistency; listing it as encrypted with absent parameters in the *parsed* case; leaving a cut-short header to answer the question from what it happened to read; letting the fail-closed answer reach the archive-level flag; **routing the member to `unrar`**, which costs it on a core-only install and buys no better answer; refusing outright, which loses a member `main` reads and that its own checksum vouches for; verifying at end of stream, which a partial read never reaches |
-| `extract_all` on a listing that ends in damage writes the members listed before it, then raises the listing's error (§2.4) | **Ruled by davitf, 2026-10-03**, for every format: it is what TAR already did, the order `stream_members()` gives, and what `unrar` and 7-Zip do — measured with unrar 7.00 and p7zip 16.02 on the cuts in `tests/test_extraction_damaged_listing.py`, both write the members before the cut and exit nonzero | Refusing before any write when the listing was walked first, which is what RAR did until then and made the outcome depend on whether the caller had listed; returning an `ExtractionReport` for the prefix alongside the error, which no public shape does today and the ruling did not take — a caller who needs the prefix's names reads `members_report()`, whose members are the prefix the pass was offered |
+| `extract_all` on a listing that ends in damage writes the members listed before it, then raises the listing's error (§2.4) | **Ruled by davitf, 2026-10-03**, for every format: it is what TAR already did, the order `stream_members()` gives, and what `unrar` and 7-Zip do — measured with unrar 7.00 and p7zip 16.02 on cut archives, both write the members before the cut and exit nonzero | Refusing before any write when the listing was walked first, which is what RAR did until then and made the outcome depend on whether the caller had listed; returning an `ExtractionReport` for the prefix alongside the error, which no public shape does today and the ruling did not take — a caller who needs the prefix's names reads `members_report()`, whose members are the prefix the pass was offered |
 
 ### Solid glob-emit measurement (2026-09-20)
 
@@ -1446,11 +1439,7 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
   that is not valid UTF-8 could serve a sibling's bytes. Duplicate names failed with
   `CorruptionError`. An 8-bit RAR3 name listed as UTF-16LE (`b"caf\xe9.txt"` as
   `'慣琮瑸'`). The first two are fixed by computing the selection `unrar` makes (§2.3),
-  the third by the decoding in §2.2;
-  the pins are
-  `tests/test_audit_rar_iso_dir.py::test_invalid_utf8_name_never_reads_a_siblings_bytes`,
-  `::test_duplicate_named_compressed_rar5_members_read_their_own_bytes` and
-  `::test_rar3_8bit_name_is_not_decoded_as_utf16`, no longer xfail. The measurements
+  the third by the decoding in §2.2. The measurements
   behind the fix, on Linux with `unrar` 7.00 (`unrar p -inul -n./<mask> -- archive`):
 
   | Stored name | UTF-8 text as mask | Stored bytes as mask |
@@ -1461,10 +1450,8 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
   | two members with the same name | matches both | matches both |
   | RAR3 emoji, UTF-16 field `emoji_\uf600.txt` | the real emoji fails; `U+F600` matches | — |
 
-  The rest of the selection rules are in `tests/test_rar_unrar_names.py`, 26 RAR5 and
-  10 RAR3 names checked against `unrar`'s output. **Code page evidence for the 8-bit
-  listing.** Windows `unrar` reads a RAR 1.5-4 8-bit name as the OEM code page
-  (`arcread.cpp`, `ArcCharToWide(..., ACTW_OEM)` then `OemToCharBuffA`), which is what
+  **Code page evidence for the 8-bit listing.** Windows `unrar` reads a RAR 1.5-4 8-bit
+  name as the OEM code page (`arcread.cpp`, `ArcCharToWide(..., ACTW_OEM)` then `OemToCharBuffA`), which is what
   WinRAR writes; the Windows CI runner's OEM 437 turns `\xe9` into `Θ`. `unrar` on
   Linux keeps the bytes and maps them to private-use characters (`unrar lb` prints
   `caf\xef\xbf\xbe\xee\x83\xa9.txt`), 7-Zip on Linux prints the raw bytes, and
@@ -1614,11 +1601,7 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
     refusal (exit 2, "No files to extract") would need mapping to
     `ResourceLimitError`.
 
-  Pins: `tests/test_audit_rar_iso_dir.py` (the tests after "the RAR dictionary counts
-  against DecoderLimits.max_decoder_memory"), which replace the xfail
-  `test_audit_cross_format.py::test_rar_declared_dictionary_is_checked_against_decoder_memory`,
-  and `tests/test_rar_parser.py::test_rar5_dictionary_size_follows_unrar`. Code:
-  `RarMemberInfo.dictionary_size` (parser), `unar_dictionary_costs` (`rar_unar.py`),
+  Code: `RarMemberInfo.dictionary_size` (parser), `unar_dictionary_costs` (`rar_unar.py`),
   `_unrar_dictionary_costs` and `RarReader._check_dictionary_memory` (`rar_reader.py`).
 
 - **Does the glob-concatenation refusal earn its keep?** It ships and is decided (§6):
@@ -1728,78 +1711,78 @@ python3 scripts/exploration/rar_unrar_input_matrix.py       # §2.3 input modes,
 python3 scripts/exploration/rar_decompressor_matrix.py      # §3 the decompressor table
 ```
 
-| Claim | Pinned by |
-| --- | --- |
-| A member whose packed data the file cuts is `TruncatedError` when `unrar` would decode it, encrypted or not, solid or not, in random access and in a pass; a cut stored plaintext one raises `TruncatedError` too (the bytes before the cut are not asserted) | `tests/test_cut_archive_cross_format.py::test_a_cut_rar_read_through_unrar_is_truncated`, `::test_a_cut_archive_raises_truncated_in_every_format` |
-| Cost receipt: `DIRECT` for a nonsolid archive, `SOLID` with `solid_block_count is None` for a solid one | `tests/test_cost_receipt.py::test_cost_receipt_per_format[rar]`, `tests/test_rar_reader.py::test_basic_solid_stream_and_random` |
-| Listing and stored reads with **no binary on `PATH` at all**, and a compressed read there naming RARLAB `unrar` | `tests/test_rar_reader.py::test_listing_and_stored_reads_need_no_unrar` |
-| A stored nonsolid archive is read end to end with zero subprocesses (the §2.3 measurement) | `::test_stored_nonsolid_archive_spawns_no_unrar_process` |
-| The finder rejects a missing or non-RARLAB binary, and the message names the lookalikes | `::test_missing_unrar_raises`, `::test_unrar_not_installed_message_names_lookalikes`, `::test_non_rarlab_unrar_rejected` |
-| A non-RARLAB binary on `PATH` is rejected, and the one we run is RARLAB's 6.0+ | `::test_non_rarlab_unrar_rejected`, `::test_unrar_on_path_is_the_rarlab_build` |
-| Identification parses major.minor from the probe banner; below 6.0 (or unparseable RARLAB) is refused once and cached as RARLAB | `::test_rarlab_unrar_below_floor_is_rejected_and_cached`, `::test_rarlab_unrar_at_or_above_floor_is_accepted`, `::test_unparseable_rarlab_banner_is_rejected_and_cached` |
-| The finder caches hits and misses for one `PATH`, then re-probes after `PATH` changes or a cached binary vanishes | `::test_non_rarlab_unrar_negative_probe_is_cached`, `::test_missing_unrar_negative_probe_is_cached`, `::test_path_change_invalidates_cached_unrar_miss`, `::test_deleted_cached_unrar_is_not_returned` |
-| A solid pass spawns `unrar` only on the first read | `::test_solid_pass_spawns_unrar_only_on_the_first_read` |
-| Hostile member names (`-inul`, `@atfile`) read **their own** bytes, RAR4 and RAR5 | `::test_hostile_member_name_reads_its_own_bytes` |
-| An archive path starting with `-` or `@` reads its members; `--` sits directly before the path | `tests/test_rar_unrar_argv.py::test_archive_named_like_a_switch_reads_its_members`, `::test_archive_path_follows_a_switch_terminator` |
-| A probe that times out is cached for that binary, the next name is still tried, a replaced binary is re-probed, and every refusal names the timeout | `tests/test_rar_unrar_argv.py::test_timed_out_probe_is_cached_and_the_next_name_is_used`, `::test_timed_out_only_candidate_is_not_installed_without_reprobing`, `::test_replaced_binary_after_a_timeout_is_probed_again`, `::test_real_hung_unrar_costs_one_probe_timeout` |
-| A wildcard member name reads its own bytes, including the solid prefix-skip case | `::test_wildcard_member_name_reads_its_own_bytes`, `::test_wildcard_solid_stream_members_reads_all`, `::test_seekable_wildcard_respawn_still_skips_glob_prefix` |
-| Listing a stream-volume set writes nothing; the first compressed read writes the whole set once and close removes it | `::test_stream_volume_listing_writes_nothing`, `::test_stream_volume_read_materializes_once` |
-| A glob name whose mask also matches earlier members is refused; the flag reads it anyway; a glob matching nothing else is untouched; a solid streaming pass is untouched | `::test_glob_member_with_earlier_matches_is_refused`, `::test_glob_member_matching_nothing_else_still_reads`, `::test_glob_concatenation_flag_names_itself_in_the_refusal`, `::test_wildcard_nonsolid_stream_members_hits_the_refusal` |
-| A directory-component glob or a backslash in the stored name is a typed refusal; `-ver` history is omitted from the skip unless the target is a history row | `::test_wildcard_dirglob_and_backslash_names_are_refused`, `::test_wildcard_ver_live_glob_skips_history_rows`, `::test_unrar_glob_demux_ok_basename_only` |
-| Hostile prefixes and glob names become a `-n./` mask; `[]` stays literal in the skip; Windows fold is per-character so `?` stays length-aligned | `::test_unrar_member_include_switch_builds_n_mask`, `::test_unrar_mask_selection_treats_brackets_as_literal`, `::test_unrar_mask_selection_windows_fold_does_not_change_wildcard_length` |
-| `seekable_members=True` respawns named `unrar` on a backward seek; stored direct-slice does not; default route stays a pipe | `::test_seekable_members_respawns_unrar_on_backward_seek`, `::test_seekable_members_does_not_respawn_on_stored_direct_slice`, `::test_unrar_route_is_not_seekable_by_default`, `::test_unrar_respawn_overrun_probe_sees_trailing_bytes`, `::test_unrar_respawn_seek_end_does_not_drain_or_respawn`, `::test_unrar_respawn_failed_seek_leaves_position`, `::test_unrar_respawn_boundary_read_is_one_byte` |
-| A solid later-member rewind is loud without lowering the global threshold; a live `unrar` survives close+respawn | `::test_seekable_unrar_emits_stream_rewind`, `::test_rewind_warning_min_redecode_bytes_is_a_cost_floor`, `::test_seekable_unrar_respawns_while_process_still_running` |
-| The password reaches `unrar` on stdin, not in argv | `tests/test_crypto_findings.py::test_f4_password_arg_is_bare_or_dash`, `::test_f4_password_passed_via_stdin_not_argv` |
-| A NUL in a password or a member name is a typed refusal; a password past the pipe buffer does not deadlock the spawn | `tests/test_audit_rar_iso_dir.py::test_password_with_nul_is_not_silently_cut_by_unrar`, `::test_nul_in_member_name_read_raises_an_archivey_error`, `::test_long_password_does_not_deadlock_the_unrar_spawn` |
-| An 8-bit RAR3 name is masked with its stored bytes; `unrar` runs under a UTF-8 locale, and without one a non-ASCII name is refused before spawning | `tests/test_audit_rar_iso_dir.py::test_rar3_8bit_name_member_is_readable`, `::test_non_ascii_member_reads_under_the_c_locale`, `tests/test_rar_unrar_argv.py::test_8bit_name_mask_is_the_stored_bytes`, `::test_unrar_child_runs_under_a_utf8_locale`, `::test_non_ascii_name_without_a_utf8_locale_is_refused_before_spawning` |
-| Each read returns its own member's bytes when the mask selects others: duplicate names (solid and not), a RAR5 name cut at a bad byte, a name `unrar` reads as empty; an earlier unmodellable name refuses later reads | `tests/test_audit_rar_iso_dir.py::test_invalid_utf8_name_never_reads_a_siblings_bytes`, `::test_duplicate_named_compressed_rar5_members_read_their_own_bytes`, `tests/test_rar_unrar_names.py::test_every_rar5_member_reads_its_own_bytes_or_is_refused`, `::test_duplicate_names_read_by_position`, `::test_invalid_utf8_name_reads_through_the_prefix_unrar_sees`, `::test_name_unrar_reads_as_empty_is_refused`, `::test_earlier_name_unrar_cannot_be_modelled_refuses_later_reads` |
-| The mask selection archivey predicts is the one `unrar` 7.00 makes (Linux) | `tests/test_rar_unrar_names.py::test_rar5_mask_selection_is_the_one_unrar_makes`, `::test_rar3_8bit_mask_selection_is_the_one_unrar_makes`, `tests/test_rar_reader.py::test_unrar_mask_selection_follows_unrar_path_rules`, `::test_unrar_mask_selection_on_windows_takes_either_separator_in_the_name` |
-| An 8-bit RAR 1.5-4 name lists in its writer's code page, honours `encoding=`, and still reads; RAR5 names ignore `encoding=` | `tests/test_audit_rar_iso_dir.py::test_rar3_8bit_name_is_not_decoded_as_utf16`, `tests/test_rar_unrar_names.py::test_8bit_rar3_name_lists_in_its_writers_code_page`, `::test_encoding_argument_decodes_an_8bit_rar3_name`, `::test_valid_utf8_rar3_name_wins_over_the_encoding_argument`, `::test_8bit_rar3_name_decoded_with_encoding_still_reads`, `::test_unicode_flagged_rar3_name_without_a_utf16_field`, `::test_encoding_argument_leaves_rar5_names_alone`, `::test_8bit_name_macos_unrar_reads_as_empty_is_refused_before_spawning` |
-| An explicit volume list in separate directories reads as given | `tests/test_audit_rar_iso_dir.py::test_explicit_rar_volume_paths_in_separate_directories_open` |
-| An invalid DOS date or out-of-range FILETIME is `None` plus `MEMBER_TIMESTAMP_INVALID`; a crafted `;n` suffix is not a bare `ValueError` | `tests/test_audit_cross_format.py::test_invalid_timestamp_is_none_and_reported`, `tests/test_audit_rar_iso_dir.py::test_rar3_version_suffix_is_parsed_without_a_bare_value_error` |
-| Exit-code mapping: 11, 2/3, 10, hash-present suppression, solid-pipe suppression, negative rc | `tests/test_rar_reader.py::test_unrar_owned_stream_maps_exit_11_to_encryption_error` and the nine tests after it |
-| A missing stdout pipe is a typed error, not a `RuntimeError` | `::test_open_unrar_p_missing_stdout_pipe_is_typed` |
-| Header-encrypted listing with a password, and a wrong password as `EncryptionError` on both generations | `::test_encrypted_header_lists_with_password`, `::test_header_encryption_wrong_password_is_encryption_error` |
-| Encrypted member data requires a password | `::test_encrypted_data_requires_password` |
-| A partial read of RAR3/4 encrypted data emits `ENCRYPTED_MEMBER_UNVERIFIED` (named open, seek, solid pass); a read to EOF, a RAR5 member with a PswCheck, and a header-encrypted RAR4 archive do not | `tests/test_encrypted_member_unverified.py::test_rar4_wrong_password_partial_read_is_reported` and the six `test_rar*` tests after it |
-| Tweaked digests kept out of `hashes`, and BLAKE2sp verified / cross-checked against `unrar` | `::test_blake2sp_only_hash`, `::test_blake2sp_verified_no_unverifiable_diagnostic`, `::test_blake2sp_corrupt_payload_raises`, `::test_blake2sp_unrar_oracle_crosscheck` |
-| RAR5 redirect digests dropped without losing RAR4's genuine ones | `tests/test_review_simplicity_consistency.py::test_rar4_link_digests_survive_the_rar5_fix`, `tests/test_corpus_sweep.py::test_corpus_conformance` (8 RAR entries) |
-| RAR5 Windows symlink and junction targets list as ZIP's and 7z's do, and a drive or UNC target is refused at extraction | `tests/test_link_target_portability.py` (the same targets in all three formats) |
-| A RAR5 name that is not UTF-8, and an 8-bit RAR 1.5-4 name with a byte windows-1252 leaves undefined, list as distinct names, read their own bytes through `unrar`, and extract escaped | `tests/test_rar_undecodable_names.py` |
-| Solid symlink / hardlink demux does not consume pipe bytes | `tests/test_rar_reader.py::test_solid_symlink_demux_and_link_targets`, `::test_solid_hardlink_demux_and_targets` |
-| Solid link emission per generation: RAR5 packed 0 / unpacked > 0, RAR4 packed > 0 / unpacked > 0, both emit 0; `is_payload_file()` is False | `::test_solid_symlink_demux_and_link_targets` (the `symlinks_solid__` pair; `__rar4` links are stored M0), `::test_solid_hardlink_demux_and_targets` (RAR5 hardlinks), `::test_named_unrar_p_bytes_rejects_no_match`. No RAR 1.5/2.x solid-symlink fixture. Unfixtured existing kinds: Windows symlink, junction (their targets are pinned on crafted redirect records instead) |
-| A RAR5 file copy lists as `FILE` with `is_file_copy` and its source, reads and extracts as an independent file (both programs, solid and not); a dangling or wrong-size copy raises; a hard link stays `HARDLINK` | `tests/test_audit2_rar.py::test_file_copy_redirect_extracts_as_an_independent_file`, `::test_file_copy_lists_as_a_file_that_names_its_source`, `::test_file_copy_yields_its_bytes_in_stream_members_order`, `::test_file_copy_extracts_as_an_independent_file_on_every_path`, `::test_file_copy_without_a_matching_source_is_a_typed_error`, `::test_rar5_hard_link_stays_a_hardlink` |
-| A solid pass decodes a file copy's source once for all its copies (both programs; the source read or skipped, extracted or filtered out); kept in the spool past the memory allowance, decoded again when the spool limit has no room; the spool charge starts at the first kept byte, after a stream source's own copy, and ends with the pass; a pass that reads nothing writes nothing; the kept bytes are checked against the source's digest and count toward extraction limits | `tests/test_rar_file_copy_solid_pass.py`, `tests/test_rar_reader.py::test_solid_stream_members_of_a_stream_source_writes_nothing_until_read`, `tests/test_rar_spool_limit.py::test_budget_release_gives_a_reservation_back` |
-| Extraction copies a file copy from its written source and keeps nothing for it (random access and streaming, both programs); a replaced source file falls back to decoding; a dry run keeps sources; `stream_members(file_copy_streams=False)` yields `None` for copies, solid or not, and keeps nothing | `tests/test_rar_file_copy_solid_pass.py::test_extract_copies_each_copy_from_the_written_source`, `::test_extract_falls_back_when_the_written_source_was_replaced`, `::test_dry_run_still_serves_copies_from_one_decode`, `::test_stream_members_without_copy_streams_yields_none_for_copies`, `::test_stream_members_without_copy_streams_on_a_nonsolid_archive` |
-| File-version rows list, read, stay out of `extract_all`, and keep solid demux aligned | `::test_file_version_list_and_read`, `::test_file_version_extract_all_skips_history`, `::test_file_version_solid_demux_aligned` |
-| M0 is `STORED`; M1–M5 is `RAR` with `level` 1–5; unpack version in `extra["rar.extract_version"]` (stored included; RAR3 `UNP_VER` unvalidated, RAR5 reports 50); method bytes outside M0–M5 stay `UNKNOWN` with no `level` | `tests/test_rar_reader.py::test_member_reports_exact_compression_and_extract_version`, `::test_rar3_unp_ver_byte_is_reported_unvalidated`, `::test_unknown_method_byte_omits_level`, `::test_stored_m0_direct_read`, `tests/test_rar_oracle.py::test_native_rar_matches_rarfile_metadata_and_bytes` |
-| Volume sets (`partN` and `.rNN`, including an SFX `.exe`/`.sfx` first volume), stream volumes, a stray `partN` of another padding, and a set with a volume missing at its start, middle or end | `::test_multi_volume_roundtrip`, `::test_multi_volume_rnn_roundtrip`, `::test_multi_volume_stream_materialization`, `::test_incomplete_multi_volume_lists_then_raises`, `tests/test_rar_missing_last_volume.py`, `tests/test_volumes.py::test_discover_rar_part_volumes`, `::test_discover_old_rar_rnn_volumes`, `::test_discover_old_scheme_sfx_rnn_first_volume`, `::test_old_scheme_sfx_exe_opens_rnn_set`, `::test_multi_volume_rar_opens_volume_set_or_rejects_stub`, `::test_discover_prefers_the_opened_names_padding_over_a_stray`, `::test_discover_prefers_the_opened_names_spelling_over_a_case_variant`, `::test_rar_part_set_with_a_stray_of_another_width_opens`, `::test_rar_mixed_width_set_opens_and_reads_from_either_anchor`, `tests/test_rar_volume_gaps.py` |
-| Stub-only `vol.exe` follows `vol.exe.001` / `vol.7z.001` / `vol.zip.001`; a real SFX is not redirected | `tests/test_volumes.py::test_stub_only_exe_opens_zip_split_first_volume`, `::test_stub_only_exe_opens_windows_7z_first_volume`, `::test_sevenzip_sfx_numbered_parts_open_from_any_part`, `::test_embedded_sfx_zip_is_not_redirected_to_sibling_volume` |
-| RAR 1.5 / 2.x list and read; extract version ≤ 20 is not a rejection | `tests/test_rar_reader.py::test_rar15_and_rar2_list_and_read`, `::test_extract_version_20_payload_accepted` |
-| RAR 1.5 / 2.x archive and member comments match `rarfile`; stored old-style comments need no binary; RAR3 CMT reaches `member.comment`; RAR5 CMT stays archive-only | `::test_rar15_and_rar2_comments_match_rarfile`, `::test_rar3_stored_old_style_main_comment_needs_no_unrar`, `::test_rar3_service_comment_maps_to_member_comment`, `::test_rar5_comment_service_stays_archive_only` |
-| An encrypted old-style comment is `None` and spawns nothing | `::test_rar3_parser_drops_encrypted_old_style_comment`, `::test_rar3_encrypted_old_style_comment_is_skipped_up_front` |
-| Stored names over `max_metadata_bytes` refuse at open (RAR4, RAR5, and a volume set weighing a split member's name once) | `tests/test_listing_limits.py::test_rar5_open_weighs_names_against_max_metadata_bytes`, `::test_rar4_open_weighs_names_against_max_metadata_bytes`, `::test_rar5_volume_set_weighs_names_across_volumes`, `::test_rar4_volume_set_counts_a_split_name_once` |
-| Compressed RAR 1.5-4 comments (old-style subblocks and `CMT` headers) over `max_metadata_bytes` (member and archive comments, each weighed by the larger of its declared size and its packed bytes, summed with the names) refuse at open before any decode | `::test_rar3_compressed_comments_over_metadata_budget_refused_before_decode`, `::test_rar3_compressed_comments_within_metadata_budget_are_decoded`, `::test_rar3_compressed_archive_comment_counts_toward_budget` |
-| A compressed RAR 2.9-4 `CMT` comment is decoded by the selected program and `None` without one; its CRC32 and unicode bit are honoured; one declaring more than 256 KiB, or packing more than that, is dropped unread; a SALT-flagged one spawns nothing; its packed bytes count toward the budget when larger than its declared size | `::test_rar3_compressed_service_comment_is_read`, `::test_rar3_compressed_service_comment_without_a_decompressor_is_none`, `::test_rar3_compressed_service_comment_checks_crc32_and_unicode_flag`, `::test_rar3_compressed_service_comment_counts_toward_budget`, `::test_rar3_compressed_member_service_comment_is_weighed_as_it_attaches`, `::test_rar3_compressed_service_comment_over_rar_maximum_is_dropped`, `::test_rar3_compressed_service_comment_at_rar_maximum_is_decoded`, `::test_rar3_compressed_service_comment_with_oversized_packed_data_is_dropped`, `::test_rar3_compressed_service_comments_weighed_by_packed_bytes`, `::test_rar3_salted_compressed_service_comment_is_not_decoded` |
-| A `CMT` comment whose data runs past the end of the file, stored or compressed, is a cut: RAR 1.5-4 and RAR5 list the members before it, then `TruncatedError`, and the comment is `None`, as `unrar` lists them; a `CMT` the walk reads (its bytes in the file, within the 256 KiB compressed cap, not encrypted or split) whose packed bytes alone are over `max_metadata_bytes` is refused before it is read | `tests/test_rar_parser.py::test_a_rar3_stored_comment_past_the_end_of_the_file_is_a_cut`, `::test_a_rar3_comment_past_the_end_of_the_file_keeps_the_members_before_it`, `::test_a_rar3_compressed_comment_past_the_end_of_the_file_is_a_cut`, `::test_a_rar5_comment_past_the_end_of_the_file_keeps_the_members_before_it`, `::test_unrar_lists_the_member_before_a_rar3_comment_cut`, `::test_unrar_lists_the_member_before_a_rar5_comment_cut`, `::test_a_comment_over_the_metadata_budget_is_refused_before_it_is_read` |
-| RAR3 non-BMP name recovery from the 8-bit field | `::test_fix_rar3_astral_truncation`, `::test_rar3_non_bmp_filename_not_truncated` |
-| Listing without QO is a header-to-header walk; with QO, FILE headers already in it are not read (§1.1) | `::test_listing_without_qo_walks_header_to_header`, `::test_listing_with_qo_does_not_seek_per_member`, `::test_listing_qo_skip_count_does_not_scale_with_member_count` |
-| QO listing matches the FILE-header walk field-for-field | `::test_qo_listing_matches_file_walk_on_corpus`, `::test_qo_listing_matches_file_walk_live` |
-| QO listing serves stored reads and keeps the archive comment; unreadable QO falls back to the walk | `::test_qo_listing_stored_read_and_comment`, `::test_unreadable_qo_falls_back_to_file_walk` |
-| QO payload of non-FILE records parses in linear time; overlapping QO spans are refused | `::test_rar5_qo_non_file_records_parse_in_linear_time`, `::test_qo_overlapping_spans_are_rejected` |
-| AUTO still lists small files QO omitted; `rar a` rewrites QO; FILE after QO is still listed | `::test_auto_qo_lists_small_files_omitted_from_cache`, `::test_rar_a_rewrites_qo_and_lists_the_new_member`, `::test_file_header_after_qo_is_still_listed` |
-| A QO copy no header the walk reaches matches is reported on a clean end, refused under `STRICT`, kept past the damaged-service-header cap, not reported after a cut, a damaged header, a damaged end block or without QO, and not listed, as in `unrar` | `::test_a_qo_copy_the_walk_never_reaches_is_reported`, `::test_an_intact_qo_reports_no_unmatched_copy`, `::test_an_unmatched_qo_copy_is_kept_past_the_damaged_header_cap`, `::test_unmatched_qo_copies_are_not_reported_without_a_clean_end`, `::test_unrar_lists_the_walk_not_an_unmatched_qo_copy` |
-| A malformed optional RAR5 extra record drops the record, not the archive; encryption stays fatal; a zeroed extra area does not retain one skip per byte; the extra area is placed by its declared size | `tests/test_rar_header_record_leniency.py` |
-| An unknown compression version is `UnsupportedFeatureError` on read, for both decompressors and the solid pass; a stored member reads. In a solid archive so is a later member of its solid stream, and under `unrar` a later solid group too, worded by cause; `unar` reads a later group; a stored one reads | `tests/test_rar_unknown_compression.py` |
-| Bounded hostile parsing: the header-size vint, hostile packed sizes, hostile modes, out-of-range timestamps | `::test_rar5_header_size_vint_is_bounded`, `::test_load_vint_single_and_multi_byte`, `::test_rar5_hostile_packed_size_is_corruption`, `::test_rar_reader_masks_hostile_unix_mode`, `::test_rar5_out_of_range_windowstime_is_tolerated` |
-| RAR5/RAR3 `accessed`/`created` from the time extra, and `None` when the extra or slot is absent | `::test_rar5_xtime_fixture_surfaces_accessed_and_ctime`, `::test_rar4_xtime_fixture_surfaces_accessed_and_ctime`, `::test_xtime_absent_accessed_created_are_none`, `::test_created_or_ctime_follows_host_os`, `::test_parse_rar5_xtime_keeps_ctime_and_atime_with_ns`, `::test_parse_rar3_ext_time_slot_order_is_mtime_ctime_atime` |
-| RAR3 compressed-name decode fails closed on overrun; long RLE stays bounded (§4) | `::test_rar3_compressed_name_decode_is_bounded`, `::test_rar3_rle_name_still_decodes_when_the_8bit_field_is_present`, `::test_rar3_rle_name_may_be_longer_than_encdata`, `::test_rar3_rle_name_zero_correction_keeps_hi_byte`, `::test_rar3_unicode_name_decode_matches_reference_and_stays_bounded` |
-| The >4 GiB RAR3 packed skip, and split-continuation identity checks | `::test_rar3_large_packed_member_skips_full_64bit_size`, `::test_rar3_mismatched_split_continuation_is_corruption` and the three tests after it |
-| Member-table ceiling at parse via `listing_limits.max_members` | `::test_rar_parser_max_members_at_parse`, `::test_rar_parser_omitted_max_members_matches_listing_limits_default`, `::test_rar_open_enforces_listing_limits`, `::test_rar_unlimited_lifts_member_cap`, `::test_rar_split_continuation_does_not_consume_member_slot`, `::test_qo_over_max_members_raises_not_unusable` |
-| The SFX needle validator, its `DAMAGED` verdict, and a decoy skipped for the real payload | `tests/test_sfx.py::test_rar_main_header_validator`, `::test_rar_main_header_validator_crc_fail_is_damaged`, `::test_rar_short_peek_is_not_a_rar_even_when_remaining_is_known`, `::test_rar_decoy_crossing_the_scan_window_end_is_rejected_like_one_inside`, `::test_mz_rar5_crc_fail_skips_to_the_real_payload`, `::test_shebang_script_mentioning_rar_magic_is_not_rar`, `::test_shebang_plus_real_rar_detects` |
-| Metadata and bytes match `rarfile` on our fixtures and on the corpus | `tests/test_rar_oracle.py::test_native_rar_matches_rarfile_metadata_and_bytes`, `::test_corpus_rar_matches_rarfile` |
-| Mutation and coverage-guided fuzzing of the header walk | `tests/fuzz_rar_parser.py::test_parse_rar_archive_fuzz_harness`, `tests/test_mutation_fuzz.py` (`basic-solid-rar5` / `basic-solid-rar4` entries), Atheris targets `rar_header` and `rar` |
-| `extract_all` over a listing cut part-way writes the members before the cut, then raises the listing's error, in both modes, under either `OnError`, with no report; a selected hard link in the prefix still gets its source's bytes; an entry unmatched in the prefix is not reported; listing limits still refuse before any write | `tests/test_extraction_damaged_listing.py` |
+| Claim |
+| --- |
+| A member whose packed data the file cuts is `TruncatedError` when `unrar` would decode it, encrypted or not, solid or not, in random access and in a pass; a cut stored plaintext one raises `TruncatedError` too (the bytes before the cut are not asserted) |
+| Cost receipt: `DIRECT` for a nonsolid archive, `SOLID` with `solid_block_count is None` for a solid one |
+| Listing and stored reads with **no binary on `PATH` at all**, and a compressed read there naming RARLAB `unrar` |
+| A stored nonsolid archive is read end to end with zero subprocesses (the §2.3 measurement) |
+| The finder rejects a missing or non-RARLAB binary, and the message names the lookalikes |
+| A non-RARLAB binary on `PATH` is rejected, and the one we run is RARLAB's 6.0+ |
+| Identification parses major.minor from the probe banner; below 6.0 (or unparseable RARLAB) is refused once and cached as RARLAB |
+| The finder caches hits and misses for one `PATH`, then re-probes after `PATH` changes or a cached binary vanishes |
+| A solid pass spawns `unrar` only on the first read |
+| Hostile member names (`-inul`, `@atfile`) read **their own** bytes, RAR4 and RAR5 |
+| An archive path starting with `-` or `@` reads its members; `--` sits directly before the path |
+| A probe that times out is cached for that binary, the next name is still tried, a replaced binary is re-probed, and every refusal names the timeout |
+| A wildcard member name reads its own bytes, including the solid prefix-skip case |
+| Listing a stream-volume set writes nothing; the first compressed read writes the whole set once and close removes it |
+| A glob name whose mask also matches earlier members is refused; the flag reads it anyway; a glob matching nothing else is untouched; a solid streaming pass is untouched |
+| A directory-component glob or a backslash in the stored name is a typed refusal; `-ver` history is omitted from the skip unless the target is a history row |
+| Hostile prefixes and glob names become a `-n./` mask; `[]` stays literal in the skip; Windows fold is per-character so `?` stays length-aligned |
+| `seekable_members=True` respawns named `unrar` on a backward seek; stored direct-slice does not; default route stays a pipe |
+| A solid later-member rewind is loud without lowering the global threshold; a live `unrar` survives close+respawn |
+| The password reaches `unrar` on stdin, not in argv |
+| A NUL in a password or a member name is a typed refusal; a password past the pipe buffer does not deadlock the spawn |
+| An 8-bit RAR3 name is masked with its stored bytes; `unrar` runs under a UTF-8 locale, and without one a non-ASCII name is refused before spawning |
+| Each read returns its own member's bytes when the mask selects others: duplicate names (solid and not), a RAR5 name cut at a bad byte, a name `unrar` reads as empty; an earlier unmodellable name refuses later reads |
+| The mask selection archivey predicts is the one `unrar` 7.00 makes (Linux) |
+| An 8-bit RAR 1.5-4 name lists in its writer's code page, honours `encoding=`, and still reads; RAR5 names ignore `encoding=` |
+| An explicit volume list in separate directories reads as given |
+| An invalid DOS date or out-of-range FILETIME is `None` plus `MEMBER_TIMESTAMP_INVALID`; a crafted `;n` suffix is not a bare `ValueError` |
+| Exit-code mapping: 11, 2/3, 10, hash-present suppression, solid-pipe suppression, negative rc |
+| A missing stdout pipe is a typed error, not a `RuntimeError` |
+| Header-encrypted listing with a password, and a wrong password as `EncryptionError` on both generations |
+| Encrypted member data requires a password |
+| A partial read of RAR3/4 encrypted data emits `ENCRYPTED_MEMBER_UNVERIFIED` (named open, seek, solid pass); a read to EOF, a RAR5 member with a PswCheck, and a header-encrypted RAR4 archive do not |
+| Tweaked digests kept out of `hashes`, and BLAKE2sp verified / cross-checked against `unrar` |
+| RAR5 redirect digests dropped without losing RAR4's genuine ones |
+| RAR5 Windows symlink and junction targets list as ZIP's and 7z's do, and a drive or UNC target is refused at extraction |
+| A RAR5 name that is not UTF-8, and an 8-bit RAR 1.5-4 name with a byte windows-1252 leaves undefined, list as distinct names, read their own bytes through `unrar`, and extract escaped |
+| Solid symlink / hardlink demux does not consume pipe bytes |
+| Solid link emission per generation: RAR5 packed 0 / unpacked > 0, RAR4 packed > 0 / unpacked > 0, both emit 0; `is_payload_file()` is False |
+| A RAR5 file copy lists as `FILE` with `is_file_copy` and its source, reads and extracts as an independent file (both programs, solid and not); a dangling or wrong-size copy raises; a hard link stays `HARDLINK` |
+| A solid pass decodes a file copy's source once for all its copies (both programs; the source read or skipped, extracted or filtered out); kept in the spool past the memory allowance, decoded again when the spool limit has no room; the spool charge starts at the first kept byte, after a stream source's own copy, and ends with the pass; a pass that reads nothing writes nothing; the kept bytes are checked against the source's digest and count toward extraction limits |
+| Extraction copies a file copy from its written source and keeps nothing for it (random access and streaming, both programs); a replaced source file falls back to decoding; a dry run keeps sources; `stream_members(file_copy_streams=False)` yields `None` for copies, solid or not, and keeps nothing |
+| File-version rows list, read, stay out of `extract_all`, and keep solid demux aligned |
+| M0 is `STORED`; M1–M5 is `RAR` with `level` 1–5; unpack version in `extra["rar.extract_version"]` (stored included; RAR3 `UNP_VER` unvalidated, RAR5 reports 50); method bytes outside M0–M5 stay `UNKNOWN` with no `level` |
+| Volume sets (`partN` and `.rNN`, including an SFX `.exe`/`.sfx` first volume), stream volumes, a stray `partN` of another padding, and a set with a volume missing at its start, middle or end |
+| Stub-only `vol.exe` follows `vol.exe.001` / `vol.7z.001` / `vol.zip.001`; a real SFX is not redirected |
+| RAR 1.5 / 2.x list and read; extract version ≤ 20 is not a rejection |
+| RAR 1.5 / 2.x archive and member comments match `rarfile`; stored old-style comments need no binary; RAR3 CMT reaches `member.comment`; RAR5 CMT stays archive-only |
+| An encrypted old-style comment is `None` and spawns nothing |
+| Stored names over `max_metadata_bytes` refuse at open (RAR4, RAR5, and a volume set weighing a split member's name once) |
+| Compressed RAR 1.5-4 comments (old-style subblocks and `CMT` headers) over `max_metadata_bytes` (member and archive comments, each weighed by the larger of its declared size and its packed bytes, summed with the names) refuse at open before any decode |
+| A compressed RAR 2.9-4 `CMT` comment is decoded by the selected program and `None` without one; its CRC32 and unicode bit are honoured; one declaring more than 256 KiB, or packing more than that, is dropped unread; a SALT-flagged one spawns nothing; its packed bytes count toward the budget when larger than its declared size |
+| A `CMT` comment whose data runs past the end of the file, stored or compressed, is a cut: RAR 1.5-4 and RAR5 list the members before it, then `TruncatedError`, and the comment is `None`, as `unrar` lists them; a `CMT` the walk reads (its bytes in the file, within the 256 KiB compressed cap, not encrypted or split) whose packed bytes alone are over `max_metadata_bytes` is refused before it is read |
+| RAR3 non-BMP name recovery from the 8-bit field |
+| Listing without QO is a header-to-header walk; with QO, FILE headers already in it are not read (§1.1) |
+| QO listing matches the FILE-header walk field-for-field |
+| QO listing serves stored reads and keeps the archive comment; unreadable QO falls back to the walk |
+| QO payload of non-FILE records parses in linear time; overlapping QO spans are refused |
+| AUTO still lists small files QO omitted; `rar a` rewrites QO; FILE after QO is still listed |
+| A QO copy no header the walk reaches matches is reported on a clean end, refused under `STRICT`, kept past the damaged-service-header cap, not reported after a cut, a damaged header, a damaged end block or without QO, and not listed, as in `unrar` |
+| A malformed optional RAR5 extra record drops the record, not the archive; encryption stays fatal; a zeroed extra area does not retain one skip per byte; the extra area is placed by its declared size |
+| An unknown compression version is `UnsupportedFeatureError` on read, for both decompressors and the solid pass; a stored member reads. In a solid archive so is a later member of its solid stream, and under `unrar` a later solid group too, worded by cause; `unar` reads a later group; a stored one reads |
+| Bounded hostile parsing: the header-size vint, hostile packed sizes, hostile modes, out-of-range timestamps |
+| RAR5/RAR3 `accessed`/`created` from the time extra, and `None` when the extra or slot is absent |
+| RAR3 compressed-name decode fails closed on overrun; long RLE stays bounded (§4) |
+| The >4 GiB RAR3 packed skip, and split-continuation identity checks |
+| Member-table ceiling at parse via `listing_limits.max_members` |
+| The SFX needle validator, its `DAMAGED` verdict, and a decoy skipped for the real payload |
+| Metadata and bytes match `rarfile` on our fixtures and on the corpus |
+| Mutation and coverage-guided fuzzing of the header walk |
+| `extract_all` over a listing cut part-way writes the members before the cut, then raises the listing's error, in both modes, under either `OnError`, with no report; a selected hard link in the prefix still gets its source's bytes; an entry unmatched in the prefix is not reported; listing limits still refuse before any write |
 
 **Building fixtures.** `uv run python scripts/gen_rar_fixtures.py` regenerates most of
 `tests/fixtures/rar/`; it needs the RARLAB `rar` writer, and because RAR 7 dropped `-ma4` it

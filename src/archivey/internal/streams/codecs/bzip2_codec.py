@@ -909,7 +909,7 @@ class Bzip2Codec(StreamCodec):
     def _translate_accelerator(self, exc: Exception) -> ArchiveyError | None:
         """Translate the rapidgzip bzip2 accelerator's exceptions to the library's error types."""
         if from_callers_source(exc):
-            return None  # the caller's source raised it, through the decoder process
+            return None  # the caller's source raised it (``from_callers_source``)
         # A message rapidgzip could not decode to text (it quotes a non-UTF-8 input
         # byte) arrives readable, as a RuntimeError: see ``_error_payload`` in
         # ``rapidgzip_worker.py``.

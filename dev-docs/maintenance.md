@@ -22,7 +22,7 @@ those use the AI plan's quota.
 | `ci.yml` | each PR push (except documentation-only PRs) and each push to `main` | no | see [CI is red](#ci-is-red-on-main-or-on-a-pr) |
 | `docs-checks.yml` | each PR and each push to `main` | no | a docs build or OpenSpec gate broke |
 | `docs-deploy.yml` | each push to `main` | no | the Pages deploy failed; the site keeps the previous version |
-| `ppmd-native-stress.yml` | each PR (except documentation-only PRs) and each push to `main` | no | not a required check; see [Known issues](known-issues.md), pyppmd sections |
+| `ppmd-native-stress.yml` | weekly (Wednesday 05:29 UTC), on demand, and on PRs that change the PPMd code, its child process, its tests or the dependency pins | no | not a required check; see [Known issues](known-issues.md), pyppmd sections |
 | `atheris-fuzz.yml` | each PR except documentation-only PRs (short), nightly when `main` moved in the last 3 days | no | a fuzz target found an input; see [A fuzz job found a crash](#a-fuzz-job-found-a-crash); it also holds a release until it is green on the release PR ([release gate](release-checklist.md#6-version-bump-and-tag)) |
 | `benchmark-wall.yml` | daily, with a change guard | no | a wall-time ratio moved; see [The benchmark went red](#the-benchmark-went-red) |
 | `accelerator-crash-search.yml` | weekly (Monday) | no | a new rapidgzip crash signature; it also holds a release until it is green on the release PR ([release gate](release-checklist.md#6-version-bump-and-tag)) |

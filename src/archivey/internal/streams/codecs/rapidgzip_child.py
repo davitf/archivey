@@ -38,6 +38,7 @@ import os
 import subprocess
 import tempfile
 import weakref
+from collections.abc import Callable
 from pathlib import Path
 from typing import IO, BinaryIO
 
@@ -82,6 +83,8 @@ from archivey.internal.streams.codecs.rapidgzip_worker import (
     OPEN,
     OPEN_LIMIT,
     OPEN_PATH,
+    OPEN_RANGE,
+    OPEN_RANGE_ARGS,
     OPEN_STREAM,
     POINTS,
     POINTS_REPLY,
@@ -99,6 +102,7 @@ from archivey.internal.streams.codecs.rapidgzip_worker import (
 )
 from archivey.internal.streams.decompressor_stream import SeekPoint, truncated_message
 from archivey.internal.streams.streamtools import ReadOnlyIOStream
+from archivey.internal.streams.streamtools.slice import file_region
 
 _WORKER = Path(__file__).with_name("decoder_worker.py")
 
@@ -229,7 +233,9 @@ _FROM_SOURCE = "_archivey_raised_by_callers_source"
 
 def from_callers_source(exc: BaseException) -> bool:
     """Whether ``exc`` came from the caller's own source, parked while a decoder read it
-    (the rapidgzip child's reads, or the in-process bzip2 decoder's).
+    (the rapidgzip child's reads, or the in-process bzip2 decoder's), or raised by a
+    file region's check before a call to the child (what reading that source would
+    have raised; see ``file_region``).
 
     Such an exception is raised to the caller as itself, so a translator must leave it
     alone, including one whose types (``EOFError``) it would map for a decoder.
@@ -386,8 +392,24 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         # before the next one.
         self._since_query = 0
         self._query_after = _MIN_QUERY_SPACING
+        # The checks of a file region (``file_region``): the child reads the file
+        # itself, so they run here, before each call.
+        self._region_checks: tuple[Callable[[], None], ...] = ()
+        pass_fds: tuple[int, ...] = ()
+        if isinstance(source, (str, os.PathLike)) or os.name != "posix":
+            region = None
+        else:
+            region = file_region(source)
         if isinstance(source, (str, os.PathLike)):
             open_kind, open_path = OPEN_PATH, os.fsencode(os.fspath(source))
+        elif region is not None:
+            # A byte range of a file on disk (a ZIP member): the child reads it with
+            # ``os.pread`` on an inherited descriptor, so no compressed byte crosses a
+            # pipe. POSIX only: ``pass_fds`` has no Windows form.
+            open_kind = OPEN_RANGE
+            open_path = OPEN_RANGE_ARGS.pack(region.fd, region.start, region.length)
+            self._region_checks = region.checks
+            pass_fds = (region.fd,)
         else:
             self._source = source
             open_kind, open_path = OPEN_STREAM, b""
@@ -417,6 +439,7 @@ class RapidgzipChildStream(ReadOnlyIOStream):
                 _start_error,
                 stdin=subprocess.PIPE,
                 stderr=stderr,
+                pass_fds=pass_fds,
             )
         except RapidgzipChildStartError:
             stderr.close()
@@ -528,6 +551,14 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         self._raise_if_unusable()
         # Refused before anything is written, so the child is still in step.
         _check_arg(arg)
+        for check in self._region_checks:
+            try:
+                check()
+            except Exception as exc:
+                # What a read of the caller's source would have raised, so it reaches
+                # the caller as that read's error would (``_answer_source``).
+                mark_callers_source(exc)
+                raise
         try:
             frame = self._exchange(tag, arg, payload)
         except BaseException:
