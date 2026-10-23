@@ -12,7 +12,6 @@ import io
 import zlib
 from pathlib import Path
 
-import py7zr
 import pytest
 
 import archivey
@@ -26,11 +25,13 @@ from archivey import (
 from archivey.internal.config import check_decoder_memory
 from archivey.internal.resource_usage import ResourceUsageRecorder
 from archivey.internal.spool import SpoolBudget
+from tests.conftest import requires
 
 _FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def _lzma2_7z(path: Path, dict_size: int) -> Path:
+    py7zr = pytest.importorskip("py7zr")
     filters = [{"id": py7zr.FILTER_LZMA2, "preset": 1, "dict_size": dict_size}]
     with py7zr.SevenZipFile(path, "w", filters=filters) as archive:
         archive.writestr(b"x" * 1000, "a.txt")
@@ -78,6 +79,7 @@ def test_a_refused_declaration_is_recorded_at_its_full_size() -> None:
     )
 
 
+@requires("cryptography")
 def test_key_derivation_rounds_are_recorded(tmp_path: Path) -> None:
     path = _FIXTURES / "sevenzip" / "encrypted_link.7z"
     with archivey.open_archive(path, password="SECRET") as reader:
