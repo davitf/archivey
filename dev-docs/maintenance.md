@@ -19,7 +19,7 @@ those use the AI plan's quota.
 | --- | --- | --- | --- |
 | `review-loop.yml` | each time the `review` label is added | **yes**, one Opus session per round: up to 5 rounds an agent can ask for, 8 if a person keeps adding the label ([Review loop](review-loop.md)) | the review itself failed to post; re-add the label once |
 | `claude.yml` | an `@claude` mention by a person on an issue or PR | **yes**, one session per mention | nothing, unless you asked for something |
-| `ci.yml` | each PR push (except documentation-only PRs), each merge-queue group and each push to `main`; its `CI gate` job is the queue's required check | no | see [CI is red](#ci-is-red-on-main-or-on-a-pr) |
+| `ci.yml` | each PR push (except documentation-only PRs), each merge-queue group and each push to `main`; its `CI gate` job is the queue's required check; PyPy's core-only suite runs only on pushes to `main` and dispatched runs | no | see [CI is red](#ci-is-red-on-main-or-on-a-pr); it also holds a release until a dispatched run is green on the release PR ([release gate](release-checklist.md#6-version-bump-and-tag)) |
 | `docs-checks.yml` | each PR, each merge-queue group and each push to `main` | no | a docs build or OpenSpec gate broke |
 | `pr-gate.yml` | each PR | no | never red: it reports `CI gate` as passed so any PR can join the merge queue, where the real `CI gate` in `ci.yml` runs |
 | `docs-deploy.yml` | each push to `main` | no | the Pages deploy failed; the site keeps the previous version |

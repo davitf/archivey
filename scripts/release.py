@@ -69,6 +69,8 @@ RELEASE_GATE_WORKFLOWS = (
     # the nightly budgets, about ten times longer.
     "atheris-fuzz.yml",
     "rapidgzip-resume-stress.yml",
+    # Pull requests skip PyPy's core-only suite; a dispatched run includes it.
+    "ci.yml",
 )
 
 
