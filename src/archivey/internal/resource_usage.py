@@ -30,7 +30,7 @@ content probe checks is never counted as the archive's.
 from __future__ import annotations
 
 import threading
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -41,7 +41,12 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class ResourceUsage:
-    """A snapshot of :class:`ResourceUsageRecorder`; every number is a peak or a total."""
+    """A snapshot of :class:`ResourceUsageRecorder`.
+
+    The decoder memory and spool numbers are peaks and the key-derivation rounds a
+    total. The listing numbers are the tracker's current totals: a failed walk that is
+    retried resets them, so they count the last walk.
+    """
 
     decoder_memory: int = 0
     decoder_memory_what: str = ""
@@ -49,9 +54,6 @@ class ResourceUsage:
     spool_bytes: int = 0
     listed_members: int = 0
     listing_metadata_bytes: int = 0
-
-    def as_dict(self) -> dict[str, int | str]:
-        return asdict(self)
 
 
 class ResourceUsageRecorder:

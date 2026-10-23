@@ -130,7 +130,7 @@ class SpoolBudget:
             while chunk := src.read(_COPY_CHUNK):
                 out.write(chunk)
                 self._written += len(chunk)
-            self._peak = max(self._peak, self._written)
+                self._peak = max(self._peak, self._written)
             return
         while True:
             remaining = limit - self._written

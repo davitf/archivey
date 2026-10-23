@@ -108,17 +108,17 @@ from archivey import (
 
 
 @dataclass
-class _Probe:
+class _Warnings:
     # Archivey's own WARNING log records for the archive being scanned.
-    warnings: list[str] = field(default_factory=list)
+    messages: list[str] = field(default_factory=list)
 
     def reset(self) -> None:
-        self.warnings = []
+        self.messages = []
 
 
-PROBE = _Probe()
+WARNINGS = _Warnings()
 # Set when a reader had no resource-usage record; reported once, in the summary.
-USAGE_MISSING = [False]
+USAGE_MISSING = False
 
 
 class _WarningCapture(logging.Handler):
@@ -132,7 +132,7 @@ class _WarningCapture(logging.Handler):
     """
 
     def emit(self, record: logging.LogRecord) -> None:
-        PROBE.warnings.append(record.getMessage())
+        WARNINGS.messages.append(record.getMessage())
 
 
 # --- Scanning ----------------------------------------------------------------------
@@ -287,7 +287,7 @@ def scan_one(
     found reach the CSV whichever stage stopped it.
     """
     row = _Row(path=str(path), file_size=path.stat().st_size)
-    PROBE.reset()
+    WARNINGS.reset()
     try:
         info = archivey.detect_format(path, config=config)
     except FormatDetectionError:
@@ -316,7 +316,7 @@ def scan_one(
 
 def _finish(row: _Row) -> _Row:
     """Derive the flags from everything recorded."""
-    for message in PROBE.warnings:
+    for message in WARNINGS.messages:
         row.log.append(f"warning: {message}")
         if message.startswith("Could not remove dry-run scratch directory"):
             row.flag("scratch_left_behind")
@@ -345,75 +345,94 @@ def _open_and_extract(
             row.diagnostics[code.value] += count
         return
     with reader:
-        row.text["open"] = "ok"
-        ai = reader.info
-        row.text["format"] = _format_name(ai.format)
-        row.text["version"] = ai.format_version or ""
-        row.text["solid"] = "yes" if ai.is_solid else ""
-        row.text["encrypted"] = "yes" if ai.is_encrypted else ""
-
-        member_bytes: dict[int, int] = {}  # id(member) -> bytes written
-        total = [0]
-
-        def on_progress(p: archivey.ExtractionProgress) -> None:
-            member_bytes[id(p.member)] = p.member_bytes_written
-            total[0] = p.bytes_written
-
-        report = None
         try:
-            with tempfile.TemporaryDirectory(prefix="archivey-scan-") as tmp:
-                report = reader.extract_all(
-                    Path(tmp) / "out",
-                    dry_run=True,
-                    on_error="continue",
-                    on_progress=on_progress,
-                )
-        except Exception as exc:  # noqa: BLE001
-            row.failure("extract", exc)
-        row.numbers["bytes_written"] = total[0]
+            _scan_open_reader(reader, config, row)
+        finally:
+            # Read even when the scan raised: a failing archive is a row the record
+            # is for, and the reader's declarations so far are still in it.
+            _read_usage(reader, row)
 
-        listed = reader.members_report_if_available()
-        members = listed.members if listed is not None else ()
-        if listed is not None:
-            row.numbers["members"] = len(members)
-            row.text["codecs"] = " ".join(
-                sorted(
-                    {
-                        "+".join(c.algo.value for c in m.compression)
-                        for m in members
-                        if m.compression
-                    }
-                )
+
+def _scan_open_reader(
+    reader: archivey.ArchiveReader, config: ArchiveyConfig, row: _Row
+) -> None:
+    """Fill ``row`` from an open reader: its info, a dry-run extraction, the listing."""
+    row.text["open"] = "ok"
+    ai = reader.info
+    row.text["format"] = _format_name(ai.format)
+    row.text["version"] = ai.format_version or ""
+    row.text["solid"] = "yes" if ai.is_solid else ""
+    row.text["encrypted"] = "yes" if ai.is_encrypted else ""
+
+    member_bytes: dict[int, int] = {}  # id(member) -> bytes written
+    total = [0]
+
+    def on_progress(p: archivey.ExtractionProgress) -> None:
+        member_bytes[id(p.member)] = p.member_bytes_written
+        total[0] = p.bytes_written
+
+    report = None
+    try:
+        with tempfile.TemporaryDirectory(prefix="archivey-scan-") as tmp:
+            report = reader.extract_all(
+                Path(tmp) / "out",
+                dry_run=True,
+                on_error="continue",
+                on_progress=on_progress,
             )
-            if any(m.type is MemberType.OTHER for m in members):
-                row.flag("device_or_fifo")
-        _read_usage(reader, row)
-        for code, count in reader.diagnostics.counts.items():
-            row.diagnostics[code.value] += count
+    except Exception as exc:  # noqa: BLE001
+        row.failure("extract", exc)
+    row.numbers["bytes_written"] = total[0]
 
-        if report is not None:
-            _read_report(report, members, member_bytes, config, row)
+    listed = reader.members_report_if_available()
+    members = listed.members if listed is not None else ()
+    if listed is not None:
+        row.numbers["members"] = len(members)
+        row.text["codecs"] = " ".join(
+            sorted(
+                {
+                    "+".join(c.algo.value for c in m.compression)
+                    for m in members
+                    if m.compression
+                }
+            )
+        )
+        if any(m.type is MemberType.OTHER for m in members):
+            row.flag("device_or_fifo")
+    for code, count in reader.diagnostics.counts.items():
+        row.diagnostics[code.value] += count
+
+    if report is not None:
+        _read_report(report, members, member_bytes, config, row)
 
 
 def _read_usage(reader: archivey.ArchiveReader, row: _Row) -> None:
-    """Copy the reader's private resource-usage record into the row."""
-    snapshot = getattr(reader, "_resource_usage", None)
-    if snapshot is None:
-        USAGE_MISSING[0] = True
+    """Copy the reader's private resource-usage record into the row.
+
+    The record is internal, so a missing method or a renamed field sets
+    ``USAGE_MISSING`` rather than failing the row.
+    """
+    global USAGE_MISSING
+    try:
+        usage = reader._resource_usage()
+        numbers = {
+            "decoder_memory": usage.decoder_memory,
+            "kdf_rounds": usage.key_derivation_rounds,
+            "spool_bytes": usage.spool_bytes,
+        }
+        metadata_bytes = usage.listing_metadata_bytes
+        what = usage.decoder_memory_what
+    except AttributeError:
+        USAGE_MISSING = True
         return
-    usage = snapshot()
-    for column, value in (
-        ("decoder_memory", usage.decoder_memory),
-        ("kdf_rounds", usage.key_derivation_rounds),
-        ("spool_bytes", usage.spool_bytes),
-        ("metadata_bytes", usage.listing_metadata_bytes),
-    ):
+    for column, value in numbers.items():
         if value:
             row.numbers[column] = value
-    if usage.decoder_memory_what:
+    # Unconditional, as before the record: an archive that listed nothing counts 0.
+    row.numbers["metadata_bytes"] = metadata_bytes
+    if what:
         row.log.append(
-            f"largest decoder allocation: {usage.decoder_memory} bytes, "
-            f"{usage.decoder_memory_what}"
+            f"largest decoder allocation: {numbers['decoder_memory']} bytes, {what}"
         )
 
 
@@ -886,7 +905,7 @@ def main(argv: list[str] | None = None) -> int:
         summary = _summary(rows)
         if skipped:
             summary += f"not read: {len(skipped)} files or directories (see above)\n"
-        if USAGE_MISSING[0]:
+        if USAGE_MISSING:
             summary += "warning: resource usage not recorded (internals changed)\n"
         log.write(summary)
     print(f"\n{summary}\nwrote {args.output} and {log_path}", file=sys.stderr)

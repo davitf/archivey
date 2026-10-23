@@ -26,6 +26,7 @@ from archivey.internal.config import check_decoder_memory
 from archivey.internal.resource_usage import ResourceUsageRecorder
 from archivey.internal.spool import SpoolBudget
 from tests.conftest import requires
+from tests.streams_util import make_lzip_member
 
 _FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -93,12 +94,26 @@ def test_a_detection_probe_is_not_counted() -> None:
     # Detection reads bytes 1-4 of an unplaced file as an LZMA Alone dictionary size;
     # bare zlib read that way declares gigabytes, which is not the archive's.
     data = zlib.compress(b"blob 12\x00hello world\n" * 50)
-    with archivey.open_archive(
-        io.BytesIO(data), config=ArchiveyConfig(always_probe_content=True)
-    ) as reader:
+    config = ArchiveyConfig(always_probe_content=True)
+    # The precondition: a content probe placed the file, so the probe ran.
+    detected = archivey.detect_format(io.BytesIO(data), config=config)
+    assert detected.format == ArchiveFormat.ZLIB
+    assert detected.detected_by == "content_probe"
+    with archivey.open_archive(io.BytesIO(data), config=config) as reader:
         reader.read(reader.members()[0])
         usage = reader._resource_usage()
     assert usage.decoder_memory == 0
+
+
+def test_a_real_declaration_on_the_same_path_is_counted() -> None:
+    # The non-zero control for the test above: the same reader shape over an lzip
+    # member records the 1 MiB dictionary its header declares.
+    data = make_lzip_member(b"a" * 100_000, 20)
+    config = ArchiveyConfig(always_probe_content=True)
+    with archivey.open_archive(io.BytesIO(data), config=config) as reader:
+        reader.read(reader.members()[0])
+        usage = reader._resource_usage()
+    assert usage.decoder_memory == 1 << 20
 
 
 def _spool(limit: int | None) -> SpoolBudget:
