@@ -108,14 +108,14 @@ uv sync --group dev --extra all && uv run --no-sync pytest -n auto
 # 2. Minimum supported versions — every declared dependency pinned to its floor
 #    (`pycdlib 1.22`, `backports.zstd 1.0`, …), so version-specific library bugs in the
 #    supported range surface. --no-sync keeps the lowest resolution for the test run.
-uv sync --group dev --extra all --resolution lowest-direct && uv run --no-sync pytest -n auto
+uv sync --group dev --extra all --resolution lowest-direct && uv run --no-sync pytest -n auto --no-cov
 
 # 3. Zero-dependency core — no extras, no dev group; proves tests needing an optional
 #    library skip/xfail cleanly (see the `requires` helper in tests/conftest.py) and the
 #    core imports nothing third-party.
 uv sync --no-dev && uv run --no-sync python tests/check_zero_dep_core.py \
   && uv run --no-sync --with pytest --with pytest-timeout --with pytest-cov --with pytest-xdist \
-     pytest tests/ -q -n auto
+     pytest tests/ -q -n auto --no-cov
 ```
 
 These mirror CI's `[all]`, `[all-lowest]`, and `[core-only]` legs; all three must stay
