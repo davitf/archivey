@@ -2466,3 +2466,38 @@ def test_name_patterns_do_not_accept_trailing_newline(
     # the name, so the pattern must not see a part marker or suffix behind it.
     assert accepts(name)
     assert not accepts(name + "\n")
+
+
+@pytest.mark.parametrize(
+    ("accepts", "name", "lookalike"),
+    [
+        (_has_volume_scheme, "a.7z.001", "a.7z.\u0660\u0660\u0661"),
+        (_has_volume_scheme, "a.zip.001", "a.z\u0131p.001"),
+        (_has_volume_scheme, "a.part1.rar", "a.part\u0661.rar"),
+        (_has_volume_scheme, "a.part1.sfx", "a.part1.\u017ffx"),
+        (is_zip_split_segment_name, "a.z01", "a.z\u0660\u0661"),
+        (is_zip_split_segment_name, "a.zip.001", "a.zip.\u0660\u0660\u0661"),
+        (is_zip_split_segment_name, "a.zip.001", "a.z\u0130p.001"),
+        (_strips_7z_suffix, "a.7z.001", "a.7z.\u0660\u0660\u0661"),
+        (_strips_7z_suffix, "a.7z.0000001", "a.7z.000000\u0661"),
+    ],
+    ids=[
+        "numbered-digit",
+        "numbered-letter",
+        "rar-part-digit",
+        "rar-part-letter",
+        "zip-zNN-digit",
+        "zip-NNN-digit",
+        "zip-NNN-letter",
+        "7z-stem-digit",
+        "7z-stem-wide",
+    ],
+)
+def test_name_patterns_are_ascii_only(
+    accepts: Callable[[str], bool], name: str, lookalike: str
+) -> None:
+    # On a ``str`` pattern ``\d`` matches any Unicode digit and ``re.IGNORECASE``
+    # folds dotless ``\u0131``, dotted ``\u0130`` and long ``\u017f`` into ASCII
+    # letters. Volume and suffix markers are ASCII, so lookalikes must not match.
+    assert accepts(name)
+    assert not accepts(lookalike)
