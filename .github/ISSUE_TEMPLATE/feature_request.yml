@@ -5,10 +5,10 @@ body:
   - type: markdown
     attributes:
       value: |
-        First read [dev-docs/IDEAS.md](https://github.com/davitf/archivey/blob/main/dev-docs/IDEAS.md).
+        First read [dev-docs/IDEAS.md](https://github.com/archivey-dev/archivey/blob/main/dev-docs/IDEAS.md).
         It lists the ideas we know of and the status of each. If your request is there,
         name the idea and say what you need from it. Items we decided to leave out are in
-        [openspec/project.md](https://github.com/davitf/archivey/blob/main/openspec/project.md),
+        [openspec/project.md](https://github.com/archivey-dev/archivey/blob/main/openspec/project.md),
         section "Deferred / out of scope (v1)".
   - type: textarea
     id: problem

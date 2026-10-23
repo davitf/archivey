@@ -42,7 +42,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ROOT_PYPROJECT = ROOT / "pyproject.toml"
 CLI_PYPROJECT = ROOT / "packages" / "archivey-cli" / "pyproject.toml"
 CHANGELOG = ROOT / "CHANGELOG.md"
-REPO_URL = "https://github.com/davitf/archivey"
+REPO_URL = "https://github.com/archivey-dev/archivey"
 
 #: The versions this script writes: a final release, a pre-release, or a ``.devN``.
 VERSION_RE = re.compile(r"^\d+\.\d+\.\d+((a|b|rc)\d+)?(\.dev\d+)?$")

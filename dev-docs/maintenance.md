@@ -19,8 +19,9 @@ those use the AI plan's quota.
 | --- | --- | --- | --- |
 | `review-loop.yml` | each time the `review` label is added | **yes**, one Opus session per round: up to 5 rounds an agent can ask for, 8 if a person keeps adding the label ([Review loop](review-loop.md)) | the review itself failed to post; re-add the label once |
 | `claude.yml` | an `@claude` mention by a person on an issue or PR | **yes**, one session per mention | nothing, unless you asked for something |
-| `ci.yml` | each PR push (except documentation-only PRs) and each push to `main` | no | see [CI is red](#ci-is-red-on-main-or-on-a-pr) |
-| `docs-checks.yml` | each PR and each push to `main` | no | a docs build or OpenSpec gate broke |
+| `ci.yml` | each PR push (except documentation-only PRs), each merge-queue group and each push to `main`; its `CI gate` job is the queue's required check | no | see [CI is red](#ci-is-red-on-main-or-on-a-pr) |
+| `docs-checks.yml` | each PR, each merge-queue group and each push to `main` | no | a docs build or OpenSpec gate broke |
+| `pr-gate.yml` | each PR | no | never red: it reports `CI gate` as passed so any PR can join the merge queue, where the real `CI gate` in `ci.yml` runs |
 | `docs-deploy.yml` | each push to `main` | no | the Pages deploy failed; the site keeps the previous version |
 | `ppmd-native-stress.yml` | weekly (Wednesday 05:29 UTC), on demand, and on PRs that change the PPMd code, its child process, its tests or the dependency pins | no | not a required check; see [Known issues](known-issues.md), pyppmd sections |
 | `atheris-fuzz.yml` | each PR except documentation-only PRs (short), nightly when `main` moved in the last 3 days | no | a fuzz target found an input; see [A fuzz job found a crash](#a-fuzz-job-found-a-crash); it also holds a release until it is green on the release PR ([release gate](release-checklist.md#6-version-bump-and-tag)) |
@@ -50,7 +51,7 @@ whoever asks. Then read the diff yourself.
      [A dependency broke](#a-dependency-broke-or-stopped-shipping-wheels).
    - **The `3.15` prerelease leg or `3.15t`** (allowed to fail). Read it, but it blocks
      nothing; see [A new CPython](#a-new-cpython-release).
-3. For an agent: "CI failed on PR N in davitf/archivey. Read the failed job log, decide
+3. For an agent: "CI failed on PR N in archivey-dev/archivey. Read the failed job log, decide
    whether the PR caused it, and fix it or say why not. Follow `.claude/skills/steward`."
 
 ## A fuzz job found a crash
@@ -179,7 +180,7 @@ limit.
 2. For a bug, ask for what the bug-report form asks for if it is missing (version,
    `archivey info`, Python, OS, the archive or how to make it). Without a file that
    reproduces it, most archive bugs cannot be fixed.
-3. For a bug with a file: "Reproduce GitHub issue N in davitf/archivey, add the archive
+3. For a bug with a file: "Reproduce GitHub issue N in archivey-dev/archivey, add the archive
    (or a generated equivalent) as a test fixture, and fix it in a draft PR." Follow
    `.claude/skills/address-linear-issue` for the shape of the work.
 4. For a feature request, point at [`IDEAS.md`](IDEAS.md). If it is already there, add
