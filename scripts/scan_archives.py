@@ -60,9 +60,11 @@ hardlink never falls back to a copy: ``bytes_written`` is a floor for
 
 **Resource columns.** ``decoder_memory``, ``kdf_rounds``, ``spool_bytes`` and
 ``metadata_bytes`` come from the reader's private resource-usage record
-(``reader._resource_usage()``), read once the dry run is over. It is internal, so the
-script checks it is there and prints ``warning: resource usage not recorded`` rather
-than leaving the columns silently empty. ``decoder_memory`` is the largest allocation
+(``reader._resource_usage()``). The three peaks are read when the reader closes, even
+if the scan raised, since a failing archive is a row they are for; ``metadata_bytes``
+is written once the listing was reached, so a row that never listed leaves it empty.
+The record is internal, so the script checks it is there and prints ``warning:
+resource usage not recorded`` rather than leaving the columns silently empty. ``decoder_memory`` is the largest allocation
 an archive *declared* that archivey checks itself; xz, LZMA Alone and zstd hand the
 limit to liblzma / libzstd and are not counted, and neither is a size a detection
 probe checks. A file the reader could not open has no record, so its row leaves these
@@ -86,7 +88,7 @@ from collections import Counter
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import archivey
 from archivey import (
@@ -399,6 +401,10 @@ def _scan_open_reader(
         )
         if any(m.type is MemberType.OTHER for m in members):
             row.flag("device_or_fifo")
+    # Once the listing was reached, an archive that listed nothing counts 0.
+    usage = _usage(reader)
+    if usage is not None:
+        row.numbers["metadata_bytes"] = usage.listing_metadata_bytes
     for code, count in reader.diagnostics.counts.items():
         row.diagnostics[code.value] += count
 
@@ -406,8 +412,16 @@ def _scan_open_reader(
         _read_report(report, members, member_bytes, config, row)
 
 
-def _read_usage(reader: archivey.ArchiveReader, row: _Row) -> None:
-    """Copy the reader's private resource-usage record into the row.
+class _Usage(NamedTuple):
+    decoder_memory: int
+    decoder_memory_what: str
+    key_derivation_rounds: int
+    spool_bytes: int
+    listing_metadata_bytes: int
+
+
+def _usage(reader: archivey.ArchiveReader) -> _Usage | None:
+    """The reader's private resource-usage record, or ``None`` when it changed shape.
 
     The record is internal, so a missing method or a renamed field sets
     ``USAGE_MISSING`` rather than failing the row.
@@ -415,24 +429,34 @@ def _read_usage(reader: archivey.ArchiveReader, row: _Row) -> None:
     global USAGE_MISSING
     try:
         usage = reader._resource_usage()
-        numbers = {
-            "decoder_memory": usage.decoder_memory,
-            "kdf_rounds": usage.key_derivation_rounds,
-            "spool_bytes": usage.spool_bytes,
-        }
-        metadata_bytes = usage.listing_metadata_bytes
-        what = usage.decoder_memory_what
+        return _Usage(
+            usage.decoder_memory,
+            usage.decoder_memory_what,
+            usage.key_derivation_rounds,
+            usage.spool_bytes,
+            usage.listing_metadata_bytes,
+        )
     except AttributeError:
         USAGE_MISSING = True
+        return None
+
+
+def _read_usage(reader: archivey.ArchiveReader, row: _Row) -> None:
+    """Copy the record's three peaks into the row (``metadata_bytes`` is elsewhere)."""
+    usage = _usage(reader)
+    if usage is None:
         return
-    for column, value in numbers.items():
+    for column, value in (
+        ("decoder_memory", usage.decoder_memory),
+        ("kdf_rounds", usage.key_derivation_rounds),
+        ("spool_bytes", usage.spool_bytes),
+    ):
         if value:
             row.numbers[column] = value
-    # Unconditional, as before the record: an archive that listed nothing counts 0.
-    row.numbers["metadata_bytes"] = metadata_bytes
+    what = usage.decoder_memory_what
     if what:
         row.log.append(
-            f"largest decoder allocation: {numbers['decoder_memory']} bytes, {what}"
+            f"largest decoder allocation: {usage.decoder_memory} bytes, {what}"
         )
 
 

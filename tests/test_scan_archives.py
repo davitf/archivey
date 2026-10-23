@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 import archivey
+from archivey.internal.base_reader import BaseArchiveReader
 from tests.streams_util import make_lzip_member
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -550,3 +551,51 @@ def test_row_round_trips_through_the_csv() -> None:
     record = {k: "" if v is None else str(v) for k, v in row.csv_row().items()}
     back = scan._Row.from_csv(record)
     assert scan._summary([back]) == scan._summary([row])
+
+
+def test_a_changed_usage_record_warns_and_keeps_the_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The record is internal: a renamed field must set the summary warning, not turn
+    # the row into a ``scan`` failure that hides its open and extract results.
+    class _Renamed:
+        decoder_memory = 0
+
+    monkeypatch.setattr(scan, "USAGE_MISSING", False)
+    monkeypatch.setattr(BaseArchiveReader, "_resource_usage", lambda self: _Renamed())
+    row = scan.scan_one(FIXTURE, scan._scan_config(False))
+    assert row is not None
+    out = row.csv_row()
+    assert out["open"] == "ok"
+    assert out["extract"] == "ok"
+    assert out.get("metadata_bytes", "") == ""
+    assert scan.USAGE_MISSING
+    summary_line = "warning: resource usage not recorded"
+    logger = logging.getLogger("archivey")
+    monkeypatch.setattr(logger, "handlers", list(logger.handlers))
+    monkeypatch.setattr(logger, "propagate", logger.propagate)
+    csv_out = tmp_path / "scan.csv"
+    assert scan.main([str(FIXTURE.parent), "-o", str(csv_out)]) == 0
+    assert summary_line in csv_out.with_suffix(".log").read_text(encoding="utf-8")
+
+
+def test_the_peaks_are_read_when_the_scan_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The usage record is read in a ``finally``: a reader that opened and then raised
+    # still reports its peaks, and a row that never listed has no metadata_bytes.
+    def fail(reader: object, config: object, row: object) -> None:
+        raise RuntimeError("raised after the open")
+
+    monkeypatch.setattr(scan, "_scan_open_reader", fail)
+    calls: list[object] = []
+    real = scan._read_usage
+    monkeypatch.setattr(
+        scan,
+        "_read_usage",
+        lambda reader, row: (calls.append(reader), real(reader, row)),
+    )
+    row = scan.scan_one(FIXTURE, scan._scan_config(False))
+    assert row is not None
+    assert len(calls) == 1
+    assert "metadata_bytes" not in row.numbers
