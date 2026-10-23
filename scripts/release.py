@@ -54,6 +54,7 @@ NEEDS_MINOR_LABEL = "needs-minor"
 #: The versions this script writes: a final release, a pre-release, or a ``.devN``.
 VERSION_RE = re.compile(r"^\d+\.\d+\.\d+((a|b|rc)\d+)?(\.dev\d+)?$")
 _FINAL_TAG_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
+_PRE_TAG_RE = re.compile(r"^v(\d+\.\d+\.\d+)(?:a|b|rc)\d+$")
 _PROJECT_VERSION_RE = re.compile(r'^(version = ")([^"]+)(")$', re.MULTILINE)
 _PIN_RE = re.compile(r'("archivey\[recommended\]==)([^"]+)(")')
 _UNRELEASED_RE = re.compile(r"^## \[Unreleased\][^\n]*\n", re.MULTILINE)
@@ -146,12 +147,43 @@ def next_release_version(previous_tag: str | None, needs_minor: bool) -> str:
 
 def _pre_release_floor(tag: str | None) -> str | None:
     """``X.Y.Z`` when ``tag`` is a pre-release ``vX.Y.Z(a|b|rc)N``; otherwise None."""
-    match = re.match(r"^v(\d+\.\d+\.\d+)(?:a|b|rc)\d+$", tag or "")
+    match = _PRE_TAG_RE.match(tag or "")
     return match.group(1) if match else None
 
 
 def _version_key(version: str) -> tuple[int, ...]:
     return tuple(int(part) for part in version.split("."))
+
+
+def next_release_line(
+    final: str, newest: str | None, verdict: str, labelled: list[str] | str
+) -> str:
+    """The last line of ``notes``: the next version, whether it is a patch, and why.
+
+    ``final`` is the last final tag the API was measured from, ``newest`` the newest tag
+    of any kind, ``verdict`` the API report's ``minor``/``patch``/``none``, and
+    ``labelled`` the ``needs-minor`` pull requests or why they could not be listed.
+    The version is decided once (the bucket, then a published pre-release as a floor),
+    and the sentence says whatever decided it.
+    """
+    reasons = []
+    if verdict == "minor":
+        reasons.append("the public API changed")
+    if isinstance(labelled, list) and labelled:
+        reasons.append(f"{len(labelled)} merged pull request(s) are labelled")
+    version = next_release_version(final, bool(reasons))
+    floor = _pre_release_floor(newest)
+    if floor is not None and _version_key(floor) > _version_key(version):
+        version = floor
+        reasons.append(f"{newest} is already out")
+    if (
+        _version_key(version)[:2]
+        != _version_key(next_release_version(final, False))[:2]
+    ):
+        return f"This is a minor release, {version}: {'; '.join(reasons)}."
+    if isinstance(labelled, str):
+        return f"The API allows a patch release, {version}; check the labels by hand."
+    return f"This can be a patch release: {version}."
 
 
 def _link_section_start(text: str) -> int:
@@ -479,20 +511,7 @@ def cmd_notes(_args: argparse.Namespace) -> None:
     elif labelled:
         print(f"\nMerged pull requests labelled `{NEEDS_MINOR_LABEL}`:")
         print("\n".join(f"- {pr}" for pr in labelled))
-    needs_minor = verdict == "minor" or (isinstance(labelled, list) and bool(labelled))
-    version = next_release_version(final, needs_minor)
-    floor = _pre_release_floor(previous)
-    if floor is not None and _version_key(floor) > _version_key(version):
-        print(f"\n{previous} is already out, so the next release is at least {floor}.")
-        version = floor
-    if needs_minor:
-        print(f"\nThis needs a minor release: {version}.")
-    elif isinstance(labelled, str):
-        print(
-            f"\nThe API allows a patch release ({version}); check the labels by hand."
-        )
-    else:
-        print(f"\nThis can be a patch release: {version}.")
+    print("\n" + next_release_line(final, previous, verdict, labelled))
 
 
 def cmd_start(args: argparse.Namespace) -> None:

@@ -4,9 +4,9 @@
 The surface is what the stability policy (``docs/how-it-is-built.md`` §Versioning and
 stability) promises: the list of public submodules, every name ``archivey`` and those
 submodules export, with its signature, fields, properties and enum values, and the
-``archivey`` command's verbs, options and exit codes. ``dev-docs/api-surface.txt`` holds it, and
-``tests/test_api_surface.py`` fails when that file is stale, so a pull request that
-changes the API shows the change in its diff.
+``archivey`` command's verbs, options and exit codes. ``dev-docs/api-surface.txt``
+holds it, and ``tests/test_api_surface.py`` fails when that file is stale, so a pull
+request that changes the API shows the change in its diff.
 
 ``release.py notes`` compares the surface at the last tag with this checkout's and
 says whether the release can be a patch: see :func:`classify`.
@@ -17,6 +17,7 @@ Usage::
     python scripts/api_surface.py --check     # exit 1 if the file is stale
     python scripts/api_surface.py --src DIR   # print the surface of DIR/archivey
     python scripts/api_surface.py --compare-to OLD   # what changed since OLD's surface
+    python scripts/api_surface.py --modules-from FILE  # FILE's list of public modules
 
 Stdlib only.
 """

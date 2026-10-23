@@ -11,6 +11,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "api_surface.py"
 
@@ -126,3 +128,34 @@ def test_surface_lists_the_public_modules() -> None:
 def test_cli_lines_say_how_an_option_is_read() -> None:
     lines = api_surface.parse(api_surface.SURFACE_FILE.read_text(encoding="utf-8"))
     assert "cli-arg cat patterns [action=Store nargs='*']" in lines
+
+
+def test_modules_from_reports_a_newly_public_module(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # An older tree whose surface file did not list archivey.terminal yet: measured with
+    # that list, the module and its names show as added.
+    full = api_surface.PUBLIC_MODULES
+    monkeypatch.setattr(api_surface, "PUBLIC_MODULES", full)  # main() reassigns it
+    old_list = tmp_path / "old-surface.txt"
+    old_list.write_text(
+        "".join(
+            f"module {name}\n"
+            for name in api_surface.PUBLIC_MODULES
+            if name != "archivey.terminal"
+        ),
+        encoding="utf-8",
+    )
+    old_surface = tmp_path / "old.txt"
+    assert api_surface.main(["--modules-from", str(old_list)]) == 0
+    old_surface.write_text(capsys.readouterr().out, encoding="utf-8")
+    assert "archivey.terminal" not in old_surface.read_text(encoding="utf-8")
+
+    monkeypatch.setattr(api_surface, "PUBLIC_MODULES", full)
+    lines = api_surface.surface_lines()
+    minor, patch = api_surface.classify(
+        api_surface.parse(old_surface.read_text(encoding="utf-8")), lines
+    )
+    assert "+ module archivey.terminal" in minor
+    assert any(line.startswith("+ function archivey.terminal.") for line in minor)
+    assert patch == []

@@ -608,15 +608,9 @@ def test_notes_never_suggests_a_version_behind_a_published_pre_release(
 ) -> None:
     out = _notes(monkeypatch, capsys, newest="v0.3.0rc1", final="v0.2.0")
     assert "Public API since v0.2.0" in out
-    assert out.rstrip().endswith("0.3.0.")
-    assert "0.2.1" not in out
-
-
-def test_notes_after_a_patch_level_pre_release_with_a_minor_change(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    out = _notes(monkeypatch, capsys, "v0.2.1rc1", "v0.2.0", verdict="minor")
-    assert out.rstrip().endswith("This needs a minor release: 0.3.0.")
+    assert out.rstrip().endswith(
+        "This is a minor release, 0.3.0: v0.3.0rc1 is already out."
+    )
 
 
 def test_notes_says_why_it_stops_without_a_final_release(
@@ -624,3 +618,52 @@ def test_notes_says_why_it_stops_without_a_final_release(
 ) -> None:
     out = _notes(monkeypatch, capsys, newest="v0.2.0rc1", final=None)
     assert "No final release yet" in out
+
+
+@pytest.mark.parametrize(
+    ("newest", "verdict", "labelled", "expected"),
+    [
+        ("v0.2.0", "none", [], "This can be a patch release: 0.2.1."),
+        ("v0.2.0", "patch", [], "This can be a patch release: 0.2.1."),
+        (
+            "v0.2.0",
+            "none",
+            "label missing",
+            "The API allows a patch release, 0.2.1; check the labels by hand.",
+        ),
+        (
+            "v0.2.0",
+            "minor",
+            [],
+            "This is a minor release, 0.3.0: the public API changed.",
+        ),
+        (
+            "v0.2.0",
+            "none",
+            ["#7 Refuse more names"],
+            "This is a minor release, 0.3.0: 1 merged pull request(s) are labelled.",
+        ),
+        (
+            "v0.3.0rc1",
+            "none",
+            "label missing",
+            "This is a minor release, 0.3.0: v0.3.0rc1 is already out.",
+        ),
+        (
+            "v0.2.1rc1",
+            "none",
+            [],
+            "This can be a patch release: 0.2.1.",
+        ),
+        (
+            "v0.2.1rc1",
+            "minor",
+            [],
+            "This is a minor release, 0.3.0: the public API changed.",
+        ),
+    ],
+)
+def test_next_release_line(
+    newest: str, verdict: str, labelled: list[str] | str, expected: str
+) -> None:
+    assert release.next_release_line("v0.2.0", newest, verdict, labelled) == expected
