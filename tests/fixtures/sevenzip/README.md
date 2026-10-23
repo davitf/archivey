@@ -57,3 +57,14 @@ that form too, written the same way:
 ```sh
 7zz a -mhc=off -mtm=off -mtc=off -mta=off -m0=RISCV -m1=LZMA2 riscv_special_lzma2.7z code.bin
 ```
+
+`solid_three_members.7z` holds `a.txt`, `b.txt` and `c.txt`, each its own name repeated ten
+times (50 bytes), in one LZMA2 folder, written by py7zr 1.1.4. Used by
+`tests/test_solid_open_log.py`, which runs on core-only and free-threaded legs where py7zr
+is not installed.
+
+```python
+with py7zr.SevenZipFile("solid_three_members.7z", "w") as z:
+    for name in ("a.txt", "b.txt", "c.txt"):
+        z.writestr((name * 10).encode(), name)
+```
