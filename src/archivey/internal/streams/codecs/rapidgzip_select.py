@@ -369,8 +369,8 @@ def _translate_child_or_stdlib(
     ``stdlib`` for an ``AUTO`` open whose child could not start and so decodes with the
     stdlib (:func:`_open_rapidgzip`) after this translator was chosen.
 
-    An exception from the caller's own source, which the child's reads were served from,
-    is neither: it reaches the caller unchanged.
+    An exception from the caller's own source (``from_callers_source``) is neither: it
+    reaches the caller unchanged.
     """
     if from_callers_source(exc):
         return None

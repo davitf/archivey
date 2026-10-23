@@ -27,8 +27,12 @@ Parent to child:
   is the parent's stream, read through ``SRC_*`` frames (below), and nothing follows
   the limit. Argument 2: the rest of the payload is ``OPEN_RANGE_ARGS`` (a file
   descriptor the parent passed to this process, a start offset and a length), and the
-  source is that byte range of the file, read with ``os.pread`` (``_FileRange``). A ZIP
-  member in an archive on disk is one: its compressed bytes then never cross a pipe.
+  source is that byte range of the file, read with ``os.pread`` (``_FileRange``). The
+  parent sends it for a stream that is a byte range of a regular file
+  (``file_region``): mainly a ZIP member in an archive on disk, and also a ``.gz`` or
+  ``.bz2`` opened from the caller's ``open(path, "rb")``. The compressed bytes then
+  never cross a pipe. A ``.tar.gz`` does not qualify: it is read through detection's
+  peek reader (``_BoundedPeekReader``), which ends the walk.
 - ``READ`` (argument: at most this many bytes), ``SEEK`` (argument: offset; payload: one
   byte, ``whence``), ``RESUME`` (argument: a decompressed offset; the reply's argument is
   the largest index point at or before it, or -1), ``POINTS`` (argument: a

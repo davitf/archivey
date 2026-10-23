@@ -688,16 +688,23 @@ def run_cases(
     _m_wall, (bdec, seeks, unpacked) = timed_with_optional_warmup(
         lambda: _op_read_all(fixtures.zip_path, config=cfg_zip_off)
     )
+    # Wall time unmeasured, as for the ON row below, so the pair compares.
+    wall, _ = timed_with_optional_warmup(
+        lambda: _op_read_all_unmeasured(fixtures.zip_path, config=cfg_zip_off)
+    )
     results.append(
         CaseResult(
             "zip_read_all_accel_off",
             "zip",
             "read_all",
-            _m_wall,
+            wall,
             bdec,
             seeks,
             unpacked_bytes=unpacked,
-            notes="stdlib deflate codec; accelerators forced OFF",
+            notes=(
+                "stdlib deflate codec; accelerators forced OFF; counts from the "
+                "measured route, wall time from the unmeasured one"
+            ),
         )
     )
     if has_accel:
@@ -729,7 +736,8 @@ def run_cases(
                     "rapidgzip accelerator ON for in-ZIP deflate ([seekable]); count "
                     "depends on the rapidgzip version, so the gate checks only ON > OFF; "
                     "counts are from the measured route (child reads through the "
-                    "parent), wall time from the unmeasured one (child reads the file)"
+                    "parent), wall time from the unmeasured one (on POSIX, the child "
+                    "reads the file)"
                 ),
             )
         )
