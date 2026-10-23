@@ -194,6 +194,12 @@ handle them as they happen instead, pass a function as `on_diagnostic=` in
 it's recorded, the same record the summaries keep. An exception it raises stops the operation and
 reaches your code.
 
+One code is logged at INFO rather than as a warning: `STREAM_REWIND_REDECOMPRESSES`, which
+reports how your code reads a compressed stream (seeking back), not a problem with the archive.
+`logging.basicConfig()` and the `archivey` command without `-v` show only warnings, so it prints
+nothing there. It is still counted in `reader.diagnostics`, passed to `on_diagnostic`, and raised
+by a policy that names it. To see its log line, set the `archivey` logger to INFO.
+
 ## Raising or quieting a diagnostic
 
 ```python

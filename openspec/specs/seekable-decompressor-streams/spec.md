@@ -32,7 +32,7 @@ configuration against declared seek demand, not the `streaming` access-mode
 proxy. For declared-seekable streams, native XZ/lzip indexes, rapidgzip-backed
 gzip/bzip2 indexes, and stdlib fallback rewinds retain their contracts. The
 stdlib O(n)-per-rewind path MAY serve the seek but MUST emit the documented
-slow-rewind diagnostic/warning.
+slow-rewind diagnostic (`STREAM_REWIND_REDECOMPRESSES`).
 
 Under `AUTO`, the system SHALL additionally require the known compressed input size to reach a
 documented minimum threshold before selecting rapidgzip for any DEFLATE-family stream (deflate,
