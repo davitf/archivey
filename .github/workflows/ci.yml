@@ -590,11 +590,13 @@ jobs:
       # it is an ini option in pyproject.toml, which `-o addopts=` does not touch. This
       # job hung outright four times on 2026-09-21 with the timeout armed and never
       # fired, which is why that method is set at all.
+      # `-n auto` as in the other legs: run single-process, this job was the slowest in
+      # the workflow (two full suites, about 15 minutes).
       - name: Run full suite (core-only)
         run: >
           uv run --python ${{ matrix.python }} --no-sync
-          --with pytest --with pytest-timeout
-          pytest tests/ -q --timeout=120 -o addopts=
+          --with pytest --with pytest-timeout --with pytest-xdist
+          pytest tests/ -q -n auto --timeout=120 -o addopts=
 
       - name: Sync GIL-safe extras
         # [free-threaded] IS this list, so the job now installs the documented extra
@@ -609,8 +611,8 @@ jobs:
       - name: Run full suite + concurrent_reader (GIL-safe extras)
         run: >
           uv run --python ${{ matrix.python }} --no-sync
-          --with pytest --with pytest-timeout
-          pytest tests/ -q --timeout=120 -o addopts=
+          --with pytest --with pytest-timeout --with pytest-xdist
+          pytest tests/ -q -n auto --timeout=120 -o addopts=
       - name: Assert the GIL-re-enabling packages stay unimported
         # pyppmd, inflate64, brotli and rapidgzip re-enable the GIL when imported, so
         # archivey imports each one only when a stream needs it. With all four installed,
