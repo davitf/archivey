@@ -28,7 +28,7 @@ LINKED = [
 # The same pattern as scripts/check_docs_nav.py: `tree/` for directories, and a path
 # quoted in YAML does not keep its closing quote.
 _REPO_LINK = re.compile(
-    r"https://github\.com/davitf/archivey/(?:blob|tree)/main/([^)\s\"'#]+)"
+    r"https://github\.com/archivey-dev/archivey/(?:blob|tree)/main/([^)\s\"'#]+)"
 )
 
 
