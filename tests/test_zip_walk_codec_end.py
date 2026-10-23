@@ -193,7 +193,7 @@ def _params(method: int, data: MemberData) -> CodecParams:
     return CodecParams()
 
 
-def _codec(method: int):  # noqa: ANN202 - test helper
+def _codec(method: int):
     from archivey.internal.backends.zip_reader import _ZIP_METHOD_CODECS
 
     return _ZIP_METHOD_CODECS[method]

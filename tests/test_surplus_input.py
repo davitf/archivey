@@ -219,9 +219,7 @@ def test_zip_lzma_without_marker_and_a_cut_size_is_corrupt(
 
 # --- ZIP PPMd8 (method 98) ----------------------------------------------------------------
 
-_PPMD_IN_A_CHILD = ArchiveyConfig(
-    decoder_limits=DecoderLimits(max_ppmd_in_process_input=16)
-)
+_PPMD_IN_A_CHILD = ArchiveyConfig(decoder_limits=DecoderLimits(max_ppmd_held_input=16))
 _PPMD_WHERE = [
     pytest.param({}, id="in-process"),
     pytest.param({"config": _PPMD_IN_A_CHILD}, id="child"),

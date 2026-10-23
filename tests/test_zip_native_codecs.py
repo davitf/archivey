@@ -560,10 +560,10 @@ def test_zip_input_after_the_stream_is_corrupt_under_the_accelerator(
 def test_zip_ppmd_input_after_the_end_mark_is_corrupt_in_a_child_process(
     tmp_path: Path, tail: bytes
 ) -> None:
-    # A member past max_ppmd_in_process_input decodes in a child process, which
+    # A member past max_ppmd_held_input decodes in a child process, which
     # reports the decoder's unused input the same way.
     archive = _7z_zip(tmp_path, "PPMd", _PAYLOAD)
-    config = ArchiveyConfig(decoder_limits=DecoderLimits(max_ppmd_in_process_input=16))
+    config = ArchiveyConfig(decoder_limits=DecoderLimits(max_ppmd_held_input=16))
     for suffix, raises in ((b"", False), (tail, True)):
         data = _with_tail(archive, 98, suffix)
         with open_archive(io.BytesIO(data), config=config) as ar:
@@ -651,7 +651,7 @@ def test_zip_ppmd_member_without_an_end_mark_is_corrupt(
     enc = pyppmd.Ppmd8Encoder(6, 16 << 20, 0)
     body = _zip_ppmd_header(0) + enc.encode(_PAYLOAD) + enc.flush(False)
     data = _build_minimal_zip(b"p.bin", body, _PAYLOAD, 98)
-    limits = DecoderLimits(max_ppmd_in_process_input=16 if in_child else 1 << 20)
+    limits = DecoderLimits(max_ppmd_held_input=16 if in_child else 1 << 20)
     with open_archive(
         io.BytesIO(data), config=ArchiveyConfig(decoder_limits=limits)
     ) as ar:

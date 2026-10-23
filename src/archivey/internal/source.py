@@ -594,7 +594,8 @@ class ArchiveSource(ReadOnlyIOStream):
         if self._is_directory:
             raise io.UnsupportedOperation(f"{self._path} is a directory, not a stream")
         assert self._open_path is not None
-        handle = open(self._open_path, "rb")
+        # The handle outlives this statement; its owner closes it.
+        handle = open(self._open_path, "rb")  # noqa: SIM115
         self._owned = handle
         self._reader = handle
         # A size that ``stat`` could not answer at construction (the file appeared since,
@@ -862,6 +863,19 @@ class ArchiveSource(ReadOnlyIOStream):
         if self._gatherer is not None or self._joined is not None:
             raise io.UnsupportedOperation("fileno")
         return self._stream().fileno()
+
+    def file_region_inner(self) -> BinaryIO | None:
+        """The stream this source reads with no change to bytes or offsets, or ``None``.
+
+        :func:`~archivey.internal.streams.streamtools.slice.file_region` asks for it, to
+        find the file under a member's view. A seekable source that neither gathers nor
+        joins volumes reads its reader at its own offsets (a rebased one through a
+        :class:`SlicingStream`). ``None`` before the handle opens: nothing is opened to
+        answer.
+        """
+        if not self._seekable or self._gatherer is not None or self._joined is not None:
+            return None
+        return self._reader
 
     def rebase_to_current_position(self) -> None:
         """Make the current position this source's offset 0.

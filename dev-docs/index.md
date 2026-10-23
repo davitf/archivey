@@ -17,6 +17,7 @@ site: everything under `docs/` is for users, and everything here is not.
 | [Writing English](writing-english.md) | Plain-English guidance for repo prose, PR text and comments. Advice, not a gate |
 | [Fuzzing](fuzzing.md) | The Atheris coverage-guided fuzz: CI cadence, local smoke, deepening one target |
 | [`archivey-dev` reference repo](archivey-dev.md) | The v1 codebase v2 ported from: how to clone it and which paths are worth reading |
+| [Maintenance runbook](maintenance.md) | What to do when a scheduled job goes red, a dependency breaks, a new CPython ships, a security report or an issue arrives; which jobs use AI quota |
 | [Release checklist](release-checklist.md) | Every-release loop: CHANGELOG, perf vs prior tag, docs, tag/publish |
 | [Release-repo cutover](release-repo-cutover.md) | One-time rename / PyPI / Pages before the first public tag |
 | [Decision log](decisions/index.md) | Rare repo-wide ADRs; prefer light notes on format/topic handbook pages for new decisions |
