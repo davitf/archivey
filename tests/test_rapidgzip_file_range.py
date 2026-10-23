@@ -390,7 +390,6 @@ def test_a_child_that_failed_on_a_member_is_not_reused(
         assert len(started) == 2
 
 
-@linux_only
 def _resident(size: int) -> mmap.mmap:
     """``size`` bytes that count as resident until closed. A map, not a ``bytearray``:
     the kernel accounts for a map and its unmap at once, whatever Python's allocator

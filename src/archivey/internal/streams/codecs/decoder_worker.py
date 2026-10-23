@@ -324,6 +324,8 @@ def _serve(stdin: IO[bytes], stdout: IO[bytes]) -> None:
 
 
 def main() -> None:
+    import os
+
     rapidgzip = sys.argv[1:2] == [RAPIDGZIP_ARG]
     refs = None
     if rapidgzip and sys.platform.startswith("linux"):
@@ -331,8 +333,6 @@ def main() -> None:
         # makes this process not dumpable: ``/proc/self`` files then belong to root,
         # and a worker that is not root can no longer open this one (measured:
         # EACCES). A descriptor opened before still writes.
-        import os
-
         try:
             refs = os.open("/proc/self/clear_refs", os.O_WRONLY | os.O_CLOEXEC)
         except OSError:
@@ -342,7 +342,6 @@ def main() -> None:
         # Loaded by path: this script's directory is not on sys.path (-P), and
         # importing it through ``archivey`` would import the whole package.
         import importlib.util
-        import os
 
         path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)), "rapidgzip_worker.py"
