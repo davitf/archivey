@@ -2,9 +2,9 @@
 """Write, check or compare the public API surface, one line per item.
 
 The surface is what the stability policy (``docs/how-it-is-built.md`` §Versioning and
-stability) promises: every name ``archivey`` and its public submodules export, with
-its signature, fields, properties and enum values, and the ``archivey`` command's
-verbs, options and exit codes. ``dev-docs/api-surface.txt`` holds it, and
+stability) promises: the list of public submodules, every name ``archivey`` and those
+submodules export, with its signature, fields, properties and enum values, and the
+``archivey`` command's verbs, options and exit codes. ``dev-docs/api-surface.txt`` holds it, and
 ``tests/test_api_surface.py`` fails when that file is stale, so a pull request that
 changes the API shows the change in its diff.
 
@@ -325,11 +325,11 @@ def surface_lines() -> list[str]:
     lines: list[str] = []
     root = importlib.import_module("archivey")
     for module_name in PUBLIC_MODULES:
-        lines.append(f"module {module_name}")
         try:
             module = importlib.import_module(module_name)
         except ModuleNotFoundError:
             continue
+        lines.append(f"module {module_name}")
         for name in sorted(_exported_names(module)):
             if not hasattr(module, name):
                 continue
@@ -422,21 +422,26 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--src", type=Path, help="import archivey from this src directory instead"
     )
+    parser.add_argument(
+        "--modules-from",
+        type=Path,
+        metavar="FILE",
+        help="take the list of public modules from the `module` lines of FILE",
+    )
     args = parser.parse_args(argv)
     global API_PAGE, PUBLIC_MODULES
     if args.src is not None:
         sys.path.insert(0, str(args.src.resolve()))
         API_PAGE = args.src.resolve().parent / "docs" / "api.md"
-        # The measured tree's own list of public modules, when it has the file.
-        old_file = args.src.resolve().parent / "dev-docs" / "api-surface.txt"
-        if old_file.exists():
-            modules = [
-                line.split(" ", 1)[1]
-                for line in parse(old_file.read_text(encoding="utf-8"))
-                if line.startswith("module ")
-            ]
-            if modules:
-                PUBLIC_MODULES = tuple(modules)
+    if args.modules_from is not None:
+        # An older tree's own list of public modules, from its committed surface file.
+        modules = [
+            line.split(" ", 1)[1]
+            for line in parse(args.modules_from.read_text(encoding="utf-8"))
+            if line.startswith("module ")
+        ]
+        if modules:
+            PUBLIC_MODULES = tuple(modules)
     lines = surface_lines()
     text = render(lines)
     if args.compare_to is not None:

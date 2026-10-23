@@ -7,6 +7,7 @@ GitHub release notes. So the edits are pinned here, including on the real files.
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import json
 import subprocess
@@ -584,3 +585,42 @@ def test_labelled_pull_requests_are_listed(monkeypatch: pytest.MonkeyPatch) -> N
         },
     )
     assert release._needs_minor_prs("HEAD") == ["#7 Refuse more names"]
+
+
+def _notes(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    newest: str | None,
+    final: str | None,
+    verdict: str = "none",
+) -> str:
+    monkeypatch.setattr(release, "_git", lambda *args: "")
+    monkeypatch.setattr(release, "_previous_tag", lambda: newest)
+    monkeypatch.setattr(release, "_previous_final_tag", lambda: final)
+    monkeypatch.setattr(release, "_api_change", lambda tag: (verdict, "report"))
+    monkeypatch.setattr(release, "_needs_minor_prs", lambda tag: [])
+    release.cmd_notes(argparse.Namespace())
+    return capsys.readouterr().out
+
+
+def test_notes_never_suggests_a_version_behind_a_published_pre_release(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = _notes(monkeypatch, capsys, newest="v0.3.0rc1", final="v0.2.0")
+    assert "Public API since v0.2.0" in out
+    assert out.rstrip().endswith("0.3.0.")
+    assert "0.2.1" not in out
+
+
+def test_notes_after_a_patch_level_pre_release_with_a_minor_change(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = _notes(monkeypatch, capsys, "v0.2.1rc1", "v0.2.0", verdict="minor")
+    assert out.rstrip().endswith("This needs a minor release: 0.3.0.")
+
+
+def test_notes_says_why_it_stops_without_a_final_release(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = _notes(monkeypatch, capsys, newest="v0.2.0rc1", final=None)
+    assert "No final release yet" in out

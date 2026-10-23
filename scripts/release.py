@@ -144,6 +144,16 @@ def next_release_version(previous_tag: str | None, needs_minor: bool) -> str:
     return f"{major}.{minor}.{patch + 1}"
 
 
+def _pre_release_floor(tag: str | None) -> str | None:
+    """``X.Y.Z`` when ``tag`` is a pre-release ``vX.Y.Z(a|b|rc)N``; otherwise None."""
+    match = re.match(r"^v(\d+\.\d+\.\d+)(?:a|b|rc)\d+$", tag or "")
+    return match.group(1) if match else None
+
+
+def _version_key(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in version.split("."))
+
+
 def _link_section_start(text: str) -> int:
     """Where the trailing link definitions start.
 
@@ -387,19 +397,23 @@ def _api_change(previous: str) -> tuple[str, str]:
     Both sides are written by this checkout's ``scripts/api_surface.py``, the old one from
     a temporary worktree of the tag, so a change in the script's format between releases
     does not show as an API change. Each side reads its own tree's ``docs/api.md`` for the
-    names of a module without ``__all__``, and its own ``dev-docs/api-surface.txt`` for
-    the list of public modules, so a module made public since the tag shows as added.
-    A tag older than that file is measured with this checkout's list.
+    names of a module without ``__all__``. The tag's side takes its list of public
+    modules from the tag's ``dev-docs/api-surface.txt`` (``--modules-from``), so a module
+    made public since the tag shows as added; ``HEAD`` uses the script's own list. A tag
+    older than that file is measured with this checkout's list.
     """
     script = ROOT / "scripts" / "api_surface.py"
     with tempfile.TemporaryDirectory() as tmp:
         tree = Path(tmp) / "tree"
         _git("worktree", "add", "--detach", str(tree), previous)
         try:
+            old_cmd = [sys.executable, "-I", str(script), "--src", str(tree / "src")]
+            old_surface = tree / "dev-docs" / "api-surface.txt"
+            if old_surface.exists():
+                old_cmd += ["--modules-from", str(old_surface)]
             old = subprocess.run(
-                [sys.executable, "-I", str(script), "--src", str(tree / "src")],
-                cwd=ROOT, check=True, stdout=subprocess.PIPE, text=True,
-            ).stdout  # fmt: skip
+                old_cmd, cwd=ROOT, check=True, stdout=subprocess.PIPE, text=True
+            ).stdout
         finally:
             _git("worktree", "remove", "--force", str(tree))
         old_file = Path(tmp) / "old.txt"
@@ -455,6 +469,7 @@ def cmd_notes(_args: argparse.Namespace) -> None:
     # question is what 0.3.0 changes against 0.2.x.
     final = _previous_final_tag()
     if final is None:
+        print("\nNo final release yet, so there is no API to compare against.")
         return
     verdict, api_report = _api_change(final)
     print(f"\nPublic API since {final}:\n{api_report}")
@@ -466,6 +481,10 @@ def cmd_notes(_args: argparse.Namespace) -> None:
         print("\n".join(f"- {pr}" for pr in labelled))
     needs_minor = verdict == "minor" or (isinstance(labelled, list) and bool(labelled))
     version = next_release_version(final, needs_minor)
+    floor = _pre_release_floor(previous)
+    if floor is not None and _version_key(floor) > _version_key(version):
+        print(f"\n{previous} is already out, so the next release is at least {floor}.")
+        version = floor
     if needs_minor:
         print(f"\nThis needs a minor release: {version}.")
     elif isinstance(labelled, str):
