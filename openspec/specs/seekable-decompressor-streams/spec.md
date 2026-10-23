@@ -411,7 +411,7 @@ SHALL be reported the same way.
 | Single-block xz / one-member lzip / `.Z` with no CLEAR codes | the origin | yes, same as above |
 | Multi-block xz, multi-member lzip | the containing block | only when the progress since that block passes the threshold |
 | Multi-frame zstd; multi-member gzip or BGZF on the stdlib engine | the containing frame, member or block | as above |
-| One-frame zstd, zstd ZIP member (`single_stream`), one-member gzip on the stdlib engine | the origin | yes, once progress passes the threshold |
+| One-frame zstd (a ZIP member too), one-member gzip on the stdlib engine | the origin | yes, once progress passes the threshold |
 | Accelerated gzip/bzip2, dense index | the containing block | as above |
 | Accelerated gzip/bzip2, sparse index | up to a block back | yes, once past the threshold |
 | Any codec, less progress discarded than the threshold | — | no |
@@ -426,8 +426,7 @@ The event SHALL live on the stream operation and cumulative owning-reader
 aggregate, never on `CostReceipt` or `ArchiveInfo`. Gzip/bzip2/deflate/zlib context names the
 `[seekable]` accelerator when a rapidgzip path was eligible; brotli, lz4, and zstd record no
 accelerator. A zstd stream SHALL rewind in place: from the nearest frame start it knows
-(§"zstd frame starts are seek points"), or from the start when it has one frame or is a
-container member that is one frame (`single_stream`). When a
+(§"zstd frame starts are seek points"), or from the start when it has one frame. When a
 deflate/zlib stream falls back to stdlib `zlib` (accelerator absent, `OFF`, or below the
 `AUTO` threshold), its rewind SHALL name the `[seekable]` accelerator, consistent with the
 gzip fallback.
@@ -579,8 +578,8 @@ Unknown reserved header flag bits (`0x60` in the third header byte) SHALL raise
 
 On declared seek demand, every regular zstd frame after the first SHALL be a seek
 point, recorded when a forward read reaches it. A skippable frame holds no output and
-SHALL NOT be one. A stream opened without seek demand, or a container coder that is one
-frame (`single_stream`), SHALL keep no points.
+SHALL NOT be one. A stream opened without seek demand SHALL keep no points. A ZIP or 7z
+zstd coder keeps them as a `.zst` file does.
 
 #### Scenario: frame point matrix
 
@@ -589,7 +588,7 @@ frame (`single_stream`), SHALL keep no points.
 | Multi-frame file, read forward, then seek back | Resumes at the frame start before the target |
 | Skippable frame before each frame (pzstd) | Points at the regular frames only |
 | Stream opened without seek demand | No points kept, no table read |
-| ZIP zstd member (`single_stream`) ending in a seek table, seek declared | No table read; the only point stays at offset 0 |
+| ZIP zstd member of two frames ending in a seek table, seek declared | The table's frame starts are the seek points, as in a `.zst` file |
 
 ### Requirement: zstd reads the Seekable Zstandard seek table
 
