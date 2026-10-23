@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "archivey"
-version = "0.2.0rc1"
+version = "0.2.1.dev0"
 description = "Python library for reading, streaming, and safely extracting archives"
 readme = "README.md"
 license = { text = "MIT" }
@@ -67,7 +67,8 @@ recommended = [
     "inflate64>=1.0.0",
     "backports.zstd>=1.0.0; python_version < '3.14'",
     # >=1.2.0: process(output_buffer_limit=) / can_accept_more_data (CVE-2025-6176).
-    "brotli>=1.2.0",
+    # >=1.2.1: decoder buffer overflow fix (CVE-2026-111497).
+    "brotli>=1.2.1",
     "lz4>=4.4.5",
     # AES block operations only (7z, RAR headers, WinZip AES ZIP); PBKDF2/SHA/HMAC are
     # stdlib. RAR5 BLAKE2sp is native on hashlib (internal/hashing/blake2sp.py) and needs
@@ -141,6 +142,8 @@ dev = [
     "ty==0.0.90",
     "ruff==0.17.1",
     "pre-commit>=4.0.0",
+    # tests/test_release_script.py reads the workflow files with it.
+    "pyyaml>=6.0",
     "coverage[toml]>=7.6.0",
     # >=1.1: earlier releases pin pyppmd<1.3.0, the range the pyppmd>=1.3.1 floor
     # above rules out (wrong bytes on chunked PPMd decodes). Needed by
@@ -154,7 +157,7 @@ dev = [
     # Stdlib compression.zstd on 3.14+; backports only needed below that.
     "backports.zstd>=1.0.0; python_version < '3.14'",
     "lz4>=4.4.5",
-    "brotli>=1.2.0",
+    "brotli>=1.2.1",
     # pycdlib (the [iso] extra) is in the dev group like the other optional format libs, so
     # the ISO backend's tests run in the default dev env and the type checkers can resolve the
     # PyCdlibIO annotation. The core-only CI leg installs with --no-dev, so it stays absent
@@ -186,6 +189,9 @@ docs = [
     "mkdocs-autorefs>=1.2.0",
     "mkdocs-material>=9.6.0",
     "griffe-fieldz>=0.2.1",
+    # Writes llms.txt, llms-full.txt and a Markdown copy of each page for coding
+    # agents. Capped below 0.6: a 0.x release may change the output format.
+    "mkdocs-llmstxt>=0.5.1,<0.6",
 ]
 # Coverage-guided fuzz harness (Atheris / libFuzzer). CI-only: never a user-facing
 # runtime extra and never folded into `[all]` — see packaging-and-extras + threat-model O5.
@@ -319,6 +325,12 @@ addopts = "--cov=archivey --cov-report=term-missing --cov-report=xml --timeout=6
 # each new override site must remember to repeat it. The ini key is untouched by
 # `-o addopts=`, so they all inherit it and none of them names it.
 timeout_method = "thread"
+# A per-test timeout also covers fixture setup and teardown: a module-scoped fixture's
+# setup counts against the first test that uses it on a worker, and its teardown against
+# the last test of the module there, often an unrelated one on the 60 s default. A slow
+# module fixture once killed a Windows xdist worker that way, with no traceback. Keep
+# module fixtures fast, or mark the test `@pytest.mark.timeout(N, func_only=True)` so the
+# budget covers only the test body.
 
 markers = [
     "sample_archives: declarative parametrization over sample archives and config variants",

@@ -53,9 +53,10 @@ Formats covered here: ZIP (deflate / LZMA / WinZip AES / ZipCrypto), TAR, gzip,
 tar.gz/tar.bz2 (+ accelerators), in-ZIP accelerated deflate, solid 7z, and RAR
 data paths on committed fixtures when RARLAB ``unrar`` is present (large solid
 RAR when the ``rar`` writer can build one). Listing wall peers: ``zipfile`` /
-``tarfile`` / ``py7zr`` / ``rarfile`` (Q1 bands). ISO and directory backends are
-instrumented for measurement but deliberately out of scope for this harness —
-see ``benchmarks/tar_iso_lock_baseline.py`` for ISO.
+``tarfile`` / ``py7zr`` / ``rarfile`` (Q1 bands); ``benchmarks/peers.py`` reports
+list, read and extract against py7zr / rarfile / libarchive-c, outside the gate.
+ISO and directory backends are instrumented for measurement but deliberately out
+of scope for this harness — see ``benchmarks/tar_iso_lock_baseline.py`` for ISO.
 """
 
 from __future__ import annotations

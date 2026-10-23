@@ -58,6 +58,12 @@ with archivey.open_archive("photos.tar.gz") as reader:
 
 **<https://davitf.github.io/archivey/>**
 
+The [cheat sheet](https://davitf.github.io/archivey/cheat-sheet/) has the main calls, their errors
+and the zipfile and tarfile equivalents on one page.
+Coding agents can read the docs as Markdown, starting from
+[llms.txt](https://davitf.github.io/archivey/llms.txt), or all in one file from
+[llms-full.txt](https://davitf.github.io/archivey/llms-full.txt).
+
 [Install](https://davitf.github.io/archivey/install/) ·
 [Opening an archive](https://davitf.github.io/archivey/opening/) ·
 [Choosing how to read](https://davitf.github.io/archivey/reading/) ·
@@ -83,3 +89,4 @@ how changes are made and checked, and what the process does not promise.
 - **[CONTRIBUTING.md](https://github.com/davitf/archivey/blob/main/CONTRIBUTING.md)** — coding / testing standards
 - **[VISION.md](https://github.com/davitf/archivey/blob/main/VISION.md)** — priorities and trade-offs; authoritative contracts live in `openspec/specs/`
 - **[SECURITY.md](https://github.com/davitf/archivey/blob/main/SECURITY.md)** — private vulnerability reporting
+- **[Issues](https://github.com/davitf/archivey/issues/new/choose)** — bug reports and feature requests, each with its own form
