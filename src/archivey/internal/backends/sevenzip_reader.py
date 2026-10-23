@@ -1436,9 +1436,13 @@ class SevenZipReader(BaseArchiveReader):
 
     def _solid_run(self, member: ArchiveMember) -> SolidRun | None:
         # Every open() builds its folder's decoder afresh and decodes up to the member.
+        # A member alone in its folder decodes no other member's bytes.
         raw = member._raw
         assert isinstance(raw, _MemberRaw)
-        if raw.folder_index is None:
+        if (
+            raw.folder_index is None
+            or len(self._folder_members.get(raw.folder_index, ())) <= 1
+        ):
             return None
         return SolidRun(
             raw.folder_index, raw.folder_prefix, _member_stream_size(member)

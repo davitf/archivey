@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from archivey import open_archive
+from archivey import ArchiveyConfig, RarDecompressor, open_archive
 from archivey.cli.logging_config import cli_logging, cli_opens_members
 from archivey.cost import AccessCost
 from tests.conftest import binary_refusal
@@ -27,8 +27,11 @@ _LOGGER = "archivey.backends"
 _NAMES = ("a.txt", "b.txt", "c.txt")
 _FIXTURES = Path(__file__).parent / "fixtures"
 _SOLID_7Z = _FIXTURES / "sevenzip" / "solid_three_members.7z"
+_NONSOLID_7Z = _FIXTURES / "sevenzip" / "links_mid_folder_nonsolid.7z"
 _RAR_SOLID = _FIXTURES / "rar" / "basic_solid__.rar"
+_RAR_GROUPS = _FIXTURES / "rar" / "solid_groups__.rar"
 _UNRAR_REFUSAL = binary_refusal("unrar")
+_UNAR_REFUSAL = binary_refusal("unar")
 
 
 def _records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
@@ -80,18 +83,50 @@ def test_an_open_that_decodes_a_7z_folder_again_logs_once(
         assert len(_records(caplog)) == 1
 
 
-def test_an_open_that_decodes_nothing_twice_does_not_log(
+def test_reading_the_same_member_again_does_not_log(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.INFO, logger=_LOGGER)
     with open_archive(_SOLID_7Z) as reader:
-        # c decodes a and b once; a starts the folder, so nothing before it is decoded.
-        reader.read("c.txt")
+        # a starts the folder: reading it again decodes only itself, which a
+        # non-solid archive would pay too.
         reader.read("a.txt")
         reader.read("a.txt")
         assert _records(caplog) == []
         reader.read("b.txt")
         assert len(_records(caplog)) == 1
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "again"),
+    [
+        # b decoded a as its prefix; opening a decodes a again.
+        ("b.txt", "a.txt", 50),
+        # c decoded a and b; b decodes a and itself again.
+        ("c.txt", "b.txt", 100),
+    ],
+)
+def test_an_earlier_member_counts_the_bytes_decoded_again(
+    caplog: pytest.LogCaptureFixture, first: str, second: str, again: int
+) -> None:
+    caplog.set_level(logging.INFO, logger=_LOGGER)
+    with open_archive(_SOLID_7Z) as reader:
+        reader.read(first)
+        assert _records(caplog) == []
+        reader.read(second)
+        (record,) = _records(caplog)
+        assert f"{second!r} decoded again {again} bytes" in record.getMessage()
+
+
+def test_a_non_solid_7z_keeps_no_runs(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO, logger=_LOGGER)
+    with open_archive(_NONSOLID_7Z) as reader:
+        assert reader.cost.access_cost is AccessCost.DIRECT
+        for member in reader.members():
+            if member.is_file:
+                reader.read(member.name)
+        assert reader._solid_decoded == {}
+    assert _records(caplog) == []
 
 
 def test_a_tar_gz_read_in_archive_order_does_not_log(
@@ -181,6 +216,22 @@ def test_a_solid_rar_logs_on_the_second_member(
         assert _records(caplog) == []
         reader.read("subdir/file2.txt")
         assert len(_records(caplog)) == 1
+
+
+@pytest.mark.skipif(_UNAR_REFUSAL is not None, reason=f"needs unar: {_UNAR_REFUSAL}")
+def test_unar_counts_each_solid_stream_on_its_own(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Two solid streams: a, b and then c, d. unar decodes only the member's stream.
+    caplog.set_level(logging.INFO, logger=_LOGGER)
+    config = ArchiveyConfig(rar_decompressor=RarDecompressor.UNAR)
+    with open_archive(_RAR_GROUPS, config=config) as reader:
+        reader.read("b.txt")
+        reader.read("c.txt")
+        assert _records(caplog) == []
+        reader.read("d.txt")
+        (record,) = _records(caplog)
+        assert "'d.txt' decoded again 840 bytes" in record.getMessage()
 
 
 def test_the_cli_drops_the_advice_for_its_own_opens() -> None:

@@ -584,7 +584,7 @@ class BaseArchiveReader(ArchiveReader):
         # decodes again bytes an earlier one decoded: that logs the advice once (an
         # INFO record by ruling, not a diagnostic or a warnings.warn), and counting
         # stops (``None``).
-        self._solid_decoded: dict[Hashable, int] | None = {}
+        self._solid_decoded: dict[Hashable, tuple[int, int]] | None = {}
         self._solid_decoded_lock = threading.Lock()
         # The archive's source, recorded by every backend's constructor. The reader owns
         # it: teardown closes it after ``_close_archive``. Also backs
@@ -3351,19 +3351,29 @@ class BaseArchiveReader(ArchiveReader):
 
         ``run`` is ``member``'s :meth:`_solid_run`, and the open already succeeded, so
         this only counts and logs: it must not raise. The open decoded the run from its
-        start through ``run.offset + run.size``; the bytes before ``run.offset`` were
-        decoded and discarded, and those an earlier open of the same run had already
-        decoded are decoded again. On the first such open the record is INFO on
+        start through ``run.offset + run.size``. Per run the reader keeps how far opens
+        have decoded and how far they discarded (the largest ``offset``). This open
+        decodes again the part of its discarded prefix that an earlier open decoded,
+        plus the part of its own member an earlier open decoded and discarded. Reading
+        the same member twice is not counted: a non-solid archive pays that too. On the
+        first open that decodes anything again the record is INFO on
         ``archivey.backends``: the caller may have chosen the pattern, and
         ``reader.cost`` and the ``open()`` docstring already carry the cost.
         """
+        end = run.offset + run.size
         with self._solid_decoded_lock:
             decoded = self._solid_decoded
             if decoded is None:
                 return
-            again = min(run.offset, decoded.get(run.key, 0))
+            decoded_to, discarded_to = decoded.get(run.key, (0, 0))
+            again = min(run.offset, decoded_to) + max(
+                0, min(end, discarded_to) - run.offset
+            )
             if again <= 0:
-                decoded[run.key] = max(decoded.get(run.key, 0), run.offset + run.size)
+                decoded[run.key] = (
+                    max(decoded_to, end),
+                    max(discarded_to, run.offset),
+                )
                 return
             self._solid_decoded = None
         logger.info(

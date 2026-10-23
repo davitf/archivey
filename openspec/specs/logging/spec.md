@@ -42,7 +42,7 @@ table is illustrative: a logger missing from it is not a contract violation.
 | Application configures no handlers on `archivey` or ancestors | No output by default; library installs no handler |
 | Magic bytes conflict with extension | `logging.WARNING` on `archivey.detection` |
 | Member-name normalization changes logical meaning relative to `raw_name` | Warning on `archivey.normalization` |
-| An `open()` or `read()` that decodes again bytes an earlier one on the same reader decoded, because each open decodes its member's solid block from the start (a 7z folder, a solid RAR read through `unrar` or `unar`) | One `logging.INFO` record on `archivey.backends` per reader, giving the bytes decoded again and naming `stream_members()`; not a diagnostic, no `warnings.warn`. A compressed TAR keeps one decoder position across opens, so reading its members in archive order logs nothing, and its backward seeks report `STREAM_REWIND_REDECOMPRESSES` |
+| An `open()` or `read()` that decodes again bytes an earlier one on the same reader decoded, because each open decodes its member's solid block from the start (a 7z folder holding more than one member, a solid RAR read through `unrar`, or one solid stream of it read through `unar`); reading the same member again does not count | One `logging.INFO` record on `archivey.backends` per reader, giving the bytes decoded again and naming `stream_members()`; not a diagnostic, no `warnings.warn`. A compressed TAR keeps one decoder position across opens, so reading its members in archive order logs nothing, and its backward seeks report `STREAM_REWIND_REDECOMPRESSES` |
 
 ### Requirement: Warning logs are ordered projections of diagnostics
 
