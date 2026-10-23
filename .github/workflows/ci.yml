@@ -667,8 +667,12 @@ jobs:
       - name: Assert zero-dependency core
         if: ${{ !cancelled() }}
         run: uv run --python ${{ matrix.python }} --no-sync python tests/check_zero_dep_core.py
+      # Core-only on PyPy runs on each push to main and on a dispatched run (a release gate,
+      # scripts/release.py), not on pull requests or in the merge queue: it is about five
+      # of this job's fifteen minutes, and the CPython core-only legs already cover the
+      # fallback paths on every pull request.
       - name: Run full suite (core-only)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && github.event_name != 'pull_request' && github.event_name != 'merge_group' }}
         env:
           PYTHONFAULTHANDLER: "1"
         run: >
@@ -677,7 +681,7 @@ jobs:
           pytest tests/ -q -n auto --timeout=300 -o addopts= --tb=no -p no:warnings
           -m 'not ppmd_native_stress' --junitxml=pypy-core.xml -o junit_family=xunit1
       - name: Failures (core-only), one line each
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && github.event_name != 'pull_request' && github.event_name != 'merge_group' }}
         run: python3 scripts/junit_failure_lines.py pypy-core.xml
       - name: Install what installs (runtime extras, then test-only packages)
         if: ${{ !cancelled() }}
