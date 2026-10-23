@@ -248,15 +248,18 @@ the exact remaining `unpack_size` and never passes `-1`; refuses unsized PPMd7 a
 construction; decodes unsized PPMd8 in bounded 64 KiB requests; injects at most one capped
 NUL at the end; stops at a spent payload; and hands pyppmd the whole member in one
 `decode`, so a short return is the end. Two exceptions are fed in pieces: members over
-`DecoderLimits.max_ppmd_in_process_input` (16 MiB by default), and a ZIP member read from
+`DecoderLimits.max_ppmd_held_input` (16 MiB by default), and a ZIP member read from
 a stream that cannot seek, whose sizes follow its data, so its input runs on into the rest
-of the archive. Fed in pieces, pyppmd 1.3.1 can return short at a false `eof` with input
-unread, which reads as a spent payload: a valid member then raises `TruncatedError` a few
-KiB short (tracked internally). Every PPMd member decodes in a child process unless
-`process_isolation` is `NONE` (`ppmd_child.py`), because the quiesce NUL can crash pyppmd
-on small members too; a crash becomes `CorruptionError` (`ResourceLimitError` for SIGKILL
-or a refused `mem_size`, `ReadError` for other deaths). A child is reused only after a
-member that ended cleanly. Pinned by
+of the archive. Fed in pieces, pyppmd 1.3.1 resumes a worker that waited for input with
+the output budget and count of the call that started it, so a call can return short at a
+false `eof` with input unread, which reads as a spent payload; a valid member raised
+`TruncatedError` some KiB short. `PpmdDecoder._native_decode` now asks 1 byte of each call
+that brings new input after the first, which stops a resumed worker after one symbol, and
+the rest of a new worker; a request of 1 byte needs no split. Every PPMd member decodes in
+a child process unless `process_isolation` is `NONE` (`ppmd_child.py`), because the
+quiesce NUL can crash pyppmd on small members too; a crash becomes `CorruptionError`
+(`ResourceLimitError` for SIGKILL or a refused `mem_size`, `ReadError` for other deaths).
+A child is reused only after a member that ended cleanly. Pinned by
 `tests/test_ppmd_crash_isolation.py` and `tests/test_ppmd_raw_streams.py`; the
 non-blocking PPMd native stress workflow watches for regressions.
 
@@ -338,26 +341,35 @@ check a newer run before assuming a later release still fails.
 - pyppmd runs its cffi build, which ends a valid PPMd member early: the decoder relies on
   how the C extension reports the end of data (`ppmd_decoder.py`), and the cffi build
   reports it sooner, so the read returns data cut short.
-- inflate64: a Deflate64 member of a bit-3 ZIP read from a stream that cannot seek raises
-  `CorruptionError: Error reading deflate64 stream … error code is -3` in
-  `tests/test_zip_walk_codec_end.py::test_a_codec_member_ends_where_its_codec_ends[signed-deflate64]`
-  and `[unsigned-deflate64]` (run 39477059217). Whether the decoder or the test's own
-  Deflate64 compression is at fault is not established. archivey still uses inflate64
-  under PyPy.
+- inflate64 is wrong in both directions once a call handles more than about 32 KiB. With
+  PyPy 3.11.17 and inflate64 1.0.4, measured on 300,000 random bytes:
+  - `Inflater.inflate` of a valid stream fed in pieces of 40,000 bytes or more returns
+    wrong bytes from offset 128, with no error. Pieces of 32,769 bytes or fewer decode
+    correctly.
+  - An input of 32 KiB that expands to about 64 KiB segfaults the interpreter.
+  - `Deflater` output differs from CPython's from byte 129, and CPython's `Inflater`
+    refuses it with error -3. That is the `CorruptionError … error code is -3` in
+    `tests/test_zip_walk_codec_end.py::test_a_codec_member_ends_where_its_codec_ends[signed-deflate64]`
+    and `[unsigned-deflate64]`, whose fixtures the test compresses with `Deflater`.
+  - 1,000,000 bytes of one 44-byte line repeated, passed to one `Deflater.deflate`
+    call, segfault the interpreter; 900,000 bytes do not. 1,000,000 zero bytes or
+    random bytes do not either.
 
-**What archivey does.** It treats rapidgzip, python-lz4 and pyppmd as absent under PyPy,
-whether installed or not (`deps.unused_reason` in `internal/streams/codecs/deps.py`;
+  A decoder child runs the same interpreter, so process isolation does not help.
+
+**What archivey does.** It treats rapidgzip, python-lz4, pyppmd and inflate64 as absent under
+PyPy, whether installed or not (`deps.unused_reason` in `internal/streams/codecs/deps.py`;
 `rapidgzip_child` refuses to start the child). `MissingComponent.reason` carries why, and
 every report of a missing package (the `PackageNotInstalledError` of a read,
 `format_availability()`, the registry's refusal and `archivey --version -v`) shows it in
-place of the install advice. LZ4 and PPMd data cannot be read there; `AUTO` decodes gzip,
-zlib, deflate and bzip2 with the standard library, and `ON` raises. The tests treat the
-three as not installed under PyPy (`UNUSED_UNDER_PYPY` in `tests/conftest.py`).
+place of the install advice. LZ4, PPMd and Deflate64 data cannot be read there; `AUTO`
+decodes gzip, zlib, deflate and bzip2 with the standard library, and `ON` raises. The tests
+treat the four as not installed under PyPy (`UNUSED_UNDER_PYPY` in `tests/conftest.py`).
 
 **What remains.** PPMd reads under PyPy need either a pure-Python PPMd decoder or a
 workaround for how pyppmd's cffi build reports the end. LZ4 needs a python-lz4 that runs
-under PyPy. rapidgzip needs upstream support for PyPy. The inflate64 failure needs
-diagnosing first.
+under PyPy. rapidgzip needs upstream support for PyPy. Deflate64 needs an inflate64 that
+handles large buffers under PyPy (its cpyext build), or a pure-Python Deflate64 decoder.
 
 **Upstream.** Not filed with rapidgzip, python-lz4, pyppmd or inflate64.
 
@@ -407,6 +419,54 @@ rapidgzip.
 **Evidence.** [`linux-heap-corruption-soak.md`](investigations/linux-heap-corruption-soak.md):
 the CI step split, the soak and A/B recipes, and the recorded red runs.
 
+## PyPy: a C `bool` member reads as an int (open, upstream)
+
+**Symptom.** Under PyPy 3.11.17, a C extension's `bool` struct member (`Py_T_BOOL`) can read
+as an int. backports.zstd's `ZstdDecompressor.eof` reads `False` before a frame ends and the
+int `1` after it, where CPython gives `True`; `needs_input` read `False` in the same run.
+A check that wants `isinstance(value, bool)` drops it, which is how every zstd read in a
+decoder child failed with `AttributeError: eof`.
+
+**What archivey does.** The decoder worker takes any int as a flag and sends `bool(value)`
+(`_state` in `internal/streams/codecs/decoder_worker.py`). Pinned by
+`test_a_flag_read_as_an_int_is_reported_as_a_bool` and
+`test_an_int_flag_reaches_the_parent_as_a_bool` in `tests/test_decoder_child.py`.
+
+**What remains.** Any other code that type-checks a flag read from a C extension for `bool`
+has the same gap. Truth tests (`if decoder.eof:`) are unaffected.
+
+**Upstream.** Not filed with PyPy.
+
+**Evidence.** A two-line check under PyPy 3.11.17:
+`d = ZstdDecompressor(); d.decompress(compress(b"abc")); type(d.eof)` is `int`.
+
+## PyPy: `BufferedRandom.readinto` over-reports its last partial fill (open, upstream)
+
+**Symptom.** Under PyPy 3.11.17, `io.BufferedRandom.readinto` (a file opened `w+b` or
+`r+b`, also under `tempfile.NamedTemporaryFile` and a spilled `SpooledTemporaryFile`)
+returns more than it filled when fewer bytes are left than the buffer holds. For a
+5,000-byte file read into a 128-byte buffer, the last call returns 16 for the 8 bytes
+left, so a caller that trusts the count takes 8 stale bytes from the buffer; 300 bytes
+read 128 at a time give 344. `read` and a read-only `BufferedReader` are right, and a call
+whose buffer is no larger than what is left is right too.
+
+**What archivey does.** Under PyPy, `ArchiveSource`, the one wrapper over a caller's
+stream, fills its buffer with `read` instead of the caller's `readinto`
+(`_readinto_or_stall` in `internal/source.py`). Pinned by
+`test_readinto_over_a_read_write_file_counts_only_what_it_filled` in
+`tests/test_archive_source.py`, which fails under PyPy without it, and on CPython by
+`test_under_pypy_the_boundary_reads_and_never_trusts_a_readinto_count`, which forces the
+PyPy flag over a double that over-reports the same way. The `spooled_tempfile` and
+`named_tempfile` cases of `test_readinto_yields_content` in `tests/test_stream_inputs.py`
+call the file's own `readinto`, so they skip under PyPy.
+
+**What remains.** Nothing beyond the pins above; the PyPy CI job runs both of them.
+
+**Upstream.** Not filed with PyPy.
+
+**Evidence.** Write 5,000 bytes to `open(path, "w+b")`, `seek(0)`, then call
+`readinto(bytearray(128))` until it returns 0: the counts add up to 5,008.
+
 ## PyPy: buffer views and non-blocking `readinto` (open, by design upstream)
 
 **Symptom.** Two PyPy 3.11 behaviours that CPython does not share. A `memoryview` that
@@ -419,11 +479,65 @@ answers `readinto` with 0, the same as at the end, where CPython answers `None`.
 `try_readinto`'s docstring and in CONTRIBUTING.md §Coding standards. `ArchiveSource`, the
 one wrapper over a caller's stream, asks a 0 again with `read` (`_readinto_or_stall` in
 `internal/source.py`), so a stall raises `BlockingIOError` instead of passing for the end.
-Pinned by the zero-answering doubles in `tests/test_archive_source.py`.
+That is the CPython path. Under PyPy the caller's `readinto` is not called for a
+non-empty buffer (see the `BufferedRandom.readinto` entry above): `read` answers a stall
+with `None`, which raises the same way, so no 0 arrives to be asked again. The zero-answering doubles in
+`tests/test_archive_source.py` pin the 0-confirm on CPython only; under PyPy they reach
+`read` directly.
 
-**What remains.** Nothing gates either rule on PyPy: the PyPy CI job is allowed to fail.
-A new `readinto` that keeps a view passes every other check.
+**What remains.** A new `readinto` that keeps a view fails CI only if a test resizes its
+buffer under PyPy, and the 0-confirm is still exercised on CPython only.
 
 **Upstream.** Not filed; both are documented PyPy behaviour rather than bugs.
 
-**Evidence.** The PyPy trial job in `.github/workflows/ci.yml`; the tests named above.
+**Evidence.** The PyPy job in `.github/workflows/ci.yml`; the tests named above.
+
+## PyPy: native decoder memory (open, by design upstream)
+
+**Symptom.** Under PyPy 3.11, after the suite has run for a while, every `subprocess` call
+in a worker fails with `OSError: [Errno 12] Cannot allocate memory` from `_fork_exec`,
+while the worker's RSS is only a few GB. A PyPy decoder from `lzma` (cffi), `bz2`,
+`backports.zstd` or `brotli` frees its native buffers only when a major collection takes
+it, and their size is invisible to the GC, so that collection comes late. A run that drops
+thousands of decoders keeps their dictionaries allocated, glibc grows its heap to hold
+them, and `gc.collect()` frees them without shrinking the heap. With heuristic overcommit,
+`fork` refuses once the private writable mappings outgrow RAM plus swap.
+
+**What archivey does.** `internal/streams/native_memory.py`. Each decoder `Natives` builds
+in-process reports its likely size with `__pypy__.add_memory_pressure`, as PyPy's own
+`LZMACompressor` does:
+
+- liblzma: the filter chain's dictionary, else 8 MiB, capped by `memlimit`;
+- zstd: 8 MiB, capped by `window_log_max`;
+- bzip2: 3.5 MiB;
+- brotli: 4 MiB.
+
+A decoder's `close` also ends its liblzma decoders with `ffi.release` and cancels their
+pressure, because only the stream declares the real dictionary (up to 4 GiB uncapped).
+Pinned by `tests/test_decoder_memory_pressure.py`: each estimate exactly, and 1,600 dropped
+xz decoders in a fresh interpreter, where the last 800 must add under 2 GiB through `/proc`.
+With the accounting, the growth levels off at whatever pressure PyPy lets build before a
+major collection. That level is large and varies: 800 drops reached 3,725 MiB in an xdist
+worker (PR #901) and 2,120 MiB in a fresh interpreter (PR #951), and both passed on a
+re-run. So the test checks that growth levels off, not how high. Without the accounting,
+growth is linear at 8 MiB per drop. The drops run in a child process because the worker
+reading was 1.76 times the fresh one, likely because PyPy's threshold scales with the heap
+the last collection left (inferred, not reproduced). Each CI run writes the curve to the
+job summary.
+
+**What remains.** A zstd frame can reserve up to `window_log_max` (2 GiB under the default
+`max_decoder_memory`) and nothing frees it before a collection, nor a brotli window over
+4 MiB: neither library can free its state early under PyPy, and reporting the cap would
+force a major collection per decoder. A caller who drops streams unclosed relies on the
+estimates alone. The PyPy CI job runs the pins above; nothing measures the zstd or brotli
+windows, what a caller who leaves streams unclosed really uses, or what the same drops
+cost in a long-lived process with a large heap, the shape the ENOMEM failures had.
+
+**Upstream.** Not filed; PyPy documents that native memory needs
+`add_memory_pressure` from whoever allocates it.
+
+**Evidence.** PR #927. On main, the PyPy job's extras step had 163 failures and
+53 errors, 154 of them ENOMEM, with one worker's `[heap]` mapping at 74 GB. With the fix
+it had 35 failures, 12 errors and no ENOMEM. On the runner, 800 dropped default-preset xz
+decoders hold 9 MB on CPython and 6.4 GB on PyPy; with 8 MiB of pressure each, the PyPy
+heap stays at 82 MB. The xdist worker count and `PYPY_GC_MAX` are not the cause.

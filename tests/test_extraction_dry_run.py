@@ -16,6 +16,7 @@ import os
 import re
 import tarfile
 import tempfile
+import unicodedata
 import zipfile
 from collections.abc import Callable
 from pathlib import Path
@@ -29,6 +30,7 @@ from archivey import (
     ExtractionLimits,
     ExtractionPolicy,
     ExtractionStatus,
+    MemberType,
     NameCollisionError,
     OnError,
     OverwritePolicy,
@@ -388,6 +390,42 @@ def test_orphan_links_folded_onto_each_other_match(
         assert dry == real, policy
 
 
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+@pytest.mark.parametrize("overwrite", list(OverwritePolicy))
+@pytest.mark.parametrize(
+    "held",
+    [
+        pytest.param({"h1": b"mine"}, id="file"),
+        pytest.param({"h1/keep": b"mine"}, id="full-dir"),
+    ],
+)
+def test_orphan_first_link_destination_taken_matches(
+    held: dict[str, object],
+    overwrite: OverwritePolicy,
+    streaming: bool,
+    tmp_path: Path,
+) -> None:
+    # The source excluded and its first link's destination held by the caller: the
+    # policy decides that link alone, and the content goes to the next link.
+    blob = _tar(
+        [("src", "file", b"data"), ("h1", "hard", "src"), ("h2", "hard", "src")]
+    )
+    for policy in _POLICIES:
+        work = tmp_path / policy.value
+        (work / "tmp").mkdir(parents=True)
+        tempfile.tempdir = str(work / "tmp")
+        real, dry = _both(
+            lambda: io.BytesIO(blob),
+            work,
+            populate=lambda dest: _put(dest, held),
+            members=["h1", "h2"],
+            policy=policy,
+            overwrite=overwrite,
+            open_kwargs={"streaming": streaming},
+        )
+        assert dry == real, policy
+
+
 def _dest_named_links(dest: Path) -> list[tuple[str, str, object]]:
     """Links whose targets name ``dest`` itself, so each run needs its own archive."""
     return [
@@ -426,7 +464,7 @@ def test_link_targets_that_name_dest_match(streaming: bool, tmp_path: Path) -> N
         }
         calls = iter((False, True))
         real, dry = _both(
-            lambda: io.BytesIO(blobs[next(calls)]),
+            lambda: io.BytesIO(blobs[next(calls)]),  # noqa: B023 - called within this iteration
             work,
             policy=policy,
             open_kwargs={"streaming": streaming},
@@ -457,7 +495,7 @@ def test_link_past_a_missing_name_meets_what_dest_holds(
         }
         calls = iter((False, True))
         real, dry = _both(
-            lambda: io.BytesIO(blobs[next(calls)]),
+            lambda: io.BytesIO(blobs[next(calls)]),  # noqa: B023 - called within this iteration
             work,
             policy=policy,
             populate=lambda dest: _put(
@@ -496,11 +534,10 @@ def test_bodies_are_read_and_verified(tmp_path: Path) -> None:
 def test_limits_still_apply(tmp_path: Path) -> None:
     blob = _tar([("big", "file", b"x" * 4096)])
     dest = tmp_path / "out"
-    with open_archive(io.BytesIO(blob)) as reader:
-        with pytest.raises(ResourceLimitError):
-            reader.extract_all(
-                dest, limits=ExtractionLimits(max_extracted_bytes=1024), dry_run=True
-            )
+    with open_archive(io.BytesIO(blob)) as reader, pytest.raises(ResourceLimitError):
+        reader.extract_all(
+            dest, limits=ExtractionLimits(max_extracted_bytes=1024), dry_run=True
+        )
     _assert_nothing_left(tmp_path, dest)
 
 
@@ -547,7 +584,14 @@ def _put(dest: Path, entries: dict[str, object]) -> None:
             path.chmod(what)
         else:
             _, target = what  # type: ignore[misc]
-            os.symlink(str(target).format(dest=dest, parent=dest.parent), path)
+            os.symlink(_expand(str(target), dest), path)
+
+
+def _expand(text: str, dest: Path) -> str:
+    """A row's ``{dest}`` and ``{parent}`` placeholders, filled for one run's
+    ``dest``. Any other placeholder raises ``KeyError`` rather than staying a
+    literal that both runs would build alike."""
+    return text.format(dest=dest, parent=dest.parent) if "{" in text else text
 
 
 # Each case: what dest holds before the run, and the archive's members.
@@ -583,6 +627,17 @@ _EXISTING_CASES: dict[str, tuple[dict[str, object], list[tuple[str, str, object]
     "hardlink-over-files": (
         {"f": b"mine", "h": b"mine"},
         [("f", "file", b"content"), ("h", "hard", "f")],
+    ),
+    # RENAME's first numbered name is taken in dest, but the base name is free: the
+    # member collides with a directory the run made, so RENAME still tries it.
+    "rename-past-a-held-numbered-name": (
+        {"a (1)": b"mine"},
+        [("a/x", "file", b"x"), ("a", "file", b"a")],
+    ),
+    # The same, where the member collides with another member's case variant.
+    "rename-case-variant-past-a-held-numbered-name": (
+        {"A (1)": b"mine"},
+        [("a", "file", b"a"), ("A", "file", b"A")],
     ),
 }
 
@@ -640,6 +695,42 @@ _EXISTING_LINK_CASES: dict[
         {"sub/b/keep.txt": b"mine", "a": ("sym", "sub")},
         [("a/b", "file", b"theirs")],
     ),
+    # A symlink of the caller's that loops: the error names it in dest.
+    "under-a-looping-symlink": (
+        {"a": ("sym", "a")},
+        [("a/c", "file", b"x")],
+    ),
+    # A link member whose target is missing when it is made, and that a later member
+    # makes resolve through the caller's symlink out of dest: the recheck refuses it.
+    "link-member-escapes-after-a-later-member": (
+        {"real/esc": ("sym", "../../outside")},
+        [("l", "sym", "a/esc"), ("a", "sym", "real")],
+    ),
+    # A link member whose relative target passes a missing name and takes it off with
+    # a later "..": the checks resolve it to the caller's symlink out of dest.
+    "link-member-past-a-missing-name": (
+        {"real/esc": ("sym", "../../outside")},
+        [("l", "sym", "gone/../real/esc")],
+    ),
+    "link-member-past-two-missing-names": (
+        {"real/esc": ("sym", "../../outside")},
+        [("l", "sym", "x/y/../../real/esc")],
+    ),
+    "link-member-past-a-missing-name-deeper": (
+        {"real/sub/esc": ("sym", "../../../outside")},
+        [("l", "sym", "g/../real/sub/esc")],
+    ),
+    # A nested link member, whose directory is not on disk yet, with an absolute
+    # target that names dest and goes on through the caller's symlink out of it.
+    "nested-link-member-absolute-into-dest": (
+        {"x": ("sym", "../outside")},
+        [("a/l", "sym", "{dest}/x"), ("a/b/l", "sym", "{dest}/x")],
+    ),
+    # The same, where the later member replaces a directory the run made.
+    "link-member-escapes-after-a-later-member-replaces-a-directory": (
+        {"real/esc": ("sym", "../../outside")},
+        [("a", "dir", None), ("l", "sym", "a/esc"), ("a", "sym", "real")],
+    ),
 }
 
 
@@ -657,7 +748,23 @@ def _run_existing_case(
     relative: bool = False,
     dest_name: str = "out",
 ) -> None:
-    blob = _tar(members)
+    def source() -> io.BytesIO:
+        # A "{dest}" or "{parent}" in a link target names the run's own dest, as
+        # given, so each run builds its own archive. ``_both`` calls this in the run's directory.
+        dest = Path.cwd() / dest_name
+        return io.BytesIO(
+            _tar(
+                [
+                    (
+                        name,
+                        kind,
+                        _expand(extra, dest) if isinstance(extra, str) else extra,
+                    )
+                    for name, kind, extra in members
+                ]
+            )
+        )
+
     for policy in _POLICIES:
         work = tmp_path / policy.value
         (work / "tmp").mkdir(parents=True)
@@ -665,7 +772,7 @@ def _run_existing_case(
         if dest_name != "out":
             _spell_dest_ways(work)
         real, dry = _both(
-            lambda: io.BytesIO(blob),
+            source,
             work,
             relative=relative,
             dest_name=dest_name,
@@ -705,6 +812,21 @@ def test_existing_symlinks_are_met_alike(
 ) -> None:
     held, members = _EXISTING_LINK_CASES[case]
     _run_existing_case(held, members, overwrite, streaming, tmp_path)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+def test_symlink_loop_error_names_dest_in_its_cause(tmp_path: Path) -> None:
+    # The report shape compares the message only; the cause keeps a file name too.
+    dest = tmp_path / "out"
+    _put(dest, {"a": ("sym", "a")})
+    blob = _tar([("a/c", "file", b"x")])
+    with open_archive(io.BytesIO(blob)) as reader:
+        report = reader.extract_all(dest, on_error=OnError.CONTINUE, dry_run=True)
+    (result,) = report.results
+    assert result.status is ExtractionStatus.FAILED
+    cause = result.error.__cause__
+    assert isinstance(cause, OSError)
+    assert cause.filename == str(dest.resolve() / "a")
 
 
 @pytest.mark.parametrize("overwrite", list(OverwritePolicy))
@@ -963,6 +1085,35 @@ def test_dry_run_copies_only_what_the_pass_names(tmp_path: Path) -> None:
     assert seen == [[], ["f7"], ["f7", "sub", "sub/x"]]
 
 
+def test_numbered_name_held_under_another_normalization_is_copied_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # On a filesystem that compares names normalization-insensitively (APFS), a
+    # RENAME of the composed name "á" finds the decomposed "á (1)" taken. The
+    # dry run copies it in, under the name dest holds it by. Such a filesystem is
+    # simulated: dest's lookups fold names as ``_fold`` does.
+    composed = unicodedata.normalize("NFC", "á")
+    decomposed = unicodedata.normalize("NFD", "á")
+    dest = tmp_path / "out"
+    _put(dest, {f"{decomposed} (1)": b"mine"})
+    real_lexists = os.path.lexists
+
+    def lexists(path) -> bool:
+        if real_lexists(path):
+            return True
+        path = Path(path)
+        if path.parent != dest:
+            return False
+        key = dry_run_module._fold(path.name)
+        return any(dry_run_module._fold(n) == key for n in os.listdir(dest))
+
+    with dry_run_module.scratch_for(dest) as dry:
+        monkeypatch.setattr(os.path, "lexists", lexists)
+        dry._bring(dry.scratch, composed)
+        monkeypatch.undo()
+        assert os.listdir(dry.scratch) == [f"{decomposed} (1)"]
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX directory modes")
 @_NON_ROOT
 def test_unwritable_directory_in_dest_is_an_exemption(tmp_path: Path) -> None:
@@ -1042,6 +1193,8 @@ def test_cli_dry_run_into_a_populated_cwd_matches(
     case: str, overwrite: str, tmp_path: Path
 ) -> None:
     held, members = _EXISTING_CASES[case]
+    # The CLI runs build one archive for both runs, so a row here cannot name dest.
+    assert not any(isinstance(extra, str) and "{" in extra for _, _, extra in members)
     real, dry = _cli_both(
         _tar(members), held, ["-d", ".", "--overwrite", overwrite], tmp_path
     )
@@ -1067,9 +1220,11 @@ def test_cli_dry_run_names_where_a_root_lands_past_a_file(
 def test_destination_that_is_a_file_is_refused(tmp_path: Path) -> None:
     dest = tmp_path / "out"
     dest.write_bytes(b"")
-    with open_archive(io.BytesIO(_tar([("a", "file", 0)]))) as reader:
-        with pytest.raises(ExtractionError, match="not a directory"):
-            reader.extract_all(dest, dry_run=True)
+    with (
+        open_archive(io.BytesIO(_tar([("a", "file", 0)]))) as reader,
+        pytest.raises(ExtractionError, match="not a directory"),
+    ):
+        reader.extract_all(dest, dry_run=True)
     assert list((tmp_path / "tmp").iterdir()) == []
 
 
@@ -1079,9 +1234,8 @@ def test_destination_under_a_file_is_refused(tmp_path: Path) -> None:
     raised = []
     for dry_run in (False, True):
         dest = tmp_path / "afile" / ("dry" if dry_run else "real") / "out"
-        with open_archive(io.BytesIO(blob)) as reader:
-            with pytest.raises(OSError) as caught:
-                reader.extract_all(dest, dry_run=dry_run)
+        with open_archive(io.BytesIO(blob)) as reader, pytest.raises(OSError) as caught:
+            reader.extract_all(dest, dry_run=dry_run)
         raised.append(caught.value)
     real, dry = raised
     if os.name != "nt":
@@ -1161,14 +1315,16 @@ def test_errors_and_warnings_name_dest(
     # The directory is locked before its file is written, so the write fails.
     blob = _tar([("ro", "dir", 0o555), ("ro/f", "file", 0)])
     dest = tmp_path / "out"
-    with caplog.at_level(logging.WARNING, logger="archivey"):
-        with open_archive(io.BytesIO(blob)) as reader:
-            report = reader.extract_all(
-                dest,
-                policy=ExtractionPolicy.TRUSTED,
-                on_error=OnError.CONTINUE,
-                dry_run=True,
-            )
+    with (
+        caplog.at_level(logging.WARNING, logger="archivey"),
+        open_archive(io.BytesIO(blob)) as reader,
+    ):
+        report = reader.extract_all(
+            dest,
+            policy=ExtractionPolicy.TRUSTED,
+            on_error=OnError.CONTINUE,
+            dry_run=True,
+        )
     failed = report.results[-1]
     assert failed.status is ExtractionStatus.FAILED
     assert isinstance(failed.error, PermissionError)
@@ -1177,24 +1333,32 @@ def test_errors_and_warnings_name_dest(
     assert str(dest / "ro") in caplog.text
     assert "archivey-dry-run-" not in caplog.text
 
-    with open_archive(io.BytesIO(blob)) as reader:
-        with pytest.raises(PermissionError) as caught:
-            reader.extract_all(
-                dest,
-                policy=ExtractionPolicy.TRUSTED,
-                on_error=OnError.STOP,
-                dry_run=True,
-            )
+    with (
+        open_archive(io.BytesIO(blob)) as reader,
+        pytest.raises(PermissionError) as caught,
+    ):
+        reader.extract_all(
+            dest,
+            policy=ExtractionPolicy.TRUSTED,
+            on_error=OnError.STOP,
+            dry_run=True,
+        )
     assert str(dest / "ro") in str(caught.value)
     assert "archivey-dry-run-" not in str(caught.value)
     _assert_nothing_left(tmp_path, dest)
 
 
+@pytest.mark.parametrize(
+    "fd_walk",
+    [False, *([True] if dry_run_module._FD_WALK else [])],
+    ids=lambda v: "fd-walk" if v else "path-walk",
+)
 def test_scratch_is_removed_when_the_archive_locks_its_own_directories(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fd_walk: bool
 ) -> None:
     # The directories get their modes when the run ends; the scratch directory is
-    # removed after that.
+    # removed after that, by either walk.
+    monkeypatch.setattr(dry_run_module, "_FD_WALK", fd_walk)
     blob = _tar([("ro/f", "file", 0), ("ro", "dir", 0o555), ("zero", "dir", 0)])
     dest = tmp_path / "out"
     with open_archive(io.BytesIO(blob)) as reader:
@@ -1203,14 +1367,53 @@ def test_scratch_is_removed_when_the_archive_locks_its_own_directories(
     _assert_nothing_left(tmp_path, dest)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="PATH_MAX is a POSIX limit")
+def test_scratch_is_removed_when_its_tree_is_deeper_than_path_max(
+    tmp_path: Path,
+) -> None:
+    # Each directory is reached through a short symlink to it, so every member name
+    # is short while the real paths in the scratch tree are longer than PATH_MAX.
+    # Removing that tree by full path failed with ENAMETOOLONG, and the scratch
+    # directory stayed in the temp directory. The deep part covers the descriptor
+    # walk; a directory down there keeps no mode (its path is too long to set one,
+    # as in a real run). The locked ``ro`` up front covers the chmod: its file
+    # cannot be removed until ``ro`` is opened up. The last links resolve past
+    # PATH_MAX, so the filter refuses them; the members under them still go in under
+    # real directories named ``l``, so the tree stays deeper than PATH_MAX.
+    component = "d" * 250
+    depth = os.pathconf(tmp_path, "PC_PATH_MAX") // len(component) + 2
+    entries: list[tuple[str, str, object]] = [("ro/f", "file", 0), ("ro", "dir", 0o555)]
+    path = ""
+    for _ in range(depth):
+        entries.append((f"{path}{component}", "dir", None))
+        entries.append((f"{path}l", "sym", component))
+        path += "l/"
+    entries.append((f"{path}f", "file", 0))
+    entries.append((path.rstrip("/") + "/" + component, "dir", 0o555))
+    blob = _tar(entries)
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(blob)) as reader:
+        report = reader.extract_all(dest, policy=ExtractionPolicy.TRUSTED, dry_run=True)
+    blocked = [r.member for r in report.results if r.status is ExtractionStatus.BLOCKED]
+    assert blocked
+    assert all(m.type is MemberType.SYMLINK for m in blocked)
+    assert {r.status for r in report.results} == {
+        ExtractionStatus.EXTRACTED,
+        ExtractionStatus.BLOCKED,
+    }
+    _assert_nothing_left(tmp_path, dest)
+
+
 def test_scratch_is_removed_on_abort_and_the_message_names_dest(
     tmp_path: Path,
 ) -> None:
     blob = _tar([("A", "file", 0), ("a", "file", 0)])
     dest = tmp_path / "out"
-    with open_archive(io.BytesIO(blob)) as reader:
-        with pytest.raises(NameCollisionError) as caught:
-            reader.extract_all(dest, abort_on=[AbortOn.NAME_COLLISION], dry_run=True)
+    with (
+        open_archive(io.BytesIO(blob)) as reader,
+        pytest.raises(NameCollisionError) as caught,
+    ):
+        reader.extract_all(dest, abort_on=[AbortOn.NAME_COLLISION], dry_run=True)
     assert display_path(dest / "A") in str(caught.value)
     assert "archivey-dry-run-" not in str(caught.value)
     _assert_nothing_left(tmp_path, dest)

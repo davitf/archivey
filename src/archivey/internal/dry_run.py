@@ -20,7 +20,7 @@ import shutil
 import stat
 import tempfile
 import unicodedata
-from collections.abc import Iterable, Iterator
+from collections.abc import Generator, Iterable
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePath
 from typing import BinaryIO, NamedTuple
@@ -31,6 +31,7 @@ from archivey.internal.filters import (
 )
 from archivey.internal.logs import extraction as logger
 from archivey.internal.long_paths import long_path, plain
+from archivey.paths import numbered_name
 from archivey.types import ArchiveMember, ExtractionResult, MemberType
 
 # Prefix of the private scratch directory a dry run extracts into. Removed when the run
@@ -110,6 +111,11 @@ def scratch_tree(
     return tuple(sorted(found)), tuple(sorted(links))
 
 
+#: Whether ``remove_scratch`` can walk by directory descriptor (POSIX). ``fwalk``
+#: exists only where ``stat`` takes ``dir_fd``; ``chmod`` is the one it does not imply.
+_FD_WALK = hasattr(os, "fwalk") and os.chmod in os.supports_dir_fd
+
+
 def remove_scratch(root: Path) -> None:
     """Remove a dry run's scratch directory, whatever modes the archive gave its entries.
 
@@ -122,11 +128,25 @@ def remove_scratch(root: Path) -> None:
         # In the long-path form throughout, so the walk can reach a deep entry.
         top = long_path(root)
         os.chmod(top, 0o700)
-        for parent, dirnames, filenames in os.walk(top):
-            for name in (*dirnames, *filenames):
-                path = os.path.join(parent, name)
-                if not os.path.islink(path):
-                    os.chmod(path, 0o700 if name in dirnames else 0o600)
+        if _FD_WALK:
+            # Relative to each directory's descriptor: links in the archive can build
+            # a tree whose full paths pass PATH_MAX, which no path-based call reaches.
+            # (``scratch_tree`` keeps the path form; a tree it cannot list is
+            # reported as ``None``.)
+            for _, dirnames, filenames, dir_fd in os.fwalk(top):
+                for names, mode in ((dirnames, 0o700), (filenames, 0o600)):
+                    for name in names:
+                        st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+                        if not stat.S_ISLNK(st.st_mode):
+                            os.chmod(name, mode, dir_fd=dir_fd)
+        else:
+            for parent, dirnames, filenames in os.walk(top):
+                for names, mode in ((dirnames, 0o700), (filenames, 0o600)):
+                    for name in names:
+                        path = os.path.join(parent, name)
+                        if not os.path.islink(path):
+                            os.chmod(path, mode)
+        # rmtree removes by descriptor wherever ``rmtree.avoids_symlink_attacks``.
         shutil.rmtree(top)
     except OSError as exc:
         logger.warning(
@@ -152,8 +172,8 @@ class _Listing(NamedTuple):
     # Sorted, so the entry ``_bring_one`` copies is the same on every run.
     names: tuple[str, ...]
     present: frozenset[str]
-    # Each name by its ``_fold`` key, and the names spelled from it as RENAME
-    # spells a free name (``_NUMBERED``).
+    # Each name by its ``_fold`` key; and by the ``_fold`` key of a name, the names
+    # spelled from it, in any case, as RENAME spells a free name (``_NUMBERED``).
     folded: dict[str, str]
     numbered: dict[str, tuple[str, ...]]
 
@@ -188,8 +208,9 @@ class DryRun:
     # kept. Where those two spellings of dest differ, the pass is handed a spelling
     # of the scratch directory that differs from its own ``abspath`` the same way, so
     # each path can be shown in the spelling a real run would give it.
-    # (``dest.resolve()`` spells nothing a real run reports; it is only for matching
-    # link targets, ``dest_spellings``.)
+    # (``dest.resolve()`` spells one thing a real run reports, the path of a symlink
+    # loop under dest (``rebase_os_error``). Else it is only for matching link
+    # targets, ``dest_spellings``.)
     scratch_given: Path
     shown_abspath: Path
     # The caller's destination as the absolute path they gave and as it resolves,
@@ -356,13 +377,28 @@ class DryRun:
             ),
         )
 
-    def rebase_os_error(self, exc: OSError) -> None:
+    def rebase_os_error(self, exc: OSError, *, resolved: bool = False) -> None:
         """Point a filesystem error's file names at the caller's dest, without the
-        long-path prefix, in place."""
+        long-path prefix, in place.
+
+        With ``resolved``, the error names a path the pass built from the resolved
+        scratch directory, where a real run names one built from the resolved dest
+        (``check_universal``'s symlink loop): it is shown under the resolved dest."""
         for attr in ("filename", "filename2"):
             value = getattr(exc, attr, None)
             if isinstance(value, str):
-                setattr(exc, attr, str(self.shown(Path(plain(value)))))
+                path = Path(plain(value))
+                shown = self._shown_resolved(path) if resolved else None
+                setattr(exc, attr, str(shown or self.shown(path)))
+
+    def _shown_resolved(self, path: Path) -> Path | None:
+        """``path``, under the resolved scratch directory, under the resolved dest;
+        ``None`` for a path outside it."""
+        try:
+            rest = path.relative_to(self.scratch)
+        except ValueError:
+            return None
+        return Path(self.dest_spellings[1]) / rest
 
     def record(self, made: Iterable[Path]) -> ScratchRecord:
         """What the pass left in the scratch copy of dest, for ``ExtractionReport``:
@@ -382,15 +418,17 @@ class DryRun:
             if rel:
                 _with_ancestors(ours, rel)
         top: tuple[tuple[str, bool], ...] | None = None
-        with contextlib.suppress(OSError):
-            with os.scandir(long_path(self.scratch)) as entries:
-                top = tuple(
-                    sorted(
-                        (entry.name, entry.is_dir(follow_symlinks=False))
-                        for entry in entries
-                        if entry.name not in copied or entry.name in ours
-                    )
+        with (
+            contextlib.suppress(OSError),
+            os.scandir(long_path(self.scratch)) as entries,
+        ):
+            top = tuple(
+                sorted(
+                    (entry.name, entry.is_dir(follow_symlinks=False))
+                    for entry in entries
+                    if entry.name not in copied or entry.name in ours
                 )
+            )
         if top is None or len(top) != 1:
             return ScratchRecord(top, None, None)
         tree = scratch_tree(self.scratch)
@@ -448,6 +486,18 @@ class DryRun:
             on_disk = self._link_parts(self.target_on_disk(target))
             self._walk((*rel.parent.parts, *on_disk))
 
+    def bring_in_link(self, path: Path, target: str) -> None:
+        """Copy into the scratch tree the entries of dest that the pass's symlink at
+        ``path``, with the target ``target`` on disk, resolves through now.
+
+        A later member can change a path that the link resolves through, and the
+        recheck then resolves it again (``_recheck_links``). The new route can pass
+        entries of dest that ``bring_in`` did not copy when the link was made."""
+        rel = self._rel(path.parent)
+        if not rel and path.parent not in (self.scratch, self.scratch_given):
+            return  # outside the scratch tree: not a link of the pass
+        self._walk((*PurePath(rel).parts, *self._link_parts(target)))
+
     def _link_parts(self, target: str) -> tuple[str, ...]:
         """The ``_walk`` components of a symlink of the scratch tree whose target is
         ``target``: from the link's directory, from the scratch root for an absolute
@@ -468,9 +518,14 @@ class DryRun:
     def _walk(self, parts: tuple[str, ...], *, leaf: bool = False) -> None:
         """Follow ``parts`` from the scratch root as the OS resolves a path, copying in
         the entry of dest at each component first (``_bring``). It stops where the
-        path meets a file or nothing, or leaves the scratch tree. Above the scratch
-        root it can only come back in by dest's name (``../out/x``), as the scratch
-        root is the one entry there named like dest (``scratch_for``).
+        path leaves the scratch tree, or ends past a file or nothing. A file or a
+        missing name on the way is kept as a name and taken off by a later ``..``, as
+        the checks resolve the path (``Path.resolve``, and ``_match``'s ``extra``), so
+        the walk goes on from there. A restart at the scratch root (an absolute link
+        target, after a link member's own directory) drops the kept names, as an
+        absolute path does. Above the scratch root it can only come back in by dest's
+        name (``../out/x``), as the scratch root is the one entry there named like
+        dest (``scratch_for``).
 
         With ``leaf``, ``parts`` is a member's own path: when it ends on a directory,
         one entry of it is copied in (``_bring_one``). A symlink on the way there is
@@ -481,13 +536,21 @@ class DryRun:
         above = self.scratch.parent
         ends_on_directory = False
         hops = 0
+        # The names kept past a file or a missing name, not yet taken off by "..".
+        kept = 0
         while pending:
             part = pending.pop()
             ends_on_directory = False
             if part == _FROM_ROOT:
                 current = self.scratch
+                kept = 0
                 continue
-            if part == _OUTSIDE or (current == above and part != self.scratch.name):
+            if part == _OUTSIDE:
+                return
+            if kept:
+                kept += -1 if part == ".." else 1
+                continue
+            if current == above and part != self.scratch.name:
                 return
             if part == "..":
                 current = current.parent
@@ -498,10 +561,14 @@ class DryRun:
             try:
                 st = os.lstat(long_path(path))
             except (OSError, ValueError):  # missing, or a name the OS does not take
-                return
+                kept = 1
+                continue
             if stat.S_ISDIR(st.st_mode):
                 current = path
                 ends_on_directory = True
+                continue
+            if not stat.S_ISLNK(st.st_mode):
+                kept = 1
                 continue
             hops += 1
             if not pending:
@@ -509,7 +576,7 @@ class DryRun:
                 # there, never a directory to find empty. A symlink on the way to
                 # the last component leaves the probe on (``a -> sub``, ``a/b``).
                 leaf = False
-            if not stat.S_ISLNK(st.st_mode) or hops > _MAX_LINK_HOPS:
+            if hops > _MAX_LINK_HOPS:
                 return
             try:
                 target = plain(os.readlink(long_path(path)))
@@ -532,13 +599,29 @@ class DryRun:
         listing = self._listing(directory)
         if listing is None:
             return
+        self._bring_held(directory, listing, name)
+        # A RENAME can try the numbered names also when dest does not hold ``name``:
+        # the member can collide with another member of the run. Each is spelled
+        # from ``name`` as RENAME spells it, file or directory, and looked for as
+        # ``name`` is.
+        counters = {
+            found.group(2)
+            for candidate in listing.numbered.get(_fold(name), ())
+            if (found := _NUMBERED.fullmatch(candidate)) is not None
+        }
+        for counter in sorted(counters, key=int):
+            for is_dir in (False, True):
+                spelled = numbered_name(name, int(counter), is_dir=is_dir)
+                self._bring_held(directory, listing, spelled)
+
+    def _bring_held(self, directory: Path, listing: _Listing, name: str) -> None:
+        """Copy in the entry of ``listing`` that the caller's filesystem finds by
+        ``name``, under the name dest holds it by, if there is one."""
         held = name if name in listing.present else listing.folded.get(_fold(name))
-        if held is None or (
-            held != name and not os.path.lexists(long_path(listing.source / name))
+        if held is not None and (
+            held == name or os.path.lexists(long_path(listing.source / name))
         ):
-            return
-        for candidate in (held, *listing.numbered.get(held, ())):
-            self._copy_named(directory, listing, candidate)
+            self._copy_named(directory, listing, held)
 
     def _bring_one(self, directory: Path) -> None:
         """Copy in one entry of the directory of dest that ``directory`` stands for,
@@ -587,7 +670,7 @@ class DryRun:
                     found = _NUMBERED.fullmatch(name)
                     if found is not None:
                         base = found.group(1) + found.group(3)
-                        numbered.setdefault(base, []).append(name)
+                        numbered.setdefault(_fold(base), []).append(name)
                 listing = _Listing(
                     source,
                     tuple(names),
@@ -724,7 +807,7 @@ class DryRun:
 
 
 @contextlib.contextmanager
-def scratch_for(dest: Path) -> Iterator[DryRun]:
+def scratch_for(dest: Path) -> Generator[DryRun, None, None]:
     """A ``DryRun`` for ``dest``, its scratch copy created, and removed with everything
     under it when the block ends.
 

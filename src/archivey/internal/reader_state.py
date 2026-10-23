@@ -50,10 +50,11 @@ for the transition.
 from __future__ import annotations
 
 import enum
+import gc
 import threading
 import weakref
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 from archivey.exceptions import ArchiveyUsageError
 from archivey.types import MemberStreams
@@ -63,6 +64,51 @@ if TYPE_CHECKING:
 
     from archivey.internal.open_site import OpenSite
     from archivey.internal.streams.archive_stream import ArchiveStream
+
+
+T = TypeVar("T")
+
+# A dropped pass or member stream releases what it held here only when it is freed.
+# CPython usually frees it at once, when its last reference goes (the end of a ``for``
+# loop left with ``break``, ``reader.open(m).read()``), but not when it sits in a
+# reference cycle: then it waits for the cycle collector. PyPy frees every dropped
+# object only at a later collection. Until then the next call would be refused as
+# overlapping something nobody can reach, at a moment memory pressure decides.
+
+
+_OVERLAP_MARK = "_archivey_overlap_refusal"
+
+
+def _overlap_refused(message: str) -> ArchiveyUsageError:
+    """A refusal because other work holds the reader: one that a dropped pass or
+    stream can be behind, so a collection may clear it.
+
+    It is a plain :class:`ArchiveyUsageError`, as the docs promise for an overlap; a
+    private mark on the instance tells :func:`_retry_after_collecting` it may retry. A
+    closed reader or a callback re-entry raises an unmarked one, which no collection
+    clears."""
+    exc = ArchiveyUsageError(message)
+    setattr(exc, _OVERLAP_MARK, True)
+    return exc
+
+
+def _retry_after_collecting(attempt: Callable[[], T]) -> T:
+    """``attempt()``; refused for an overlap, ``attempt`` again after a collection has
+    run the cleanup of passes and streams already dropped.
+
+    This runs on every interpreter, so whether a call is refused depends only on
+    whether the earlier pass or stream is still reachable, never on when a collection
+    happened to run. The collection runs only on that refusal, outside the state lock
+    (the cleanup takes it). A refusal that still holds afterwards is a real overlap
+    and raises.
+    """
+    try:
+        return attempt()
+    except ArchiveyUsageError as exc:
+        if not getattr(exc, _OVERLAP_MARK, False):
+            raise
+    gc.collect()
+    return attempt()
 
 
 # Passes that may run beside workers and beside one another on a CONCURRENT reader.
@@ -286,6 +332,9 @@ class ReaderState:
         return self._root
 
     def acquire_pass(self, name: str) -> OperationToken:
+        return _retry_after_collecting(lambda: self._acquire_pass_once(name))
+
+    def _acquire_pass_once(self, name: str) -> OperationToken:
         """Acquire a data-pass token: root when free, else a child under an internal owner."""
         with self._lock:
             self._require_admissible_locked(name)
@@ -301,12 +350,12 @@ class ReaderState:
             if self._root is not None and not (
                 overlap and self._pass_admits_overlap_locked(self._root.name)
             ):
-                raise ArchiveyUsageError(
+                raise _overlap_refused(
                     f"Cannot start {name!r}: another reader operation "
                     f"({self._root.name!r}) is already active."
                 )
             if self._workers and not overlap:
-                raise ArchiveyUsageError(
+                raise _overlap_refused(
                     f"Cannot start {name!r}: a concurrent open()/read() call is still "
                     "in progress."
                 )
@@ -410,6 +459,9 @@ class ReaderState:
             self._children.discard(child)
 
     def acquire_worker(self, name: str) -> OperationToken:
+        return _retry_after_collecting(lambda: self._acquire_worker_once(name))
+
+    def _acquire_worker_once(self, name: str) -> OperationToken:
         """Short-lived token for random ``open()`` / ``read()`` (D7).
 
         Rejected while a reader-wide root pass is active (unless under library-internal
@@ -430,7 +482,7 @@ class ReaderState:
             ):
                 # Side passes exist only beside a root that admits overlap, and they
                 # admit it too, so checking the root is enough.
-                raise ArchiveyUsageError(
+                raise _overlap_refused(
                     f"Cannot call {name!r}: another reader operation "
                     f"({self._root.name!r}) is already active."
                 )
@@ -522,6 +574,9 @@ class ReaderState:
                 self._materialization_cv.notify_all()
 
     def reserve_live_stream(self) -> LiveStreamReservation:
+        return _retry_after_collecting(self._reserve_live_stream_once)
+
+    def _reserve_live_stream_once(self) -> LiveStreamReservation:
         """Take a live-stream lease before the stream object exists.
 
         Raises :class:`~archivey.exceptions.ArchiveyUsageError` under the same
@@ -531,16 +586,17 @@ class ReaderState:
         """
         with self._lock:
             self._require_lifecycle_open_locked("open()")
-            if not (self.concurrent or self._internal_opens_active_locked()):
-                if self._live_streams or self._reservations:
-                    site = self.open_site
-                    loc = site.location if site is not None else "<unknown>"
-                    raise ArchiveyUsageError(
-                        "A member stream is already open on this reader. Close it "
-                        "before opening another, or reopen the archive with "
-                        "concurrent_operations=True "
-                        f"(this archive was opened without concurrent_operations at {loc})."
-                    )
+            if not (self.concurrent or self._internal_opens_active_locked()) and (
+                self._live_streams or self._reservations
+            ):
+                site = self.open_site
+                loc = site.location if site is not None else "<unknown>"
+                raise _overlap_refused(
+                    "A member stream is already open on this reader. Close it "
+                    "before opening another, or reopen the archive with "
+                    "concurrent_operations=True "
+                    f"(this archive was opened without concurrent_operations at {loc})."
+                )
             token = LiveStreamReservation()
             self._reservations.add(token)
             self._lease_count += 1

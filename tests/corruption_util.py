@@ -9,7 +9,7 @@ error could reasonably be either uses ``pytest.raises(CorruptionError)``.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
 
@@ -21,7 +21,7 @@ from archivey.exceptions import CorruptionError, TruncatedError
 @contextmanager
 def raises_corruption_not_truncation(
     **kwargs: Any,
-) -> Iterator[pytest.ExceptionInfo[CorruptionError]]:
+) -> Generator[pytest.ExceptionInfo[CorruptionError], None, None]:
     """``pytest.raises(CorruptionError, **kwargs)`` that also fails on a ``TruncatedError``."""
     with pytest.raises(CorruptionError, **kwargs) as info:
         yield info

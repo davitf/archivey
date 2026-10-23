@@ -476,9 +476,20 @@ system MUST NOT materialize the excluded source at its own destination. It SHALL
 make the source content available only through selected link destinations: write
 the bytes to the first selected link path allowed by `OverwritePolicy`, record
 `NOT_OVERWRITTEN` links under `SKIP`, link further selected links to the
-materialized path, and write nothing if every selected link is skipped. The
+materialized path, and write nothing if no selected link takes the bytes (each is
+skipped or fails on its own, as below). The
 materialized file gets the selected link's transformed metadata. An equivalent
 hidden temp inside `dest` is permitted.
+
+Two kinds of failure are the source's: the refusal of the source's recorded size
+under the per-member ratio limit, which every link would meet, and any failure once
+the copy of the source's bytes into the link's temp file begins (reading or decoding
+the source, a bomb limit, writing or placing the file). The bytes cannot then be
+offered to another link, so that link and every later one fail as one group; links
+before it keep their own results. Every other failure is the link's own: a destination
+that `ERROR` refuses, one that `REPLACE` cannot remove (a directory with entries), or a
+directory that refuses the temp file fails that link alone, governed by `OnError`, and
+under `CONTINUE` the content moves to the next selected link.
 
 Recovering orphaned links SHALL take at most one extra pass and no speculative upfront
 scan to find them: a seekable source gets one conditional second pass after the main
@@ -528,6 +539,10 @@ refuses its links; any other is recovered as above.
 | HARDLINK reached after its source was extracted | Try `os.link()` against recorded source paths; fallback to copy on all-`EXDEV` or all-`EMLINK` |
 | Selected hardlink source was excluded but recoverable | Source content appears at selected link path(s); excluded source path is never created |
 | First selected link destination exists under `OverwritePolicy.SKIP` | That link result is `NOT_OVERWRITTEN`; content moves to the next allowed link; all skipped means no write |
+| First selected link destination refused under `OverwritePolicy.ERROR`, or a directory with entries under `REPLACE`, with `OnError.CONTINUE` | That link alone is `FAILED`, with no failure group; content moves to the next allowed link |
+| Every selected link destination refused under `OverwritePolicy.ERROR`, with `OnError.CONTINUE` | Each link is `FAILED` on its own, with no failure group; nothing is written |
+| The directory of the first selected link refuses the temp file, with `OnError.CONTINUE` | That link alone is `FAILED`, with no failure group; content moves to the next allowed link |
+| Reading the excluded source fails while writing it at a later link, an earlier link skipped | The skipped link stays `NOT_OVERWRITTEN`; that link and the ones after it are `FAILED` as one failure group |
 | Excluded source on a forward-only stream | Per-member failure: `STOP` raises; `CONTINUE` records `FAILED` and proceeds |
 | HARDLINK appears before its also-selected source | After the pass it links to the extracted source inode; source bytes read and counted once |
 | HARDLINK whose resolved source is not a FILE (e.g. a DIRECTORY member) | Per-member `ExtractionError` naming the source's type (for a directory: a hard link to one cannot be created); the source itself still extracts |
@@ -1677,21 +1692,25 @@ bytes a real extraction counts for copying a hardlink across a filesystem bounda
 inside `dest` are not counted. And a directory of `dest` gains its owner's read,
 write and search bits in the scratch directory, so a refusal that comes from its
 permissions MAY appear only in a real extraction; a symlink of `dest` that the OS will
-not create there is copied as an empty file; and an entry that cannot be copied (the
-scratch filesystem is full, or the name is too long there) is left out. A `dest` that
-exists and is not a directory SHALL be refused as a real extraction refuses it. A `dest`
-that does not exist SHALL be refused with the error a real extraction gets creating it
-when the nearest part of its path that exists cannot be resolved, is not a directory, or
-cannot be written to. Whether it can be written to is a prediction made with
-`access(2)`, which checks the real user and group ids rather than the effective ones,
-and on Windows it is not made; so a refusal that comes from a process whose real and
-effective ids differ, from a change after the check, or on Windows, MAY appear only in a
-real extraction. File names in errors raised, recorded or logged SHALL be the ones a
-real extraction's errors give, spelled from `dest` as given or as `os.path.abspath`
-spells it, and never the scratch directory's, except in the warning that the scratch
-directory itself could not be removed. The scratch directory SHALL be removed before the
-call returns or raises, including when the archive stored modes that make its
-directories unwritable or its files read-only.
+not create there is copied as an empty file; an entry that cannot be copied (the
+scratch filesystem is full, or the name is too long there) is left out; and a path
+whose links expand past `PATH_MAX` cannot be resolved and is refused, so where the
+scratch directory's path and `dest`'s differ in length, a member whose resolution
+passes that limit in only one of them MAY be refused in only one of the two runs. A
+`dest` that exists and is not a directory SHALL be refused as a real extraction
+refuses it. A `dest` that does not exist SHALL be refused with the error a real
+extraction gets creating it when the nearest part of its path that exists cannot be
+resolved, is not a directory, or cannot be written to. Whether it can be written to is a
+prediction made with `access(2)`, which checks the real user and group ids rather than
+the effective ones, and on Windows it is not made; so a refusal that comes from a
+process whose real and effective ids differ, from a change after the check, or on
+Windows, MAY appear only in a real extraction. File names in errors raised, recorded or
+logged SHALL be the ones a real extraction's errors give, spelled from `dest` as given,
+as `os.path.abspath` spells it, or resolved (a symlink loop already in `dest`), and
+never the scratch directory's, except in the warning that the scratch directory itself
+could not be removed. The scratch directory SHALL be removed before the call returns or
+raises, including when the archive stored modes that make its directories unwritable or
+its files read-only.
 
 #### Scenario: dry-run matrix
 

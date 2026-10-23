@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "archivey"
-version = "0.2.0rc1"
+version = "0.2.1.dev0"
 description = "Python library for reading, streaming, and safely extracting archives"
 readme = "README.md"
 license = { text = "MIT" }
@@ -67,13 +67,14 @@ recommended = [
     "inflate64>=1.0.0",
     "backports.zstd>=1.0.0; python_version < '3.14'",
     # >=1.2.0: process(output_buffer_limit=) / can_accept_more_data (CVE-2025-6176).
-    "brotli>=1.2.0",
+    # >=1.2.1: decoder buffer overflow fix (CVE-2026-111497).
+    "brotli>=1.2.1",
     "lz4>=4.4.5",
     # AES block operations only (7z, RAR headers, WinZip AES ZIP); PBKDF2/SHA/HMAC are
     # stdlib. RAR5 BLAKE2sp is native on hashlib (internal/hashing/blake2sp.py) and needs
     # no package at all.
     "cryptography>=45.0.0",
-    "pycdlib>=1.16.0",
+    "pycdlib>=1.22.0",
     "tqdm>=4.67.0",
 ]
 # rapidgzip backs BOTH gzip (RapidgzipFile) and bzip2 (its bundled IndexedBzip2File). The
@@ -101,7 +102,7 @@ seekable = [
 # the GIL still disabled. That gap is also why `pip install archivey[recommended]` fails
 # on 3.13t — documented in docs/install.md, not worked around.
 free-threaded = [
-    "pycdlib>=1.16.0",
+    "pycdlib>=1.22.0",
     "lz4>=4.4.5",
     "tqdm>=4.67.0",
     "backports.zstd>=1.0.0; python_version < '3.14'",
@@ -137,12 +138,18 @@ dev = [
     #
     # Keep `ruff` in step with the `rev:` in .pre-commit-config.yaml — the framework hook
     # path resolves its own copy. tests/test_tooling_pins.py enforces that.
-    "pyrefly==1.1.1",
-    "ty==0.0.60",
-    "ruff==0.15.22",
+    "pyrefly==1.4.0",
+    "ty==0.0.90",
+    "ruff==0.17.1",
     "pre-commit>=4.0.0",
+    # tests/test_release_script.py reads the workflow files with it.
+    "pyyaml>=6.0",
     "coverage[toml]>=7.6.0",
-    "py7zr>=1.0.0",
+    # >=1.1: earlier releases pin pyppmd<1.3.0, the range the pyppmd>=1.3.1 floor
+    # above rules out (wrong bytes on chunked PPMd decodes). Needed by
+    # tests/test_sevenzip_reader.py::test_py7zr_codec_fixtures_roundtrip[ppmd] and
+    # ::test_encrypted_ppmd_chunked_reads_roundtrip.
+    "py7zr>=1.1.0",
     "rarfile>=4.2",
     # libarchive-c is a dev-only cross-validation oracle for optional corpus tests
     # (tests/test_libarchive_corpus.py); it is not a runtime backend.
@@ -150,12 +157,12 @@ dev = [
     # Stdlib compression.zstd on 3.14+; backports only needed below that.
     "backports.zstd>=1.0.0; python_version < '3.14'",
     "lz4>=4.4.5",
-    "brotli>=1.2.0",
+    "brotli>=1.2.1",
     # pycdlib (the [iso] extra) is in the dev group like the other optional format libs, so
     # the ISO backend's tests run in the default dev env and the type checkers can resolve the
     # PyCdlibIO annotation. The core-only CI leg installs with --no-dev, so it stays absent
     # there and the zero-dep core / graceful-degradation paths are still exercised.
-    "pycdlib>=1.16.0",
+    "pycdlib>=1.22.0",
     # ncompress is a test-only LZW *compressor* used to generate .Z fixtures for the
     # native unix-compress decoder (core; decode-only).
     "ncompress>=1.0.0",
@@ -182,6 +189,9 @@ docs = [
     "mkdocs-autorefs>=1.2.0",
     "mkdocs-material>=9.6.0",
     "griffe-fieldz>=0.2.1",
+    # Writes llms.txt, llms-full.txt and a Markdown copy of each page for coding
+    # agents. Capped below 0.6: a 0.x release may change the output format.
+    "mkdocs-llmstxt>=0.5.1,<0.6",
 ]
 # Coverage-guided fuzz harness (Atheris / libFuzzer). CI-only: never a user-facing
 # runtime extra and never folded into `[all]` — see packaging-and-extras + threat-model O5.
@@ -192,21 +202,70 @@ fuzz = [
     "atheris>=3.0.0; python_version >= '3.12'",
 ]
 
+# The sdist carries what a build needs, plus the changelog. Without this list hatch
+# packs every tracked file (openspec/, review/, dev-docs/, .claude/, tests/ ...), which
+# made the 0.2.0rc1 sdist about 7.5 MB. tests/ stays out on purpose: it would add about
+# 2.3 MB, and dozens of its tests read files that exist only in a git checkout (scripts/,
+# review/, openspec/, .github/), so the suite does not pass from an unpacked sdist. Run
+# the tests from the git tag instead. hatch adds pyproject.toml, PKG-INFO and the
+# repo-root .gitignore. publish.yml's build job fails when the sdist holds another
+# top-level path; tests/test_sdist_contents.py ties its list to this one.
+[tool.hatch.build.targets.sdist]
+only-include = ["src", "LICENSE", "README.md", "CHANGELOG.md"]
+
 [tool.ruff]
 target-version = "py311"
 
 [tool.ruff.lint]
-extend-select = ["I", "F", "C4", "ISC", "RET", "BLE", "UP"]
+# Ruff 0.16 grew its default set from 59 rules to 413 (bugbear, simplify, RUF, a pylint
+# and a bandit subset, refurb, pie, pyi, …); we take all of it. It also dropped some
+# pycodestyle E4/E7 and pyflakes rules from the defaults. "F" on the first line already
+# selects every pyflakes rule; the second line restores the E4/E7 ones. E902 (E9) is
+# still in the default set.
+extend-select = [
+    "I", "F", "C4", "ISC", "RET", "BLE", "UP",
+    "E401", "E402", "E701", "E702", "E703", "E711", "E712", "E713", "E714", "E721",
+    "E731", "E741", "E742", "E743",
+]
+
+[tool.ruff.lint.isort]
+# One `from m import (...)` per module, aliases included (`Set as AbstractSet`).
+combine-as-imports = true
+
+[tool.ruff.lint.flake8-bugbear]
+# Immutable values, safe as argument and dataclass defaults (B008, RUF009): an enum.Flag
+# and a frozen dataclass of ints.
+# `archivey.internal.config` re-exports DecoderLimits, so both paths are listed.
+extend-immutable-calls = [
+    "archivey.types.MemberStreams",
+    "archivey.config.DecoderLimits",
+    "archivey.internal.config.DecoderLimits",
+]
 
 [tool.ruff.lint.per-file-ignores]
 # This survey promises to run on a bare Python 3.8+ interpreter, so the UP rules, which
 # assume the package's py311 floor, don't apply to it.
 "scripts/exploration/brotli_probe_field_survey.py" = ["UP"]
+# The ISO reader patches pycdlib's parsers in place and reads a few of its private
+# attributes. Through setattr/getattr the checkers see `object`; a plain assignment or
+# attribute read would need a pyrefly and a ty suppression on every line instead.
+"src/archivey/internal/backends/iso_reader.py" = ["B009", "B010"]
 
 [tool.pyrefly]
 search-path = ["src"]
 project-includes = ["src"]
 python_version = "3.11"
+
+# pycdlib is py.typed but declares its signatures in PEP 484 type comments
+# (`# type: () -> int`), which Pyrefly does not read. From 1.4 Pyrefly instead infers
+# each return type from the body, and the inference is wrong in ways the comments are
+# not: `DirectoryRecord.extent_location()` comes out `int | None` because
+# `orig_extent_loc` starts as None in `__init__`. Treat pycdlib's unannotated
+# functions as returning Any, as Pyrefly 1.1 effectively did and as ty does (it
+# reports these calls' results as Unknown).
+[[tool.pyrefly.sub-config]]
+matches = "**/pycdlib/**"
+untyped-def-behavior = "skip-and-infer-return-any"
 
 [tool.ty]
 # ty is Astral's own from-scratch type checker (not pyright/mypy-based). The library
@@ -276,6 +335,12 @@ addopts = "--cov=archivey --cov-branch --cov-report=term-missing --cov-report=xm
 # each new override site must remember to repeat it. The ini key is untouched by
 # `-o addopts=`, so they all inherit it and none of them names it.
 timeout_method = "thread"
+# A per-test timeout also covers fixture setup and teardown: a module-scoped fixture's
+# setup counts against the first test that uses it on a worker, and its teardown against
+# the last test of the module there, often an unrelated one on the 60 s default. A slow
+# module fixture once killed a Windows xdist worker that way, with no traceback. Keep
+# module fixtures fast, or mark the test `@pytest.mark.timeout(N, func_only=True)` so the
+# budget covers only the test body.
 
 markers = [
     "sample_archives: declarative parametrization over sample archives and config variants",

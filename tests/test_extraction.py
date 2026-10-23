@@ -15,6 +15,7 @@ import shutil
 import struct
 import subprocess
 import tarfile
+import tempfile
 import time
 import unicodedata
 import warnings
@@ -52,6 +53,7 @@ from archivey.internal.bomb_tracker import AlwaysStopResourceLimitError, BombTra
 from archivey.internal.extraction import _CHUNK, ExtractionCoordinator
 from archivey.internal.filters import (
     POLICY_TRANSFORMS,
+    _resolve_with_pathlib,
     apply_name_policy,
     check_universal,
     resolve_or_raise_on_loop,
@@ -61,7 +63,7 @@ from archivey.internal.filters import (
 from archivey.internal.link_watch import LinkWatch
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.types import ArchiveFormat, ArchiveInfo, ArchiveMember, MemberType
-from tests.conftest import case_sensitive
+from tests.conftest import binary_refusal, case_sensitive
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.extract_util import open_and_extract
 from tests.streams_util import SizedNonSeekable
@@ -262,7 +264,24 @@ def test_check_universal_names_a_loop_in_the_destination(
     with pytest.raises(ExtractionError) as info:
         check_universal(member, dest)
     assert type(info.value) is ExtractionError
-    assert "A path in the destination does not resolve" in str(info.value)
+    assert "A path in the destination does not resolve (a symlink loop)" in str(
+        info.value
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+def test_check_universal_names_a_path_past_path_max_in_the_destination(
+    tmp_path: Path,
+) -> None:
+    # Not a loop: the destination's link chain is longer than PATH_MAX when expanded.
+    _link_chain_past_path_max(tmp_path)
+    with pytest.raises(ExtractionError) as info:
+        check_universal(_member("up/f"), tmp_path)
+    assert type(info.value) is ExtractionError
+    assert (
+        "A path in the destination does not resolve (a path that cannot be looked up)"
+        in str(info.value)
+    )
 
 
 def test_check_universal_enforced_under_trusted(tmp_path: Path) -> None:
@@ -1593,8 +1612,8 @@ def _bomb_7z(tmp_path: Path) -> tuple[Path, str, str]:
 def _bomb_rar(tmp_path: Path) -> tuple[Path, str, str]:
     # Committed, so the leg runs wherever unrar is installed (no rar writer needed).
     # prefix.bin records 1 MiB from 91 bytes. unrar reads tail.txt.
-    if shutil.which("unrar") is None:
-        pytest.skip("unrar not installed")
+    if (refusal := binary_refusal("unrar")) is not None:
+        pytest.skip(refusal)
     return _RAR_FIXTURES / "seek_respawn_solid__.rar", "prefix.bin", "tail.txt"
 
 
@@ -2054,9 +2073,8 @@ def test_extracting_under_a_symlink_loop_raises_eloop(
         src = tmp_path / "a.tar"
         src.write_bytes(_tar_bytes([("file", "f.txt", b"x")]))
     os.symlink("loop", tmp_path / "loop")
-    with open_archive(src) as reader:
-        with pytest.raises(OSError) as info:
-            reader.extract_all(tmp_path / "loop" / "out", dry_run=dry_run)
+    with open_archive(src) as reader, pytest.raises(OSError) as info:
+        reader.extract_all(tmp_path / "loop" / "out", dry_run=dry_run)
     assert info.value.errno == errno.ELOOP
     assert sorted(p.name for p in tmp_path.iterdir()) == sorted([src.name, "loop"])
 
@@ -2078,9 +2096,11 @@ def test_extracting_into_a_self_looping_symlink_raises_extraction_error(
         src = tmp_path / "a.tar"
         src.write_bytes(_tar_bytes([("file", "f.txt", b"x")]))
     os.symlink("loop", tmp_path / "loop")
-    with open_archive(src) as reader:
-        with pytest.raises(ExtractionError, match="exists and is not a directory"):
-            reader.extract_all(tmp_path / "loop", dry_run=dry_run)
+    with (
+        open_archive(src) as reader,
+        pytest.raises(ExtractionError, match="exists and is not a directory"),
+    ):
+        reader.extract_all(tmp_path / "loop", dry_run=dry_run)
     assert sorted(p.name for p in tmp_path.iterdir()) == sorted([src.name, "loop"])
 
 
@@ -2104,6 +2124,36 @@ def test_resolve_or_raise_on_loop_keeps_a_missing_component(tmp_path: Path) -> N
     assert resolve_or_raise_on_loop(path) == tmp_path.resolve() / "d" / "missing" / "f"
 
 
+def _link_chain_past_path_max(root: Path) -> None:
+    """``root/up``: links whose expansion is longer than PATH_MAX, leading to
+    ``root``'s parent."""
+    component = "d" * 200
+    path_max = os.pathconf(root, "PC_PATH_MAX")
+    depth = path_max // len(component) + 1
+    here = root
+    for _ in range(depth):
+        (here / component).mkdir()
+        os.symlink(component, here / "s")
+        here = here / "s"  # The short spelling, which stays under PATH_MAX.
+    os.symlink(os.path.join(*[".."] * (depth + 1)), here / "x")
+    os.symlink(os.path.join(*["s"] * depth, "x", ".."), root / "up")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+def test_resolve_or_raise_on_loop_raises_when_a_component_cannot_be_looked_up(
+    tmp_path: Path,
+) -> None:
+    # os.path.realpath keeps the long name and drops it again at the "..", so it
+    # gives a path inside tmp_path, while the kernel follows `up` one link at a time
+    # to tmp_path's parent.
+    _link_chain_past_path_max(tmp_path)
+    assert os.path.realpath(tmp_path / "up").startswith(str(tmp_path.resolve()))
+    with pytest.raises(OSError) as info:
+        resolve_or_raise_on_loop(tmp_path / "up")
+    assert info.value.errno == errno.ENAMETOOLONG
+    assert info.value.filename == str(tmp_path / "up")
+
+
 @pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
 def test_resolve_or_raise_on_loop_swallows_enoent_from_the_stat(
     tmp_path: Path,
@@ -2116,7 +2166,7 @@ def test_resolve_or_raise_on_loop_swallows_enoent_from_the_stat(
     )
 
 
-def test_resolve_or_raise_on_loop_treats_winerror_1921_as_a_loop(
+def test_windows_resolution_treats_winerror_1921_as_a_loop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Windows reports a loop as ERROR_CANT_RESOLVE_FILENAME, not ELOOP. Raised here by
@@ -2133,7 +2183,7 @@ def test_resolve_or_raise_on_loop_treats_winerror_1921_as_a_loop(
     monkeypatch.setattr(Path, "stat", stat)
     path = tmp_path / "x"
     with pytest.raises(OSError) as info:
-        resolve_or_raise_on_loop(path)
+        _resolve_with_pathlib(path)
     assert type(info.value) is OSError
     assert info.value.errno == errno.ELOOP
     assert info.value.filename == str(path)
@@ -2397,9 +2447,11 @@ def test_tar_hardlink_orphan_forward_only_onerror(tmp_path: Path) -> None:
 
     # STOP: raises on the unrecoverable orphan.
     dest = tmp_path / "out_stop"
-    with open_archive(NonSeekableBytesIO(raw), streaming=True) as r:
-        with pytest.raises(ExtractionError):
-            r.extract_all(dest, filter=drop_source)
+    with (
+        open_archive(NonSeekableBytesIO(raw), streaming=True) as r,
+        pytest.raises(ExtractionError),
+    ):
+        r.extract_all(dest, filter=drop_source)
 
     # CONTINUE: records FAILED, does not raise.
     dest2 = tmp_path / "out_continue"
@@ -2651,18 +2703,20 @@ def test_streaming_live_ratio_halts_under_continue(tmp_path: Path) -> None:
 
     raw = _tar_bytes([("file", "z.bin", b"\x00" * (8 * 1024 * 1024))], mode="w:gz")
     dest = tmp_path / "out"
-    with open_archive(NonSeekableBytesIO(raw), streaming=True) as r:
-        with pytest.raises(ResourceLimitError):
-            r.extract_all(
-                dest,
-                limits=ExtractionLimits(
-                    max_ratio=10.0,
-                    ratio_activation_threshold=1024,
-                    live_ratio_activation_threshold=1024,
-                    max_extracted_bytes=100 * 2**20,
-                ),
-                on_error=OnError.CONTINUE,  # global guard halts anyway
-            )
+    with (
+        open_archive(NonSeekableBytesIO(raw), streaming=True) as r,
+        pytest.raises(ResourceLimitError),
+    ):
+        r.extract_all(
+            dest,
+            limits=ExtractionLimits(
+                max_ratio=10.0,
+                ratio_activation_threshold=1024,
+                live_ratio_activation_threshold=1024,
+                max_extracted_bytes=100 * 2**20,
+            ),
+            on_error=OnError.CONTINUE,  # global guard halts anyway
+        )
 
 
 def test_streaming_plain_tar_no_live_ratio_trip(tmp_path: Path) -> None:
@@ -2768,12 +2822,14 @@ def test_piped_blank_start_passes_like_a_file(tmp_path: Path) -> None:
 
     # A live floor under the blank start judges it before the data arrives: this is the
     # trade-off the floor sets, and what the old behaviour did at 5 MiB.
-    with open_archive(NonSeekableBytesIO(raw), streaming=True) as r:
-        with pytest.raises(ResourceLimitError, match="Live decompression ratio"):
-            r.extract_all(
-                tmp_path / "low",
-                limits=replace(limits, live_ratio_activation_threshold=1024),
-            )
+    with (
+        open_archive(NonSeekableBytesIO(raw), streaming=True) as r,
+        pytest.raises(ResourceLimitError, match="Live decompression ratio"),
+    ):
+        r.extract_all(
+            tmp_path / "low",
+            limits=replace(limits, live_ratio_activation_threshold=1024),
+        )
 
 
 def test_non_seekable_member_stream_keeps_its_declared_size(tmp_path: Path) -> None:
@@ -2786,12 +2842,11 @@ def test_non_seekable_member_stream_keeps_its_declared_size(tmp_path: Path) -> N
         info = tarfile.TarInfo("inner.gz")
         info.size = len(inner)
         t.addfile(info, io.BytesIO(inner))
-    with open_archive(outer) as outer_ar:
-        with outer_ar.open("inner.gz") as member_stream:
-            assert not member_stream.seekable()
-            with open_archive(member_stream, streaming=True) as inner_ar:
-                assert inner_ar.compressed_source_size == len(inner)
-                assert inner_ar.compressed_bytes_consumed is None
+    with open_archive(outer) as outer_ar, outer_ar.open("inner.gz") as member_stream:
+        assert not member_stream.seekable()
+        with open_archive(member_stream, streaming=True) as inner_ar:
+            assert inner_ar.compressed_source_size == len(inner)
+            assert inner_ar.compressed_bytes_consumed is None
 
 
 def test_plain_tar_from_sized_pipe_has_no_archive_wide_denominator() -> None:
@@ -2920,6 +2975,209 @@ def test_orphan_link_failing_after_the_content_was_placed_fails_alone(
     assert by_name["L2.txt"].failure_group_id is None
 
 
+@pytest.mark.parametrize(
+    ("overwrite", "held", "message"),
+    [
+        (OverwritePolicy.ERROR, "file", "Destination already exists"),
+        (OverwritePolicy.REPLACE, "full-dir", "Destination is a directory"),
+    ],
+    ids=["error-over-file", "replace-over-full-dir"],
+)
+def test_orphan_link_refused_by_the_policy_fails_alone(
+    tmp_path: Path, overwrite: OverwritePolicy, held: str, message: str
+) -> None:
+    # The excluded source's content goes to the first link the OverwritePolicy lets
+    # it take. L1's destination is refused, so L1 fails on its own, nothing of the
+    # source has been read, and L2 gets the content: the source did not fail, so no
+    # failure group joins the two.
+    src = _orphan_tar(tmp_path, ["L1.txt", "L2.txt"])
+    dest = tmp_path / "out"
+    dest.mkdir()
+    if held == "file":
+        (dest / "L1.txt").write_bytes(b"pre-existing")
+    else:
+        (dest / "L1.txt").mkdir()
+        (dest / "L1.txt" / "keep").write_bytes(b"pre-existing")
+
+    with open_archive(src) as r:
+        results = r.extract_all(
+            dest,
+            members=["L1.txt", "L2.txt"],
+            overwrite=overwrite,
+            on_error=OnError.CONTINUE,
+        ).results
+
+    by_name = {res.member.name: res for res in results}
+    first = by_name["L1.txt"]
+    assert first.status is ExtractionStatus.FAILED
+    assert message in str(first.error)
+    assert first.failure_group_id is None
+    assert first.failure_group_size is None
+    assert first.requested_path == dest / "L1.txt"
+    assert by_name["L2.txt"].status is ExtractionStatus.EXTRACTED
+    assert by_name["L2.txt"].failure_group_id is None
+    assert (dest / "L2.txt").read_bytes() == b"hello world"
+    if held == "file":
+        assert (dest / "L1.txt").read_bytes() == b"pre-existing"
+    else:
+        assert (dest / "L1.txt" / "keep").read_bytes() == b"pre-existing"
+    assert not (dest / "A.txt").exists()
+
+
+def test_orphan_link_refused_by_the_policy_stops_under_stop(tmp_path: Path) -> None:
+    # Under OnError.STOP the first link's own failure ends the run, as any other
+    # link's would.
+    src = _orphan_tar(tmp_path, ["L1.txt", "L2.txt"])
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "L1.txt").write_bytes(b"pre-existing")
+
+    with (
+        open_archive(src) as r,
+        pytest.raises(ExtractionError, match="Destination already exists"),
+    ):
+        r.extract_all(
+            dest, members=["L1.txt", "L2.txt"], overwrite=OverwritePolicy.ERROR
+        )
+    assert not (dest / "L2.txt").exists()
+
+
+def test_orphan_source_failure_keeps_earlier_link_results(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # L1 is skipped, then reading the source fails while it is copied into L2's temp
+    # file. The source failed, so L2 and L3 fail as one group of two; L1's
+    # NOT_OVERWRITTEN stands.
+    src = _orphan_tar(tmp_path, ["L1.txt", "L2.txt", "L3.txt"])
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "L1.txt").write_bytes(b"pre-existing")
+
+    def boom(*args: object, **kwargs: object) -> None:
+        raise ExtractionError("forced second-pass failure")
+
+    monkeypatch.setattr(ExtractionCoordinator, "_copy_to_fileobj", staticmethod(boom))
+    with open_archive(src) as r:
+        results = r.extract_all(
+            dest,
+            members=["L1.txt", "L2.txt", "L3.txt"],
+            overwrite=OverwritePolicy.SKIP,
+            on_error=OnError.CONTINUE,
+        ).results
+
+    by_name = {res.member.name: res for res in results}
+    assert by_name["L1.txt"].status is ExtractionStatus.NOT_OVERWRITTEN
+    assert by_name["L1.txt"].failure_group_id is None
+    failed = [by_name["L2.txt"], by_name["L3.txt"]]
+    assert [r.status for r in failed] == [ExtractionStatus.FAILED] * 2
+    assert failed[0].failure_group_id is not None
+    assert failed[0].failure_group_id == failed[1].failure_group_id
+    assert [r.failure_group_size for r in failed] == [2, 2]
+    assert (dest / "L1.txt").read_bytes() == b"pre-existing"
+    assert not (dest / "L2.txt").exists()
+    assert not (dest / "L3.txt").exists()
+    assert sorted(p.name for p in dest.iterdir()) == ["L1.txt"]  # no temp left
+
+
+def test_orphan_source_refused_from_its_recorded_size_fails_as_a_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The recorded-size refusal is a property of the source, which every link would
+    # meet: it fails the links as one group, and no link is tried after it.
+    src = _orphan_tar(tmp_path, ["L1.txt", "L2.txt"])
+    dest = tmp_path / "out"
+
+    def refuse(self: BombTracker) -> None:
+        raise ResourceLimitError("forced recorded-size refusal")
+
+    monkeypatch.setattr(BombTracker, "check_recorded_size", refuse)
+    with open_archive(src) as r:
+        results = r.extract_all(
+            dest, members=["L1.txt", "L2.txt"], on_error=OnError.CONTINUE
+        ).results
+
+    assert [res.status for res in results] == [ExtractionStatus.FAILED] * 2
+    assert results[0].failure_group_id is not None
+    assert results[0].failure_group_id == results[1].failure_group_id
+    assert [res.failure_group_size for res in results] == [2, 2]
+    assert not (dest / "L1.txt").exists()
+    assert not (dest / "L2.txt").exists()
+
+
+def _orphan_tar_with_link_in_ro(tmp_path: Path) -> Path:
+    src = tmp_path / "a.tar"
+    src.write_bytes(
+        _tar_bytes(
+            [
+                ("file", "A.txt", b"hello world"),
+                ("hard", "ro/L1.txt", "A.txt"),
+                ("hard", "L2.txt", "A.txt"),
+            ]
+        )
+    )
+    return src
+
+
+def _assert_first_link_failed_alone(results, dest: Path) -> None:
+    by_name = {res.member.name: res for res in results}
+    first = by_name["ro/L1.txt"]
+    assert first.status is ExtractionStatus.FAILED
+    assert isinstance(first.error, PermissionError)
+    assert first.failure_group_id is None
+    assert first.failure_group_size is None
+    assert first.requested_path == dest / "ro" / "L1.txt"
+    assert by_name["L2.txt"].status is ExtractionStatus.EXTRACTED
+    assert (dest / "L2.txt").read_bytes() == b"hello world"
+    assert list((dest / "ro").iterdir()) == []
+
+
+def test_orphan_link_whose_temp_file_is_refused_fails_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Creating the temp file comes before the first read of the source, so a
+    # directory that refuses it fails that link alone and the next link gets the
+    # content. The refusal is injected, so this runs as root too; the test below
+    # makes the real one.
+    src = _orphan_tar_with_link_in_ro(tmp_path)
+    dest = tmp_path / "out"
+    mkstemp = tempfile.mkstemp
+
+    def refuse_in_ro(*args: object, **kwargs: object) -> tuple[int, str]:
+        if Path(str(kwargs["dir"])).name == "ro":
+            raise PermissionError(errno.EACCES, "Permission denied", kwargs["dir"])
+        return mkstemp(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(tempfile, "mkstemp", refuse_in_ro)
+    with open_archive(src) as r:
+        results = r.extract_all(
+            dest, members=["ro/L1.txt", "L2.txt"], on_error=OnError.CONTINUE
+        ).results
+    _assert_first_link_failed_alone(results, dest)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX directory permissions")
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0, reason="root writes anywhere"
+)
+def test_orphan_link_in_a_read_only_directory_fails_alone(tmp_path: Path) -> None:
+    # The same, with the caller's read-only directory refusing the temp file.
+    src = _orphan_tar_with_link_in_ro(tmp_path)
+    dest = tmp_path / "out"
+    (dest / "ro").mkdir(parents=True)
+    (dest / "ro").chmod(0o500)
+    try:
+        with open_archive(src) as r:
+            results = r.extract_all(
+                dest,
+                members=["ro/L1.txt", "L2.txt"],
+                overwrite=OverwritePolicy.ERROR,
+                on_error=OnError.CONTINUE,
+            ).results
+    finally:
+        (dest / "ro").chmod(0o700)
+    _assert_first_link_failed_alone(results, dest)
+
+
 def test_orphan_all_links_skipped_writes_nothing(tmp_path: Path) -> None:
     # Companion to the above: when EVERY selected link's destination already exists under
     # SKIP, all links are recorded NOT_OVERWRITTEN, existing files stay untouched, and no stray
@@ -2938,6 +3196,35 @@ def test_orphan_all_links_skipped_writes_nothing(tmp_path: Path) -> None:
         ).results
 
     assert [res.status for res in results] == [ExtractionStatus.NOT_OVERWRITTEN] * 2
+    assert (dest / "L1.txt").read_bytes() == b"keep-1"
+    assert (dest / "L2.txt").read_bytes() == b"keep-2"
+    assert sorted(p.name for p in dest.iterdir()) == ["L1.txt", "L2.txt"]  # no strays
+
+
+def test_orphan_all_links_refused_writes_nothing(tmp_path: Path) -> None:
+    # The ERROR sibling of the above: every link's destination is refused, so each
+    # link fails on its own (no failure group), the caller's files stay untouched,
+    # and nothing else is written.
+    src = _orphan_tar(tmp_path, ["L1.txt", "L2.txt"])
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "L1.txt").write_bytes(b"keep-1")
+    (dest / "L2.txt").write_bytes(b"keep-2")
+
+    with open_archive(src) as r:
+        results = r.extract_all(
+            dest,
+            members=["L1.txt", "L2.txt"],
+            overwrite=OverwritePolicy.ERROR,
+            on_error=OnError.CONTINUE,
+        ).results
+
+    assert [res.status for res in results] == [ExtractionStatus.FAILED] * 2
+    for res, name in zip(results, ["L1.txt", "L2.txt"], strict=True):
+        assert "Destination already exists" in str(res.error)
+        assert res.failure_group_id is None
+        assert res.failure_group_size is None
+        assert res.requested_path == dest / name
     assert (dest / "L1.txt").read_bytes() == b"keep-1"
     assert (dest / "L2.txt").read_bytes() == b"keep-2"
     assert sorted(p.name for p in dest.iterdir()) == ["L1.txt", "L2.txt"]  # no strays
@@ -3151,8 +3438,8 @@ def test_streaming_duplicate_name_removes_the_copy_a_filter_drops(
         seen: list[str] = []
 
         def drop_second(member: ArchiveMember) -> ArchiveMember | None:
-            seen.append(member.name)
-            return member if len(seen) == 1 else None
+            seen.append(member.name)  # noqa: B023 - called within this iteration
+            return member if len(seen) == 1 else None  # noqa: B023 - called within this iteration
 
         with open_archive(io.BytesIO(archive), streaming=streaming) as reader:
             results = reader.extract_all(dest, filter=drop_second).results
@@ -3169,13 +3456,13 @@ def test_streaming_duplicate_name_removes_the_copy_when_the_later_one_fails(
         seen: list[str] = []
 
         def fail_second(member: ArchiveMember) -> ArchiveMember | None:
-            seen.append(member.name)
-            if len(seen) == 2:
+            seen.append(member.name)  # noqa: B023 - called within this iteration
+            if len(seen) == 2:  # noqa: B023 - called within this iteration
                 # A one-pass extraction keeps the earlier copy until the later one's
                 # outcome is known, so a later copy that lands replaces it atomically.
                 # TAR extracts in one pass in both modes: random access enforces the
                 # listing limits as members arrive rather than listing first.
-                assert (dest / "a.txt").exists()
+                assert (dest / "a.txt").exists()  # noqa: B023 - called within this iteration
                 raise ExtractionError("refused", member_name=member.name)
             return member
 
@@ -3468,8 +3755,8 @@ def test_streaming_duplicate_name_known_differences(tmp_path: Path) -> None:
         picked: list[str] = []
 
         def first_only(member: ArchiveMember) -> bool:
-            picked.append(member.name)
-            return len(picked) == 1
+            picked.append(member.name)  # noqa: B023 - called within this iteration
+            return len(picked) == 1  # noqa: B023 - called within this iteration
 
         dest = tmp_path / f"select-{streaming}"
         assert outcome(streaming, dest, members=first_only) == expected
@@ -3483,8 +3770,8 @@ def test_streaming_duplicate_name_known_differences(tmp_path: Path) -> None:
         seen: list[str] = []
 
         def drop_second(member: ArchiveMember) -> ArchiveMember | None:
-            seen.append(member.name)
-            return member if len(seen) == 1 else None
+            seen.append(member.name)  # noqa: B023 - called within this iteration
+            return member if len(seen) == 1 else None  # noqa: B023 - called within this iteration
 
         dest = tmp_path / f"replace-{streaming}"
         dest.mkdir()
@@ -4635,7 +4922,7 @@ def _tar_with_member(path: Path, name: str, *, link_target: str | None = None) -
 
 @pytest.mark.parametrize(
     "name",
-    ["invoice‮cod.exe", "a⁦b.txt", "x‪y", "z‬.bin"],
+    ["invoice\u202ecod.exe", "a\u2066b.txt", "x\u202ay", "z\u202c.bin"],
     ids=["rlo", "lri", "lre", "pdf"],
 )
 @pytest.mark.parametrize("policy", [ExtractionPolicy.STRICT, ExtractionPolicy.STANDARD])
@@ -4685,7 +4972,9 @@ def test_bidi_override_name_extracts_under_trusted(name: str, tmp_path: Path) ->
     assert (dest / name).is_file()  # faithful bytes: stored name, unmodified
 
 
-@pytest.mark.parametrize("name", ["invoice‮cod.exe", "a⁦b.txt"], ids=["rlo", "lri"])
+@pytest.mark.parametrize(
+    "name", ["invoice\u202ecod.exe", "a\u2066b.txt"], ids=["rlo", "lri"]
+)
 def test_apply_name_policy_rejects_bidi_override(name: str, tmp_path: Path) -> None:
     """The typed error itself, at the boundary that produces it.
 
@@ -4710,12 +4999,12 @@ def test_bidi_override_in_a_symlink_target_is_refused(tmp_path: Path) -> None:
     from archivey.exceptions import FilterRejectionError
     from archivey.internal.filters import apply_name_policy
 
-    member = _member("link", type=MemberType.SYMLINK, link_target="rea‮dm.txt")
+    member = _member("link", type=MemberType.SYMLINK, link_target="rea\u202edm.txt")
     check_universal(member, tmp_path)  # not a universal violation
     with pytest.raises(FilterRejectionError):
         apply_name_policy(member, ExtractionPolicy.STRICT)
 
-    src = _tar_with_member(tmp_path / "a.tar", "link", link_target="rea‮dm.txt")
+    src = _tar_with_member(tmp_path / "a.tar", "link", link_target="rea\u202edm.txt")
     dest = tmp_path / "out"
     report = open_and_extract(src, dest, on_error=OnError.STOP)
     assert report.results[0].status is ExtractionStatus.BLOCKED
@@ -4724,7 +5013,7 @@ def test_bidi_override_in_a_symlink_target_is_refused(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "name",
-    ["‏doc.pdf", "‎total-2024.txt", "؜فهرس.txt"],
+    ["\u200fdoc.pdf", "\u200etotal-2024.txt", "\u061cفهرس.txt"],
     ids=["rlm", "lrm", "alm"],
 )
 def test_bidi_directional_marks_still_extract(name: str, tmp_path: Path) -> None:
@@ -4755,7 +5044,7 @@ def test_rtl_script_without_controls_extracts_silently(tmp_path: Path) -> None:
 
 def test_bidi_override_is_a_blocked_result_under_continue(tmp_path: Path) -> None:
     """It inherits the whole `FilterRejectionError` lifecycle, which is what a batch wants."""
-    src = _tar_with_member(tmp_path / "a.tar", "invoice‮cod.exe")
+    src = _tar_with_member(tmp_path / "a.tar", "invoice\u202ecod.exe")
     report = open_and_extract(src, tmp_path / "out", on_error=OnError.CONTINUE)
     (result,) = report.results
     assert result.status is ExtractionStatus.BLOCKED
@@ -4987,10 +5276,11 @@ def test_hardlink_failure_group_is_recorded_on_results(
     )
     dest = tmp_path / "out"
 
-    def boom(self, *args: object, **kwargs: object) -> None:
+    def boom(*args: object, **kwargs: object) -> None:
         raise ExtractionError("forced second-pass failure")
 
-    monkeypatch.setattr(ExtractionCoordinator, "_write_file_atomic", boom)
+    # Failing the copy, after the temp file exists: a failure of the source's data.
+    monkeypatch.setattr(ExtractionCoordinator, "_copy_to_fileobj", staticmethod(boom))
     with open_archive(io.BytesIO(archive)) as reader:
         report = reader.extract_all(
             dest,

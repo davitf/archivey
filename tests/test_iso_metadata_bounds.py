@@ -8,7 +8,6 @@ length the ``CE`` entry declares. Every fixture is built in the test.
 
 from __future__ import annotations
 
-import importlib.metadata
 import io
 import struct
 from pathlib import Path
@@ -224,42 +223,21 @@ def _with_chained_ce(length: int) -> bytearray:
     return data
 
 
-def _pycdlib_follows_ce_chains() -> bool:
-    """pycdlib follows a ``CE`` chain from 1.21; before, a second ``CE`` is invalid.
-
-    ``uv.lock`` pins an older pycdlib, so CI takes the ``False`` branch: there the
-    chained tests pin pycdlib's own refusal of the second ``CE``, raised while it parses
-    the first area, and pass with archivey's check on continuation areas removed. The
-    check itself is exercised only on 1.21+ (``uv run --with pycdlib==1.21.0``).
-    """
-    version = importlib.metadata.version("pycdlib")
-    return tuple(int(part) for part in version.split(".")[:2]) >= (1, 21)
-
-
-# What older pycdlib raises, in its own parse, for a CE inside a continuation area.
-_NO_CHAINS = r"Only single CE record supported"
-
-
 def test_a_chained_continuation_area_past_its_block_is_refused_before_the_read(
     tmp_path: Path,
 ) -> None:
     """Every link of a ``CE`` chain is held to its block, not only the record's own.
 
-    pycdlib 1.21 follows the chain and reads each further link for its declared
-    length, clamped only to the image, before it refuses a link past its block: 8 MiB
-    here, under any limits. Older pycdlib refuses the second ``CE`` while parsing the
-    first area, before any read.
+    pycdlib follows the chain and reads each further link for its declared length,
+    clamped only to the image, before it refuses a link past its block: 8 MiB here,
+    under any limits.
     """
     path = tmp_path / "ce-chain.iso"
     with path.open("wb") as f:
         f.write(_with_chained_ce(8 * 2**20))
         f.truncate(16 * 2**20)
 
-    match = (
-        "continuation area of 8388608 bytes at offset 0 of block 100"
-        if _pycdlib_follows_ce_chains()
-        else _NO_CHAINS
-    )
+    match = "continuation area of 8388608 bytes at offset 0 of block 100"
     for limits in (ListingLimits(), ListingLimits.UNLIMITED):
         config = ArchiveyConfig(listing_limits=limits)
         with pytest.raises(CorruptionError, match=match):
@@ -269,13 +247,9 @@ def test_a_chained_continuation_area_past_its_block_is_refused_before_the_read(
 
 
 def test_a_chained_continuation_area_inside_its_block_is_read() -> None:
-    """The check does not refuse a link that fits its block (where pycdlib chains)."""
+    """The check does not refuse a link that fits its block."""
     data = _with_chained_ce(64)
     data += bytes(101 * 2048 - len(data))
-    if not _pycdlib_follows_ce_chains():
-        with pytest.raises(CorruptionError, match=_NO_CHAINS):
-            open_archive(io.BytesIO(bytes(data)))
-        return
     with open_archive(io.BytesIO(bytes(data))) as reader:
         assert [m.name for m in reader.members()] == ["a" * 230]
 

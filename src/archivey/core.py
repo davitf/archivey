@@ -21,7 +21,7 @@ import errno
 import os
 from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO, Literal, overload
+from typing import TYPE_CHECKING, BinaryIO, Literal, cast, overload
 
 from archivey.config import (
     DEFAULT_ARCHIVEY_CONFIG,
@@ -80,7 +80,7 @@ from archivey.internal.registry import (
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.internal.streams.codecs import codec_for_stream_format, open_codec_stream
-from archivey.internal.streams.streamtools import is_stream
+from archivey.internal.streams.streamtools import OneReadEachStream, is_stream
 from archivey.internal.volumes import (
     OpenSourceInput,
     ResolvedSource,
@@ -106,16 +106,16 @@ if TYPE_CHECKING:
     from archivey.internal.diagnostics_collector import DiagnosticCollector
 
 __all__ = [
+    "DEFAULT_ARCHIVEY_CONFIG",
+    "AcceleratorMode",
+    "ArchiveyConfig",
     "DetectionConfidence",
+    "ExtractionLimits",
     "FormatAvailability",
     "FormatInfo",
     "FormatSupport",
-    "MissingComponent",
-    "ArchiveyConfig",
-    "ExtractionLimits",
     "ListingLimits",
-    "AcceleratorMode",
-    "DEFAULT_ARCHIVEY_CONFIG",
+    "MissingComponent",
     "detect_format",
     "format_availability",
     "list_known_formats",
@@ -388,6 +388,35 @@ def open_archive(
     ``ArchiveyConfig(diagnostic_policy=DiagnosticPolicy(ignore={
     DiagnosticCode.PASSWORD_ARGUMENT_UNUSED}))``, which keeps the count without the log
     line.
+
+    Reader calls made after the open raise the same ``ReadError`` subclasses for damage,
+    a wrong password or a missing link target that shows only when a member is read.
+
+    Raises:
+        FormatDetectionError: No format matches the source's contents or name.
+        StreamNotSeekableError: The source cannot seek and ``streaming=False``, or the
+            format needs to seek in either access mode (every format except TAR, ZIP and
+            the single-file compressed streams).
+        CorruptionError: The archive's header is damaged or cut short. A numbered split
+            set with a missing part raises the subclass
+            :class:`~archivey.TruncatedError`.
+        EncryptionError: The member list is encrypted (7z, RAR) and no password given
+            opens it.
+        UnsupportedFeatureError: The format is recognized, but this archive uses a
+            variant or feature archivey cannot read.
+        PackageNotInstalledError: The format needs an optional package that is not
+            installed, such as ``pycdlib`` for ISO.
+        ResourceLimitError: The archive exceeds a limit that is checked at open, such as
+            :class:`~archivey.ListingLimits` ``max_members`` while a ZIP, 7z, RAR or ISO
+            index is parsed, or :class:`~archivey.DecoderLimits` for data the open
+            decodes.
+        DiagnosticRaisedError: A diagnostic that the :class:`~archivey.DiagnosticPolicy`
+            in the config raises on, recorded while the archive is detected or opened.
+        ArchiveyUsageError: One argument has a type or value the call cannot use (then
+            also a ``TypeError`` or ``ValueError``), or ``streaming=True`` is combined
+            with ``concurrent_operations=True``.
+        FileNotFoundError: The path does not exist. Other ``OSError`` from reading the
+            source is not wrapped either.
     """
     # Safety net for `from archivey.core import open_archive` (package __init__ also
     # imports backends so list_supported_formats works on a bare `import archivey`).
@@ -811,6 +840,25 @@ def open_stream(
     A stream must be blocking: when a non-blocking one has nothing ready (its ``read``
     returns ``None``), opening or reading raises ``BlockingIOError``, not an archivey
     error.
+
+    Reading the returned stream raises ``CorruptionError`` (or ``TruncatedError``) for
+    damaged data, on the read that finds it.
+
+    Raises:
+        FormatDetectionError: No compression format matches the source, or the source is
+            an archive container (ZIP, 7z, RAR, ISO, an uncompressed tar).
+        StreamNotSeekableError: ``seekable=True`` and the source cannot seek.
+        ResourceLimitError: The stream asks a decoder for more memory than
+            :class:`~archivey.DecoderLimits` allows, raised by the read of the returned
+            stream that starts the decoder.
+        PackageNotInstalledError: The format needs an optional package that is not
+            installed.
+        DiagnosticRaisedError: A diagnostic that the :class:`~archivey.DiagnosticPolicy`
+            in the config raises on, recorded while the stream is detected or opened.
+        ArchiveyUsageError: One argument has a type or value the call cannot use (then
+            also a ``TypeError`` or ``ValueError``): a directory path, or a container
+            format passed as ``format=``.
+        FileNotFoundError: The path does not exist.
     """
     import archivey.internal.backends  # noqa: F401
 
@@ -921,9 +969,15 @@ def _open_stream_from_source(
     )
     # A path goes to the codec as a path: it opens its own handles and can use
     # path-only accelerator features, and the source then never opens one.
-    codec_source: str | BinaryIO = (
-        str(codec_input.path) if codec_input.path is not None else codec_input
-    )
+    codec_source: str | BinaryIO
+    if codec_input.path is not None:
+        codec_source = str(codec_input.path)
+    elif source_is_seekable:
+        codec_source = codec_input
+    else:
+        # What has arrived, one read of the source per feed, as the readers feed a
+        # codec (``BaseArchiveReader._codec_input``).
+        codec_source = OneReadEachStream(cast("BinaryIO", codec_input.arrived_view()))
     return open_codec_stream(
         codec,
         codec_source,

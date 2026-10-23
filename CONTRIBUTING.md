@@ -106,7 +106,7 @@ The three legs, which `--all-configs` runs in order:
 uv sync --group dev --extra all && uv run --no-sync pytest -n auto
 
 # 2. Minimum supported versions — every declared dependency pinned to its floor
-#    (`pycdlib 1.16`, `backports.zstd 1.0`, …), so version-specific library bugs in the
+#    (`pycdlib 1.22`, `backports.zstd 1.0`, …), so version-specific library bugs in the
 #    supported range surface. --no-sync keeps the lowest resolution for the test run.
 uv sync --group dev --extra all --resolution lowest-direct && uv run --no-sync pytest -n auto --no-cov
 
@@ -251,6 +251,9 @@ maintainer.
   (`with memoryview(b) as view:`), test doubles included. The caller may resize the
   buffer next, and PyPy frees a dropped view only at a collection; the full contract is
   in `try_readinto`'s docstring.
+- **Read a flag from a C extension by its truth, not its type.** PyPy can read a C `bool`
+  member as the int 1 (dev-docs/known-issues.md, "PyPy: a C `bool` member reads as an
+  int"), so `isinstance(value, bool)` drops it.
 - **Match the surrounding code.** Naming, structure, and idiom should read like the file
   you're editing.
 - **Type-checker suppressions must be justified, and are a last resort.** A bare
@@ -385,6 +388,16 @@ maintainer.
   reach the path it named. For a test the PR says fails on `main`,
   `uv run python scripts/review_prep.py red-on-base <test ids>` runs it against the
   merge base's `src/` and prints a table for the PR body.
+- **A test you move or refactor still tests what it did.** When a change moves tests
+  between files or swaps their setup for a shared helper, run the suite before it (twice,
+  for the coverage baseline) and after it, and compare the runs with
+  `scripts/compare_test_runs.py` (its docstring has the commands). It fails when a test
+  is missing, new or has a different outcome, and when a test lost a large share of the
+  `src/` lines it ran: a test whose body no longer reaches the library still passes, so
+  only this catches it. Per-test coverage varies a little between runs, so smaller
+  losses do not fail; they are listed, and a reviewer reads them. Neither check reads
+  test code: a test that makes the same calls and has lost an assertion reports `same`
+  on both, so the moved tests still get read. Paste both results into the PR.
 - **A parity promise gets its comparison test first.** When a feature promises to behave
   like another archivey path (a dry run like a real extraction), write the test that
   runs both and compares them first, before the feature itself. This generalises the

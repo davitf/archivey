@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import stat
 import sys
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -166,7 +166,7 @@ def open_for_cli(
     stdin: BinaryIO | None = None,
     err: TextIO | None = None,
     format: ArchiveFormat | None = None,
-) -> Iterator[ForwardArchiveReader]:
+) -> Generator[ForwardArchiveReader, None, None]:
     """Open an archive, optionally wrapping the call in measurement for ``--track-io``.
 
     A path that can be read only once (see :func:`is_read_once`) opens in streaming
@@ -184,16 +184,18 @@ def open_for_cli(
         source, streaming = archive, is_read_once(archive)
     err = err if err is not None else sys.stderr
     if track_io:
-        with enable_measurement():
-            with _open(
+        with (
+            enable_measurement(),
+            _open(
                 source,
                 password=password,
                 streaming=streaming,
                 config=config,
                 format=format,
-            ) as reader:
-                yield reader
-                _report_track_io(reader, err)
+            ) as reader,
+        ):
+            yield reader
+            _report_track_io(reader, err)
     else:
         with _open(
             source,

@@ -1,6 +1,6 @@
 """Print one line per failed or errored test from a pytest JUnit XML report.
 
-The PyPy trial job in ci.yml uses this. pytest's own ``-r`` summary prints the whole
+The PyPy job in ci.yml uses this. pytest's own ``-r`` summary prints the whole
 assertion message, which can run to dozens of lines per failure, and the GitHub API
 returns only the last few thousand lines of a job log. One line per failure keeps the
 complete list readable from there. A count per message comes last.
@@ -41,10 +41,11 @@ def _node_id(case: ET.Element) -> str:
     path = case.get("file")
     if not path:
         return f"{classname}::{name}"
-    # classname is the module's dotted path, then any class: keep only the class.
+    # classname is the module's dotted path, then any classes, outermost first: keep
+    # only the classes, each its own node id part.
     module = path.removesuffix(".py").replace("/", ".")
     inner = classname.removeprefix(module).lstrip(".")
-    return "::".join(part for part in (path, inner, name) if part)
+    return "::".join([path, *(inner.split(".") if inner else []), name])
 
 
 def _cut(line: str, width: int) -> str:
