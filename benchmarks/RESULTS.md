@@ -46,11 +46,85 @@ uv run --extra all python -m benchmarks.harness --mode structural --scale ci
 uv run --extra all python -m benchmarks.harness --mode full --scale realistic
 ```
 
-**Measurement host for tables below:** 4-core Intel Xeon (KVM), Linux x86_64.
-rapidgzip parallelises across cores — absolute speedups scale with core count;
-treat the figures as directional, not portable.
+## 0.2.0 release figures (2026-10-21)
+
+The figures quoted in the 0.2.0 CHANGELOG entry. Source: `benchmark-wall.yml` run
+39544292797 (`workflow_dispatch`), `measured_at` 2026-10-21T04:30:48Z, `source_sha`
+`de8a65654e35`, GitHub `ubuntu-latest` (4 vCPUs), Python 3.11, `--mode full --scale
+realistic --warmup`. Corpus: 64 × 256 KiB members, 32 MiB gzip; 7z listing 10 000 solid
+tiny / 1 000 non-solid members; RAR listing 1 000 / 256 members, the committed ci-scale
+fixtures, because the nightly has no `rar` writer. The `tarfile` peers for `.tar.gz` and
+`.tar.bz2` read in one forward pass. The band column is the report's own label against
+`VISION.md`.
+
+| Case | archivey | peer | ratio | band |
+| --- | ---: | ---: | ---: | --- |
+| `zip_open_list` | 1.9 ms | 0.2 ms | 8.50× | above listing 3.0× |
+| `zip_read_all` | 21.6 ms | 11.4 ms | 1.90× | above 1.3×, under 2.0× |
+| `zip_extract` | 54.2 ms | 21.4 ms | 2.54× | above 2.0× safety |
+| `tar_open_list` | 3.4 ms | 1.5 ms | 2.28× | within listing ≤3.0× |
+| `tar_read_all` | 7.7 ms | 2.8 ms | 2.74× | above 2.0× safety |
+| `gzip_read_all` | 56.7 ms | 52.1 ms | 1.09× | within ≤1.3× |
+| `targz_read_all_accel_off` | 21.8 ms | 13.2 ms | 1.65× | above 1.3×, under 2.0× |
+| `targz_read_all_accel_on` | 77.0 ms | 13.6 ms | 5.68× | above 2.0× safety |
+| `tarbz2_read_all_accel_off` | 139.6 ms | 119.6 ms | 1.17× | within ≤1.3× |
+| `tarbz2_read_all_accel_on` | 118.6 ms | 120.2 ms | 0.99× | within ≤1.3× |
+| `sevenzip_open_list` | 1.9 ms | 0.8 ms | 2.32× | above native parity (~1.25×) |
+| `sevenzip_many_open_list` | 150.5 ms | 103.0 ms | 1.46× | above native parity (~1.25×) |
+| `sevenzip_nonsolid_open_list` | 22.1 ms | 14.0 ms | 1.58× | above native parity (~1.25×) |
+| `rar_open_list` | 1.0 ms | 0.2 ms | 5.46× | above native parity (~1.25×) |
+| `rar_many_open_list` | 27.1 ms | 14.4 ms | 1.89× | above native parity (~1.25×) |
+| `rar_nonsolid_open_list` | 7.6 ms | 3.7 ms | 2.02× | above native parity (~1.25×) |
+
+Cost model from the same run, as the report prints it: fitted from 2048 × 8 KiB and 64 ×
+256 KiB, checked against 512 × 16 KiB, 16 × 1 MiB and 4 × 4 MiB
+(`benchmarks/cost_model.py`). Reading is members per second through a `stream_members()`
+pass, listing included, with the byte cost taken out; it is the per-member term, which
+is why it shows a larger gap than `zip_read_all` above. Throughput is the data rate once
+per-member costs are taken out, on data that compresses about 4:1. Uncompressed TAR
+shows no throughput (no codec): its byte cost is a small remainder of the fit, and its
+large check rungs are expected to miss. Both sides read the same files, so the
+comparison between them holds even where the absolute numbers move between hosts. A row
+marked \* has a check rung more than 25% and at least 0.5 ms off its fit. Not a gate.
+
+| format | side | open | reading | throughput |
+| --- | --- | ---: | ---: | ---: |
+| zip | archivey | 0.39 ms | 6k members/s | 370 MiB/s |
+| zip | zipfile | 0.03 ms | 51k members/s | 380 MiB/s |
+| tar | archivey \* | 0.45 ms | 12k members/s | no codec |
+| tar | tarfile | 0.05 ms | 38k members/s | no codec |
+
+Check rung off the fit (the starred row; expected for uncompressed TAR at multi-MiB
+members, so the TAR member rates describe small members):
+
+- tar archivey read 4 × 4 MiB: measured 1.79 ms, predicted 2.68 ms (−49%)
+
+Three published cases do not reproduce between runs, so read them as ranges.
+`gzip_read_all` straddles parity: 0.86–0.89× in the nightlies of 2026-10-15, -16 and -18
+and in the 07:04 run of 2026-10-20, then 1.14× four hours later on the same commit
+(`b72df0b7`, run 39416281497) and 1.09× here. Both sides slowed in the slow runs, and
+`z_zeros_read_all`, which has no peer, went from 93 ms to 246 ms with them, so the move
+is the runner and not a 0.2.0 change to the gzip read path. `tar_open_list` gave
+2.28–2.6× and `tar_read_all` 2.7–3.0× over the same runs; the 1.49× and 2.08× this file
+once quoted from the 2026-10-19 run were one fast night.
+
+Against the older tables below: the native ZIP reader replaced `zipfile`, rapidgzip now
+runs in its own process (about 45 ms to start, `docs/security.md`), so forcing the gzip
+accelerator on at this corpus size is slower than the plain codec, and the earlier
+`.tar.gz` / `.tar.bz2` peers decompressed twice.
+
+**Measurement host for the tables below:** 4-core Intel Xeon (KVM), Linux x86_64,
+July–September 2026, before the native ZIP reader and the rapidgzip subprocess;
+superseded by the section above where they overlap. rapidgzip parallelises across cores
+— absolute speedups scale with core count; treat the figures as directional, not
+portable.
 
 ## Investigation: ZIP “faster than stdlib” and TAR slowdown
+
+> **Superseded.** This investigation dates from July 2026, when archivey read ZIP
+> through the standard library's `zipfile`. Since October 2026 it has its own native ZIP
+> reader and no longer imports `zipfile`, so "we wrap `zipfile`" below no longer holds.
+> The current figures are in "0.2.0 release figures" above.
 
 ### ZIP — yes, caching / methodology artifact
 
