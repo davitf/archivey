@@ -544,7 +544,7 @@ specs-to-handbook discussion below), but we are migrating executable detail into
 [`dev-docs/discussions/2026-09-specs-to-handbook-and-tests.md`](dev-docs/discussions/2026-09-specs-to-handbook-and-tests.md).
 On every PR that touches `openspec/specs/` or a change delta:
 
-- Prefer a **pytest** (and a handbook / Verify link) over a new WHEN/THEN scenario.
+- Prefer a **pytest** over a new WHEN/THEN scenario.
 - When you touch a requirement that is already covered by tests, **collapse or delete**
   redundant scenarios rather than adding siblings “for completeness”.
 - Leave that capability **no denser than you found it** (preferably thinner).

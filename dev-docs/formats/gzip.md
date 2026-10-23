@@ -236,8 +236,7 @@ threads. The peak is read from `VmHWM` in `/proc/self/status` (Linux), `getrusag
 the BSDs) or `GetProcessMemoryInfo` (Windows); where none works, no cap applies. Not
 `getrusage` on Linux: there a child's `ru_maxrss` starts at its parent's peak, because
 `exec` keeps the high-water mark of the memory it replaces. A parent that had once held
-more than the child's decode plus the cap left the child never stopped
-(`test_the_limit_counts_from_the_childs_own_memory_not_the_parents_peak`).
+more than the child's decode plus the cap left the child never stopped.
 
 Where no child can start — a frozen application, no `sys.executable`, archivey imported
 from a zip so the worker is not a file, or a spawn or temporary file the system refuses —
@@ -586,7 +585,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | A member after the first with a header CRC that does not match, or with reserved `FLG` bits, raises the same error with `rapidgzip` as without it | **archivey** | Measured on rapidgzip 0.16.0 (2026-10-18). A later header CRC makes rapidgzip raise, and the read falls back to zlib (`CorruptionError`). A later reserved flag is accepted by rapidgzip, but the further-member scan skips that header, the single-member trailer check fails, and the read falls back to zlib (`UnsupportedFeatureError`). The pre-start probe still sees only the first member (§2.3) |
 | A wrong ISIZE on any member but the last reads clean under `rapidgzip` builds that do not compare the size; the standard library raises | **library** / **archivey** | Every member's CRC-32 is still checked, so the data is right; the spec accepts this difference (§2.3). `rapidgzip` 0.16.0 compares it only in its own chunk decoder, for a stream that lies wholly in one chunk; the inflate-wrapper decoder (ISA-L, in the Linux wheels) appends the footer without comparing. The last member's ISIZE is checked by the backstop, which finds the trailer by the CRC-32 of the output, or in a file of several members by the CRC-32 of the end of the output. After a seek that skipped output there is no CRC-32 and the file's last four bytes stand in for the ISIZE in a file of one member; in that case only, four bytes appended after a wrong ISIZE, equal to the length, pass for the trailer. In a file with a further member the last member's trailer is checked whatever the last four bytes say. Found by the `gzip_accel` fuzz target |
 | A truncated bare raw DEFLATE stream under `use_rapidgzip=ON` can end short with no error | **library** | No size or checksum to check it against (§2.3). `AUTO` never does this. A stream cut before its first byte of output raises, as with the accelerator off |
-| `rapidgzip` does not check a zlib stream's Adler-32 | **library** | archivey checks it after `rapidgzip`, once the stream is read to its end (§2.3). Found by `tests/test_nested_archives.py` |
+| `rapidgzip` does not check a zlib stream's Adler-32 | **library** | archivey checks it after `rapidgzip`, once the stream is read to its end (§2.3) |
 | Several zlib streams one after another, read in bounded reads to the end under `use_rapidgzip=ON`, read as one; the standard library reads the first alone and reports the rest as bytes after the stream | **library** | RFC 1950 defines one stream per file. A completing `read()` and a seek to the end stop at the first stream as with the accelerator off; bounded reads have the second stream's bytes before the end shows up, and the Adler-32 check accepts them when the standard library reproduces them stream by stream (§2.3), so they get those bytes as content and no `ARCHIVE_TRAILING_DATA` |
 | Trailing junk after a `.gz` is a warning, where `GzipFile` raises | **archivey** | The rule is shared by every codec ([`single-file.md`](single-file.md) §6); `DiagnosticPolicy.STRICT` raises |
 | A `.gz` with bytes after it under `rapidgzip` decodes part of the file twice | **archivey** | The switch to the standard library replays up to where `rapidgzip` failed (§2.3); a resumed replay that reaches a member's end starts over to check its CRC-32 |
@@ -642,39 +641,38 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
     -k "gzip or zlib or deflate or rapidgzip or accelerat"
 ```
 
-| Claim | Pinned by |
-| --- | --- |
-| A cut or wrong-ISIZE last member of a concatenated gzip or BGZF file raises through `rapidgzip`, at every cut point; a valid one reads with no handover | `tests/test_rapidgzip_end_checks.py::test_a_cut_last_member_of_a_concatenated_gzip_raises`, `::test_every_cut_of_the_last_of_three_gzip_members_raises`, `::test_gzip_wrong_last_isize_in_a_concatenated_file_raises`, `::test_a_real_further_gzip_member_needs_no_stdlib_handover`, `::test_a_forged_last_trailer_hashed_since_a_skip_raises`, `::test_the_crc_kept_since_a_skip_spans_every_read_after_it`, `::test_a_forged_last_trailer_reaching_before_a_skip_raises`, `::test_a_skip_reads_back_only_the_skipped_part_of_the_last_member`, `::test_a_skipped_read_back_past_its_ceiling_goes_to_the_stdlib`, `::test_a_seek_to_exactly_the_end_then_a_read_is_checked`, `::test_a_valid_concatenation_after_a_skip_needs_no_stdlib_handover`, `::test_the_crc_of_a_suffix_comes_from_the_running_crc`, `::test_crc_checkpoints_hold_the_crc_of_each_prefix`, `::test_the_last_member_check_reads_back_little_more_than_the_last_member`, `::test_a_forged_last_trailer_reads_back_no_more_than_the_checkpoint_spacing`, `::test_a_last_member_of_several_checkpoints_needs_no_stdlib_handover`, `::test_a_last_member_over_64_mib_needs_no_stdlib_handover`, `::test_an_empty_last_member_with_a_long_name_reads_as_with_the_accelerator_off` |
-| Multi-member, NUL padding, trailing junk after the payload | `tests/test_codecs.py::test_gzip_multi_member_and_padding_parity`, `::test_gzip_trailing_junk_delivers_member_then_reports`, `::test_gzip_multi_member_cross_feed_edges`, `tests/test_stream_trailing_data.py::test_rapidgzip_reads_to_the_end_and_reports` |
-| Member starts and BGZF blocks are seek points; the walk stops at a plain member; the BGZF sizes are trusted; a size query does not walk | `tests/test_bgzf_seek.py` |
-| A member after the first with a bad header CRC or a reserved flag raises the same error with `rapidgzip` as without it | `tests/test_audit2_tar_streams.py::test_gzip_accelerator_refuses_a_later_member_the_stdlib_refuses` |
-| A member after NULs is trailing data, and strict refuses it, with `rapidgzip` off, `AUTO` and on, for a read and a seek; NULs at the end and members with nothing between them stay silent | `tests/test_stream_trailing_data.py::test_a_stream_after_nul_padding_is_trailing_data`, `::test_a_seek_to_the_end_stops_at_nul_padding`, `::test_strict_refuses_a_stream_after_nul_padding`, `::test_nul_padding_at_the_end_and_direct_concatenation_stay_silent` |
-| A truncated stream gives its prefix to sized reads and raises | `::test_truncated_gzip_large_read_recovers_prefix_like_read1`, `::test_truncated_zlib_deflate_large_read_recovers_prefix`, `::test_truncated_gzip_readall_raises` |
-| `FNAME`, Latin-1, `MTIME` | `tests/test_single_file.py::test_gzip_stored_filename_surfaced`, `::test_gzip_stored_filename_non_ascii_is_latin1`, `::test_gzip_mtime_surfaced` |
-| No size, no CRC, no scan at open | `::test_gz_size_is_always_none`, `::test_gzip_never_reports_a_crc32`, `::test_gzip_open_does_not_scan_for_a_second_member` |
-| zlib Adler-32 checked, not listed; under `rapidgzip` too, across seeks and through the TAR end scan | `::test_zlib_omits_hashes_but_verifies_adler_on_read`, `tests/test_rapidgzip_deflate_zlib.py::test_rapidgzip_zlib_damage_raises_from_the_adler_check`, `::test_rapidgzip_zlib_adler_check_survives_seeks`, `::test_rapidgzip_zlib_concatenated_streams_pass_the_check`, `::test_tar_zz_member_damage_raises_under_rapidgzip_on`, `tests/test_nested_archives.py::test_damaged_inner_archive_raises_an_archivey_error` |
-| `ON` on a source that cannot seek raises `StreamNotSeekableError`; `AUTO` uses the standard library there | `tests/test_nested_archives.py::test_accelerator_on_over_a_forward_only_member_is_refused_cleanly`, `::test_auto_ignores_seek_demand_on_a_forward_only_compressed_tar` |
-| zlib header grammar and probe | `tests/test_detection.py::test_zlib_detected_at_every_legal_window_size`, `::test_zlib_grammar_admits_exactly_66_header_pairs`, `::test_zlib_grammar_accepts_a_preset_dictionary_header` |
-| `AUTO` needs declared seeking; `ON` does not. A large `.gz` opened without `seekable_members=True` stays on the standard library | `tests/test_seekable_streams.py::test_accelerator_mode_auto_resolution`, `tests/test_rapidgzip_deflate_zlib.py::test_auto_on_a_large_gz_file_follows_declared_seeking` |
-| `AUTO` threshold and size condition; `ON` below it | `tests/test_rapidgzip_deflate_zlib.py::test_the_auto_threshold_is_past_the_child_break_even`, `::test_auto_selects_rapidgzip_above_threshold`, `::test_auto_without_decompressed_size_uses_stdlib_even_when_large`, `::test_on_forces_rapidgzip_below_threshold` |
-| The abort happens in-process, and not through archivey | `tests/test_accelerator_truncation_abort.py::test_raw_rapidgzip_aborts_on_truncated_gzip` (canary), `::test_truncated_gzip_with_seekable_members_raises_truncated`, `::test_what_a_cut_stream_delivers_before_the_abort_is_a_correct_prefix` |
-| A cut stream under `rapidgzip` delivers the standard library's bytes; the takeover resumes at a checkpoint, and starts over at a member's end | `tests/test_rapidgzip_resume.py`, `tests/test_deflate_resume.py`, `tests/test_accelerator_truncation_abort.py::test_after_a_child_crash_the_standard_library_reads_on` |
-| How the child's death is reported; no child → fallback and one warning | `::test_a_child_death_is_reported_by_how_it_ended`, `::test_a_child_killed_from_outside_ends_the_stream`, `::test_without_a_child_auto_uses_stdlib_and_on_refuses`, `::test_a_child_that_cannot_start_falls_back_to_stdlib_under_auto`, `::test_an_auto_fallback_warns_once_per_process` |
-| The caller's source exception reaches the caller | `::test_an_exception_from_the_callers_source_reaches_the_caller_unchanged` |
-| The ISIZE backstop and the empty-end fallback | `tests/test_accelerator_corruption.py::test_rapidgzip_truncation_is_reported`, `::test_rapidgzip_silent_empty_fallback_recovers_prefix`, `::test_rapidgzip_isize_soft_short_raises_on_readall`, `::test_rapidgzip_multimember_not_flagged`, `::test_gzip_backstop_keeps_raising_after_its_own_truncation`, `::test_gzip_cut_member_before_a_complete_one_raises`, `::test_gzip_cut_member_with_a_forged_isize_raises` |
-| A cut zlib stream delivers the bytes and error of `OFF` under `ON` and `AUTO`, cut in the first block, a later block or the trailer; the declared-size exception | `tests/test_accelerator_takeover.py::test_a_cut_zlib_reads_as_it_does_with_the_accelerator_off` |
-| A seek to or past the end of a cut gzip or raw DEFLATE stream gives what `OFF` gives under `ON`, whether `rapidgzip` delivered nothing or part of the data | `tests/test_accelerator_takeover.py::test_a_seek_to_the_end_of_a_gzip_or_deflate_stream_gives_what_it_does_off` |
-| Under `rapidgzip`: the gzip check survives seeks; a chance `1f 8b 08` does not silence it; a seek that fails on data is handed over; a second zlib stream is trailing data | `tests/test_rapidgzip_end_checks.py` |
-| A raw DEFLATE source that looks like gzip, zlib or bzip2, a zlib source whose header `rapidgzip` does not take for zlib (none at all, or one with a preset dictionary), a raw DEFLATE stream cut before any output, and a declared-empty stream that does not decode give the bytes and error of `OFF` under `ON` | `tests/test_rapidgzip_deflate_zlib.py::test_a_stream_of_another_format_raises_as_with_the_accelerator_off`, `::test_raw_deflate_cut_before_any_output_raises_truncated`, `::test_a_declared_empty_stream_that_does_not_decode_raises` |
-| A cut bare zlib stream under `ON` without a size raises | `tests/test_rapidgzip_deflate_zlib.py::test_standalone_zlib_midcut_raises_through_rapidgzip_on_without_size` |
-| Close guard on shutdown; one accelerator library | `tests/test_accelerator_shutdown.py::test_accelerator_shutdown_canary`, `::test_archivey_uses_single_accelerator_library` |
+| Claim |
+| --- |
+| A cut or wrong-ISIZE last member of a concatenated gzip or BGZF file raises through `rapidgzip`, at every cut point; a valid one reads with no handover |
+| Multi-member, NUL padding, trailing junk after the payload |
+| Member starts and BGZF blocks are seek points; the walk stops at a plain member; the BGZF sizes are trusted; a size query does not walk |
+| A member after the first with a bad header CRC or a reserved flag raises the same error with `rapidgzip` as without it |
+| A member after NULs is trailing data, and strict refuses it, with `rapidgzip` off, `AUTO` and on, for a read and a seek; NULs at the end and members with nothing between them stay silent |
+| A truncated stream gives its prefix to sized reads and raises |
+| `FNAME`, Latin-1, `MTIME` |
+| No size, no CRC, no scan at open |
+| zlib Adler-32 checked, not listed; under `rapidgzip` too, across seeks and through the TAR end scan |
+| `ON` on a source that cannot seek raises `StreamNotSeekableError`; `AUTO` uses the standard library there |
+| zlib header grammar and probe |
+| `AUTO` needs declared seeking; `ON` does not. A large `.gz` opened without `seekable_members=True` stays on the standard library |
+| `AUTO` threshold and size condition; `ON` below it |
+| The abort happens in-process, and not through archivey |
+| A cut stream under `rapidgzip` delivers the standard library's bytes; the takeover resumes at a checkpoint, and starts over at a member's end |
+| How the child's death is reported; no child → fallback and one warning |
+| The caller's source exception reaches the caller |
+| The ISIZE backstop and the empty-end fallback |
+| A cut zlib stream delivers the bytes and error of `OFF` under `ON` and `AUTO`, cut in the first block, a later block or the trailer; the declared-size exception |
+| A seek to or past the end of a cut gzip or raw DEFLATE stream gives what `OFF` gives under `ON`, whether `rapidgzip` delivered nothing or part of the data |
+| Under `rapidgzip`: the gzip check survives seeks; a chance `1f 8b 08` does not silence it; a seek that fails on data is handed over; a second zlib stream is trailing data |
+| A raw DEFLATE source that looks like gzip, zlib or bzip2, a zlib source whose header `rapidgzip` does not take for zlib (none at all, or one with a preset dictionary), a raw DEFLATE stream cut before any output, and a declared-empty stream that does not decode give the bytes and error of `OFF` under `ON` |
+| A cut bare zlib stream under `ON` without a size raises |
+| Close guard on shutdown; one accelerator library |
 
 **Building fixtures.** The standard library writes gzip and zlib (`gzip.compress`,
 `zlib.compress`); `tests/streams_util.py::make_bgzf` writes BGZF; `pigz` and `bgzip`
 (package `tabix`) install from the distribution. `scripts/setup-dev-env.sh` (`tabix`
-on Linux, `htslib` on macOS) and the Linux `all` CI legs install `bgzip`, so
-`tests/test_bgzf_seek.py::test_a_real_bgzip_file_seeks_by_its_blocks` checks the walk
-against the reference writer; the macOS CI legs skip it.
+on Linux, `htslib` on macOS) and the Linux `all` CI legs install `bgzip`, so the suite
+checks the walk against the reference writer there; the macOS CI legs skip that check.
 `scripts/bench_rapidgzip_child.py` measures the child's start and round-trip cost.
 
 ## 9. References
