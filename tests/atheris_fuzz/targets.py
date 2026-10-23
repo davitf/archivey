@@ -41,7 +41,6 @@ from archivey.internal.streams.codecs import (
 )
 from archivey.internal.streams.codecs.arm64_filter import FILTER_ARM64, arm64_decode
 from archivey.internal.streams.codecs.bcj2_filter import Bcj2DecoderStream
-from archivey.internal.streams.codecs.gzip_codec import _MEMBER_PROBE_INPUT
 from archivey.internal.streams.codecs.lzma_filter_decoder import FilterStream
 from archivey.internal.streams.codecs.riscv_filter import FILTER_RISCV, riscv_decode
 from archivey.types import FormatSupport
@@ -658,13 +657,9 @@ def _gzip_ignoring_lengths(data: bytes) -> bytes | None:
     rapidgzip checks each member's CRC-32, and the spec accepts a wrong ISIZE over data
     the CRC-32 confirms in a file of several members: a malformed trailer, not damaged
     data. That is a member another member follows. The last member's is checked by the
-    backstop, and missed only when the further-member scan stands down early: with three
-    or more members (an earlier one can confirm), or a last member whose input is longer
-    than the scan's probe (``_MEMBER_PROBE_INPUT``). With two members and a small last one
-    the backstop catches it, so it is not excused here and the target keeps noticing.
-    A file of one member is never excused, with or without padding or other bytes after
-    it. The test for the last member is looser than the scan: it does not ask whether an
-    earlier member is itself right.
+    backstop, against the end of the output, whatever comes before it, so a wrong ISIZE
+    there is never excused, nor in a file of one member, with or without padding or other
+    bytes after it.
     zlib checks the CRC-32 before the length, so a member that fails only "incorrect
     length check" has its data confirmed. Fed a byte at a time so the output before that
     error is kept and the member's end is known; only called on the rare input where the
@@ -672,12 +667,12 @@ def _gzip_ignoring_lengths(data: bytes) -> bytes | None:
     """
     out = bytearray()
     pos = 0
-    members: list[tuple[bool, int]] = []  # (failed the length check, bytes it spans)
+    members: list[bool] = []  # whether each failed the length check
     while pos < len(data):
         if not any(data[pos:]):
             break  # zero padding after the last member, as GzipFile skips it
         decoder = zlib.decompressobj(31)
-        start, bad_length = pos, False
+        bad_length = False
         while True:
             if pos >= len(data):
                 return None  # cut inside a member
@@ -692,11 +687,8 @@ def _gzip_ignoring_lengths(data: bytes) -> bytes | None:
             pos += 1
             if decoder.eof:
                 break
-        members.append((bad_length, pos - start))
-    if len(members) < 2:
-        return None
-    last_bad, last_size = members[-1]
-    if last_bad and len(members) < 3 and last_size <= _MEMBER_PROBE_INPUT:
+        members.append(bad_length)
+    if len(members) < 2 or members[-1]:
         return None
     return bytes(out)
 

@@ -16,8 +16,6 @@ import gc
 import gzip
 import io
 import random
-import subprocess
-import sys
 import weakref
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -44,6 +42,7 @@ from tests.corruption_util import (
     is_corruption_not_truncation,
     raises_corruption_not_truncation,
 )
+from tests.streams_util import rapidgzip_soft_end_length
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -353,19 +352,6 @@ def test_gzip_cut_member_before_a_complete_one_raises(
         s.read()
 
 
-# Reads a cut gzip with raw rapidgzip and prints how many bytes it delivered. It runs in a
-# child interpreter because rapidgzip 0.16 aborts the process on some cuts (see
-# test_accelerator_truncation_abort.py), and opens the file as archivey's worker does.
-_SOFT_END_PROBE = """
-import sys, rapidgzip
-with rapidgzip.open(sys.argv[1], parallelization=0) as f:
-    try:
-        print(len(f.read()))
-    except ValueError:
-        print("RAISED")
-"""
-
-
 @pytest.fixture(scope="module")
 def forged_cut_gzip(tmp_path_factory: pytest.TempPathFactory) -> bytes:
     """A gzip cut short, its trailer set to the length rapidgzip delivers before its soft
@@ -379,19 +365,13 @@ def forged_cut_gzip(tmp_path_factory: pytest.TempPathFactory) -> bytes:
     )
     path = tmp_path_factory.mktemp("forged_cut") / "cut.gz"
     path.write_bytes(cut)
-    proc = subprocess.run(
-        [sys.executable, "-c", _SOFT_END_PROBE, str(path)],
-        capture_output=True,
-        text=True,
-        timeout=120,
-        check=False,
-    )
-    if proc.returncode != 0 or proc.stdout.strip() == "RAISED":
+    delivered = rapidgzip_soft_end_length(str(path))
+    if delivered is None:
         # Some builds raise or abort on the cut instead of ending softly (macOS raises;
         # Linux wheels abort on other cuts). Archivey then reports the truncation without
         # a soft end, and there is no soft end to forge a trailer for.
         pytest.skip("this rapidgzip build does not end softly on this cut")
-    cut[-4:] = int(proc.stdout).to_bytes(4, "little")
+    cut[-4:] = delivered.to_bytes(4, "little")
     return bytes(cut)
 
 

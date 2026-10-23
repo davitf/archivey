@@ -292,6 +292,30 @@ def _refuse_forward_only_accelerator(
     )
 
 
+def _accelerator_field(label: str) -> str:
+    """The config setting that turns rapidgzip on for a ``label`` stream."""
+    return "use_indexed_bzip2" if label == "bzip2" else "use_rapidgzip"
+
+
+def _no_child_reason(label: str) -> str:
+    """The start of the ``ResourceLimitError`` message for a ``label`` stream whose
+    rapidgzip child cannot run."""
+    field_name = _accelerator_field(label)
+    return (
+        f"the rapidgzip accelerator runs in a child process, and none can be started "
+        f"here to decode this {label} stream. Set {field_name}=AcceleratorMode.OFF to "
+        "decode it with the standard library"
+    )
+
+
+def _require_rapidgzip_child(label: str) -> None:
+    """Raise ``ResourceLimitError`` where no rapidgzip child process can run here
+    (:func:`rapidgzip_child_unavailable_reason`). Starts nothing."""
+    unavailable = rapidgzip_child_unavailable_reason()
+    if unavailable is not None:
+        raise ResourceLimitError(f"{_no_child_reason(label)} ({unavailable}).")
+
+
 def _open_rapidgzip(
     source: CodecSource, label: str, config: StreamConfig
 ) -> RapidgzipChildStream | None:
@@ -301,9 +325,12 @@ def _open_rapidgzip(
     rapidgzip 0.16 aborts the process on a gzip, zlib or raw DEFLATE stream that ends
     early, so it never decodes one in this process: see ``rapidgzip_child``. Its bzip2
     decoder runs in a child too, as a precaution: no abort has been seen in it, but it
-    comes from the same library. A path source is opened by the child; a stream source is
-    read for the child here, so the caller's own exception from it still reaches the
-    caller.
+    comes from the same library. A path source is opened by the child. On POSIX, a stream
+    that is a byte range of a regular file (``file_region``: a ZIP member of an archive on
+    disk) is read by the child from an inherited descriptor; the parent still checks
+    before each call that the stream could be read, and raises what that read would. Any
+    other stream source is read for the child here, so the caller's own exception from
+    it still reaches the caller.
 
     Where no child can be started (the spawn or its temporary file refused: a process
     cap, no writable temporary directory, too many open files, a child that cannot
@@ -318,15 +345,9 @@ def _open_rapidgzip(
     the rest of the stream (``_StdlibOnAcceleratorError``).
     """
     bzip2 = label == "bzip2"
-    field_name = "use_indexed_bzip2" if bzip2 else "use_rapidgzip"
-    reason = (
-        f"the rapidgzip accelerator runs in a child process, and none can be started "
-        f"here to decode this {label} stream. Set {field_name}=AcceleratorMode.OFF to "
-        "decode it with the standard library"
-    )
-    unavailable = rapidgzip_child_unavailable_reason()
-    if unavailable is not None:
-        raise ResourceLimitError(f"{reason} ({unavailable}).")
+    field_name = _accelerator_field(label)
+    reason = _no_child_reason(label)
+    _require_rapidgzip_child(label)
     try:
         return RapidgzipChildStream(
             source,
@@ -348,8 +369,8 @@ def _translate_child_or_stdlib(
     ``stdlib`` for an ``AUTO`` open whose child could not start and so decodes with the
     stdlib (:func:`_open_rapidgzip`) after this translator was chosen.
 
-    An exception from the caller's own source, which the child's reads were served from,
-    is neither: it reaches the caller unchanged.
+    An exception from the caller's own source (``from_callers_source``) is neither: it
+    reaches the caller unchanged.
     """
     if from_callers_source(exc):
         return None

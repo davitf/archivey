@@ -1692,22 +1692,25 @@ bytes a real extraction counts for copying a hardlink across a filesystem bounda
 inside `dest` are not counted. And a directory of `dest` gains its owner's read,
 write and search bits in the scratch directory, so a refusal that comes from its
 permissions MAY appear only in a real extraction; a symlink of `dest` that the OS will
-not create there is copied as an empty file; and an entry that cannot be copied (the
-scratch filesystem is full, or the name is too long there) is left out. A `dest` that
-exists and is not a directory SHALL be refused as a real extraction refuses it. A `dest`
-that does not exist SHALL be refused with the error a real extraction gets creating it
-when the nearest part of its path that exists cannot be resolved, is not a directory, or
-cannot be written to. Whether it can be written to is a prediction made with
-`access(2)`, which checks the real user and group ids rather than the effective ones,
-and on Windows it is not made; so a refusal that comes from a process whose real and
-effective ids differ, from a change after the check, or on Windows, MAY appear only in a
-real extraction. File names in errors raised, recorded or logged SHALL be the ones a
-real extraction's errors give, spelled from `dest` as given, as `os.path.abspath`
-spells it, or resolved (a symlink loop already in `dest`), and never the scratch
-directory's, except in the warning that the scratch directory itself could not be
-removed. The scratch directory SHALL be removed before the call returns or raises,
-including when the archive stored modes that make its directories unwritable or its
-files read-only.
+not create there is copied as an empty file; an entry that cannot be copied (the
+scratch filesystem is full, or the name is too long there) is left out; and a path
+whose links expand past `PATH_MAX` cannot be resolved and is refused, so where the
+scratch directory's path and `dest`'s differ in length, a member whose resolution
+passes that limit in only one of them MAY be refused in only one of the two runs. A
+`dest` that exists and is not a directory SHALL be refused as a real extraction
+refuses it. A `dest` that does not exist SHALL be refused with the error a real
+extraction gets creating it when the nearest part of its path that exists cannot be
+resolved, is not a directory, or cannot be written to. Whether it can be written to is a
+prediction made with `access(2)`, which checks the real user and group ids rather than
+the effective ones, and on Windows it is not made; so a refusal that comes from a
+process whose real and effective ids differ, from a change after the check, or on
+Windows, MAY appear only in a real extraction. File names in errors raised, recorded or
+logged SHALL be the ones a real extraction's errors give, spelled from `dest` as given,
+as `os.path.abspath` spells it, or resolved (a symlink loop already in `dest`), and
+never the scratch directory's, except in the warning that the scratch directory itself
+could not be removed. The scratch directory SHALL be removed before the call returns or
+raises, including when the archive stored modes that make its directories unwritable or
+its files read-only.
 
 #### Scenario: dry-run matrix
 

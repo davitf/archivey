@@ -544,7 +544,13 @@ is `True` when any folder packs more than one file, `CostReceipt.solid_block_cou
 is the folder count, and non-solid archives report `AccessCost.DIRECT`. Each
 member's parsed coder chain SHALL map to `tuple[CompressionMethod, ...]` in compress
 order: pre-filters first, packing codec last. If a POSIX attribute block is absent,
-`mode`, `uid`, and `gid` SHALL be `None`, never guessed defaults.
+`mode`, `uid`, and `gid` SHALL be `None`, never guessed defaults. The attribute word
+holds a Unix mode when its high 16 bits hold a Unix file type (`S_IFMT` bits), as 7-Zip
+reads it; a special file type (device, FIFO, socket, unknown) counts only with the
+`0x8000` bit (FILE_ATTRIBUTE_UNIX_EXTENSION) set, because the Windows attribute
+STRICTLY_SEQUENTIAL reads as `S_IFCHR`. `mode`, the type a mode gives (symlink,
+directory, special file), `extra["special_file_type"]`, `create_system` and the slot
+"Created" fills SHALL all use that one test.
 
 #### Scenario: metadata matrix
 
@@ -554,9 +560,13 @@ order: pre-filters first, packing codec last. If a POSIX attribute block is abse
 | Every folder packs one file | `ArchiveInfo.is_solid` false; access cost is `DIRECT` |
 | BCJ pre-filter followed by LZMA2 | `member.compression` is `(BCJ, LZMA2)`, not the decode order the folder stores |
 | No POSIX attribute block | `member.mode`, `member.uid`, and `member.gid` are all `None` |
-| "Created" stored, attribute high word holds a Unix mode with a file type (`S_IFMT` bits) | `created is None`; `ctime` holds it (7-Zip on Linux and p7zip store `st_ctime`) |
-| "Created" stored, no Unix file type in the high word (`0x8000` alone or Windows attributes above `0xFFFF` included) | `created` holds it; `ctime is None` |
-| "Created" out of range | Both `None`; `MEMBER_TIMESTAMP_INVALID` with `field` `ctime` when the high word holds a Unix file type, else `created` |
+| "Created" stored, the attribute word holds a Unix mode (below) | `created is None`; `ctime` holds it (7-Zip on Linux and p7zip store `st_ctime`) |
+| "Created" stored, no Unix mode (`0x8000` alone, Windows attributes above `0xFFFF`) | `created` holds it; `ctime is None` |
+| "Created" out of range | Both `None`; `MEMBER_TIMESTAMP_INVALID` with `field` `ctime` when the word holds a Unix mode, else `created` |
+| Unix mode `0x8000 \| 0x20 \| (0o100644 << 16)` | `mode == 0o644`; `create_system` is `UNIX` |
+| ARCHIVE \| PINNED (`0x80020`), with or without `0x8000`, or ARCHIVE \| STRICTLY_SEQUENTIAL (`0x20000020`) | `mode is None`; type `FILE`; `create_system` is `WINDOWS_NTFS` |
+| `0o120777 << 16` without `0x8000` | `mode == 0o777`; type `SYMLINK`, as 7-Zip lists it |
+| `0o010644 << 16` (FIFO) without `0x8000` | `mode is None`; type `FILE`; no `special_file_type` |
 
 ### Requirement: Infer presented names for nameless 7z members
 
