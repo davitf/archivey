@@ -5,8 +5,10 @@ The steps a person still decides are the CHANGELOG text and when to merge. Every
 else is here. A release is four commands, run from a clean, up-to-date ``main``:
 
 1. ``notes`` prints the merged pull requests since the last tag, as raw material for
-   the CHANGELOG entry. Write the entry under ``## [Unreleased]`` in a normal PR, or as
-   the first commit of step 2.
+   the CHANGELOG entry, and says whether the release can be a patch: it compares the
+   public API at the tag with ``HEAD`` (``scripts/api_surface.py``) and lists the
+   merged pull requests labelled ``needs-minor``. Write the entry under
+   ``## [Unreleased]`` in a normal PR, or as the first commit of step 2.
 2. ``start X.Y.Z`` sets the version in both pyproject files (and the ``archivey-cli``
    pin), refreshes ``uv.lock``, moves the ``[Unreleased]`` text under a dated
    ``[X.Y.Z]`` heading with its compare links, commits on ``release/vX.Y.Z``, pushes,
@@ -36,6 +38,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,6 +46,10 @@ ROOT_PYPROJECT = ROOT / "pyproject.toml"
 CLI_PYPROJECT = ROOT / "packages" / "archivey-cli" / "pyproject.toml"
 CHANGELOG = ROOT / "CHANGELOG.md"
 REPO_URL = "https://github.com/archivey-dev/archivey"
+
+#: The label on a merged pull request whose change needs a minor release although the
+#: API surface file does not show it, such as a call that now gives a different result.
+NEEDS_MINOR_LABEL = "needs-minor"
 
 #: The versions this script writes: a final release, a pre-release, or a ``.devN``.
 VERSION_RE = re.compile(r"^\d+\.\d+\.\d+((a|b|rc)\d+)?(\.dev\d+)?$")
@@ -117,6 +124,23 @@ def next_dev_version(version: str) -> str:
     if pre:
         return f"{major}.{minor}.{patch}{pre}{int(pre_number) + 1}.dev0"
     return f"{major}.{minor}.{int(patch) + 1}.dev0"
+
+
+def next_release_version(previous_tag: str | None, needs_minor: bool) -> str:
+    """The release after ``previous_tag``: v0.2.0 -> 0.2.1, or 0.3.0 when it needs a minor.
+
+    Before 1.0 a minor release is where breaking changes go, so nothing here suggests a
+    major release.
+    """
+    if previous_tag is None:
+        return "0.1.0"
+    match = re.match(r"^v?(\d+)\.(\d+)\.(\d+)", previous_tag)
+    if match is None:
+        raise ReleaseError(f"{previous_tag!r} is not a version tag")
+    major, minor, patch = (int(part) for part in match.groups())
+    if needs_minor:
+        return f"{major}.{minor + 1}.0"
+    return f"{major}.{minor}.{patch + 1}"
 
 
 def _link_section_start(text: str) -> int:
@@ -347,11 +371,77 @@ def _check_gates(runner: Runner, branch: str) -> str:
     return merge or "<release-PR-merge-commit>"
 
 
+def _api_change(previous: str) -> tuple[str, str]:
+    """(``minor``, ``patch`` or ``none``; the report) for the public API since ``previous``.
+
+    Both sides are written by this checkout's ``scripts/api_surface.py``, the old one from
+    a temporary worktree of the tag, so a change in the script's format between releases
+    does not show as an API change.
+    """
+    script = ROOT / "scripts" / "api_surface.py"
+    with tempfile.TemporaryDirectory() as tmp:
+        tree = Path(tmp) / "tree"
+        _git("worktree", "add", "--detach", str(tree), previous)
+        try:
+            old = subprocess.run(
+                [sys.executable, "-I", str(script), "--src", str(tree / "src")],
+                cwd=ROOT, check=True, stdout=subprocess.PIPE, text=True,
+            ).stdout  # fmt: skip
+        finally:
+            _git("worktree", "remove", "--force", str(tree))
+        old_file = Path(tmp) / "old.txt"
+        old_file.write_text(old, encoding="utf-8")
+        out = subprocess.run(
+            [sys.executable, "-I", str(script), "--src", str(ROOT / "src"),
+             "--compare-to", str(old_file)],
+            cwd=ROOT, check=True, stdout=subprocess.PIPE, text=True,
+        ).stdout  # fmt: skip
+    verdict, _, text = out.partition("\n")
+    return verdict, text.rstrip()
+
+
+def _needs_minor_prs(previous: str) -> list[str] | None:
+    """Merged pull requests since ``previous`` labelled ``needs-minor``; None without ``gh``."""
+    since = _git("log", "-1", "--format=%cI", previous)
+    try:
+        out = subprocess.run(
+            ["gh", "pr", "list", "--state", "merged", "--base", "main",
+             "--label", NEEDS_MINOR_LABEL, "--search", f"merged:>{since}",
+             "--limit", "200", "--json", "number,title"],
+            cwd=ROOT, check=True, stdout=subprocess.PIPE, text=True,
+        ).stdout  # fmt: skip
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return [f"#{pr['number']} {pr['title']}" for pr in json.loads(out)]
+
+
 def cmd_notes(_args: argparse.Namespace) -> None:
     previous = _previous_tag()
     since = f"{previous}..HEAD" if previous else "HEAD"
     print(f"Merged since {previous or 'the first commit'}:\n")
     print(_git("log", "--first-parent", "--format=- %s", since))
+    if previous is None:
+        return
+    verdict, api_report = _api_change(previous)
+    print(f"\nPublic API since {previous}:\n{api_report}")
+    labelled = _needs_minor_prs(previous)
+    if labelled is None:
+        print(
+            f"\nCould not list the `{NEEDS_MINOR_LABEL}` pull requests (is `gh` set up?)."
+        )
+    elif labelled:
+        print(f"\nMerged pull requests labelled `{NEEDS_MINOR_LABEL}`:")
+        print("\n".join(f"- {pr}" for pr in labelled))
+    needs_minor = verdict == "minor" or bool(labelled)
+    version = next_release_version(previous, needs_minor)
+    if needs_minor:
+        print(f"\nThis needs a minor release: {version}.")
+    elif labelled is None:
+        print(
+            f"\nThe API allows a patch release ({version}); check the labels by hand."
+        )
+    else:
+        print(f"\nThis can be a patch release: {version}.")
 
 
 def cmd_start(args: argparse.Namespace) -> None:
@@ -468,7 +558,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--dry-run", action="store_true", help="print, change nothing")
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("notes", help="list merged pull requests since the last tag")
+    sub.add_parser(
+        "notes",
+        help="list merged pull requests since the last tag, and say patch or minor",
+    )
     start = sub.add_parser("start", help="open the release pull request")
     start.add_argument("version")
     start.add_argument(

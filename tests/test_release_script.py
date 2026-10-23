@@ -528,3 +528,19 @@ def test_tag_checks_the_gates_on_another_branch(
     assert "+ gh pr view hand-made --json headRefOid" in out
     for workflow in release.RELEASE_GATE_WORKFLOWS:
         assert f"+ gh run list --workflow {workflow} --branch hand-made" in out
+
+
+@pytest.mark.parametrize(
+    ("tag", "needs_minor", "expected"),
+    [
+        ("v0.2.0", False, "0.2.1"),
+        ("v0.2.0", True, "0.3.0"),
+        ("v0.3.4", True, "0.4.0"),
+        ("v1.2.3", False, "1.2.4"),
+        (None, False, "0.1.0"),
+    ],
+)
+def test_next_release_version(
+    tag: str | None, needs_minor: bool, expected: str
+) -> None:
+    assert release.next_release_version(tag, needs_minor) == expected

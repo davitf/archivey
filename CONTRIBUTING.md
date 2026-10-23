@@ -158,6 +158,18 @@ User-facing history lives in [`CHANGELOG.md`](CHANGELOG.md). Pull requests do no
 it: the release PR writes each version's entry (new features, public API changes and
 security fixes one line each, other bug fixes summarized in one line).
 
+Whether a release can be a patch follows
+[`docs/how-it-is-built.md`](docs/how-it-is-built.md) §Versioning and stability, and
+`scripts/release.py notes` answers it from two sources:
+
+- **`dev-docs/api-surface.txt`** lists the public API one line per item: names,
+  signatures, fields, enum values, `ARCHIVE_INTEGRITY_CODES`, and the command's verbs,
+  options and exit codes. A pull request that changes any of them runs
+  `uv run python scripts/api_surface.py --write` and commits the result;
+  `tests/test_api_surface.py` fails until it does.
+- **The `needs-minor` label** marks a merged pull request that needs a minor release for
+  a reason the file cannot show, such as a call that now gives a different result.
+
 ## Tooling decisions
 
 - **Type-checking is Pyrefly + ty** — the library is kept clean on **both**. We do
