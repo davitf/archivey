@@ -130,10 +130,11 @@ class ReadOnlyIOStream(io.RawIOBase, BinaryIO):
         surface.
 
         ``Never`` is the honest return type: this returns nothing, ever. It is also
-        why subclasses that *do* have a path (:class:`DelegatingStream` here, and
-        ``ArchiveSource`` outside this package) need ``# pyrefly: ignore[bad-override]``
-        — widening ``Never`` to ``str`` is a deliberate LSP exception, not an
-        oversight.
+        why the subclasses that *do* have a path (:class:`DelegatingStream` here, and
+        ``ArchiveSource`` and ``ArchiveStream`` outside this package) need
+        ``# pyrefly: ignore[bad-override]`` and
+        ``# ty: ignore[invalid-property-type-override]``: widening ``Never`` to
+        ``str`` is a deliberate LSP exception, not an oversight.
 
         Do not "fix" this by returning a string or ``None``. See :meth:`mode`, which
         overrides the same ``typing.IO`` stub for the same reason.
@@ -254,7 +255,7 @@ class DelegatingStream(ReadOnlyIOStream):
             return
         try:
             old.close()
-        except Exception:  # noqa: BLE001 - best-effort; the new inner took over
+        except Exception:  # noqa: BLE001, S110 - best-effort; the new inner took over
             pass
 
     def read(self, n: int = -1, /) -> bytes:
@@ -297,7 +298,7 @@ class DelegatingStream(ReadOnlyIOStream):
             super().close()
 
     @property
-    def name(self) -> str:  # pyrefly: ignore[bad-override]  # base is Never; this returns a path when the inner has one
+    def name(self) -> str:  # pyrefly: ignore[bad-override]  # ty: ignore[invalid-property-type-override]  # base is Never; this returns a path when the inner has one
         """Path of the inner stream, or raise :exc:`AttributeError` if it has none.
 
         Raising keeps ``hasattr(..., "name")`` false when the inner is nameless

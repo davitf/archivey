@@ -116,6 +116,7 @@ def _run(script: str, *args: str) -> subprocess.CompletedProcess[str]:
         text=True,
         timeout=120,
         env={**os.environ, "PYTHONFAULTHANDLER": "1"},
+        check=False,
     )
 
 
@@ -375,10 +376,12 @@ def test_what_a_cut_stream_delivers_before_the_abort_is_a_correct_prefix(
     payload = _payload()
     path = _write(tmp_path, f"cut.{codec.value}", _compress(codec, payload)[:-cut])
     got = bytearray()
-    with open_codec_stream(codec, str(path), config=_ON) as stream:
-        with pytest.raises(CorruptionError):
-            while block := stream.read(chunk):
-                got += block
+    with (
+        open_codec_stream(codec, str(path), config=_ON) as stream,
+        pytest.raises(CorruptionError),
+    ):
+        while block := stream.read(chunk):
+            got += block
     assert len(got) < len(payload)
     assert payload.startswith(got)
 
@@ -434,7 +437,7 @@ def test_the_child_stream_reads_and_seeks_like_stdlib(
 def _child_stream(stream: object) -> RapidgzipChildStream:
     inner = stream
     while not isinstance(inner, RapidgzipChildStream):
-        inner = getattr(inner, "_inner")
+        inner = inner._inner
     return inner
 
 
@@ -541,10 +544,12 @@ def test_a_fault_archivey_raises_about_the_source_is_not_marked_as_the_sources()
     """Only what the caller's source itself raised is marked as the caller's (and so
     left untranslated): archivey's own guard against an over-long read is not."""
     source = _OverReadingSource(zlib.compress(_payload()))
-    with open_codec_stream(Codec.ZLIB, source, config=_ON) as stream:
-        with pytest.raises(ValueError, match="the excess is already consumed") as info:
-            while stream.read(1 << 16):
-                pass
+    with (
+        open_codec_stream(Codec.ZLIB, source, config=_ON) as stream,
+        pytest.raises(ValueError, match="the excess is already consumed") as info,
+    ):
+        while stream.read(1 << 16):
+            pass
     assert not rapidgzip_child.from_callers_source(info.value)
 
 
@@ -1094,7 +1099,9 @@ def test_under_pypy_on_is_refused_with_the_reason(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """rapidgzip misreads valid streams under PyPy, so no child runs it there and ON
-    says why."""
+    says why. Under PyPy ``deps.rapidgzip`` already reads as absent, so ON raises
+    PackageNotInstalledError first (tests/test_codecs.py); this pins the backstop for a
+    rapidgzip that reads as present."""
     monkeypatch.setattr(codecs_module.deps, "UNDER_PYPY", True)
     assert rapidgzip_child.rapidgzip_child_unavailable_reason() == (
         "archivey does not use rapidgzip under PyPy, where it misreads valid streams"

@@ -16,7 +16,6 @@ import lzma
 import random
 import struct
 import subprocess
-import sys
 import tarfile
 import zlib
 from typing import Any
@@ -31,7 +30,7 @@ from archivey.internal.streams.codecs import Codec, open_codec_stream
 from archivey.internal.streams.codecs.lzma_codec import LzmaAloneCodec
 from archivey.internal.streams.codecs.xz_decoder import _decode_xz_head
 from archivey.types import ContainerFormat, StreamFormat
-from tests.conftest import requires_zstd, zstd_backend
+from tests.conftest import CPYTHON, requires_zstd, zstd_backend
 from tests.streams_util import (
     lzma_alone_with_filter,
     make_lzip_member,
@@ -143,7 +142,7 @@ def test_clamped_alone_decode_is_byte_identical() -> None:
 
 
 @pytest.mark.skipif(
-    sys.implementation.name != "cpython",
+    not CPYTHON,
     reason="PyPy's lzma cannot write FORMAT_ALONE with a filter chain",
 )
 @pytest.mark.parametrize(
@@ -402,7 +401,7 @@ def test_xz_head_scans_each_index_by_its_own_size(
 
 
 @pytest.mark.skipif(
-    sys.implementation.name != "cpython",
+    not CPYTHON,
     reason="PyPy's lzma cannot compress with this filter chain (LZMA_PROG_ERROR)",
 )
 def test_xz_head_with_filters_ahead_of_lzma2_is_byte_identical() -> None:

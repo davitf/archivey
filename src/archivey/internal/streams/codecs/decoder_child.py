@@ -188,6 +188,11 @@ class _Pool:
         except (OSError, ValueError):
             process.end()
             return
+        except BaseException:
+            # Interrupted part-way through the frame: no lease holds the child any
+            # more, so it is ended here or never.
+            process.end()
+            raise
         with self._lock:
             if process.alive() and len(self._idle) < MAX_IDLE:
                 self._idle.append(process)
@@ -306,9 +311,11 @@ class DecoderChild:
     reused child gave wrong bytes that no later read can take back. Neither child's
     verdict is then charged to the data.
 
-    After the child dies, every later call raises the same error again. After a reply
-    was interrupted (``KeyboardInterrupt`` part-way through), every later call raises
-    ``ArchiveyUsageError``: the rest of the reply is still in the pipe.
+    After the child dies, every later call raises the same error again. After a request
+    or its reply was interrupted (``KeyboardInterrupt`` part-way through), every later
+    call raises ``ArchiveyUsageError``, and the child is ended at close (see
+    :meth:`_abandon`): the rest of the request is still to be read, or the rest of the
+    reply is still in the pipe.
     """
 
     # How a death during a request is reported: the subclass for PPMd keeps the
@@ -402,8 +409,8 @@ class DecoderChild:
             raise self._death
         if self._interrupted:
             raise ArchiveyUsageError(
-                f"the {self.describe} is not running: a reply from it was "
-                "interrupted, and this decoder cannot continue"
+                f"the {self.describe} was interrupted in the middle of a request "
+                "or its reply, and this decoder cannot continue"
             )
         process = self._lease.process
         if process is None:
@@ -423,6 +430,11 @@ class DecoderChild:
             process.send(tag, arg, *parts)
         except (OSError, ValueError):
             raise _Died(process) from None
+        except BaseException:
+            # Interrupted part-way through a request: the child is still reading it,
+            # and would read the next frame as the rest of its payload.
+            self._abandon()
+            raise
         return self._receive_raw()
 
     def _receive_raw(self) -> tuple[int, bytes, bytes]:
@@ -435,10 +447,17 @@ class DecoderChild:
         except BaseException:
             # Interrupted part-way through a reply: the rest of it is still in the
             # pipe, and the next read would take its bytes for a reply header.
-            self._interrupted = True
-            self._lease.reusable = False
+            self._abandon()
             raise
         return tag, state, output
+
+    def _abandon(self) -> None:
+        """Give up on the child after an interrupt part-way through a frame: every
+        later call refuses, and :meth:`close` ends the child instead of reusing it.
+        The child is not ended here: ending it waits for it to exit (up to
+        ``REAP_TIMEOUT``), and that wait must not run inside the interrupt."""
+        self._interrupted = True
+        self._lease.reusable = False
 
     def _request(self, tag: int, arg: int, *parts: bytes) -> bytes:
         """Send one request and return its output, re-running in a fresh child a crash
@@ -567,7 +586,8 @@ class DecoderChild:
     def flag(self, name: str) -> bool:
         value = self._state.get(name)
         if not isinstance(value, bool):
-            raise AttributeError(name)
+            # Stands in for the decoder lacking this attribute.
+            raise AttributeError(name)  # noqa: TRY004
         return value
 
     def has(self, name: str) -> bool:
@@ -606,7 +626,8 @@ class DecoderChild:
     def unconsumed_tail(self) -> bytes:
         size = self._state.get("unconsumed_tail")
         if not isinstance(size, int):
-            raise AttributeError("unconsumed_tail")
+            # Stands in for the decoder lacking this attribute.
+            raise AttributeError("unconsumed_tail")  # noqa: TRY004
         if size == 0:
             return b""
         if size <= len(self._input):

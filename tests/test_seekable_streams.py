@@ -8,6 +8,7 @@ import dataclasses
 import gzip
 import importlib.util
 import io
+import itertools
 import lzma
 import random
 import struct
@@ -321,9 +322,11 @@ def test_xz_block_resume_hands_off_before_a_stream_without_blocks(
 
 def test_xz_truncated_raises() -> None:
     compressed = lzma.compress(CONTENT, format=lzma.FORMAT_XZ)
-    with XzDecompressorStream(io.BytesIO(compressed[: len(compressed) // 2])) as stream:
-        with pytest.raises(TruncatedError):
-            stream.read()
+    with (
+        XzDecompressorStream(io.BytesIO(compressed[: len(compressed) // 2])) as stream,
+        pytest.raises(TruncatedError),
+    ):
+        stream.read()
 
 
 def test_xz_truncated_large_read_recovers_prefix() -> None:
@@ -652,16 +655,20 @@ def test_xz_megabytes_of_stream_padding_decode_in_one_strip() -> None:
 
 @pytest.mark.parametrize("data", [b"", b"\xfd", b"\xfd7zXZ", b"\xfd7zXZ\x00"])
 def test_xz_source_cut_inside_the_first_header_is_truncated(data: bytes) -> None:
-    with XzDecompressorStream(io.BytesIO(data)) as stream:
-        with pytest.raises(TruncatedError):
-            stream.read()
+    with (
+        XzDecompressorStream(io.BytesIO(data)) as stream,
+        pytest.raises(TruncatedError),
+    ):
+        stream.read()
 
 
 @pytest.mark.parametrize("data", [b"a", b"abc", b"\x00" * 4, b"\xfd7zXY"])
 def test_xz_short_source_that_is_not_xz_is_corrupt(data: bytes) -> None:
-    with XzDecompressorStream(io.BytesIO(data)) as stream:
-        with raises_corruption_not_truncation(match="no streams found"):
-            stream.read()
+    with (
+        XzDecompressorStream(io.BytesIO(data)) as stream,
+        raises_corruption_not_truncation(match="no streams found"),
+    ):
+        stream.read()
 
 
 def test_xz_index_with_room_for_more_records_is_rejected() -> None:
@@ -724,9 +731,41 @@ def test_lzip_trailer_member_size_mismatch_raises_on_forward_read() -> None:
     the next member's seek point, so ``seek(256)`` then served member 2's bytes.
     """
     bad = _lzip_with_lying_member_size()
-    with LzipDecompressorStream(io.BytesIO(bad)) as stream:
-        with raises_corruption_not_truncation(match="member size mismatch"):
-            stream.read()
+    with (
+        LzipDecompressorStream(io.BytesIO(bad)) as stream,
+        raises_corruption_not_truncation(match="member size mismatch"),
+    ):
+        stream.read()
+
+
+@pytest.mark.parametrize("index_first", [False, True])
+def test_lzip_empty_member_reads_the_same_with_or_without_the_index(
+    index_first: bool,
+) -> None:
+    """An empty member's start and the next member's start share an output offset.
+
+    The trailer index and the decode each give one of the two; both are valid. Once
+    the pair raised a CorruptionError, whichever came first.
+    """
+    from archivey.internal.diagnostics_collector import DiagnosticCollector
+
+    parts = [bytes(range(256)) * 400, b"", b"B" * 50_000, b"C" * 50_000]
+    data = b"".join(make_lzip_member(p) for p in parts)
+    full = b"".join(parts)
+    seen: list[Any] = []
+    collector = DiagnosticCollector(on_diagnostic=seen.append)
+    with LzipDecompressorStream(io.BytesIO(data), collector=collector) as stream:
+        if index_first:
+            assert stream.seek(0, io.SEEK_END) == len(full)
+            stream.seek(0)
+            assert stream.read() == full
+        else:
+            stream.read(len(parts[0]) + len(parts[2]) + 10)
+            stream.seek(len(full) - 5)  # past the known points: reads the index
+            assert stream.read() == full[-5:]
+        stream.seek(len(parts[0]) + 3)
+        assert stream.read(5) == full[len(parts[0]) + 3 : len(parts[0]) + 8]
+    assert seen == []
 
 
 def test_lzip_cold_seek_trusts_a_self_consistent_trailer_chain() -> None:
@@ -745,14 +784,18 @@ def test_lzip_cold_seek_trusts_a_self_consistent_trailer_chain() -> None:
         assert stream.read() == b"C" * 256  # the index's answer, not member 1
         assert stream.tell() == 512
 
-    with LzipDecompressorStream(io.BytesIO(bad)) as stream:
-        with raises_corruption_not_truncation(match="member size mismatch"):
-            stream.seek(100)
-            stream.read(16)  # the lying trailer is reached within the first feed
+    with (
+        LzipDecompressorStream(io.BytesIO(bad)) as stream,
+        raises_corruption_not_truncation(match="member size mismatch"),
+    ):
+        stream.seek(100)
+        stream.read(16)  # the lying trailer is reached within the first feed
 
-    with LzipDecompressorStream(io.BytesIO(bad)) as stream:
-        with raises_corruption_not_truncation(match="member size mismatch"):
-            stream.read()
+    with (
+        LzipDecompressorStream(io.BytesIO(bad)) as stream,
+        raises_corruption_not_truncation(match="member size mismatch"),
+    ):
+        stream.read()
 
 
 @pytest.mark.skipif(
@@ -803,9 +846,11 @@ def test_xz_cold_seek_trusts_a_self_consistent_block_index() -> None:
         with raises_corruption_not_truncation():
             stream.read()
 
-    with XzDecompressorStream(io.BytesIO(bad)) as stream:
-        with raises_corruption_not_truncation():
-            stream.read()
+    with (
+        XzDecompressorStream(io.BytesIO(bad)) as stream,
+        raises_corruption_not_truncation(),
+    ):
+        stream.read()
 
 
 def test_lzip_multi_member_seek_after_forward_read_serves_the_right_bytes() -> None:
@@ -862,17 +907,21 @@ def test_lzip_index_backwards_parses_members() -> None:
 @pytest.mark.parametrize("data", [b"", b"L", b"LZI", b"LZIP", b"LZIPx"])
 def test_lzip_source_cut_inside_the_first_header_is_truncated(data: bytes) -> None:
     """Nothing, or the start of the magic, is an lzip file that was cut short."""
-    with LzipDecompressorStream(io.BytesIO(data)) as stream:
-        with pytest.raises(TruncatedError):
-            stream.read()
+    with (
+        LzipDecompressorStream(io.BytesIO(data)) as stream,
+        pytest.raises(TruncatedError),
+    ):
+        stream.read()
 
 
 @pytest.mark.parametrize("data", [b"a", b"abc", b"LZIx", b"xLZIP"])
 def test_lzip_short_source_that_is_not_lzip_is_corrupt(data: bytes) -> None:
     """Trailing data is allowed only after a member, so this must not decode to b''."""
-    with LzipDecompressorStream(io.BytesIO(data)) as stream:
-        with raises_corruption_not_truncation(match="expected magic"):
-            stream.read()
+    with (
+        LzipDecompressorStream(io.BytesIO(data)) as stream,
+        raises_corruption_not_truncation(match="expected magic"),
+    ):
+        stream.read()
 
 
 @pytest.mark.parametrize("trailing", [b"a", b"abc", b"abcde"])
@@ -934,9 +983,11 @@ def test_lzip_version_0_member_is_unsupported_on_forward_read(case: str) -> None
     for each of these layouts, after printing the members before it; a full ``LZIP``
     magic always starts a member here.
     """
-    with LzipDecompressorStream(io.BytesIO(_V0_CASES[case]())) as stream:
-        with pytest.raises(UnsupportedFeatureError, match="lzip version 0 "):
-            stream.read()
+    with (
+        LzipDecompressorStream(io.BytesIO(_V0_CASES[case]())) as stream,
+        pytest.raises(UnsupportedFeatureError, match="lzip version 0 "),
+    ):
+        stream.read()
 
 
 @pytest.mark.parametrize("case", sorted(set(_V0_CASES) - _V0_UNREACHABLE))
@@ -977,12 +1028,14 @@ def test_lzip_seek_past_a_version_0_member_is_unsupported(case: str) -> None:
     from archivey.diagnostics import DiagnosticCode
 
     collector, seen = _collect_diagnostics()
-    with LzipDecompressorStream(
-        io.BytesIO(_V0_CASES[case]()), collector=collector
-    ) as stream:
-        with pytest.raises(UnsupportedFeatureError, match="lzip version 0 "):
-            stream.seek(0, io.SEEK_END)
-            stream.read()
+    with (
+        LzipDecompressorStream(
+            io.BytesIO(_V0_CASES[case]()), collector=collector
+        ) as stream,
+        pytest.raises(UnsupportedFeatureError, match="lzip version 0 "),
+    ):
+        stream.seek(0, io.SEEK_END)
+        stream.read()
     degraded = [d for d in seen if d.code is DiagnosticCode.SEEK_INDEX_DEGRADED]
     assert bool(degraded) == (case in _V0_UNREACHABLE)
 
@@ -993,26 +1046,34 @@ def test_lzip_cut_header_after_a_member_is_truncated_on_every_path() -> None:
     A sequential read calls the file truncated, and a seek must too.
     """
     data = make_lzip_member(b"x" * 4000) + b"LZIP\x00"
-    with LzipDecompressorStream(io.BytesIO(data)) as stream:
-        with pytest.raises(TruncatedError):
-            stream.read()
-    with LzipDecompressorStream(io.BytesIO(data)) as stream:
-        with pytest.raises(TruncatedError):
-            stream.seek(0, io.SEEK_END)
-            stream.read()
-    with LzipDecompressorStream(io.BytesIO(data)) as stream:
-        with pytest.raises(TruncatedError):
-            stream.seek(3000)
-            stream.read()
+    with (
+        LzipDecompressorStream(io.BytesIO(data)) as stream,
+        pytest.raises(TruncatedError),
+    ):
+        stream.read()
+    with (
+        LzipDecompressorStream(io.BytesIO(data)) as stream,
+        pytest.raises(TruncatedError),
+    ):
+        stream.seek(0, io.SEEK_END)
+        stream.read()
+    with (
+        LzipDecompressorStream(io.BytesIO(data)) as stream,
+        pytest.raises(TruncatedError),
+    ):
+        stream.seek(3000)
+        stream.read()
 
 
 @pytest.mark.parametrize("version", [2, 255])
 def test_lzip_future_version_is_unsupported(version: int) -> None:
     member = bytearray(make_lzip_member(b"x"))
     member[4] = version
-    with LzipDecompressorStream(io.BytesIO(bytes(member))) as stream:
-        with pytest.raises(UnsupportedFeatureError, match=f"lzip version {version} "):
-            stream.read()
+    with (
+        LzipDecompressorStream(io.BytesIO(bytes(member))) as stream,
+        pytest.raises(UnsupportedFeatureError, match=f"lzip version {version} "),
+    ):
+        stream.read()
 
 
 def test_lzip_peek_index_summary_matches_the_payload() -> None:
@@ -1089,7 +1150,7 @@ def test_spaced_collector_stays_within_the_cap_and_spreads_what_it_keeps(
     kept = collector.items
     assert kept[0] == 0  # the first item always survives
     assert collector.thinned
-    gaps = [b - a for a, b in zip(kept, kept[1:])]
+    gaps = [b - a for a, b in itertools.pairwise(kept)]
     # Greedy spacing: no kept gap is wider than the spacing plus one step.
     assert all(g <= collector.spacing + step for g in gaps), (gaps, collector.spacing)
     if step:
@@ -1421,29 +1482,35 @@ def test_a_degraded_seek_index_reaches_the_readers_collector(
         raise_on=ARCHIVE_INTEGRITY_CODES - {DiagnosticCode.ARCHIVE_TRAILING_DATA}
     )
     strict = ArchiveyConfig(diagnostic_policy=policy)
-    with open_archive(path, config=strict, seekable_members=True) as reader:
-        with reader.open(reader.members()[0]) as stream:
-            with pytest.raises(DiagnosticRaisedError) as info:
-                stream.seek(500)
-            # The raise came after the seek finished: a caller who catches it still
-            # has a working handle at the position it asked for.
-            assert stream.tell() == 500
-            assert stream.read() == data[500:]
+    with (
+        open_archive(path, config=strict, seekable_members=True) as reader,
+        reader.open(reader.members()[0]) as stream,
+    ):
+        with pytest.raises(DiagnosticRaisedError) as info:
+            stream.seek(500)
+        # The raise came after the seek finished: a caller who catches it still
+        # has a working handle at the position it asked for.
+        assert stream.tell() == 500
+        assert stream.read() == data[500:]
     assert info.value.diagnostic.code is DiagnosticCode.SEEK_INDEX_DEGRADED
 
-    with open_archive(path, config=strict, seekable_members=True) as reader:
-        with reader.open(reader.members()[0]) as stream:
-            with pytest.raises(DiagnosticRaisedError):
-                stream.seek(0, io.SEEK_END)
-            stream.seek(0)
-            assert stream.read() == data
+    with (
+        open_archive(path, config=strict, seekable_members=True) as reader,
+        reader.open(reader.members()[0]) as stream,
+    ):
+        with pytest.raises(DiagnosticRaisedError):
+            stream.seek(0, io.SEEK_END)
+        stream.seek(0)
+        assert stream.read() == data
 
-    with open_archive(path, config=strict, seekable_members=True) as reader:
-        with reader.open(reader.members()[0]) as stream:
-            with pytest.raises(DiagnosticRaisedError):
-                stream.size  # noqa: B018 - the size query is what raises
-            assert stream.read() == data
-            assert stream.size == len(data)
+    with (
+        open_archive(path, config=strict, seekable_members=True) as reader,
+        reader.open(reader.members()[0]) as stream,
+    ):
+        with pytest.raises(DiagnosticRaisedError):
+            stream.size  # noqa: B018 - the size query is what raises
+        assert stream.read() == data
+        assert stream.size == len(data)
 
 
 @pytest.mark.parametrize("source_kind", ["path", "bytesio"])
@@ -2046,8 +2113,7 @@ def test_accelerator_mode_auto_resolution() -> None:
 
 
 hypothesis = pytest.importorskip("hypothesis")
-from hypothesis import given  # noqa: E402
-from hypothesis import strategies as st  # noqa: E402
+from hypothesis import given, strategies as st  # noqa: E402
 
 
 def _seek_interleaving_ops(stream: Any, plaintext: bytes, ops: list[str]) -> None:

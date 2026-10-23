@@ -22,6 +22,7 @@ XZ spec: https://tukaani.org/xz/xz-file-format.txt
 
 from __future__ import annotations
 
+import functools
 import io
 import itertools
 import lzma
@@ -60,6 +61,7 @@ from archivey.internal.streams.decompressor_stream import (
     damaged_stream_error,
     emit_index_thinned,
     near_stream_magic,
+    release_decoder,
     truncated_message,
 )
 
@@ -842,6 +844,7 @@ class _XzState:
                     self._stream_offset += compressed_size
                     new_streams.append((self._stream_decomp_bytes, compressed_size))
                     self._streams_seen += 1
+                    release_decoder(self._dec)
                     self._dec = None
                     self._buf[0:0] = unused
                     self._state = self._NEED_HEADER
@@ -1125,7 +1128,7 @@ class XzDecoder(BaseDecoder):
                         stream_comp_end,
                         stop_at=stream_comp_start,
                         start_decompressed_offset=stream_decomp_start,
-                        on_thinned=lambda: thinned.append(True),
+                        on_thinned=functools.partial(thinned.append, True),
                     )
                     if thinned:
                         emit_index_thinned(
@@ -1486,16 +1489,20 @@ def _decode_xz_head(
             format=lzma.FORMAT_RAW, filters=_head_filter_chain(header, size)
         )
         fed = 0
-        while not dec.eof and len(out) < size:
-            data = b""
-            if dec.needs_input:
-                data = source.take_all()
-                fed += len(data)
-            out += dec.decompress(data, size - len(out))
-        if not dec.eof:
-            break  # ``size`` reached inside the block
-        source.pending[:0] = dec.unused_data
-        compressed = len(header) + fed - len(dec.unused_data)
+        try:
+            while not dec.eof and len(out) < size:
+                data = b""
+                if dec.needs_input:
+                    data = source.take_all()
+                    fed += len(data)
+                out += dec.decompress(data, size - len(out))
+            if not dec.eof:
+                break  # ``size`` reached inside the block
+            unused = dec.unused_data
+        finally:
+            release_decoder(dec)
+        source.pending[:0] = unused
+        compressed = len(header) + fed - len(unused)
         source.take(-compressed % 4 + _check_size(check))  # block padding, then check
     return bytes(out)
 

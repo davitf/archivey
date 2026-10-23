@@ -22,6 +22,7 @@ from benchmarks.harness import (
     run_cases,
     write_baselines,
 )
+from tests.conftest import UNUSED_UNDER_PYPY
 
 _RAR_DATA_CASES = (
     "rar_solid_sequential",
@@ -102,14 +103,17 @@ def test_benchmark_structural_gate(tmp_path: Path) -> None:
     unmeasured_accel = [
         name for name in _ACCEL_ON_CASES if name not in by_case or by_case[name].skipped
     ]
-    if unmeasured_accel and (_running_in_ci() or _rapidgzip_available()):
+    # Under PyPy archivey does not use rapidgzip at all (UNUSED_UNDER_PYPY), so the
+    # ON cases measure nothing there.
+    accel_used = "rapidgzip" not in UNUSED_UNDER_PYPY
+    if unmeasured_accel and accel_used and (_running_in_ci() or _rapidgzip_available()):
         pytest.fail(
             "accelerator ON cases did not run: "
             f"{unmeasured_accel}. Install the '[seekable]' extra (rapidgzip>=0.16.0); "
             "the CI matrix gets it via --extra all."
         )
 
-    if _rapidgzip_available():
+    if accel_used and _rapidgzip_available():
         # Engagement signal: ON seeks more than OFF on the same deflate ZIP.
         assert (
             by_case["zip_read_all_accel_on"].source_seek_count
