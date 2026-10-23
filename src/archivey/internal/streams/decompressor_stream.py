@@ -847,7 +847,8 @@ class DecompressorStream(ReadOnlyIOStream):
         self._make_decoder = make_decoder
         try:
             if isinstance(path, (str, os.PathLike)):
-                self._inner: BinaryIO = open(os.fspath(path), "rb")
+                # The handle outlives this statement; its owner closes it.
+                self._inner: BinaryIO = open(os.fspath(path), "rb")  # noqa: SIM115
                 self._owned_inner = self._inner
             else:
                 # typeshed keeps BufferedIOBase and BinaryIO apart; at runtime it is one.
@@ -867,7 +868,7 @@ class DecompressorStream(ReadOnlyIOStream):
             try:
                 if owned is not None:
                     owned.close()
-            except Exception:  # noqa: BLE001 - the refusal below is the error to report
+            except Exception:  # noqa: BLE001, S110 - the refusal below is the error to report
                 pass
             finally:
                 super().close()

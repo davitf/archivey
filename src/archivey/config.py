@@ -69,9 +69,9 @@ class AcceleratorMode(Enum):
         # AUTO: only pay for seek machinery when the caller asked for seekable streams.
         if not (available and seekable):
             return False
-        if min_size is not None and input_size is not None and input_size < min_size:
-            return False
-        return True
+        return not (
+            min_size is not None and input_size is not None and input_size < min_size
+        )
 
 
 class ProcessIsolation(Enum):
@@ -89,7 +89,13 @@ class ProcessIsolation(Enum):
     """The default: only the decoders seen to crash on some input run in a child
     process: rapidgzip (``use_rapidgzip``, ``use_indexed_bzip2``) and pyppmd (every PPMd
     member). Every other decoder runs in the caller's process. Processes are reused for
-    later members, so a run of small PPMd members costs little more than in-process.
+    later decoders. Measured on one Linux machine (``scripts/bench_process_isolation.py``),
+    each PPMd decoder costs about 1.4 to 2 ms more than in-process: a non-solid 7z of
+    1024 PPMd members of 4 KiB took about twice as long. A ZIP member or a non-solid 7z
+    member has a decoder of its own. A solid PPMd folder is one decoder for all its
+    members: it pays that once, and about 0.1 to 0.35 ms for each 4 KiB member read from
+    it; the decoded bytes cross between processes on top of that, at the copying cost
+    ``NATIVE_DECODERS`` gives for single streams.
     Where no child process can be started, a PPMd member raises
     :class:`~archivey.ResourceLimitError` and rapidgzip under ``AUTO`` falls back to the
     standard library."""
@@ -98,12 +104,18 @@ class ProcessIsolation(Enum):
     inflate64, pyppmd and rapidgzip, including the trial decodes format detection runs.
 
     Each open decoder has a process of its own, and processes are reused for later
-    members, so the cost is mostly copying data between processes: measured on Linux,
-    reads took about 1.05 times as long for bzip2 and xz, 1.2 to 1.5 times for gzip and
-    deflate, and about 5 times for zstd. An idle process holds about 9 MB. Where no child
-    process can be started (a frozen application, archivey imported from a zip, a
-    refused spawn), opening a decoder raises :class:`~archivey.ResourceLimitError`;
-    nothing is decoded in the caller's process."""
+    decoders. Measured on one Linux machine (``scripts/bench_process_isolation.py``), a
+    single stream (1 to 64 MiB for gzip and zstd, 1 to 16 MiB for bzip2 and xz) took
+    about 1.05 to 1.5 times as long for bzip2, 1.1 to 1.6 times for xz, 1.4 to 2 times
+    for gzip and deflate, and 2 to 6 times for zstd, mostly copying data between
+    processes. Each decoder also costs about 0.6 to 1 ms (ZIP deflate and non-solid 7z
+    LZMA2 members), and a PPMd decoder about 1.4 to 2 ms, as under ``KNOWN_CRASHES``; an
+    archive of many small members pays mostly that. A solid 7z folder is one decoder,
+    plus about 0.1 to 0.3 ms for each 4 KiB member read from it, with the copying of
+    larger members on top. An idle process holds about 9 MB. Where no child process can
+    be started (a frozen application, archivey imported from a zip, a refused spawn),
+    opening a decoder raises :class:`~archivey.ResourceLimitError`; nothing is decoded
+    in the caller's process."""
     NONE = "none"
     """No child process at all: every decoder runs in the caller's process.
 
@@ -561,19 +573,18 @@ class DecoderLimits:
     did not choose may want ``2**24``, which still admits every
     archive the usual tools write."""
 
-    max_ppmd_in_process_input: int | None = 16 * 2**20
+    max_ppmd_held_input: int | None = 16 * 2**20
     """Largest PPMd member, in compressed bytes, held and handed to the decoder whole.
     16 MiB.
 
     The decoder is pyppmd, in a child process unless ``process_isolation`` is
-    ``ProcessIsolation.NONE``. Fed whole, it decodes a valid member in full and is
-    asked little after a corrupt one ends early, the state in which it can crash. Fed in
-    pieces, it can stop at a false end on valid data (``TruncatedError`` a few KiB
-    short), and it cannot tell a corrupt stream that ended from a valid one waiting for
-    input. Holding costs memory in this process: the held input, and about as much
-    again while it is copied. A larger member, and a ZIP member read from a stream that
-    cannot seek with its sizes stored after its data, is fed in pieces. ``None`` holds
-    every member whose size is known, at a memory cost that grows with the member."""
+    ``ProcessIsolation.NONE``. Fed whole, it is asked little after a corrupt member
+    ends early, the state in which it can crash. Fed in pieces, it cannot tell a
+    corrupt stream that ended from a valid one waiting for input. Holding costs memory
+    in this process: the held input, and about as much again while it is copied. A
+    larger member, and a ZIP member read from a stream that cannot seek with its sizes
+    stored after its data, is fed in pieces. ``None`` holds every member whose size is
+    known, at a memory cost that grows with the member."""
 
     UNLIMITED: ClassVar[DecoderLimits]
 
@@ -584,7 +595,7 @@ class DecoderLimits:
 DecoderLimits.UNLIMITED = DecoderLimits(
     max_decoder_memory=None,
     max_key_derivation_rounds=None,
-    max_ppmd_in_process_input=None,
+    max_ppmd_held_input=None,
 )
 
 

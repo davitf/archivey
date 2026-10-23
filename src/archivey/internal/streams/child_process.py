@@ -77,10 +77,12 @@ def spawn(
     stderr: int | IO[bytes],
     bufsize: int = -1,
     env: Mapping[str, str] | None = None,
+    pass_fds: Sequence[int] = (),
 ) -> subprocess.Popen[bytes]:
     """Start ``argv`` with its stdout on a pipe. An ``OSError`` raises ``fail(str(exc))``.
 
     ``env`` replaces the child's environment; ``None`` inherits this process's.
+    ``pass_fds`` are descriptors the child inherits under the same numbers (POSIX only).
     """
     try:
         return subprocess.Popen(
@@ -90,6 +92,7 @@ def spawn(
             stderr=stderr,
             bufsize=bufsize,
             env=env,
+            pass_fds=pass_fds,
         )
     except OSError as exc:
         raise fail(str(exc)) from exc
@@ -188,14 +191,18 @@ def outside_death(returncode: int | None, what: str) -> tuple[type[ArchiveyError
     if is_system_kill(returncode):
         return (
             ResourceLimitError,
-            f"{what}. SIGKILL comes from outside the decoder, most often the "
-            "system's out-of-memory killer, so the data may be valid; read it "
-            "again with more memory available.",
+            (
+                f"{what}. SIGKILL comes from outside the decoder, most often the "
+                "system's out-of-memory killer, so the data may be valid; read it "
+                "again with more memory available."
+            ),
         )
     return (
         ReadError,
-        f"{what}. The decoder did not crash: something outside it ended the "
-        "process, so the data may be valid; try reading it again.",
+        (
+            f"{what}. The decoder did not crash: something outside it ended the "
+            "process, so the data may be valid; try reading it again."
+        ),
     )
 
 

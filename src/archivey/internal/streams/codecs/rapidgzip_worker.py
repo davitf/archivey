@@ -25,7 +25,14 @@ Parent to child:
   bytes, or ``NO_MEMORY_LIMIT`` (see Memory, below). Argument 0: the rest of the
   payload is a file-system path, which the child opens itself. Argument 1: the source
   is the parent's stream, read through ``SRC_*`` frames (below), and nothing follows
-  the limit.
+  the limit. Argument 2: the rest of the payload is ``OPEN_RANGE_ARGS`` (a file
+  descriptor the parent passed to this process, a start offset and a length), and the
+  source is that byte range of the file, read with ``os.pread`` (``_FileRange``). The
+  parent sends it for a stream that is a byte range of a regular file
+  (``file_region``): mainly a ZIP member in an archive on disk, and also a ``.gz`` or
+  ``.bz2`` opened from the caller's ``open(path, "rb")``. The compressed bytes then
+  never cross a pipe. A ``.tar.gz`` does not qualify: it is read through detection's
+  peek reader (``_BoundedPeekReader``), which ends the walk.
 - ``READ`` (argument: at most this many bytes), ``SEEK`` (argument: offset; payload: one
   byte, ``whence``), ``RESUME`` (argument: a decompressed offset; the reply's argument is
   the largest index point at or before it, or -1), ``POINTS`` (argument: a
@@ -91,7 +98,9 @@ SRC_DATA, SRC_VALUE, SRC_FAIL = 10, 11, 12
 OK, ERR = shared.OK, shared.ERR
 SRC_READ, SRC_SEEK, SRC_TELL = 10, 11, 12
 
-OPEN_PATH, OPEN_STREAM = 0, 1
+OPEN_PATH, OPEN_STREAM, OPEN_RANGE = 0, 1, 2
+# The OPEN_RANGE payload after the limit: file descriptor, start offset, length.
+OPEN_RANGE_ARGS = struct.Struct("<qqq")
 
 # The start of the OPEN payload: the memory limit in bytes, or NO_MEMORY_LIMIT. And the
 # exit status of a child that went over it. See ``watch_memory``.
@@ -201,6 +210,57 @@ class _ParentSource(io.RawIOBase):
     def tell(self) -> int:
         answer, value, _ = self._ask(SRC_TELL)
         return value if answer == SRC_VALUE else 0
+
+
+class _FileRange(io.RawIOBase):
+    """``length`` bytes of the file open as ``fd``, from ``start``, as rapidgzip sees them.
+
+    The parent passed ``fd`` to this process (``OPEN_RANGE``). Reads use ``os.pread``,
+    which leaves the descriptor's offset alone, so the parent's own handle on the same
+    file is not moved. Never raises, for the reason ``_ParentSource`` gives: a failed
+    read reads as the end of the range. The parent's standard-library takeover then
+    reads the same bytes itself and raises the real error. ``seek`` cannot raise either
+    (``_ParentSource`` answers a failed one with 0), so an unknown ``whence`` counts
+    from the start and a position before the start is the start. No ``fileno``, so
+    rapidgzip stays inside the range.
+    """
+
+    def __init__(self, fd: int, start: int, length: int) -> None:
+        super().__init__()
+        self._fd = fd
+        self._start = start
+        self._length = length
+        self._pos = 0
+        # rapidgzip's threads share one position.
+        self._lock = threading.Lock()
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return True
+
+    def readinto(self, buf: Any) -> int:
+        with memoryview(buf) as outer, outer.cast("B") as view, self._lock:
+            want = min(len(view), self._length - self._pos)
+            if want <= 0:
+                return 0
+            try:
+                data = os.pread(self._fd, want, self._start + self._pos)
+            except OSError:
+                return 0
+            view[: len(data)] = data
+            self._pos += len(data)
+            return len(data)
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        with self._lock:
+            base = self._pos if whence == 1 else self._length if whence == 2 else 0
+            self._pos = max(base + offset, 0)
+            return self._pos
+
+    def tell(self) -> int:
+        return self._pos
 
 
 def _offsets_payload(offsets: Any) -> bytes:
@@ -323,7 +383,7 @@ def _windows_memory_query() -> Callable[[], int | None] | None:
         from ctypes import wintypes
 
         class Counters(ctypes.Structure):
-            _fields_ = [  # noqa: RUF012 - the ctypes layout of PROCESS_MEMORY_COUNTERS
+            _fields_ = [  # the ctypes layout of PROCESS_MEMORY_COUNTERS
                 ("cb", wintypes.DWORD),
                 ("PageFaultCount", wintypes.DWORD),
                 ("PeakWorkingSetSize", ctypes.c_size_t),
@@ -439,9 +499,13 @@ def _main(argv: list[str]) -> None:
                 raise ImportError("this rapidgzip has no IndexedBzip2File")
         else:
             opener = rapidgzip.open
-        source: object = (
-            os.fsdecode(payload) if kind == OPEN_PATH else _ParentSource(channel)
-        )
+        source: object
+        if kind == OPEN_PATH:
+            source = os.fsdecode(payload)
+        elif kind == OPEN_RANGE:
+            source = _FileRange(*OPEN_RANGE_ARGS.unpack(payload))
+        else:
+            source = _ParentSource(channel)
         stream = opener(source, parallelization=0)
     except Exception as exc:  # noqa: BLE001 - reported to the parent, which raises
         channel.send(ERR, 0, shared.error_payload(exc))
@@ -457,7 +521,7 @@ def _main(argv: list[str]) -> None:
         # when the interpreter finalizes aborts the process.
         try:
             stream.close()
-        except Exception:  # noqa: BLE001 - the process is ending either way
+        except Exception:  # noqa: BLE001, S110 - the process is ending either way
             pass
 
 

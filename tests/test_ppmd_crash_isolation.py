@@ -4,7 +4,7 @@ pyppmd (1.3.1, and 1.2.0) segfaults when asked to decode after a corrupt stream 
 hit its end early. Every PPMd member therefore decodes in a child process
 (``ppmd_child``, on the shared decoder worker), unless ``process_isolation`` is
 ``NONE``; there ``PpmdDecoder`` hands pyppmd a member whole when it is at most
-``DecoderLimits.max_ppmd_in_process_input`` of compressed input. The hostile-input
+``DecoderLimits.max_ppmd_held_input`` of compressed input. The hostile-input
 tests run in a fresh interpreter so that a regression fails the test instead of
 killing the session.
 """
@@ -219,12 +219,14 @@ def test_truncated_member_returns_its_prefix_then_raises(
     payload, packed, cut = _truncated_text_member()
     params = _params(7, len(packed), len(payload))
     got = bytearray()
-    with open_codec_stream(
-        Codec.PPMD, io.BytesIO(cut), params=params, config=ppmd_config
-    ) as stream:
-        with pytest.raises(TruncatedError):
-            while chunk := stream.read(4096):
-                got += chunk
+    with (
+        open_codec_stream(
+            Codec.PPMD, io.BytesIO(cut), params=params, config=ppmd_config
+        ) as stream,
+        pytest.raises(TruncatedError),
+    ):
+        while chunk := stream.read(4096):
+            got += chunk
     assert len(got) > 65536
     assert bytes(got) == payload[: len(got)]
 
@@ -319,16 +321,18 @@ def test_a_child_that_cannot_start_is_a_resource_limit(
         monkeypatch.setattr(decoder_child, "WORKER", worker)
     packed = _encode_ppmd7(_ZERO_RUN)
     params = _params(7, len(packed), len(_ZERO_RUN))
-    with open_codec_stream(Codec.PPMD, io.BytesIO(packed), params=params) as stream:
-        with pytest.raises(ResourceLimitError, match="none can be started"):
-            stream.read(10)
+    with (
+        open_codec_stream(Codec.PPMD, io.BytesIO(packed), params=params) as stream,
+        pytest.raises(ResourceLimitError, match="none can be started"),
+    ):
+        stream.read(10)
 
 
 @pytest.mark.parametrize(
     "limits",
     [
         DecoderLimits(),
-        DecoderLimits(max_ppmd_in_process_input=1024),
+        DecoderLimits(max_ppmd_held_input=1024),
         DecoderLimits.UNLIMITED,
     ],
     ids=["held", "in-pieces", "unlimited"],
@@ -370,11 +374,13 @@ def test_a_child_is_reused_after_a_clean_member_and_not_after_a_cut_one(
     assert POOL.idle_count() == 1
     payload, full, cut = _truncated_text_member()
     POOL.close_idle()
-    with open_codec_stream(
-        Codec.PPMD, io.BytesIO(cut), params=_params(7, len(full), len(payload))
-    ) as stream:
-        with pytest.raises(TruncatedError):
-            stream.read()
+    with (
+        open_codec_stream(
+            Codec.PPMD, io.BytesIO(cut), params=_params(7, len(full), len(payload))
+        ) as stream,
+        pytest.raises(TruncatedError),
+    ):
+        stream.read()
     assert POOL.idle_count() == 0
 
 
@@ -450,7 +456,11 @@ def test_the_child_writes_no_core_dump() -> None:
         """
     )
     proc = subprocess.run(
-        [sys.executable, "-c", probe], capture_output=True, text=True, timeout=60
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
     )
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "0"
@@ -706,9 +716,11 @@ def test_without_sys_executable_a_member_is_refused(
         open_ppmd_child(variant=7, order=_ORDER, mem_size=_MEM)
     packed = _encode_ppmd7(_ZERO_RUN)
     params = _params(7, len(packed), len(_ZERO_RUN))
-    with open_codec_stream(Codec.PPMD, io.BytesIO(packed), params=params) as stream:
-        with pytest.raises(ResourceLimitError, match="sys.executable is not set"):
-            stream.read(10)
+    with (
+        open_codec_stream(Codec.PPMD, io.BytesIO(packed), params=params) as stream,
+        pytest.raises(ResourceLimitError, match="sys.executable is not set"),
+    ):
+        stream.read(10)
 
 
 def test_close_with_an_unread_reply_does_not_wait_for_the_timeout() -> None:
