@@ -51,7 +51,7 @@ member's last byte comes out.
 The decoders come from three places. Python's standard library covers zlib, bzip2 and LZMA, and
 Zstandard on Python 3.14 and later. The `[recommended]` extra includes third-party packages that add
 support for PPMd, Deflate64, Brotli, LZ4, Zstandard on older Pythons, and AES encryption. Archivey's
-own Python code handles `.Z` files, the 7z BCJ2 and ARM64 filters, the legacy LZ4 frame, and the
+own Python code handles `.Z` files, the 7z BCJ2, ARM64 and RISC-V filters, the legacy LZ4 frame, and the
 wrapping around each compressed stream in formats such as gzip and xz. Some decoders written in C
 can crash on bad data, so archivey runs those in a child process, and can run every decoder in one.
 [Security](security.md#decoders-in-a-child-process) says which.
