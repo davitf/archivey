@@ -14,8 +14,16 @@ from typing import Any
 import pytest
 
 from archivey.diagnostics import DiagnosticCode
+from archivey.exceptions import (
+    CorruptionError,
+    ReadError,
+    ResourceLimitError,
+    UnsupportedFeatureError,
+)
 from archivey.internal.config import StreamConfig
+from archivey.internal.streams.child_process import outside_death_error
 from archivey.internal.streams.codecs import Codec, open_codec_stream
+from archivey.internal.streams.codecs.decoder_child import isolation_error
 from archivey.internal.streams.codecs.zstd_seek_table import read_seek_table
 from archivey.internal.streams.decompressor_stream import DecompressorStream
 from tests.conftest import requires_zstd, zstd_backend
@@ -379,30 +387,89 @@ def test_a_point_where_the_decode_fails_reads_whole_after_the_drop() -> None:
         _contradicted(seen)
 
 
-def test_an_error_that_is_no_verdict_on_the_data_keeps_the_table(
-    monkeypatch: pytest.MonkeyPatch,
+def _fail_once_after_a_resume(
+    monkeypatch: pytest.MonkeyPatch, engine: DecompressorStream, exc: Exception
 ) -> None:
-    """An ``OSError`` from the first decode after a resume at a table point says nothing
-    about the table: it propagates, and nothing is reported or dropped."""
+    """Make the first decode after the next resume at a seek point raise ``exc``."""
+    reset = engine._reset_to_seek_point
+    armed = [True]
+
+    def reset_then_fail(point: Any) -> None:
+        reset(point)
+        if not armed[0]:
+            return
+        armed[0] = False
+
+        def feed(*args: Any, **kwargs: Any) -> Any:
+            raise exc
+
+        monkeypatch.setattr(engine._decoder, "feed", feed)
+
+    monkeypatch.setattr(engine, "_reset_to_seek_point", reset_then_fail)
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        pytest.param(OSError("the source went away"), id="source"),
+        pytest.param(MemoryError("no memory"), id="memory"),
+        pytest.param(outside_death_error(-9, "the child ended"), id="sigkill"),
+        pytest.param(outside_death_error(-15, "the child ended"), id="sigterm"),
+        pytest.param(isolation_error("no child can start"), id="no-child"),
+        pytest.param(ReadError("the read failed"), id="read-error"),
+    ],
+)
+def test_an_error_that_is_no_verdict_on_the_data_keeps_the_table(
+    monkeypatch: pytest.MonkeyPatch, exc: Exception
+) -> None:
+    """An error from the first decode after a resume at a table point that says nothing
+    about the data (the source, memory, a decoder child ended from outside or never
+    started, a read that failed) says nothing about the table either: it propagates,
+    and nothing is reported or dropped."""
     collector, seen = _collector()
     data = make_seekable_zstd(PARTS)
     with _open(io.BytesIO(data), collector=collector) as stream:
         stream.seek(0, io.SEEK_END)
         engine = _engine(stream)
-        reset = engine._reset_to_seek_point
-
-        def reset_then_fail(point: Any) -> None:
-            reset(point)
-
-            def feed(*args: Any, **kwargs: Any) -> Any:
-                raise OSError("the source went away")
-
-            monkeypatch.setattr(engine._decoder, "feed", feed)
-
-        monkeypatch.setattr(engine, "_reset_to_seek_point", reset_then_fail)
-        with pytest.raises(OSError, match="the source went away"):
+        _fail_once_after_a_resume(monkeypatch, engine, exc)
+        with pytest.raises(type(exc)) as raised:
             stream.seek(STARTS[3] + 5)
             stream.read(10)
+        assert raised.value is exc
         points = [p.decompressed_offset for p in engine._seek_points]
     assert _degraded(seen) == []
     assert points == STARTS
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        pytest.param(CorruptionError("Not a valid frame"), id="corruption"),
+        pytest.param(
+            ResourceLimitError("Decoder limit reached: the frame declares a window"),
+            id="declared-limit",
+        ),
+        pytest.param(UnsupportedFeatureError("a window too large"), id="unsupported"),
+        pytest.param(ValueError("an unknown backend error"), id="unknown"),
+    ],
+)
+def test_a_verdict_on_the_data_at_a_table_point_drops_the_table(
+    monkeypatch: pytest.MonkeyPatch, exc: Exception
+) -> None:
+    """A verdict on the bytes at a table point drops the table and decodes from the
+    start. A ``DecoderLimits`` refusal there is one: the size it refuses is what the
+    bytes the table pointed at declare. An exception the stream does not know counts
+    too, on purpose (``_is_data_verdict``). The report does not claim the table is
+    wrong, since the data may be damaged instead."""
+    collector, seen = _collector()
+    data = make_seekable_zstd(PARTS)
+    with _open(io.BytesIO(data), collector=collector) as stream:
+        stream.seek(0, io.SEEK_END)
+        _fail_once_after_a_resume(monkeypatch, _engine(stream), exc)
+        stream.seek(STARTS[3] + 5)
+        assert stream.read(10) == FULL[STARTS[3] + 5 : STARTS[3] + 15]
+    report = _contradicted(seen)
+    assert report.message.startswith(
+        "The zstd seek table may not match the data. Decoding from its point at "
+    )
+    assert "the index is wrong there or the data is damaged" in report.message

@@ -44,7 +44,6 @@ from archivey.diagnostics import (
 from archivey.exceptions import (
     CorruptionError,
     ReadError,
-    ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
     exception_detail,
@@ -55,6 +54,7 @@ from archivey.internal.diagnostics_collector import (
     resolve_collector,
 )
 from archivey.internal.logs import streams as logger
+from archivey.internal.streams.child_process import is_no_verdict
 from archivey.internal.streams.native_memory import end_lzma_decoder
 from archivey.internal.streams.resume import (
     ResumeReachedStreamEnd,
@@ -257,11 +257,23 @@ class SeekPoint:
 def _is_data_verdict(exc: Exception) -> bool:
     """Whether a decoder's exception is about the bytes it was fed.
 
-    The exception here is mostly the backend's own (``zstd.ZstdError``,
-    ``zlib.error``), not yet translated, so this names what is not a verdict rather than
-    what is.
+    Not a verdict: an ``OSError`` (the caller's source), a ``MemoryError``, an error
+    marked by ``child_process.mark_no_verdict`` (a decoder child ended from outside,
+    most often by the out-of-memory killer, or one that could not start), and a
+    ``ReadError`` that is not a ``CorruptionError``. A ``ResourceLimitError`` is
+    otherwise a verdict: inside a decode it is a ``DecoderLimits`` refusal of a size a
+    header declared (``check_decoder_memory``), and those bytes are what the index
+    pointed at.
+
+    Every other exception counts as a verdict, on purpose. The exception here is
+    mostly the backend's own (``zstd.ZstdError``, ``zlib.error``, ``lzma.LZMAError``),
+    not yet translated, and its type differs by codec and by backend; this stream
+    holds no translator to ask (``StreamCodec.translate``). Reading an unknown
+    exception as a verdict costs at most the index: the stream reports
+    ``SEEK_INDEX_DEGRADED`` with the exception's text and decodes from the start,
+    where an error that is not specific to the resume raises again.
     """
-    if isinstance(exc, (OSError, MemoryError, ResourceLimitError)):
+    if isinstance(exc, (OSError, MemoryError)) or is_no_verdict(exc):
         return False
     return not isinstance(exc, ReadError) or isinstance(exc, CorruptionError)
 
@@ -1000,9 +1012,9 @@ class DecompressorStream(ReadOnlyIOStream):
             del claims[old.compressed_offset]
         claims[new.compressed_offset] = new
 
-    def _drop_index(self, disagreement: str) -> None:
-        """Drop every index point and size after the decode contradicted the index,
-        and say so (``disagreement`` says how).
+    def _drop_index(self, disagreement: str, *, lead: str | None = None) -> None:
+        """Drop every index point and size, and say so: ``lead`` says what happened,
+        by default that the decode contradicted the index, and ``disagreement`` how.
 
         The index is only an accelerator, and the file decodes: seeks go on from the
         points a decode from the origin records, and the size is the decoded one. A
@@ -1016,14 +1028,13 @@ class DecompressorStream(ReadOnlyIOStream):
         self._forget_index_size()
         if self._decode_from_index:
             self._restart_pending = True
-        codec = self._codec_name or "compressed"
-        index_source = _INDEX_SOURCES.get(codec, f"{codec} seek index")
+        if lead is None:
+            lead = f"The {self._index_source()} and the data do not agree."
         resolve_collector(self._diagnostics_collector).emit(
             code=DiagnosticCode.SEEK_INDEX_DEGRADED,
             message=(
-                f"The {index_source} and the data do not agree. {disagreement} The "
-                "index is no longer used: seeks resume only from points found by "
-                "decoding, and the size is the decoded one"
+                f"{lead} {disagreement} The index is no longer used: seeks resume "
+                "only from points found by decoding, and the size is the decoded one"
             ),
             context=SeekIndexContext(
                 codec=self._codec_name,
@@ -1032,6 +1043,11 @@ class DecompressorStream(ReadOnlyIOStream):
             ),
             logger=logger,
         )
+
+    def _index_source(self) -> str:
+        """What the index is, for a message, such as "zstd seek table"."""
+        codec = self._codec_name or "compressed"
+        return _INDEX_SOURCES.get(codec, f"{codec} seek index")
 
     def _forget_index_size(self) -> None:
         # _index_built is cleared too. Once the index has been tried its only reader is
@@ -1137,10 +1153,8 @@ class DecompressorStream(ReadOnlyIOStream):
         # decode-discovered points cannot collide: a point is recorded only once its
         # unit has output, so they rise in both coordinates. Points without resume
         # state where one is the index's were settled above, without a raise.
-        codec = self._codec_name or "compressed"
-        index_source = _INDEX_SOURCES.get(codec, f"{codec} seek index")
         raise CorruptionError(
-            f"The {index_source} and the data do not agree. Output offset "
+            f"The {self._index_source()} and the data do not agree. Output offset "
             f"{point.decompressed_offset} starts at compressed offset "
             f"{existing.compressed_offset} and also at compressed offset "
             f"{point.compressed_offset}. The file is damaged or was made to "
@@ -1359,21 +1373,23 @@ class DecompressorStream(ReadOnlyIOStream):
         the data is damaged there and the index was right, raises the same error after
         decoding the prefix: this stream cannot tell the two apart.
 
-        Only a verdict on the data counts. An ``OSError`` from the source, a
-        ``MemoryError``, a ``ResourceLimitError`` (a child decoder killed from outside,
-        most often by the out-of-memory killer) and a ``ReadError`` that is not a
-        ``CorruptionError`` (a child that exited for another reason) say nothing about
-        the index, and keep the path every other error takes. Returns whether it
-        dropped the index.
+        Only a verdict on the data counts (:func:`_is_data_verdict`). An ``OSError``
+        from the source, a ``MemoryError``, a decoder child ended from outside (most
+        often by the out-of-memory killer) or one that could not start, and a
+        ``ReadError`` that is not a ``CorruptionError`` say nothing about the index,
+        and keep the path every other error takes. A ``DecoderLimits`` refusal of a
+        size the bytes at the point declare is a verdict. Returns whether it dropped
+        the index.
         """
         point = self._fresh_index_point
         if point is None or self._index_dropped or not _is_data_verdict(exc):
             return False
         self._fresh_index_point = None
         self._drop_index(
-            f"Decoding from the index's point at compressed offset "
-            f"{point.compressed_offset} (output offset {point.decompressed_offset}) "
-            f"failed, so the index is wrong there or the data is damaged: {exc}"
+            f"Decoding from its point at compressed offset {point.compressed_offset} "
+            f"(output offset {point.decompressed_offset}) failed, so the index is "
+            f"wrong there or the data is damaged: {exc}",
+            lead=f"The {self._index_source()} may not match the data.",
         )
         return True
 

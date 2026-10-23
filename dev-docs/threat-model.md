@@ -1217,8 +1217,14 @@ A decode that reaches the end with another total than the index gave is the same
 contradiction; it catches a lie in the last unit, which no index point follows. So is a
 decoder that resumed at an index point and fails there before any output: a table whose
 sizes add up but put a frame start inside a frame. Only a verdict on the data counts
-there; an `OSError`, a `MemoryError` or a child decoder killed from outside propagates
-as it would anywhere. The stream cannot tell that failure from damaged data at an honest
+there; an `OSError`, a `MemoryError`, a child decoder killed from outside or one that
+could not start propagates as it would anywhere. A `DecoderLimits` refusal of a window
+or dictionary the bytes at the point declare is a verdict: a lying point can land on
+bytes that parse as such a header, and the file then still reads from the start. An
+exception the stream does not know counts as a verdict too, on purpose: the decoder's
+errors arrive untranslated and differ by backend, and misreading one costs only the
+index, since the decode from the start raises it again unless it was specific to the
+resume. The stream cannot tell that failure from damaged data at an honest
 point, so damage there is reported as `SEEK_INDEX_DEGRADED` too and costs a decode of
 the prefix before the `CorruptionError`. That is the cost side of treating the index as
 an accelerator: the error is the same, only later. Later

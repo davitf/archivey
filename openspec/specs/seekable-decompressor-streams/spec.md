@@ -493,8 +493,10 @@ resume state but different decompressed offsets, and either is the index's, the 
 is wrong; so is it when a decode reaches the end with another total than the index
 gave, and when a decoder that resumed at an index point fails before giving any output
 there (a zstd seek table whose sizes add up but put a frame start inside a frame). That
-last check counts only a verdict on the data, not an `OSError`, a `MemoryError` or a
-child decoder that died. It cannot tell a wrong index from damaged data at an honest
+last check counts only a verdict on the data, not an `OSError`, a `MemoryError`, a
+child decoder ended from outside or one that could not start; a `DecoderLimits`
+refusal of a size the bytes there declare is a verdict, and so, on purpose, is an
+exception the stream does not know, which costs at most the index. It cannot tell a wrong index from damaged data at an honest
 point, so damage there costs a decode of the prefix before its `CorruptionError`.
 Only points the seek table holds SHALL be compared, so the check costs no more
 memory than the table. The stream SHALL then drop every point that is the index's,
