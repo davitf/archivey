@@ -25,9 +25,9 @@ those use the AI plan's quota.
 | `ppmd-native-stress.yml` | weekly (Wednesday 05:29 UTC), on demand, and on PRs that change the PPMd code, its child process, its tests or the dependency pins | no | not a required check; see [Known issues](known-issues.md), pyppmd sections |
 | `atheris-fuzz.yml` | each PR except documentation-only PRs (short), nightly when `main` moved in the last 3 days | no | a fuzz target found an input; see [A fuzz job found a crash](#a-fuzz-job-found-a-crash); it also holds a release until it is green on the release PR ([release gate](release-checklist.md#6-version-bump-and-tag)) |
 | `benchmark-wall.yml` | daily, with a change guard | no | a wall-time ratio moved; see [The benchmark went red](#the-benchmark-went-red) |
-| `accelerator-crash-search.yml` | weekly (Monday) | no | a new rapidgzip crash signature; it also holds a release until it is green on the release PR ([release gate](release-checklist.md#6-version-bump-and-tag)) |
-| `accelerator-fuzz-soak.yml` | Tuesday and Friday | no | accelerated and plain decode disagree; it also holds a release until it is green on the release PR ([release gate](release-checklist.md#6-version-bump-and-tag)) |
-| `rapidgzip-resume-stress.yml` | weekly (Monday) | no | the rapidgzip child process stalled or lost a worker; it also holds a release until it is green on the release PR ([release gate](release-checklist.md#6-version-bump-and-tag)) |
+| `accelerator-crash-search.yml` | monthly (the 1st) | no | a new rapidgzip crash signature; it also holds a release until it is green on the release PR ([release gate](release-checklist.md#6-version-bump-and-tag)) |
+| `accelerator-fuzz-soak.yml` | weekly (Tuesday) | no | accelerated and plain decode disagree; it also holds a release until it is green on the release PR ([release gate](release-checklist.md#6-version-bump-and-tag)) |
+| `rapidgzip-resume-stress.yml` | monthly (the 1st) | no | the rapidgzip child process stalled or lost a worker; it also holds a release until it is green on the release PR ([release gate](release-checklist.md#6-version-bump-and-tag)) |
 | `conflict-notice.yml` | each push to `main`, and hourly | no | its own script failed; it only comments on PRs |
 | `rapidgzip-truncation-sweep.yml`, `writer-timestamps.yml` | only when their own files change, or on demand | no | investigation probes; ignore unless you are working on them |
 | `publish.yml` | a `v*` tag, or on demand | no | see [Release checklist](release-checklist.md) §6 |
