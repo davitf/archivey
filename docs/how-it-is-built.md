@@ -117,7 +117,12 @@ AI lets the maintainer build a better library, faster. It changes what is practi
 Archivey follows [semantic versioning](https://semver.org/). Before 1.0, this is what each kind
 of release may change:
 
-- **A patch release (0.2.1)** fixes bugs. It doesn't change the public API.
+- **A patch release (0.2.1)** fixes bugs and makes improvements that need no change in your
+  code. It may read archives it used to refuse, report a new
+  [diagnostic code](errors-and-diagnostics.md), or add a value to an enum that says it is
+  open-ended, such as `CompressionAlgorithm`. It doesn't add, remove or change a function,
+  class, parameter or attribute. A new code that `DiagnosticPolicy.STRICT` raises waits for a
+  minor release, unless it reports damage archivey should already have caught.
 - **A minor release (0.3.0)** may change it. A removed or renamed name keeps working for one more
   minor release first and emits a `DeprecationWarning` that names its replacement. A change that
   can't be phased in that way, such as a different result for the same call, has a line starting

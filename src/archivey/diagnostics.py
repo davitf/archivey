@@ -1208,8 +1208,9 @@ class DiagnosticPolicy:
     - ``DiagnosticPolicy.STRICT`` is ``DiagnosticPolicy(raise_on=ARCHIVE_INTEGRITY_CODES)``:
       RAISE on the codes about the archive's own bytes, COLLECT on everything else. It is
       the recommended strict mode because it is version-stable in the way that matters:
-      new codes MAY be added in a minor release, and the set's membership is versioned
-      alongside the taxonomy, so each addition is a deliberate decision.
+      a patch release may add new codes but adds none to ``ARCHIVE_INTEGRITY_CODES``,
+      unless the new code reports damage archivey should already have caught. A minor
+      release may add to the set, and each addition is a deliberate decision.
     - ``DiagnosticPolicy.PEDANTIC`` is ``DiagnosticPolicy(raise_on=frozenset(DiagnosticCode))``:
       RAISE on every code, including the argument-hygiene and access-pattern ones.
       ``frozenset(DiagnosticCode)`` is every code of the installed version, so it raises

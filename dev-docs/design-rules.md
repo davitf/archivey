@@ -748,7 +748,13 @@ the rulings above.
 ### DR-12a. After the first release, deprecate before removing
 
 **Rule.** From 0.2.0 until 1.0:
-- A patch release changes no public name or signature.
+- A patch release adds, removes and changes no public function, class, parameter or
+  attribute. It may read input it used to refuse, add a `DiagnosticCode`, or add a value
+  to an enum documented as open-ended (`CompressionAlgorithm`); the maintainer allowed
+  new codes and enum values in a patch on 2026-10-23. It adds to
+  `ARCHIVE_INTEGRITY_CODES`, which `DiagnosticPolicy.STRICT` raises, only a code for
+  damage archivey should already have caught; any other addition to that set waits for
+  a minor release.
 - A minor release may remove or rename a public name, but the old spelling keeps working
   for one minor release first and emits a `DeprecationWarning` naming the replacement,
   with `stacklevel=2` so Python attributes it to the caller's line; at the default level
