@@ -66,9 +66,10 @@ Memory. When ``OPEN`` carries a limit, the child watches its own peak resident m
 once the source is open (``_MemoryWatch``), and checks it again before each ``READ``
 reply. When the peak has grown by more than the limit, the child exits at once with
 status ``MEMORY_LIMIT_EXIT``. A ``RESET`` resets the peak to the current resident size
-(``_reset_peak``) so that the next stream's limit counts from there; where the peak
-cannot be reset (anywhere but Linux), the reply says this process cannot serve
-another stream.
+(``_reset_peak``); every stream's limit counts from the peak after the first open, so
+what an earlier stream left resident counts against the next. Where the peak cannot
+be reset (anywhere but Linux), or the process kept more than half a limit, the reply
+says it cannot serve another stream.
 """
 
 from __future__ import annotations
@@ -468,25 +469,45 @@ class _MemoryWatch:
     measured on four cores, about 17 MB.
 
     Where the peak cannot be read, nothing is watched.
+
+    A reused child (``RESET``) counts every stream's growth from the same base: the
+    peak after its first open. What an earlier stream left resident (rapidgzip's
+    allocator keeps freed chunks: measured, a 200 MiB decode left about 200 MB) then
+    counts against the next stream's limit, so a reused child holds no more than a
+    fresh one may. :meth:`reusable` ends a child that kept more than half a limit.
     """
 
     def __init__(self) -> None:
         # What ``check_memory`` compares with; ``None`` between streams.
         self.ceiling: int | None = None
+        # The peak after the first open, and the last stream's limit.
+        self._base: int | None = None
+        self._limit: int | None = None
         self._thread: threading.Thread | None = None
 
     def arm(self, limit: int) -> None:
-        """Watch from now on, with ``limit`` bytes of growth allowed."""
+        """Watch from now on: end the process past ``limit`` bytes above the base."""
         start = _peak_memory()
         if start is None:
             return
-        self.ceiling = start + limit
+        if self._base is None:
+            self._base = start
+        self._limit = limit
+        self.ceiling = self._base + limit
         if self._thread is None:
             self._thread = threading.Thread(target=self._watch, daemon=True)
             self._thread.start()
 
     def disarm(self) -> None:
         self.ceiling = None
+
+    def reusable(self) -> bool:
+        """Whether this process may serve another stream after ``RESET``: it holds at
+        most half of the last limit above the base. Call after ``_reset_peak``."""
+        if self._base is None or self._limit is None:
+            return True
+        now = _peak_memory()
+        return now is not None and now - self._base <= self._limit // 2
 
     def _watch(self) -> None:
         while True:
@@ -495,8 +516,9 @@ class _MemoryWatch:
 
 
 def _reset_peak() -> bool:
-    """Reset this process's peak memory to its current resident size, so that the next
-    stream's limit counts from there. False where it cannot be reset.
+    """Reset this process's peak memory to its current resident size, so that a peak
+    from an earlier stream does not count against the next one. False where it cannot
+    be reset.
 
     Only Linux can: writing 5 to ``/proc/self/clear_refs`` resets ``VmHWM``. The other
     systems' peak (``ru_maxrss``, ``PeakWorkingSetSize``) only grows.
@@ -552,7 +574,10 @@ def _main(argv: list[str]) -> None:
                 stream.close()
             except Exception:  # noqa: BLE001, S110 - the process may be ending
                 pass
-        if not reset or not channel.send(OK, 1 if _reset_peak() else 0):
+        if not reset:
+            return
+        reusable = _reset_peak() and watch.reusable()
+        if not channel.send(OK, 1 if reusable else 0):
             return
 
 

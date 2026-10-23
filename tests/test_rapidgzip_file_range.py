@@ -8,9 +8,11 @@ so the compressed bytes do not cross a pipe. These tests cover the region detect
 
 from __future__ import annotations
 
+import gzip
 import io
 import os
 import random
+import signal
 import subprocess
 import sys
 import threading
@@ -20,7 +22,7 @@ from pathlib import Path
 import pytest
 
 from archivey import AcceleratorMode, ArchiveyConfig, open_archive
-from archivey.exceptions import ArchiveyError
+from archivey.exceptions import ArchiveyError, CorruptionError, TruncatedError
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.codecs import rapidgzip_child, rapidgzip_worker
 from archivey.internal.streams.codecs.rapidgzip_worker import OPEN, OPEN_RANGE
@@ -252,6 +254,8 @@ def test_the_members_of_one_archive_share_a_child(
     pytest.importorskip("rapidgzip")
     started = _count_spawns(monkeypatch)
     path = _zip_members(tmp_path, ["a.bin", "b.bin", "c.bin"])
+    earlier = set(map(id, rapidgzip_child._pools.values()))
+    pools: list[rapidgzip_child.RapidgzipChildPool] = []
     with open_archive(path, config=_ON, seekable_members=True) as r:
         for name in ("a.bin", "b.bin", "c.bin"):
             with r.open(name) as stream:
@@ -259,10 +263,83 @@ def test_the_members_of_one_archive_share_a_child(
                 assert stream.read(1000) == _DATA[250_000:251_000]
                 stream.seek(0)
                 assert stream.read() == _DATA
+            pools = [
+                pool
+                for pool in rapidgzip_child._pools.values()
+                if id(pool) not in earlier
+            ]
+            assert len(pools) == 1
+            assert pools[0].idle_count() == 1
         assert len(started) == 1
         assert started[0].poll() is None
     # The archive's close ends its idle children.
+    assert pools[0].idle_count() == 0
     assert started[0].wait(timeout=10) is not None
+
+
+def test_a_file_the_caller_opened_has_no_pool(tmp_path: Path) -> None:
+    # Only an ArchiveSource says when it closes; a child cannot outlive a file whose
+    # close nobody reports, so a stream over such a file gets a child of its own.
+    with open(_file(tmp_path), "rb") as f:
+        region = file_region(f)
+        assert region is not None
+        assert rapidgzip_child.child_pool(region.owner) is None
+    source = ArchiveSource.for_path(_file(tmp_path))
+    try:
+        source.read(1)
+        region = file_region(SharedView(source, 0, 10, lock=threading.Lock()))
+        assert region is not None
+        assert rapidgzip_child.child_pool(region.owner) is not None
+    finally:
+        source.close()
+    assert rapidgzip_child.child_pool(source) is None
+
+
+@posix_only
+@linux_only
+def test_a_reused_childs_earlier_stderr_is_not_read_as_its_own(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A crash of a reused child is judged by what it wrote while serving this
+    stream: an abort message left from an earlier stream does not make the crash a
+    truncation."""
+    pytest.importorskip("rapidgzip")
+    path = tmp_path / "data.gz"
+    path.write_bytes(gzip.compress(_DATA))
+    given: list[rapidgzip_child._IdleChild] = []
+    give = rapidgzip_child.RapidgzipChildPool.give
+
+    def spy(self, bzip2, fd, child):  # type: ignore[no-untyped-def]
+        given.append(child)
+        return give(self, bzip2, fd, child)
+
+    monkeypatch.setattr(rapidgzip_child.RapidgzipChildPool, "give", spy)
+    source = ArchiveSource.for_path(path)
+    try:
+        source.read(1)
+        size = path.stat().st_size
+
+        def stream() -> rapidgzip_child.RapidgzipChildStream:
+            view = SharedView(source, 0, size, lock=threading.Lock())
+            return rapidgzip_child.RapidgzipChildStream(
+                view, label="gzip", max_memory=None
+            )
+
+        with stream() as first:
+            assert first.read(10) == _DATA[:10]
+        assert len(given) == 1
+        given[0].stderr.write(rapidgzip_child._TRUNCATION_ABORT + b"\n")
+        given[0].stderr.flush()
+        with stream() as second:
+            assert second._proc is given[0].proc
+            assert second.read(10) == _DATA[:10]
+            given[0].proc.send_signal(signal.SIGABRT)
+            given[0].proc.wait(timeout=10)
+            with pytest.raises(CorruptionError) as caught:
+                second.read()
+            assert not isinstance(caught.value, TruncatedError)
+    finally:
+        source.close()
 
 
 @posix_only
@@ -329,3 +406,29 @@ def test_the_memory_peak_resets_between_streams() -> None:
     after = rapidgzip_worker._peak_memory()
     assert after is not None
     assert after < grown - (128 << 20)
+
+
+@linux_only
+def test_a_reused_child_counts_every_stream_from_its_first_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # What an earlier stream left resident counts against the next stream's limit,
+    # and a process that kept more than half a limit is not reused.
+    # No watcher thread: it would end the test process past the ceiling.
+    monkeypatch.setattr(rapidgzip_worker._MemoryWatch, "_watch", lambda self: None)
+    watch = rapidgzip_worker._MemoryWatch()
+    limit = 256 << 20
+    watch.arm(limit)
+    first = watch.ceiling
+    assert first is not None
+    watch.disarm()
+    held = bytearray(limit // 2 + (64 << 20))
+    held[::4096] = b"\x01" * len(held[::4096])  # touch every page
+    assert rapidgzip_worker._reset_peak()
+    assert not watch.reusable()
+    watch.arm(limit)
+    assert watch.ceiling == first
+    watch.disarm()
+    del held
+    assert rapidgzip_worker._reset_peak()
+    assert watch.reusable()

@@ -908,7 +908,11 @@ class ArchiveSource(ReadOnlyIOStream):
     def on_close(self, callback: Callable[[], None]) -> None:
         """Call ``callback`` when this source closes (at once if it already has). It
         must not raise. The rapidgzip child pool ends its idle children this way:
-        they hold a copy of this source's descriptor."""
+        they hold a copy of this source's descriptor.
+
+        Best effort: a callback added while another thread closes the source may not
+        run. The pool also ends its children when the source is collected, so that
+        case only delays it."""
         if self.closed:
             callback()
             return
