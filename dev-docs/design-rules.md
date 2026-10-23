@@ -893,7 +893,9 @@ naming question to a permissions decision (ADR 0013).
 
 **Rulings.** Absolute names re-root under STANDARD and TRUSTED, and STRICT refuses. The
 caller filter runs first, so `sanitize_names` can fix them; it was picked over a fourth
-policy (2026-09-30, PR 524). Bidi overrides are policy-keyed (ADR 0017).
+policy (2026-09-30, PR 524). Bidi overrides are policy-keyed (ADR 0017). A segment of
+only dots or spaces (`a/.../b`) is refused under STANDARD as under STRICT, because Win32
+merges it into its parent (2026-10-21, PR 955, ADR 0013 decision 4).
 
 ### DR-18. Extraction never damages what it did not create
 

@@ -34,7 +34,7 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
   `.tar.Z`, `.tar.zst`, `.tar.lz4`, `.tar.br`): needs what its compressor needs (below).
   Listing: needs decompression. Members: solid. Reads from a pipe.
 - **7z:** core for LZMA, LZMA2, Deflate, BZip2, Delta and the executable filters (BCJ, BCJ2,
-  ARM64 and the others); `[recommended]` adds PPMd, Deflate64, Brotli, LZ4, AES, and Zstandard
+  ARM64, RISC-V and the others); `[recommended]` adds PPMd, Deflate64, Brotli, LZ4, AES, and Zstandard
   before Python 3.14. Listing: from its index. Members: solid, unless written without solid
   blocks (`7z -ms=off`). Needs a source that can seek.
 - **RAR:** listing and uncompressed members in core; compressed members need the `unrar`
@@ -617,6 +617,10 @@ On a compressed tar, the stream's own checksum adds three cases:
   read runs at roughly four fifths of the speed of the same file with no filter. The filter slows
   with branch density: on data where every word is a branch, it runs about 15 times slower than on
   real code.
+- **RISC-V** (a filter 7-Zip 24 added for RISC-V executables) reads on a core install, decoded in
+  pure Python like ARM64. On real RISC-V code a read runs at roughly half the speed of the same
+  file with no filter. The filter slows with branch density: on data where every word is a branch,
+  it runs about 15 times slower than on real code.
 - Bytes after a coder's stream are corruption, as in a ZIP member ([ZIP](#damaged-and-unusual-endings)),
   except that a Zstandard or LZ4 coder reads concatenated frames as one stream, so a further frame is
   content that counts against the declared size.

@@ -261,7 +261,8 @@ quiesce NUL can crash pyppmd on small members too; a crash becomes `CorruptionEr
 (`ResourceLimitError` for SIGKILL or a refused `mem_size`, `ReadError` for other deaths).
 A child is reused only after a member that ended cleanly. Pinned by
 `tests/test_ppmd_crash_isolation.py` and `tests/test_ppmd_raw_streams.py`; the
-non-blocking PPMd native stress workflow watches for regressions.
+non-blocking PPMd native stress workflow watches for regressions, weekly and on pull
+requests that touch the PPMd path.
 
 **What remains.** No crash is confirmed on the in-process path; the defect is upstream,
 so the path rests on archivey's call discipline, not on a fixed decoder. A header that

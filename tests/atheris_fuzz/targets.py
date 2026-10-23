@@ -42,6 +42,7 @@ from archivey.internal.streams.codecs import (
 from archivey.internal.streams.codecs.arm64_filter import FILTER_ARM64, arm64_decode
 from archivey.internal.streams.codecs.bcj2_filter import Bcj2DecoderStream
 from archivey.internal.streams.codecs.lzma_filter_decoder import FilterStream
+from archivey.internal.streams.codecs.riscv_filter import FILTER_RISCV, riscv_decode
 from archivey.types import FormatSupport
 from tests.atheris_fuzz.crc_fixup import (
     fixup_rar_header_crcs,
@@ -423,8 +424,8 @@ def _open_sampled(
         return
 
 
-# liblzma branch filters whose start offset of 0 it accepts. ARM64 is separate:
-# Python's lzma refuses that id, and the decoder here is archivey's.
+# liblzma branch filters whose start offset of 0 it accepts. ARM64 and RISC-V are
+# separate: Python's lzma refuses those ids, and the decoders here are archivey's.
 _LIBLZMA_BRANCHES = (
     lzma.FILTER_X86,
     lzma.FILTER_POWERPC,
@@ -433,15 +434,17 @@ _LIBLZMA_BRANCHES = (
     lzma.FILTER_ARMTHUMB,
     lzma.FILTER_SPARC,
 )
-# Byte 0 of a filter input selects one of these: BCJ2, ARM64, Delta, then each
-# liblzma branch. ``filter_seeds`` builds one seed per value.
-FILTER_KIND_COUNT = 3 + len(_LIBLZMA_BRANCHES)
+# Byte 0 of a filter input selects one of these: BCJ2, ARM64, Delta, each liblzma
+# branch, then RISC-V. ``filter_seeds`` builds one seed per value. RISC-V is last so
+# the kinds before it keep the numbers existing corpora use.
+_RISCV_KIND = 3 + len(_LIBLZMA_BRANCHES)
+FILTER_KIND_COUNT = _RISCV_KIND + 1
 
 
 def filters_one(data: bytes) -> None:
     """Run one filter decoder. Byte 0 picks which.
 
-    A 7z mutation does not assemble a BCJ2 folder or an ARM64 property block, so
+    A 7z mutation does not assemble a BCJ2 folder or an ARM64 or RISC-V coder, so
     those decoders stay dark unless a seed already has them. This target feeds
     them hostile payloads directly.
     """
@@ -456,6 +459,10 @@ def filters_one(data: bytes) -> None:
             pc = int.from_bytes(body[:4], "little") & ~3
             arm64_decode(body[4 : 4 + _MAX_FILTER_BYTES], pc)
             _fuzz_filter_stream(body[4:], {"id": FILTER_ARM64, "start_offset": pc})
+        elif kind == _RISCV_KIND:
+            pc = int.from_bytes(body[:4], "little") & ~1
+            riscv_decode(body[4 : 4 + _MAX_FILTER_BYTES], pc)
+            _fuzz_filter_stream(body[4:], {"id": FILTER_RISCV, "start_offset": pc})
         elif kind == 2:
             dist = 1 + (body[0] % 256 if body else 0)
             _fuzz_filter_stream(body[1:], {"id": lzma.FILTER_DELTA, "dist": dist})

@@ -733,7 +733,8 @@ def apply_name_policy(member: ArchiveMember, policy: ExtractionPolicy) -> Archiv
     ``TRUSTED`` returns the member unchanged (faithful bytes, defer to the local OS).
     ``STRICT``/``STANDARD`` **reject** only the unsafe name shapes — Windows-reserved device
     names, ``:`` (NTFS alternate data stream), and bidi overrides, in the name and in a
-    symlink's target — and **rewrite** the merely-non-portable ones: ``STRICT`` strips
+    symlink's target, and a name segment of only dots and spaces, which Win32 would merge
+    into its parent — and **rewrite** the merely-non-portable ones: ``STRICT`` strips
     trailing dots/spaces (O3), and both levels write a ``\\`` as ``/`` (in a link target
     too) and escape bytes that are not UTF-8 and the characters Windows refuses,
     ``<>"|?*`` and 0x01-0x1F (O7). A lone surrogate outside U+DC80-U+DCFF is escaped too,
@@ -780,9 +781,12 @@ def apply_name_policy(member: ArchiveMember, policy: ExtractionPolicy) -> Archiv
     # A trailing dot/space is silently stripped by Win32 — a legitimate macOS/Linux name
     # (e.g. a folder ending in '.'), not an attack. STRICT rewrites it to the portable
     # spelling so extraction succeeds and is identical on every OS; STANDARD/TRUSTED keep it
-    # faithful. The O2 collision map catches any clash the rewrite creates.
+    # faithful. The O2 collision map catches any clash the rewrite creates. A segment of
+    # only dots and spaces has no spelling Win32 keeps (``a/.../b`` would merge into
+    # ``a/b``), so STANDARD refuses it as STRICT does.
+    stripped = _strip_trailing_dot_space(name)  # refuses an all-dots segment under both
     if policy is ExtractionPolicy.STRICT:
-        name = _strip_trailing_dot_space(name)
+        name = stripped
     # A TAR name keeps ``\`` as a literal character, and Windows writes it as a
     # separator. Writing it as ``/`` everywhere gives the tree Windows would create, on
     # every OS. The collision key already treats the two separators as one.
@@ -939,8 +943,19 @@ def collision_key(name: str, policy: ExtractionPolicy) -> str:
     ``STRICT``/``STANDARD`` fold case and Unicode normalization so ``README``/``readme`` and
     NFC/NFD ``café`` collide on every platform; ``TRUSTED`` keys on the exact name (defer to
     the local OS). Separators are normalized so ``a/b`` and ``a\\b`` share a key.
+
+    A trailing dot or space on a segment is dropped from the key too: Win32 trims it, so
+    ``foo.`` and ``foo`` are one file on Windows. ``STRICT`` has already rewritten the name;
+    ``STANDARD`` keeps it, and without this the second member would silently replace the
+    first on Windows and land beside it elsewhere. A segment with nothing else left keeps
+    its spelling: ``.``, ``..``, and a segment of only dots and spaces, which
+    ``apply_name_policy`` refuses under both policies but which reaches ``_physical_key``
+    under ``TRUSTED`` (it keys as ``STANDARD``).
     """
     rel = name.replace("\\", "/").rstrip("/")
     if policy is ExtractionPolicy.TRUSTED:
         return rel
-    return unicodedata.normalize("NFC", rel).casefold()
+    folded = unicodedata.normalize("NFC", rel).casefold()
+    if not folded.endswith((".", " ")) and "./" not in folded and " /" not in folded:
+        return folded
+    return "/".join(segment.rstrip(". ") or segment for segment in folded.split("/"))

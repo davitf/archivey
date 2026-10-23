@@ -166,18 +166,16 @@ _ESCAPING_NAMES = [
     ".. /outside/victim",
     "a/... /.. ./outside/victim",
 ]
-# Refused under every policy. STRICT also refuses the other three. STANDARD and
-# TRUSTED re-root the absolute name inside the destination, and keep the
-# dot-and-space segments as literal names: on POSIX those are ordinary directory
-# names, and on Windows, which trims them to ``..``, the parent-containment check
-# resolves the path through the OS and refuses the member. The Windows statuses are
-# not pinned here; ``_assert_outside_untouched`` and the path check cover them.
+# Refused under every policy. STRICT also refuses the other three. STANDARD refuses the
+# dot-and-space segments too: Win32 trims them to ``..``, so they are refused on every
+# platform alike (``safe-extraction`` spec, name matrix). STANDARD and TRUSTED re-root the
+# absolute name inside the destination. TRUSTED keeps the dot-and-space segments as
+# literal names: on POSIX those are ordinary directory names, and on Windows the
+# parent-containment check resolves the path through the OS and refuses the member. The
+# Windows statuses are not pinned here; ``_assert_outside_untouched`` and the path check
+# cover them.
 _ALWAYS_BLOCKED = ["../outside/victim", "a/../../outside/victim", "C:../outside/victim"]
-_KEPT_ON_POSIX = [
-    "/outside-abs/victim",
-    ".. /outside/victim",
-    "a/... /.. ./outside/victim",
-]
+_DOT_SPACE_SEGMENTS = [".. /outside/victim", "a/... /.. ./outside/victim"]
 
 
 def _assert_traversal_contained(
@@ -186,11 +184,15 @@ def _assert_traversal_contained(
     assert sorted(results) == sorted(_ESCAPING_NAMES)
     if policy is ExtractionPolicy.STRICT:
         _assert_blocked(results, _ESCAPING_NAMES)
-    else:
-        _assert_blocked(results, _ALWAYS_BLOCKED)
-        names = _KEPT_ON_POSIX if os.name != "nt" else _KEPT_ON_POSIX[:1]
-        for name in names:
-            assert results[name].status is ExtractionStatus.EXTRACTED, results[name]
+        return
+    _assert_blocked(results, _ALWAYS_BLOCKED)
+    kept = ["/outside-abs/victim"]
+    if policy is ExtractionPolicy.STANDARD:
+        _assert_blocked(results, _DOT_SPACE_SEGMENTS)
+    elif os.name != "nt":
+        kept += _DOT_SPACE_SEGMENTS
+    for name in kept:
+        assert results[name].status is ExtractionStatus.EXTRACTED, results[name]
 
 
 @_POLICIES

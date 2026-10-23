@@ -1317,7 +1317,8 @@ class ExtractionPolicy(Enum):
     are ``rwxr-xr-x``, and owners are not applied."""
     STANDARD = "standard"
     """For archives you mostly trust, such as your own. As ``STRICT``, but trailing dots
-    and spaces are kept, an absolute name is extracted inside the destination
+    and spaces are kept (a folder named only dots or spaces, such as ``...``, is still
+    refused), an absolute name is extracted inside the destination
     (``/etc/x`` as ``etc/x``, as tar and unzip do), and permissions are kept as stored
     without the setuid, setgid and sticky bits."""
     TRUSTED = "trusted"
