@@ -237,19 +237,19 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
     tests/test_codecs.py tests/test_detection.py tests/test_single_file.py -k "brotli or br_ or chain or completeness or guess"
 ```
 
-| Claim | Pinned by |
-| --- | --- |
-| Reads; the backend is optional | `tests/test_single_file.py::test_brotli_roundtrip`, `tests/test_codecs.py::test_brotli_without_brotli_raises`, `tests/test_detection.py::test_brotli_probe_skipped_when_backend_missing` |
-| Cut is `TruncatedError`, damage `CorruptionError` | `tests/test_codecs.py::test_truncated_brotli_translates_to_truncated`, `::test_corrupt_brotli_translates_to_corruption_with_cause` |
-| One call's output is bounded | `::test_brotli_read_one_bounds_internal_buffer` |
-| No real Brotli file is rejected | `tests/test_brotli_framing_gate.py::test_real_brotli_corpus_zero_false_negatives`, `tests/test_probe_completeness_gate.py::test_real_brotli_corpus_includes_sub_100_byte_payloads`, `::test_small_real_brotli_survives_completeness` |
-| The first-block gate | `tests/test_brotli_framing_gate.py::test_framing_gate_rejects_mz_stub_and_doxygen_opener`, `::test_framing_gate_rejects_random_overrunning_blobs`, `::test_unknown_length_skips_framing_gate` |
-| The chain walk and completeness | `tests/test_probe_completeness_gate.py::test_chain_walk_rejects_second_link_overrun`, `::test_chain_walk_rejects_trailing_bytes_after_declared_end`, `::test_sixteen_mib_vacuous_first_block_caught_by_walk`, `::test_completeness_rejects_tiny_nonterminating_file`, `::test_probe_hit_under_the_completion_window_is_checked_whole` |
-| The 4 KiB sample | `::test_text_that_decodes_for_256_bytes_is_not_brotli` |
-| The chain decode | `tests/test_brotli_chain_decode.py::test_data_that_fails_past_the_window_is_not_brotli`, `::test_real_stream_with_a_long_uncompressed_first_block_is_kept`, `::test_real_stream_with_a_long_metadata_first_block_is_kept`, `::test_fast_budget_cannot_cover_the_decode_and_says_so` |
-| `PROBABLE` and `GUESS` | `tests/test_brotli_framing_gate.py::test_real_brotli_compressed_first_is_probable_without_extension`, `::test_real_brotli_with_br_extension_is_probable`, `::test_brotli_residual_that_fits_framing_detects_as_guess` |
-| `format_unconfirmed` on a probe-only failure | `::test_guess_decode_failure_sets_format_unconfirmed`, `::test_probe_unconfirmed_diagnostic_emitted_once_across_retries` |
-| Archives behind a stub are not Brotli | `tests/test_sfx.py::test_sfx_7z_behind_a_low_entropy_stub_is_not_brotli`, `::test_a_real_brotli_stream_is_unaffected` |
+| Claim |
+| --- |
+| Reads; the backend is optional |
+| Cut is `TruncatedError`, damage `CorruptionError` |
+| One call's output is bounded |
+| No real Brotli file is rejected |
+| The first-block gate |
+| The chain walk and completeness |
+| The 4 KiB sample |
+| The chain decode |
+| `PROBABLE` and `GUESS` |
+| `format_unconfirmed` on a probe-only failure |
+| Archives behind a stub are not Brotli |
 
 **Building fixtures.** `brotli.compress` writes Brotli; the `brotli` command installs from
 the distribution. `scripts/exploration/brotli_probe_field_survey.py` is the reference for

@@ -108,14 +108,14 @@ uv sync --group dev --extra all && uv run --no-sync pytest -n auto
 # 2. Minimum supported versions — every declared dependency pinned to its floor
 #    (`pycdlib 1.22`, `backports.zstd 1.0`, …), so version-specific library bugs in the
 #    supported range surface. --no-sync keeps the lowest resolution for the test run.
-uv sync --group dev --extra all --resolution lowest-direct && uv run --no-sync pytest -n auto
+uv sync --group dev --extra all --resolution lowest-direct && uv run --no-sync pytest -n auto --no-cov
 
 # 3. Zero-dependency core — no extras, no dev group; proves tests needing an optional
 #    library skip/xfail cleanly (see the `requires` helper in tests/conftest.py) and the
 #    core imports nothing third-party.
 uv sync --no-dev && uv run --no-sync python tests/check_zero_dep_core.py \
   && uv run --no-sync --with pytest --with pytest-timeout --with pytest-cov --with pytest-xdist \
-     pytest tests/ -q -n auto
+     pytest tests/ -q -n auto --no-cov
 ```
 
 These mirror CI's `[all]`, `[all-lowest]`, and `[core-only]` legs; all three must stay
@@ -137,12 +137,12 @@ Keep that when you add a step.
 > change what the gates report.
 
 A pull request that changes only documentation does not start `ci.yml` (none of its
-jobs: lint, test legs, unar and free-threaded legs, benchmark gate), `atheris-fuzz.yml`
-or `ppmd-native-stress.yml`. The docs build and the OpenSpec checks live in
-`docs-checks.yml`, which always runs. The list of documentation paths is the
-`pull_request: paths:` filter in those three workflows; if a test starts reading a doc
-file, re-include that file there, as `docs/api.md` is, or a change to it will skip the
-test that reads it. `tests/test_ci_doc_paths.py` checks that the three lists match and
+jobs: lint, test legs, unar and free-threaded legs, benchmark gate) or `atheris-fuzz.yml`.
+The docs build and the OpenSpec checks live in `docs-checks.yml`, which always runs. The
+list of documentation paths is the `pull_request: paths:` filter in those two workflows;
+if a test starts reading a doc file, re-include that file there, as `docs/api.md` is, or
+a change to it will skip the test that reads it. `tests/test_ci_doc_paths.py` checks that
+the two lists match and
 that the re-includes come after every `!` entry. Branch protection on `main` requires no
 status checks today. If one is added, it must come from a workflow that runs on every
 pull request, because a filtered workflow reports no check at all and the PR would wait
@@ -544,7 +544,7 @@ specs-to-handbook discussion below), but we are migrating executable detail into
 [`dev-docs/discussions/2026-09-specs-to-handbook-and-tests.md`](dev-docs/discussions/2026-09-specs-to-handbook-and-tests.md).
 On every PR that touches `openspec/specs/` or a change delta:
 
-- Prefer a **pytest** (and a handbook / Verify link) over a new WHEN/THEN scenario.
+- Prefer a **pytest** over a new WHEN/THEN scenario.
 - When you touch a requirement that is already covered by tests, **collapse or delete**
   redundant scenarios rather than adding siblings “for completeness”.
 - Leave that capability **no denser than you found it** (preferably thinner).

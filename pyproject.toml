@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "archivey"
-version = "0.2.0"
+version = "0.2.1.dev0"
 description = "Python library for reading, streaming, and safely extracting archives"
 readme = "README.md"
 license = { text = "MIT" }
@@ -296,7 +296,17 @@ testpaths = ["tests"]
 # --timeout: a hung test fails fast (with a traceback of all threads) instead of stalling
 # the whole job until the CI hard limit. 60s is far above any real test here (all run in
 # milliseconds), so only a genuine hang trips it.
-addopts = "--cov=archivey --cov-report=term-missing --cov-report=xml --timeout=60 -m 'not ppmd_native_stress'"
+# --cov-branch repeats `branch = true` for child processes. It matters only on pytest-cov
+# before 7 (the lowest-direct resolution), which measures a child `python` through its
+# COV_CORE_* variables. `--cov-config` defaults to `.coveragerc`, which this repo does not
+# have, so the child searches for a config in its own working directory; one started in a
+# temporary directory finds none, writes statement-only data, and the final combine
+# refuses to merge that with branch data. Other [tool.coverage.run] keys do not reach such
+# a child either. No CI leg can catch the flag's loss (the one leg that measures coverage
+# runs pytest-cov 7, which measures no child), and it is inert once the pytest-cov floor
+# reaches 7. It sits in addopts despite the timeout_method rule below because pytest-cov
+# has no ini key, and every site that overrides addopts drops --cov along with it.
+addopts = "--cov=archivey --cov-branch --cov-report=term-missing --cov-report=xml --timeout=60 -m 'not ppmd_native_stress'"
 # thread, not pytest-timeout's POSIX default of signal. SIGALRM is delivered to the main
 # thread and only runs when it next reaches the interpreter, so a thread blocked in C or a
 # deadlock off the main thread is invisible to it: on 2026-09-21 both the free-threaded job

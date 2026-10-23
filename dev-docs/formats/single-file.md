@@ -467,21 +467,21 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
     tests/test_seekable_streams.py tests/test_codecs.py tests/test_codec_descriptor.py
 ```
 
-| Claim | Pinned by |
-| --- | --- |
-| One backend, one member, names from the filename, `data` for a stream with none | `tests/test_single_file.py::test_one_backend_serves_multiple_formats`, `::test_exactly_one_member_no_directories`, `::test_name_strips_known_compression_extension`, `::test_name_appends_uncompressed_for_unknown_extension`, `::test_name_defaults_to_data_for_anonymous_stream` |
-| Cost and archive info | `::test_cost_is_indexed_and_direct`, `::test_archive_info` |
-| Size from the xz index and lzip trailers on any seekable source, not on a pipe or another archive's member stream | `::test_xz_size_from_header`, `::test_lzip_size_from_trailer`, `::test_cheap_size_does_not_require_a_path_source`, `::test_cheap_size_still_needs_seekability`, `::test_member_stream_source_is_not_seeked_to_its_end` |
-| Only lzip reports a digest | `::test_lzip_exposes_stored_crc32`, `::test_other_single_file_codecs_omit_stored_digests`, `::test_gzip_never_reports_a_crc32` |
-| Validation at open, one byte deep, deferred on a pipe | `::test_open_validation_table_covers_every_single_file_codec`, `::test_undecodable_source_raises_at_open`, `::test_valid_empty_stream_still_opens_and_reads_empty`, `::test_non_seekable_source_still_defers_validation_to_the_read` |
-| A pipe needs `streaming=True` and gives one pass | `::test_non_seekable_gzip_requires_streaming_mode`, `::test_non_seekable_gzip_streams_fine` |
-| Concurrent and re-entrant opens are independent | `::test_concurrent_open_same_member_interleaved`, `::test_reentrant_open_after_first_read` |
-| `password=` accepted and unused | `::test_password_is_accepted_and_recorded` |
-| `open_stream` is forward-only unless asked, and builds no index then | `tests/test_open_stream.py::test_open_stream_default_is_forward_only`, `::test_open_stream_xz_default_builds_no_index`, `::test_open_stream_xz_seekable_exposes_size` |
-| Bytes after the stream: payload, one report, zeros silent, strict raises, xz and lzip keep their index, containers silent | `tests/test_stream_trailing_data.py` |
-| A damaged magic on a later stream raises on a read and a seek, also when a zero replaces its first bytes, in the middle of the file or at its end; other bytes and a tail shorter than the magic still report; the rule is lzip's; after a run of zeros as long as the magic nothing is judged, a damaged magic too | `tests/test_stream_trailing_data.py::test_a_damaged_magic_on_a_later_stream_is_corruption`, `::test_other_bytes_after_a_stream_are_still_reported`, `::test_the_near_magic_rule_is_lzips`, `::test_a_magic_damaged_to_a_zero_byte_is_corruption`, `::test_a_magic_damaged_to_zeros_at_the_end_of_the_file_is_corruption`, `::test_bzip2_judges_a_short_zero_run_as_the_magic_in_both_modes`, `::test_a_zero_run_is_judged_the_same_however_the_input_is_cut`, `::test_after_zero_padding_a_magic_is_not_judged` |
-| A new codec needs only a descriptor | `tests/test_codec_descriptor.py` |
-| Probe order, completion window, `format_unconfirmed` | `tests/test_detection.py`, `tests/test_brotli_framing_gate.py::test_guess_decode_failure_sets_format_unconfirmed` |
+| Claim |
+| --- |
+| One backend, one member, names from the filename, `data` for a stream with none |
+| Cost and archive info |
+| Size from the xz index and lzip trailers on any seekable source, not on a pipe or another archive's member stream |
+| Only lzip reports a digest |
+| Validation at open, one byte deep, deferred on a pipe |
+| A pipe needs `streaming=True` and gives one pass |
+| Concurrent and re-entrant opens are independent |
+| `password=` accepted and unused |
+| `open_stream` is forward-only unless asked, and builds no index then |
+| Bytes after the stream: payload, one report, zeros silent, strict raises, xz and lzip keep their index, containers silent |
+| A damaged magic on a later stream raises on a read and a seek, also when a zero replaces its first bytes, in the middle of the file or at its end; other bytes and a tail shorter than the magic still report; the rule is lzip's; after a run of zeros as long as the magic nothing is judged, a damaged magic too |
+| A new codec needs only a descriptor |
+| Probe order, completion window, `format_unconfirmed` |
 
 **Building fixtures.** Tests build streams with the standard library (`gzip`, `bz2`,
 `lzma`, `zlib`) and the optional packages, or with the command-line tools where the
