@@ -51,6 +51,7 @@ from archivey.internal.streams.codecs.rapidgzip_select import (
     _open_rapidgzip,
     _rapidgzip_requirement,
     _refuse_forward_only_accelerator,
+    _require_rapidgzip_child,
     _StdlibSeekContract,
     _translate_rapidgzip_shared,
     _warn_child_fallback,
@@ -791,21 +792,35 @@ class Bzip2Codec(StreamCodec):
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
-        why = _bzip2_auto_without_child(config)
-        if why is not None:
-            _warn_child_fallback(why, "use_indexed_bzip2")
-        if _bzip2_uses_accelerator(config):
+        if self._use_accelerator(config):
             stream = self._open_accelerated(source, params, config)
             if stream is not None:
                 return stream
-        elif config.use_indexed_bzip2 is AcceleratorMode.ON:
-            raise PackageNotInstalledError(
-                _rapidgzip_requirement().message("bzip2 random access")
-            )
         # A rewind re-decompresses from the start; the outer ArchiveStream warns about
         # that (see rewind_warning). The [seekable] accelerator gives real random
         # access.
         return _stdlib_bzip2(source, config, single_stream=params.single_stream)
+
+    def check_accelerator(self, source: CodecSource, config: StreamConfig) -> None:
+        if config.use_indexed_bzip2 is not AcceleratorMode.ON:
+            return
+        if self._use_accelerator(config):
+            _refuse_forward_only_accelerator(source, "use_indexed_bzip2", "bzip2")
+            _require_rapidgzip_child("bzip2")
+
+    def _use_accelerator(self, config: StreamConfig) -> bool:
+        """Whether this open decodes through rapidgzip. Raises where ``ON`` asks for it
+        and rapidgzip is absent."""
+        why = _bzip2_auto_without_child(config)
+        if why is not None:
+            _warn_child_fallback(why, "use_indexed_bzip2")
+        if _bzip2_uses_accelerator(config):
+            return True
+        if config.use_indexed_bzip2 is AcceleratorMode.ON:
+            raise PackageNotInstalledError(
+                _rapidgzip_requirement().message("bzip2 random access")
+            )
+        return False
 
     def _open_accelerated(
         self, source: CodecSource, params: CodecParams, config: StreamConfig

@@ -75,7 +75,7 @@ binds.
   release, remove rather than keep.** Until 0.2.0 ships, a breaking cleanup goes in now.
 - [DR-12a](#dr-12a-after-the-first-release-deprecate-before-removing). **After the first
   release, deprecate before removing.** A removal or rename warns for one minor release;
-  a break that can't be phased in is listed under Breaking changes.
+  a break that can't be phased in gets a **Breaking:** changelog line.
 - [DR-13](#dr-13-a-public-name-earns-its-place). **A public name earns its place.** A
   public name or exception type exists only if a caller would use it differently.
 - [DR-14](#dr-14-one-obvious-way-and-one-mechanism-per-job). **One obvious way, and one
@@ -755,8 +755,8 @@ Once 0.2.0 ships, DR-12a replaces this rule.
   an archive, so the diagnostics-as-data rule (VISION, "queryable as data") does not
   govern it: there is no `Diagnostic` for a deprecated call.
 - A break that can't be phased in that way (the same call gives a different result, an
-  exception changes type) goes in a minor release and is listed under **Breaking
-  changes** in the changelog, which the GitHub release mirrors.
+  exception changes type) goes in a minor release, and its changelog line starts with
+  **Breaking:**. The GitHub release mirrors the changelog.
 - `archivey.internal` is not public and changes freely.
 
 Public docs: `docs/how-it-is-built.md` §Versioning and stability.

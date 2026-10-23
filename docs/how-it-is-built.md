@@ -121,8 +121,8 @@ may change:
 - **A patch release (0.2.1)** fixes bugs. It doesn't change the public API.
 - **A minor release (0.3.0)** may change it. A removed or renamed name keeps working for one more
   minor release first and emits a `DeprecationWarning` that names its replacement. A change that
-  can't be phased in that way, such as a different result for the same call, is listed under
-  "Breaking changes" at the top of that release's entry in the
+  can't be phased in that way, such as a different result for the same call, has a line starting
+  with **Breaking:** in that release's entry in the
   [changelog](https://github.com/davitf/archivey/blob/main/CHANGELOG.md).
 
 Python hides a `DeprecationWarning` raised outside `__main__` by default, so the changelog's

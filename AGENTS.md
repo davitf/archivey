@@ -121,7 +121,9 @@ missing; read that line.
 - Rare tasks have their own page: the v1 reference repo `archivey-dev`
   ([`dev-docs/archivey-dev.md`](dev-docs/archivey-dev.md)), Atheris fuzzing
   ([`dev-docs/fuzzing.md`](dev-docs/fuzzing.md)), releases
-  ([`dev-docs/release-checklist.md`](dev-docs/release-checklist.md)).
+  ([`dev-docs/release-checklist.md`](dev-docs/release-checklist.md)), and maintenance
+  events such as a red scheduled job, a broken dependency, a security report or a new
+  issue ([`dev-docs/maintenance.md`](dev-docs/maintenance.md)).
 
 ## Review workflow (two agents, two skills)
 

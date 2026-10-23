@@ -373,6 +373,19 @@ class StreamCodec:
     ) -> BinaryIO:
         raise NotImplementedError
 
+    def check_accelerator(self, source: CodecSource, config: StreamConfig) -> None:
+        """For an accelerator set to ``ON``, raise what :meth:`open` raises before
+        decoding because it cannot run: its package is absent, ``source`` cannot seek, or
+        no child process can run it (:func:`rapidgzip_child_unavailable_reason`). Starts
+        no process; it reads ``source`` only where :meth:`open` would decide on its first
+        bytes to leave it to the standard library (a gzip header zlib refuses), and then
+        raises nothing, as :meth:`open` does. A child that fails to start is not
+        known until one is started, so that error stays with :meth:`open`. ``AUTO`` is
+        not resolved here: the open resolves it against the config the registry
+        prepares, which this caller does not have, and logs its own fallback.
+        Default: the codec has no accelerator."""
+        return
+
     def translate(self, exc: Exception) -> ArchiveyError | None:
         """Map a raw decoder exception to an ``ArchiveyError`` subclass, or ``None``."""
         return None
@@ -574,9 +587,9 @@ class StreamCodec:
                 return out_len > 0
             return True
         except TruncatedError:
-            if fully_visible:
-                return False  # whole file in hand; stream did not terminate
-            return True  # decoded fine, just ran out of the bounded prefix
+            # With the whole file in hand, the stream did not terminate; otherwise it
+            # decoded fine and just ran out of the bounded prefix.
+            return not fully_visible
         except ArchiveyError:
             return False
         except MemoryError:
