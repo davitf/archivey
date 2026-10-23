@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "archivey"
-version = "0.2.0rc1"
+version = "0.2.1.dev0"
 description = "Python library for reading, streaming, and safely extracting archives"
 readme = "README.md"
 license = { text = "MIT" }
@@ -67,7 +67,8 @@ recommended = [
     "inflate64>=1.0.0",
     "backports.zstd>=1.0.0; python_version < '3.14'",
     # >=1.2.0: process(output_buffer_limit=) / can_accept_more_data (CVE-2025-6176).
-    "brotli>=1.2.0",
+    # >=1.2.1: decoder buffer overflow fix (CVE-2026-111497).
+    "brotli>=1.2.1",
     "lz4>=4.4.5",
     # AES block operations only (7z, RAR headers, WinZip AES ZIP); PBKDF2/SHA/HMAC are
     # stdlib. RAR5 BLAKE2sp is native on hashlib (internal/hashing/blake2sp.py) and needs
@@ -141,6 +142,8 @@ dev = [
     "ty==0.0.90",
     "ruff==0.17.1",
     "pre-commit>=4.0.0",
+    # tests/test_release_script.py reads the workflow files with it.
+    "pyyaml>=6.0",
     "coverage[toml]>=7.6.0",
     # >=1.1: earlier releases pin pyppmd<1.3.0, the range the pyppmd>=1.3.1 floor
     # above rules out (wrong bytes on chunked PPMd decodes). Needed by
@@ -154,7 +157,7 @@ dev = [
     # Stdlib compression.zstd on 3.14+; backports only needed below that.
     "backports.zstd>=1.0.0; python_version < '3.14'",
     "lz4>=4.4.5",
-    "brotli>=1.2.0",
+    "brotli>=1.2.1",
     # pycdlib (the [iso] extra) is in the dev group like the other optional format libs, so
     # the ISO backend's tests run in the default dev env and the type checkers can resolve the
     # PyCdlibIO annotation. The core-only CI leg installs with --no-dev, so it stays absent
@@ -186,6 +189,9 @@ docs = [
     "mkdocs-autorefs>=1.2.0",
     "mkdocs-material>=9.6.0",
     "griffe-fieldz>=0.2.1",
+    # Writes llms.txt, llms-full.txt and a Markdown copy of each page for coding
+    # agents. Capped below 0.6: a 0.x release may change the output format.
+    "mkdocs-llmstxt>=0.5.1,<0.6",
 ]
 # Coverage-guided fuzz harness (Atheris / libFuzzer). CI-only: never a user-facing
 # runtime extra and never folded into `[all]` — see packaging-and-extras + threat-model O5.
@@ -290,7 +296,17 @@ testpaths = ["tests"]
 # --timeout: a hung test fails fast (with a traceback of all threads) instead of stalling
 # the whole job until the CI hard limit. 60s is far above any real test here (all run in
 # milliseconds), so only a genuine hang trips it.
-addopts = "--cov=archivey --cov-report=term-missing --cov-report=xml --timeout=60 -m 'not ppmd_native_stress'"
+# --cov-branch repeats `branch = true` for child processes. It matters only on pytest-cov
+# before 7 (the lowest-direct resolution), which measures a child `python` through its
+# COV_CORE_* variables. `--cov-config` defaults to `.coveragerc`, which this repo does not
+# have, so the child searches for a config in its own working directory; one started in a
+# temporary directory finds none, writes statement-only data, and the final combine
+# refuses to merge that with branch data. Other [tool.coverage.run] keys do not reach such
+# a child either. No CI leg can catch the flag's loss (the one leg that measures coverage
+# runs pytest-cov 7, which measures no child), and it is inert once the pytest-cov floor
+# reaches 7. It sits in addopts despite the timeout_method rule below because pytest-cov
+# has no ini key, and every site that overrides addopts drops --cov along with it.
+addopts = "--cov=archivey --cov-branch --cov-report=term-missing --cov-report=xml --timeout=60 -m 'not ppmd_native_stress'"
 # thread, not pytest-timeout's POSIX default of signal. SIGALRM is delivered to the main
 # thread and only runs when it next reaches the interpreter, so a thread blocked in C or a
 # deadlock off the main thread is invisible to it: on 2026-09-21 both the free-threaded job

@@ -53,9 +53,10 @@ Formats covered here: ZIP (deflate / LZMA / WinZip AES / ZipCrypto), TAR, gzip,
 tar.gz/tar.bz2 (+ accelerators), in-ZIP accelerated deflate, solid 7z, and RAR
 data paths on committed fixtures when RARLAB ``unrar`` is present (large solid
 RAR when the ``rar`` writer can build one). Listing wall peers: ``zipfile`` /
-``tarfile`` / ``py7zr`` / ``rarfile`` (Q1 bands). ISO and directory backends are
-instrumented for measurement but deliberately out of scope for this harness —
-see ``benchmarks/tar_iso_lock_baseline.py`` for ISO.
+``tarfile`` / ``py7zr`` / ``rarfile`` (Q1 bands); ``benchmarks/peers.py`` reports
+list, read and extract against py7zr / rarfile / libarchive-c, outside the gate.
+ISO and directory backends are instrumented for measurement but deliberately out
+of scope for this harness — see ``benchmarks/tar_iso_lock_baseline.py`` for ISO.
 """
 
 from __future__ import annotations
@@ -687,16 +688,23 @@ def run_cases(
     _m_wall, (bdec, seeks, unpacked) = timed_with_optional_warmup(
         lambda: _op_read_all(fixtures.zip_path, config=cfg_zip_off)
     )
+    # Wall time unmeasured, as for the ON row below, so the pair compares.
+    wall, _ = timed_with_optional_warmup(
+        lambda: _op_read_all_unmeasured(fixtures.zip_path, config=cfg_zip_off)
+    )
     results.append(
         CaseResult(
             "zip_read_all_accel_off",
             "zip",
             "read_all",
-            _m_wall,
+            wall,
             bdec,
             seeks,
             unpacked_bytes=unpacked,
-            notes="stdlib deflate codec; accelerators forced OFF",
+            notes=(
+                "stdlib deflate codec; accelerators forced OFF; counts from the "
+                "measured route, wall time from the unmeasured one"
+            ),
         )
     )
     if has_accel:
@@ -706,18 +714,30 @@ def run_cases(
                 fixtures.zip_path, config=cfg_zip_on, seekable_members=True
             )
         )
+        # Two routes. With measurement on, the seek counter wraps the archive handle,
+        # so the child reads each member through the parent and every seek is counted
+        # (``file_region`` finds no file under the counter). Without it, on POSIX, the
+        # child reads the archive file itself: the route callers get, timed here.
+        wall, _ = timed_with_optional_warmup(
+            lambda: _op_read_all_unmeasured(
+                fixtures.zip_path, config=cfg_zip_on, seekable_members=True
+            )
+        )
         results.append(
             CaseResult(
                 "zip_read_all_accel_on",
                 "zip",
                 "read_all",
-                _m_wall,
+                wall,
                 bdec,
                 seeks,
                 unpacked_bytes=unpacked,
                 notes=(
                     "rapidgzip accelerator ON for in-ZIP deflate ([seekable]); count "
-                    "depends on the rapidgzip version, so the gate checks only ON > OFF"
+                    "depends on the rapidgzip version, so the gate checks only ON > OFF; "
+                    "counts are from the measured route (child reads through the "
+                    "parent), wall time from the unmeasured one (on POSIX, the child "
+                    "reads the file)"
                 ),
             )
         )
