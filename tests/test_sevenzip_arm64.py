@@ -23,8 +23,8 @@ from archivey.internal.backends.sevenzip_parser import SevenZipCoder
 from archivey.internal.backends.sevenzip_pipeline import plan_folder
 from archivey.internal.streams.codecs.arm64_filter import FILTER_ARM64, arm64_decode
 from archivey.internal.streams.codecs.lzma_filter_decoder import (
-    Arm64FilterDecoder,
     FilterStream,
+    PythonBranchFilterDecoder,
 )
 from tests.conftest import requires_binary, sevenzip_lists_arm64
 
@@ -133,7 +133,9 @@ def test_unaligned_tail_is_passed_through(tail_length: int) -> None:
     for words in (0, 1, 7):
         data = _payload(words, tail=tail, seed=words)
         encoded = _reference(data, 0, encode=True)
-        decoder = Arm64FilterDecoder(start_offset=0, unpack_size=len(data))
+        decoder = PythonBranchFilterDecoder(
+            decode=arm64_decode, start_offset=0, unpack_size=len(data)
+        )
         out = decoder.feed(encoded).data + decoder.flush().data
         assert out == data
         assert out[len(out) - tail_length :] == tail
@@ -146,7 +148,9 @@ def test_chunk_boundaries(piece: int, max_length: int) -> None:
     pc = 0x1000
     data = _PAYLOAD[: 3 * 4097 + 2] if piece < 4 else _PAYLOAD
     encoded = _reference(data, pc, encode=True)
-    decoder = Arm64FilterDecoder(start_offset=pc, unpack_size=len(data))
+    decoder = PythonBranchFilterDecoder(
+        decode=arm64_decode, start_offset=pc, unpack_size=len(data)
+    )
     out = bytearray()
     for start in range(0, len(encoded), piece):
         out += decoder.feed(encoded[start : start + piece], max_length).data
