@@ -757,6 +757,12 @@ Once 0.2.0 ships, DR-12a replaces this rule.
 - A break that can't be phased in that way (the same call gives a different result, an
   exception changes type) goes in a minor release, and its changelog line starts with
   **Breaking:**. The GitHub release mirrors the changelog.
+- The `archivey` command's verbs, options and exit codes are public names under the
+  same rule (maintainer, 2026-10-22). The command prints its own deprecation notice
+  for an old spelling: Python shows a `DeprecationWarning` raised inside a library
+  only when the caller asks for it. The text it prints for people may change in a
+  minor release. A minor release may add a verb, which then wins over a file of that
+  name; `archivey list <path>` and `./<path>` always reach the file (`cli` spec).
 - `archivey.internal` is not public and changes freely.
 
 Public docs: `docs/how-it-is-built.md` §Versioning and stability.

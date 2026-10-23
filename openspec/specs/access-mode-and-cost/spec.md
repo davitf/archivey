@@ -376,9 +376,8 @@ reason is recorded here rather than rediscovered a fourth time:
   certainly does not.
 - A `warnings.warn` here would be about an archive, against the project rule that
   prefers structured diagnostics precisely because "a logging warning most applications
-  never see is a surprise deferred, not avoided" (`VISION.md`). The only Python warning
-  the library may emit is a `DeprecationWarning`, which is about the caller's code
-  (`design-rules.md` DR-12a).
+  never see is a surprise deferred, not avoided" (`VISION.md`). A `DeprecationWarning`
+  is a different case: it is about the caller's code (`design-rules.md` DR-12a).
 - Emitting per `open()` on the workload that provokes it (walking every member of a
   solid archive) would produce one occurrence per member — noise proportional to the
   thing already reported once, accurately, as a cost.

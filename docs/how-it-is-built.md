@@ -125,9 +125,9 @@ may change:
   with **Breaking:** in that release's entry in the
   [changelog](https://github.com/davitf/archivey/blob/main/CHANGELOG.md).
 
-Python hides a `DeprecationWarning` raised outside `__main__` by default, so the changelog's
+Python doesn't show a `DeprecationWarning` from a library by default, so the changelog's
 "Deprecated" section is the place to look before upgrading. To find deprecated calls in your own
-code, run your tests with `python -W error::DeprecationWarning`.
+code, run your tests with `python -W error::DeprecationWarning -m pytest`.
 
 The public API is what `archivey` and its public submodules export, as listed on the
 [API page](api.md). Anything under `archivey.internal` can change in any release.
@@ -136,7 +136,9 @@ The same promise covers the `archivey` command's verbs, options and exit codes, 
 the [command-line page](cli.md): a removed or renamed one keeps working for one more minor
 release and prints a deprecation warning. The text it prints for people to read, such as
 messages and summaries, may change in any minor release, so a script should rely on the exit
-code and the options rather than on that text.
+code and the options rather than on that text. A minor release may also add a verb, and from
+then on that word runs the verb rather than naming a file. A script that passes a path should
+write `archivey list <path>` or `./<path>`, which always reach the file.
 
 1.0 comes once early users have run archivey for a while and the API has held up. After that,
 breaking changes wait for 2.0. The larger open questions, such as a plugin interface for new
