@@ -254,8 +254,11 @@ bytes. The outcome is the same on every platform. ADR
 - `STRICT` strips a trailing dot or space (`_strip_trailing_dot_space`), because Win32
   trims it silently and the reported path would differ from the real one. The rewrite is
   recorded as `ExtractionResult.presented_name`, the only record that survives a caller
-  filter rename. An all-dots segment has no portable spelling and is rejected.
-  `STANDARD` and `TRUSTED` keep the name.
+  filter rename. An all-dots segment has no portable spelling and is rejected, under
+  `STANDARD` too, since Win32 would merge `a/.../b` into `a/b`.
+  `STANDARD` and `TRUSTED` otherwise keep the name. Under `STRICT` and `STANDARD` the collision key
+  drops a trailing dot or space too, so `notes.` and `notes` collide on every platform, as
+  Win32 would merge them.
 - Two classes of character are percent-escaped (`_sanitize_portable_name`: `%XX`,
   literal `%` as `%25`), a deterministic and reversible spelling: non-UTF-8 bytes, and
   the characters Win32 refuses in a name, `<>"|?*` and the controls 0x01 to 0x1F.
@@ -267,11 +270,12 @@ bytes. The outcome is the same on every platform. ADR
   passes through (`foo\x` and `foo. /x` both become `foo/x`), and the first check saw
   only the stored spelling, so a `foo` symlink in the destination that leaves it was
   not checked on the path actually written.
-- `collision_key` casefolds and NFC-normalizes. The coordinator
-  (`_register_collision_key`, `_resolve_collision`, `_derive_free_name`) treats a
-  collision as an event: `OverwritePolicy` applies, `RENAME` writes `photo (1).jpg`, and
-  a `REPLACE` revises the clobbered member's result to `OVERWRITTEN` (`_mark_overwritten`)
-  so the merge is visible. `ExtractionReport.results` is the only record.
+- `collision_key` casefolds, NFC-normalizes and trims a trailing dot or space from each
+  segment. The coordinator (`_register_collision_key`, `_resolve_collision`,
+  `_derive_free_name`) treats a collision as an event: `OverwritePolicy` applies,
+  `RENAME` writes `photo (1).jpg`, and a `REPLACE` revises the clobbered member's
+  result to `OVERWRITTEN` (`_mark_overwritten`) so the merge is visible.
+  `ExtractionReport.results` is the only record.
   `abort_on={AbortOn.NAME_COLLISION}` makes any collision fatal;
   `abort_on={AbortOn.NAME_SANITIZED}` refuses any rewritten name.
 - A name the filter accepted but the filesystem refuses at write (`EILSEQ` on APFS,

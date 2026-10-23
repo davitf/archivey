@@ -126,6 +126,7 @@ from archivey.internal.base_reader import (
     MAX_LINK_TARGET_BYTES,
     BaseArchiveReader,
     ReadBackend,
+    SolidRun,
     pass_has_data,
 )
 from archivey.internal.config import KeyDerivationBudget, check_decoder_memory
@@ -1345,6 +1346,8 @@ class RarReader(BaseArchiveReader):
                 )
         if self._in_set:
             self._volume_count = max(self._volume_count, self._volume_set_size() or 1)
+        # Each compressed member's solid run under unar (``_unar_solid_runs``).
+        self._unar_runs: dict[int, SolidRun] | None = None
         # Built once from the parse, and only when the caller chose unar: it holds the
         # refusals and the pipe layout, and none of it applies to unrar.
         self._unar_policy: UnarRarPolicy | None = (
@@ -4094,6 +4097,59 @@ class RarReader(BaseArchiveReader):
             member_name=member.name,
             source_format=ArchiveFormat.RAR,
         )
+
+    def _solid_run(self, member: ArchiveMember) -> SolidRun | None:
+        # Each open() of a solid member runs a fresh process. Through its include
+        # mask, unrar decodes the archive from its first payload member. unar decodes
+        # only the member's solid stream, which starts at a compressed member without
+        # the solid flag, and skips stored members (``unar_dictionary_costs``). The
+        # rare unar read of a name unrar cannot address under AUTO is counted as
+        # unrar's.
+        raw = member._raw
+        if (
+            not self._archive.is_solid
+            or not isinstance(raw, RarMemberInfo)
+            or not raw.is_payload_file()
+            or raw.is_file_copy()
+            or self._can_direct_read(raw)
+            or self._decrypts_natively(raw)
+        ):
+            return None
+        if self._unar_policy is None:
+            return SolidRun(
+                None, self._solid_prefix(member), _member_stream_size(member)
+            )
+        if uses_no_dictionary(raw):
+            return None
+        return self._unar_solid_runs().get(id(member))
+
+    def _unar_solid_runs(self) -> dict[int, SolidRun]:
+        """Each compressed member's :class:`SolidRun` under ``unar``, by ``id``.
+
+        The key is the archive index of the member that starts the solid stream, and
+        the offset counts the earlier compressed entries of that stream. Streams are
+        cut on :func:`uses_no_dictionary` alone, as ``unar_dictionary_costs`` cuts
+        them, so a compressed entry that is not a payload file (a RAR3/4 symlink
+        target) still starts a stream and counts toward the offset. Built once.
+        """
+        runs = self._unar_runs
+        if runs is not None:
+            return runs
+        runs = {}
+        start = -1
+        offset = 0
+        for index, member in enumerate(self._members):
+            raw = member._raw
+            if not isinstance(raw, RarMemberInfo) or uses_no_dictionary(raw):
+                continue
+            if not raw.file_solid or start < 0:
+                start, offset = index, 0
+            size = raw.file_size
+            if raw.is_payload_file():
+                runs[id(member)] = SolidRun(start, offset, size)
+            offset += size
+        self._unar_runs = runs
+        return runs
 
     def _solid_prefix(self, target: ArchiveMember) -> int:
         """Unpacked bytes of earlier payload members in a solid archive.
