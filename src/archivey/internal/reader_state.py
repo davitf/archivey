@@ -356,8 +356,8 @@ class ReaderState:
                 )
             if self._workers and not overlap:
                 raise _overlap_refused(
-                    f"Cannot start {name!r}: a concurrent open()/read() call is still "
-                    "in progress."
+                    f"Cannot start {name!r}: a concurrent open()/get()/read() call is "
+                    "still in progress."
                 )
             token = OperationToken(name=name, kind="root")
             if self._root is None:
@@ -721,7 +721,7 @@ class ReaderState:
                     )
                 if self._workers and not self.concurrent:
                     raise ArchiveyUsageError(
-                        "Cannot close the archive reader while an open()/read() call "
+                        "Cannot close the archive reader while an open()/get()/read() call "
                         "is still in progress."
                     )
                 self._closing = True

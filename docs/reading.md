@@ -123,8 +123,10 @@ With `concurrent_operations=True`, threads can also share the rest of the reader
 members, iterate, run `stream_members()` passes and `extract_all()` at the same time, and if several
 need the member list at once, one builds it while the others wait. Each member stream still belongs
 to one thread. Opening the archive once per thread is also safe, as long as each thread opens it
-from its own path or file: one file object belongs to one reader. Closing the reader closes the
-streams still open on it, so `close()` may wait for reads in other threads to finish.
+from its own path or file: one file object belongs to one reader. `close()` waits for an `open()`
+or `get()` running in another thread, then closes the streams still open on it. It does not wait
+for reads on those streams: a read running in another thread returns what it already had or
+raises `ValueError`, as a closed file does.
 
 Without `concurrent_operations=True` the reader belongs to one thread. If another thread is inside
 a reader call, such as `members()`, `open()`, or a `stream_members()` or `extract_all()` pass,

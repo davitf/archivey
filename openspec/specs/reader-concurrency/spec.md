@@ -102,7 +102,7 @@ API.
 
 "Overlap" means concurrent method/I/O execution, not the lifetime of an idle
 open member stream: a non-concurrent `reader.close()` MAY run while member
-streams remain open, and their leases preserve resources for later stream I/O.
+streams remain open. Each stream keeps its lease until that `close()` closes it.
 This is not a blanket thread-safety guarantee for every reader method. Nor is a
 pass or member stream that nothing can reach any more an overlap, on any
 interpreter: a call refused for an overlap SHALL run a garbage collection and try
