@@ -283,6 +283,13 @@ def _reap(
         pass
 
 
+def _reap_if_owned(pid: int, proc: subprocess.Popen[bytes], stderr: IO[bytes]) -> None:
+    """The finalizer's :func:`_reap`, skipped in a process created by ``fork``: the
+    child belongs to the parent, which still talks to it."""
+    if pid == os.getpid():
+        _reap(proc, stderr)
+
+
 # How much of the child's stderr is scanned to classify its death. The abort message
 # can sit anywhere in it: the child may have written warnings before it, and a dying
 # process adds more after it (with faulthandler on, ``PYTHONFAULTHANDLER`` or
@@ -459,6 +466,7 @@ class RapidgzipChildStream(ReadOnlyIOStream):
 
     # Read by close(), which also runs on an instance whose __init__ never started.
     _pool: RapidgzipChildPool | None = None
+    _pid: int | None = None
 
     def __init__(
         self,
@@ -469,6 +477,9 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         max_memory: int | None,
     ) -> None:
         # Everything close() reads is assigned before anything that can raise.
+        # The process that started the child: a process created by ``fork`` inherits
+        # the stream with the pipes, which belong to its parent (``_owned``).
+        self._pid = os.getpid()
         self._label = label
         self._bzip2 = bzip2
         self._max_memory = max_memory
@@ -573,7 +584,9 @@ class RapidgzipChildStream(ReadOnlyIOStream):
                 self._stderr_start = stderr.seek(0, io.SEEK_END)
             except (OSError, ValueError):
                 pass
-        self._finalizer = weakref.finalize(self, _reap, proc, stderr)
+        self._finalizer = weakref.finalize(
+            self, _reap_if_owned, self._pid, proc, stderr
+        )
         try:
             self._call(OPEN, open_kind, open_payload)
         except ImportError as exc:
@@ -742,6 +755,14 @@ class RapidgzipChildStream(ReadOnlyIOStream):
             raise self._death_error()
         if self._proc is None:
             raise ValueError("I/O operation on closed file.")
+        if not self._owned():
+            raise ArchiveyUsageError(
+                "this stream's rapidgzip decoder process belongs to the process this "
+                "one was forked from; open the member again in this process"
+            )
+
+    def _owned(self) -> bool:
+        return self._pid == os.getpid()
 
     def _death_error(self) -> Exception:
         assert self._death is not None
@@ -1217,6 +1238,16 @@ class RapidgzipChildStream(ReadOnlyIOStream):
 
     def close(self) -> None:
         if self.closed:
+            return
+        if self._pid is not None and not self._owned():
+            # Inherited through ``fork``: the child is the parent's to reuse or end.
+            finalizer = self._finalizer
+            self._finalizer = self._proc = None
+            if finalizer is not None:
+                finalizer.detach()
+            self._source = None
+            self._drop_buffer()
+            super().close()
             return
         try:
             released = self._release_to_pool()

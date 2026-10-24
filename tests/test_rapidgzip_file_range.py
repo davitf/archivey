@@ -463,3 +463,39 @@ def test_a_child_is_retired_after_its_last_stream(
         with r.open("c.bin") as stream:
             assert stream.read() == _DATA
         assert len(started) == 2
+
+
+@posix_only
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="needs os.fork")
+def test_a_forked_process_leaves_its_parents_child_alone(tmp_path: Path) -> None:
+    """A process created by ``fork`` that inherits an open member stream neither talks
+    to the parent's rapidgzip child through the inherited pipes nor ends it at close:
+    a read there raises ``ArchiveyUsageError``, and the parent reads on."""
+    pytest.importorskip("rapidgzip")
+    with (
+        open_archive(
+            _zip(tmp_path, zipfile.ZIP_DEFLATED), config=_ON, seekable_members=True
+        ) as r,
+        r.open("data.bin") as stream,
+    ):
+        first = stream.read(1000)
+        read_fd, write_fd = os.pipe()
+        pid = os.fork()
+        if pid == 0:  # pragma: no cover - runs in the forked process
+            status = b"?"
+            try:
+                try:
+                    stream.read(1000)
+                    status = b"read"
+                except Exception as exc:  # noqa: BLE001 - reported to the parent
+                    status = type(exc).__name__.encode()
+                stream.close()
+                r.close()
+            finally:
+                os.write(write_fd, status)
+                os._exit(0)
+        os.close(write_fd)
+        os.waitpid(pid, 0)
+        assert os.read(read_fd, 100) == b"ArchiveyUsageError"
+        os.close(read_fd)
+        assert first + stream.read() == _DATA
