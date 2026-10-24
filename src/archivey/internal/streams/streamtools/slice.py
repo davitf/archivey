@@ -457,12 +457,15 @@ class FileRegion:
     then a check that each source and the file itself are still open.
 
     ``fd`` is a bare number, valid only while the stream it came from stays open and
-    alive: the caller holds that stream until the descriptor has been handed on."""
+    alive: the caller holds that stream until the descriptor has been handed on.
+    ``owner`` is what owns the descriptor for archivey: the outermost ``ArchiveSource``
+    looked through, else the file object itself. Readers of the same file share it."""
 
     fd: int
     start: int
     length: int
     checks: tuple[Callable[[], None], ...]
+    owner: object
 
 
 def file_region(stream: BinaryIO) -> FileRegion | None:
@@ -482,6 +485,7 @@ def file_region(stream: BinaryIO) -> FileRegion | None:
     offset = 0
     remaining: int | None = None
     checks: list[Callable[[], None]] = []
+    owner: object = None
     while True:
         # An archive source over a file (``ArchiveSource.file_region_inner``).
         inner = getattr(type(stream), "file_region_inner", None)
@@ -490,6 +494,8 @@ def file_region(stream: BinaryIO) -> FileRegion | None:
             if unwrapped is None:
                 return None
             checks.append(_open_check(stream))
+            if owner is None:
+                owner = stream
             stream = unwrapped
             continue
         if type(stream) not in (SlicingStream, SharedView):
@@ -523,7 +529,9 @@ def file_region(stream: BinaryIO) -> FileRegion | None:
     # The child keeps its own copy of ``fd``, so it could read on after the caller
     # closes this file; the check makes that read fail as a read of the stream would.
     checks.append(_open_check(stream))
-    return FileRegion(fd, offset, length, tuple(checks))
+    return FileRegion(
+        fd, offset, length, tuple(checks), stream if owner is None else owner
+    )
 
 
 def _open_check(stream: BinaryIO) -> Callable[[], None]:

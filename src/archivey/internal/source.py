@@ -69,7 +69,7 @@ import io
 import os
 import stat
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Protocol, cast
 
@@ -300,6 +300,7 @@ class ArchiveSource(ReadOnlyIOStream):
     _buffer: io.BufferedIOBase | None = None
     _replay: bytearray | None = None
     _full_count: _GatheringReader | None = None
+    _close_callbacks: tuple[Callable[[], None], ...] = ()
 
     def __init__(
         self,
@@ -904,9 +905,25 @@ class ArchiveSource(ReadOnlyIOStream):
             self._length = max(self._length - start, 0)
         self._pos = 0
 
+    def on_close(self, callback: Callable[[], None]) -> None:
+        """Call ``callback`` when this source closes (at once if it already has). It
+        must not raise. The rapidgzip child pool ends its idle children this way:
+        they hold a copy of this source's descriptor.
+
+        Best effort: a callback added while another thread closes the source may not
+        run. The pool also ends its children when the source is collected, so that
+        case only delays it."""
+        if self.closed:
+            callback()
+            return
+        self._close_callbacks = (*self._close_callbacks, callback)
+
     def close(self) -> None:
         if self.closed:
             return
+        callbacks, self._close_callbacks = self._close_callbacks, ()
+        for callback in callbacks:
+            callback()
         try:
             owned = self._owned
             self._owned = None
