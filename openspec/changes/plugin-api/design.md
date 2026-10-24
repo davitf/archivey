@@ -1,0 +1,374 @@
+## Context
+
+Measured on `main` at `446cb26`.
+
+### What a backend is today
+
+A format is two classes in `archivey.internal.backends`:
+
+- A `ReadBackend` subclass (`internal/base_reader.py:336`). It is a stateless factory. It
+  declares the formats it reads and its detection signals as class data (`FORMATS`,
+  `EXTENSIONS`, `MAGIC`, `SFX_MAGIC`, `SFX_HIT_VALIDATOR`, `CONTENT_PROBES`, `TRAILER`),
+  flags (`SUPPORTS_STREAMING_NON_SEEKABLE`, `SUPPORTS_PASSWORD`, `USES_ENCODING`,
+  `READ_IMPLEMENTED`), an optional dependency, and one method, `open_read()`.
+- A `BaseArchiveReader` subclass. It must implement four abstract methods:
+  `_iter_members`, `_open_member`, `_get_archive_info`, `_close_archive`.
+
+`internal/registry.py` collects the backends at import time. Detection reads the
+signals through the registry, and `open_archive` asks the registry for the backend of the
+detected format.
+
+### What each reader overrides beyond the four methods
+
+Counted from the class dictionaries (base-class names a reader redefines), and from the
+base-class helpers each module calls:
+
+| Reader | Extra hooks overridden | Base helpers called |
+| --- | --- | --- |
+| Single-file | `_validate_at_open` | 6, including `_codec_input`, `_wrap_compressed_input`, `_seek_handle_wrapper` |
+| Directory | `_check_extraction_dest` | `_wrap_member_stream` |
+| ISO | `_translate_exception` | 7: `_wrap_member_stream`, `_handle_guard`, `_translated_errors`, `_track_source_seeks`, three `_emit_*` |
+| TAR | `_iter_with_data`, `_pull_member`, `_register_member`, `_list_before_extraction`, `_translate_exception` | 13 |
+| ZIP | `_iter_with_data`, `_ensure_link_target`, `_archive_comment`, `_cost_receipt`, `_translate_exception` | 17 |
+| ZIP (forward) | the ZIP set, plus `_listed_in_index_order`, `_account_archive_comment` | — |
+| RAR | `_iter_with_data`, `_ensure_link_target`, `_translate_exception` | 20 |
+| 7z | `_iter_with_data`, `_ensure_link_target`, `_prepare_link_target_reads`, `_translate_exception` | 16 |
+
+TAR, ZIP, RAR and 7z need hooks into the member walk, the streaming pass and link-target
+reads. These are the parts of the base class that change most often. A narrow public
+interface cannot include them without freezing them.
+
+ISO is the one dependency-backed reader that needs only the four methods plus an
+exception translator. The three `_emit_*` helpers it calls (timestamp out of range,
+special file with data, link target unavailable) are member-level diagnostics that any
+format can meet.
+
+### Where the format set is closed
+
+- `ContainerFormat` is a `StrEnum`, and `ArchiveFormat.__post_init__` coerces the
+  container to it, so `ArchiveFormat("cpio", ...)` raises `ArchiveyUsageError`.
+  The stream half is already open: a member of another `Enum` is kept as it is, for
+  codecs registered from outside (`tests/test_codec_descriptor.py`).
+- About 20 lines outside the backends branch on a specific container: `core.py`
+  (volume joining, the ISO raw-sector refusal, the directory source), `detection.py`
+  (the inner-TAR probe), `format_args.py` (spellings), `cli/common.py` and
+  `cli/extract_cmd.py` (single-file output names). Each branch tests for one named
+  container, so a container they do not know takes the default branch. That default must
+  be checked for each site (task 2.4).
+- `DiagnosticCodeStr` is a closed `Literal` (PR 761). `CompressionAlgorithm` and
+  `HashAlgorithm` are closed enums; `CompressionAlgorithm.UNKNOWN` exists.
+
+## Goals / Non-Goals
+
+**Goals**
+
+- A package outside archivey can add a read-only format by implementing one small,
+  documented interface, and the new format works with every public reader method,
+  `detect_format`, `format_availability`, `list_known_formats`, and the CLI.
+- A plugin format gets the same safety as a built-in one for everything archivey does
+  after the plugin hands over a member: name normalization, the name-control and
+  path checks, listing limits, link resolution, safe extraction, and the extraction
+  byte, ratio and entry limits.
+- The interface does not expose `BaseArchiveReader`. Internal changes to the walk, the
+  streaming pass or link handling stay internal.
+- One existing format (ISO) uses the interface, so the full ISO test suite tests it.
+
+**Non-goals for the first version** (each is additive later)
+
+- Reading from a non-seekable source (`stream_members` over a pipe). Plugin formats
+  need a seekable source in both modes. `streaming=True` on a seekable source works.
+- Solid formats, multi-volume sets, self-extracting stubs, trailer signatures, and an
+  outer compression stream (`cpio.gz` detects as `GZ` and lists one member).
+- Passwords and encryption.
+- Link targets stored as member data and read lazily (`_LINK_TARGETS_IN_DATA`). A plugin
+  sets `link_target` when it builds the member. For a format that stores the target as
+  data (CPIO does), the plugin reads it during listing. Targets are short, and
+  `ListingLimits` bounds the total.
+- New diagnostic codes from a plugin.
+- Writing archives.
+- Automatic loading of installed plugins (call 2).
+
+## Decisions
+
+### 1. Composition, not a public base class
+
+A plugin reader does **not** subclass `BaseArchiveReader`. It implements `PluginReader`,
+a small abstract class with no internal state. An internal adapter,
+`PluginReaderAdapter(BaseArchiveReader)`, holds the plugin reader and implements the four
+abstract methods by calling it.
+
+```python
+class PluginReaderAdapter(BaseArchiveReader):
+    def _iter_members(self):
+        for record in self._plugin.iter_members():
+            member = record.member
+            member._raw = record.locator          # the plugin's handle to its data
+            member.name = normalize_member_name(member.name, ...)
+            yield member
+
+    def _open_member(self, member):
+        data = self._plugin.open_member(member, member._raw)
+        return self._wrap_member_stream(
+            data.stream, member.name,
+            size=member.size,
+            expected_size=member.size,            # a short read always raises
+            expected_hashes=data.expected_hashes, # verified as built-ins are
+            fill_size=member.size is None, verify_member=member,
+        )
+```
+
+**Why.** A subclass sees and can override every one of about 150 methods. Each one
+would become public under the stability policy, and the stability of the internals is
+what lets the readers keep agreeing (DR-5, DR-23a). With composition, the public surface
+is what `archivey.plugins` exports, and nothing else.
+
+**Rejected: export `BaseArchiveReader` and `ReadBackend` as they are.** It is the
+smallest change, but it freezes the internals, and a plugin that overrides an internal
+hook can break the guarantees for its format without any error.
+
+### 2. The public interface
+
+All in `archivey.plugins`. Names are proposals.
+
+```python
+class PluginContainer(StrEnum):            # re-exported at the root as archivey.PluginContainer
+    """Base class for a plugin's container enum."""
+
+class FormatPlugin(ABC):
+    """One format: detection data, flags, and open(). Stateless."""
+
+    format: ClassVar[ArchiveFormat]        # ArchiveFormat(MyContainer.CPIO, StreamFormat.UNCOMPRESSED)
+    extensions: ClassVar[tuple[str, ...]] = ()       # (".cpio",)
+    magic: ClassVar[tuple[Magic, ...]] = ()          # Magic(offset=0, data=b"070701")
+    probe: ClassVar[Callable[[bytes], bool] | None] = None   # sees only the prefix detection peeked
+    uses_encoding: ClassVar[bool] = False
+    requires: ClassVar[tuple[str, ...]] = ()         # importable module names
+    install_hint: ClassVar[str | None] = None
+
+    @abstractmethod
+    def open(self, source: PluginSource, context: PluginContext) -> PluginReader: ...
+
+class PluginReader(ABC):
+    """One open archive."""
+
+    member_list_upfront: ClassVar[bool] = True   # an index exists; False = listing walks headers
+
+    @abstractmethod
+    def iter_members(self) -> Iterator[MemberRecord]: ...
+    @abstractmethod
+    def open_member(self, member: ArchiveMember, locator: object) -> MemberData: ...
+    def archive_info(self) -> PluginArchiveInfo: return PluginArchiveInfo()
+    def translate_exception(self, exc: Exception) -> ArchiveyError | None: return None
+    def close(self) -> None: ...
+
+class MemberRecord(NamedTuple):
+    member: ArchiveMember      # public fields only; name decoded, not yet normalized
+    locator: object = None     # anything; handed back to open_member
+
+class MemberData(NamedTuple):
+    stream: BinaryIO
+    expected_hashes: Mapping[HashAlgorithm, bytes] = {}
+
+class PluginSource:
+    """The archive bytes. Always seekable in this version."""
+    size: int | None
+    path: Path | None                       # for a library that needs a file name
+    def read_at(self, offset: int, n: int) -> bytes: ...
+    def view(self, start: int, length: int | None = None) -> BinaryIO: ...  # own position
+
+class PluginContext:
+    """What the open archive needs from archivey."""
+    encoding: str | None
+    archive_name: str | None
+    def decode_name(self, raw: bytes) -> str: ...      # archivey's rule: valid UTF-8 wins
+    def timestamp_invalid(self, member_name: str, field: str, raw: object) -> None: ...
+    def special_file_has_data(self, member_name: str, size: int) -> None: ...
+    def link_target_unavailable(self, member_name: str, why: str) -> None: ...
+
+class PluginArchiveInfo(NamedTuple):
+    format_version: str | None = None
+    comment: str | None = None
+    extra: Mapping[str, object] = {}
+
+def register_format(plugin: type[FormatPlugin]) -> None: ...
+```
+
+Points that matter:
+
+- **The locator.** `ArchiveMember._raw` is private. A plugin needs somewhere to keep "where
+  the data of this member is". `MemberRecord.locator` is that place, and the adapter
+  stores it on the member. The plugin never sees `_raw`.
+- **Member data is verified the way a built-in's is.** The adapter always passes the
+  listed size, so a short stream raises `TruncatedError` (principle 1). A plugin that
+  knows a checksum returns it in `expected_hashes`. A plugin that knows none gets the
+  `DIGEST_UNVERIFIABLE` behaviour that a built-in format without a checksum gets.
+- **Sources are views, not a shared handle.** `PluginSource.view()` returns a stream with
+  its own position over the shared source (the `SharedSource` views the built-ins use).
+  Two member streams open at the same time, or a `CONCURRENT` reader, cannot move each
+  other's position. A plugin that holds its own handle (an external library) sets nothing
+  and the adapter serializes its calls with the reader's handle lock, as ISO does today
+  with `_handle_guard`.
+- **Diagnostics are three named methods, not `emit(code)`.** They are the member-level
+  conditions that every format can meet, and they reuse the existing codes. A plugin
+  cannot add a code, so `DiagnosticCodeStr` stays closed. A real need for a new
+  code comes to archivey as a request.
+- **Errors.** A plugin raises archivey's public exceptions (`CorruptionError`,
+  `TruncatedError`, `UnsupportedFeatureError`). Any other exception goes through
+  `translate_exception`, and an untranslated one propagates unchanged, as for a built-in
+  (DR-15a).
+- **Archive info.** The adapter builds `ArchiveInfo` and `CostReceipt` itself:
+  `is_solid=False`, `is_multivolume=False`, `is_encrypted=False`, access `DIRECT`, listing
+  cost from `member_list_upfront`, stream capability from the source. The plugin
+  supplies only what the adapter cannot know.
+- **No password, volume, SFX or streaming parameters.** Each would be a field on
+  `PluginContext` or a flag on `FormatPlugin` when it is added. Adding them breaks no
+  plugin.
+
+### 3. Format identity: `PluginContainer`
+
+The plugin defines its container enum as a subclass of a new public `StrEnum` base:
+
+```python
+class CpioContainer(PluginContainer):
+    CPIO = "cpio"
+
+CPIO = ArchiveFormat(CpioContainer.CPIO, StreamFormat.UNCOMPRESSED)
+```
+
+- `ArchiveFormat.container` is typed `ContainerFormat | PluginContainer`.
+  `__post_init__` keeps a `PluginContainer` member as it is, as it already keeps a
+  stream from another enum.
+- `display_name` for a pair with no named constant and an `UNCOMPRESSED` stream becomes
+  the container name alone (`"CPIO"`, not `"CPIO_UNCOMPRESSED"`).
+- `register_format` refuses a container value that equals a built-in value or another
+  plugin's, and a format that is already registered.
+- `format="cpio"` resolves through the registry once the plugin is registered.
+  `format_args.py` asks the registry for plugin spellings after the built-in ones.
+
+**Rejected: add `ContainerFormat.OTHER` plus a name field.** Two formats would then
+compare by a string field next to the enum, and `ArchiveFormat` would get a third field
+every caller sees. **Rejected: extend `ContainerFormat` at run time.** `Enum` does not
+support it, and the hacks that do break type checkers.
+
+A caller's `match fmt.container:` over `ContainerFormat` needs a default case once a
+plugin is registered. That is true of any open set, and the docs say so.
+
+### 4. Detection
+
+- Plugin magic, extensions and probes go into the registry tables the detector already
+  reads (`magic_entries`, `extension_map`, `content_probes`).
+- **Built-in signals win.** A plugin magic or probe match counts only when no built-in
+  format matched at the same or a higher confidence. A plugin extension that a built-in
+  format already claims is refused at registration. So registering a plugin never
+  changes how an archive that archivey reads today is detected.
+- **Probes see the prefix only.** A plugin probe gets at most the bytes detection has
+  already peeked, with no `read_at` and no decode allowance, so it cannot make detection
+  read more of an untrusted source.
+
+### 5. Registration and trust
+
+`register_format(MyPlugin)` is the only way in. The registry already invalidates its
+extension cache on registration. There is no `unregister`. Tests use the registry's
+private copy-and-restore fixture, as `tests/test_codec_descriptor.py` does.
+
+**No automatic loading (call 2).** Entry points would let any installed package claim
+files for every program in that environment that uses archivey. On an upload server
+(DR-9a) that means `pip install` of an unrelated package can change which parser reads
+an untrusted upload. With explicit registration, the program that calls
+`register_format` chose the plugin.
+
+**Plugin code is trusted code.** It runs in the caller's process, like any import.
+archivey's firm guarantees (bounded memory, no crash, DR-9a) cover archivey's code and
+what it enforces after the plugin hands over members and bytes: listing limits, name
+checks, extraction limits, and the size and digest checks on member data. They cannot
+cover the plugin's own parser. The docs say this on the "Adding a format" page, and
+`format_availability` and `FormatInfo` do not hide that a format came from a plugin
+(task 2.6).
+
+### 6. The CLI
+
+The CLI uses only public API (DR-13), so it lists, tests and extracts a plugin format
+once the plugin is registered. Nothing loads a plugin into the `archivey` command today.
+This version adds nothing for that. The obvious later option is a repeatable
+`--plugin MODULE` that imports a module before the command runs. It is left out until a
+plugin user asks.
+
+### 7. Which existing formats move
+
+**ISO moves.** `IsoReader` becomes a `PluginReader`, and `IsoReadBackend` becomes a
+`FormatPlugin` registered through the same call a third party uses. Its parsing and
+pycdlib hardening do not change. The work is in the class frame: `self._emit_*` calls
+become `context` calls, `_handle_guard` goes to the adapter, and the raw-sector-image
+refusal moves from `core.py` into `open`. The ISO test suite then tests the
+interface, including an optional dependency (`requires=("pycdlib",)`) and a translator.
+
+**Single-file stays internal.** It is not a container. It is a codec stream presented
+as one member, and it depends on the codec registry, the accelerator selection
+(rapidgzip) and the compressed-input counter that gives the live ratio guard its
+denominator. Moving it would put all three into the public interface.
+
+**Directory stays internal.** Its source is a path, not bytes, and `core.py` routes a
+directory to it before detection. It also needs `_check_extraction_dest`, which refuses
+extraction into the source tree. None of that is useful to a plugin.
+
+**TAR, ZIP, RAR and 7z stay internal** (Context). They keep the internal hooks. The
+adapter is one more `BaseArchiveReader` subclass next to them.
+
+**CPIO is the outside proof.** `packages/archivey-cpio/` (next to
+`packages/archivey-cli/`, not published) reads the four CPIO variants (binary, odc,
+newc, newc with CRC) with only `archivey.plugins` and the root API. Its tests run
+fixtures written by GNU `cpio` and `bsdcpio`, including symlinks, hard links (CPIO links
+by inode), and the newc checksum. A test fails if the package imports from
+`archivey.internal`.
+
+### 8. Will the code be cleaner?
+
+Only a little. What changes:
+
+- **Cleaner:** the reader contract is written in one public module, with a test reader
+  that cannot reach the internals. Today the contract is the docstring of a 3,900-line
+  class. ISO stops calling base-class helpers by name.
+- **Not cleaner:** `BaseArchiveReader` does not get smaller. TAR, ZIP, RAR and 7z do
+  not change. The `ContainerFormat` branches in `core.py`, detection and the CLI stay,
+  with a default branch checked for plugin containers.
+- **New code:** about 1,000 lines. The public module and the adapter about 450, the
+  registry, detection and format-identity changes about 200, the CPIO package about 350.
+  Plus a docs page and the spec.
+
+The reason to build it is extensibility after the quota drops (2026-11-09): a new
+format can come from someone else without the maintainer writing it.
+
+## Risks / Trade-offs
+
+- **A frozen surface.** Under the stability policy, a later change to
+  `archivey.plugins` costs a deprecation cycle. Mitigation: call 1, provisional
+  status until a real third-party plugin has used it.
+- **Guarantees a plugin can break.** A plugin's parser can use unbounded memory or
+  crash. Mitigation: documented scope (§5), built-in signals win (§4), explicit
+  registration only.
+- **The adapter drifts from the internals.** A base-class change that the four built-in
+  families absorb can break the adapter. Mitigation: ISO and CPIO run in the normal
+  suite and in the cross-format matrix tests, so a break fails CI.
+- **Locator stored in `_raw`.** A member that a caller copies with `dataclasses.replace`
+  keeps the locator. That is what built-in backends do already, so it is not new.
+
+## Migration Plan
+
+Additive, no migration. Order of PRs, each reviewed on its own:
+
+1. `PluginContainer`, the `ArchiveFormat` change, spellings, registry and detection
+   support, the adapter, `archivey.plugins`, and a minimal in-test plugin.
+2. ISO onto the interface.
+3. `packages/archivey-cpio/` with fixtures and CI.
+4. User docs page "Adding a format" (written by Opus), API page entry, spec
+   `format-plugins` and the deltas.
+
+No PR merges before the 0.2.0 tag. The target is 0.3.0.
+
+## Open Questions
+
+The four calls in `brief.md`. Also:
+
+- Should a plugin format be marked in `FormatInfo` (for example `from_plugin=True`) so a
+  caller can refuse plugin formats on an upload path? Recommended: yes, as one boolean.
+  It costs one public field.
