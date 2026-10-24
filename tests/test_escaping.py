@@ -587,6 +587,9 @@ _CLI_PRINT_ALLOWED = {
     "common.py: str(stats.compressed_bytes_consumed)": "int counter",
     "common.py: stats.source_seek_count": "int counter",
     "extract_cmd.py: ', '.join(parts)": "counts, built two lines above",
+    "extract_cmd.py: '; '.join(parts)": (
+        "_usage_line: int counts, and the declaring text through escape_member_name"
+    ),
     "extract_cmd.py: result.kept_mode": "int mode, printed as octal",
     "extract_cmd.py: stat.S_IMODE(os.stat(dest).st_mode)": (
         "int mode of the operator's directory, printed as octal"

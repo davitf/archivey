@@ -14,6 +14,7 @@ from archivey.internal.streams.codecs.decoder_child import (
 )
 from archivey.internal.streams.codecs.isolated import ChildPpmdDecoder
 from archivey.internal.streams.codecs.ppmd_child import (
+    ISOLATED_UNLESS_NONE,
     PpmdChildAllocationError,
     open_ppmd_child,
     ppmd_child_unavailable_reason,
@@ -534,13 +535,22 @@ class PpmdDecoder(BaseDecoder):
             "the process on corrupt input), and none can be started"
         )
         setting = self._isolation.name
+
+        def refusal(detail: object) -> str:
+            error = isolation_error(
+                f"{reason} ({detail})",
+                setting,
+                isolated_unless_none=ISOLATED_UNLESS_NONE,
+            )
+            return str(error)
+
         unavailable = ppmd_child_unavailable_reason()
         if unavailable is not None:
-            self._refuse(str(isolation_error(f"{reason} ({unavailable})", setting)))
+            self._refuse(refusal(unavailable))
         try:
             return self._release_held(in_child=True)
         except DecoderChildStartError as exc:
-            self._refuse(str(isolation_error(f"{reason} ({exc})", setting)), exc)
+            self._refuse(refusal(exc), exc)
         except PpmdChildAllocationError as exc:
             # The child started, so the advice above does not apply: in-process, the
             # same allocation would abort this process.

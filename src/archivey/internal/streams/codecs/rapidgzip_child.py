@@ -283,6 +283,18 @@ def _reap(
         pass
 
 
+def _reap_if_owned(pid: int, proc: subprocess.Popen[bytes], stderr: IO[bytes]) -> None:
+    """The finalizer's :func:`_reap`, skipped in a process created by ``fork``.
+
+    Defence in depth: in a fork this runs only when an inherited stream is still open
+    at a normal exit, and ``reap`` there would close the fork's own copies of the pipes
+    and return at once from a wait on a pid the fork did not start, so the parent's
+    child would not notice. The guard keeps that from resting on ``Popen`` details.
+    """
+    if pid == os.getpid():
+        _reap(proc, stderr)
+
+
 # How much of the child's stderr is scanned to classify its death. The abort message
 # can sit anywhere in it: the child may have written warnings before it, and a dying
 # process adds more after it (with faulthandler on, ``PYTHONFAULTHANDLER`` or
@@ -459,6 +471,7 @@ class RapidgzipChildStream(ReadOnlyIOStream):
 
     # Read by close(), which also runs on an instance whose __init__ never started.
     _pool: RapidgzipChildPool | None = None
+    _pid: int | None = None
 
     def __init__(
         self,
@@ -469,6 +482,9 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         max_memory: int | None,
     ) -> None:
         # Everything close() reads is assigned before anything that can raise.
+        # The process that started the child: a process created by ``fork`` inherits
+        # the stream with the pipes, which belong to its parent (``_owned``).
+        self._pid = os.getpid()
         self._label = label
         self._bzip2 = bzip2
         self._max_memory = max_memory
@@ -573,7 +589,9 @@ class RapidgzipChildStream(ReadOnlyIOStream):
                 self._stderr_start = stderr.seek(0, io.SEEK_END)
             except (OSError, ValueError):
                 pass
-        self._finalizer = weakref.finalize(self, _reap, proc, stderr)
+        self._finalizer = weakref.finalize(
+            self, _reap_if_owned, self._pid, proc, stderr
+        )
         try:
             self._call(OPEN, open_kind, open_payload)
         except ImportError as exc:
@@ -742,6 +760,14 @@ class RapidgzipChildStream(ReadOnlyIOStream):
             raise self._death_error()
         if self._proc is None:
             raise ValueError("I/O operation on closed file.")
+        if not self._owned():
+            raise ArchiveyUsageError(
+                "this stream's rapidgzip decoder process belongs to the process this "
+                "one was forked from; open the member again in this process"
+            )
+
+    def _owned(self) -> bool:
+        return self._pid == os.getpid()
 
     def _death_error(self) -> Exception:
         assert self._death is not None
@@ -786,14 +812,16 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         self._finalizer = self._proc = None
         if finalizer is None or proc is None or stderr is None:
             return
-        if finalizer.detach() is not None:
+        # A process created by fork drops its parent's child without ending it; as in
+        # _reap_if_owned, this is defence in depth.
+        if finalizer.detach() is not None and self._owned():
             _reap(proc, stderr, kill=kill)
 
     def _release_to_pool(self) -> bool:
         """Hand a clean child back to its pool (``RapidgzipChildPool``). False when it
         is not reusable, and the caller ends it."""
         pool = self._pool
-        if pool is None:
+        if pool is None or not self._owned():
             return False
         proc, stderr = self._proc, self._stderr
         if (
@@ -1156,7 +1184,7 @@ class RapidgzipChildStream(ReadOnlyIOStream):
             return None
         try:
             value, _ = self._call(RESUME, target, keep_parked=True)
-        except (ArchiveyError, OSError, MemoryError):
+        except (ArchiveyError, ArchiveyUsageError, OSError, MemoryError):
             raise
         except Exception:  # noqa: BLE001 - a diagnostic probe never breaks a read
             return None
@@ -1176,7 +1204,7 @@ class RapidgzipChildStream(ReadOnlyIOStream):
             return None
         try:
             value, _ = self._call(TELL_COMPRESSED, keep_parked=True)
-        except (ArchiveyError, OSError, MemoryError):
+        except (ArchiveyError, ArchiveyUsageError, OSError, MemoryError):
             raise
         except Exception:  # noqa: BLE001 - a probe; None leaves the caller's check as it was
             return None
@@ -1201,6 +1229,8 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         if self._death is None and self._proc is not None:
             try:
                 self._known_offsets = self._offsets(OFFSETS_AVAILABLE)
+            except ArchiveyUsageError:
+                raise
             except Exception:  # noqa: BLE001, S110 - the last index sent is still true
                 pass
         return dict(self._known_offsets)
