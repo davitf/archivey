@@ -12,6 +12,45 @@ one line. How to write the entry: see
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-24
+
+A patch release: no public name was added, renamed or removed.
+
+### Added
+
+- 7z archives that use 7-Zip 24's RISC-V branch filter now read. The filter is
+  decoded in Python, so it needs no extra package.
+- `archivey extract --dry-run` prints a `peak use of the reader limits:` line: the
+  largest decoder allocation, the temporary-file peak, the key-derivation rounds and
+  the listing size, to compare with the limits before tightening them.
+- Reading a member of a solid 7z or RAR archive with `open()` or `read()` logs one INFO
+  record per reader when it decodes data an earlier call already decoded, and names
+  `stream_members()` as the one-pass alternative.
+- The docs state the versioning and stability policy: until 1.0, a removed or renamed
+  name warns for one minor release before it goes.
+
+### Changed
+
+- `ExtractionPolicy.STANDARD` refuses a path segment made only of dots or spaces (such
+  as `... ` or `.. `), as `STRICT` already did: Windows trims such a segment to `..` or
+  merges it away, so the name means something different there. `STANDARD` also treats
+  `notes.` and `notes` as the same file, as Windows does, so the second one is a
+  collision on every platform instead of silently replacing the first on Windows.
+- A ZIP member compressed with Zstandard reads every frame, as a `.zst` file does. A
+  second frame used to raise `DataAfterEndError`.
+- The `STREAM_REWIND_REDECOMPRESSES` diagnostic is logged at INFO instead of WARNING.
+  It is still collected and can still be escalated by a `DiagnosticPolicy`.
+- When `rapidgzip` speeds up seeking, the members of one archive share its child process
+  on Linux instead of starting one each, and the child reads a ZIP member from the
+  archive file directly instead of through the parent process.
+
+### Fixed
+
+- Several bugs: a zstd seek table pointing where the decoder cannot start no longer
+  makes a seek fail, a rapidgzip member stream used after `fork()` raises
+  `ArchiveyUsageError` instead of disturbing the parent's decoder, and a PPMd member
+  refused under `NATIVE_DECODERS` isolation now names the setting that reads it.
+
 ## [0.2.0] - 2026-10-22
 
 First public release. This repository is a rewrite: the earlier v1 / alpha line
@@ -116,6 +155,7 @@ What goes in this file, from 0.2.0 on:
 `scripts/release.py start` writes the compare links below this comment.
 -->
 
-[Unreleased]: https://github.com/davitf/archivey/compare/v0.2.0...HEAD
-[0.2.0]: https://github.com/davitf/archivey/releases/tag/v0.2.0
-[0.2.0rc1]: https://github.com/davitf/archivey/releases/tag/v0.2.0rc1
+[Unreleased]: https://github.com/archivey-dev/archivey/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/archivey-dev/archivey/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/archivey-dev/archivey/releases/tag/v0.2.0
+[0.2.0rc1]: https://github.com/archivey-dev/archivey/releases/tag/v0.2.0rc1
