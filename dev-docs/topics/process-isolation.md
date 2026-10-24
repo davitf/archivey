@@ -177,6 +177,10 @@ start, so it can serve only that file. A child is kept only:
 
 A path source or a stream source gets a new child each time.
 
+**After `fork`.** The stream records the process that started its child. In any other
+process a read, seek, tell or index query raises `ArchiveyUsageError`, and `close()`
+drops the child without `RESET`, without returning it to the pool and without ending it.
+
 **When the child fails.** The parent does not raise at once. The standard library takes
 over from the child's last resume point and gives the verdict it gives with the
 accelerator off. gzip.md §2.3 has the cases.
@@ -227,8 +231,8 @@ cap, no temporary directory, too many open files).
 
 | Decoder | Then |
 | --- | --- |
-| PPMd under `KNOWN_CRASHES` | `ResourceLimitError`, which names `NONE` as the way to decode in-process |
-| Any decoder under `NATIVE_DECODERS`, PPMd included | `ResourceLimitError`, which names `KNOWN_CRASHES` (for PPMd that advice does not help, §4) |
+| PPMd under `KNOWN_CRASHES` or `NATIVE_DECODERS` | `ResourceLimitError`, which names `NONE` as the way to decode in-process (PPMd runs in a child under every other setting) |
+| Any other decoder under `NATIVE_DECODERS` | `ResourceLimitError`, which names `KNOWN_CRASHES` |
 | rapidgzip under `AUTO` | The standard library, with one warning per process on `archivey.streams` |
 | rapidgzip under `ON` | `ResourceLimitError` |
 
@@ -277,8 +281,7 @@ this section says what each cost comes from.
 | A loop on crafted input in a child never ends | **library** | No timeout (§At a glance). Set the accelerators `OFF` for a latency budget |
 | A PPMd member raises `ResourceLimitError` in a frozen application or under a spawn limit | **archivey** | By design: it does not decode in-process unless `NONE` is set (§2.6) |
 | `use_rapidgzip=ON` with `process_isolation=NONE` raises `ArchiveyUsageError` when the config is built | **archivey** | rapidgzip runs only in a child (§At a glance) |
-| A member stream used after `fork` raises `ArchiveyUsageError` when its decoder is in a generic child | **archivey** | Its child belongs to the parent process (§2.2). Open the member again in the forked process. A stream decoded by a rapidgzip child has no such check: only its pool knows its process, and what a read in the fork does is not tested |
-| Under `NATIVE_DECODERS` where no child can start, a PPMd member's `ResourceLimitError` advises `KNOWN_CRASHES`, which refuses the member the same way | **archivey** | `isolation_error` picks the advice from the setting, not from the decoder. Only `NONE` decodes PPMd in this process (§2.6) |
+| A member stream used after `fork` raises `ArchiveyUsageError` | **archivey** | Its child belongs to the parent process, for the generic child (§2.2) and the rapidgzip child (§2.3) alike. Open the member again in the forked process. Closing the inherited stream there leaves the parent's child alone |
 | Under PyPy, a reader that is never closed holds its children until a collection | **library** (PyPy) | Close readers; the readers already release replaced decoders (§2.2) |
 | A rapidgzip child is not reused on macOS or Windows | **archivey** | Its memory peak cannot be reset there (§2.3). Windows has no file-range path at all |
 
@@ -332,6 +335,7 @@ The costs:
 
 ```bash
 uv run --no-sync python scripts/bench_process_isolation.py   # NONE / KNOWN_CRASHES / NATIVE_DECODERS
+uv run --no-sync python scripts/bench_accelerator_reads.py   # reads through the rapidgzip child
 uv run --no-sync python scripts/bench_rapidgzip_child.py     # the rapidgzip child against in-process
 uv run --no-sync python scripts/bench_bzip2_child.py         # the same for bzip2
 ```
