@@ -407,7 +407,7 @@ def test_concurrent_first_touch_materialization_failure_wakes_waiters(
 
 @pytest.mark.concurrent_reader
 def test_close_drains_in_flight_workers_then_closes(tmp_path: Path) -> None:
-    """close() waits for in-flight open() workers; escaped streams stay readable."""
+    """close() waits for in-flight open() workers, then closes the streams they returned."""
     path = _make_zip(tmp_path / "a.zip", n=4)
     reader = open_archive(path, concurrent_operations=True)
     reader.members()  # publish so open() work is post-materialization
