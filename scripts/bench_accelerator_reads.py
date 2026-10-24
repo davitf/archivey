@@ -27,8 +27,17 @@ Three parts:
    ``seekable_members=True``: the full read under ``AUTO`` and ``OFF``, the open plus
    the first byte, and a plain ``zlib`` decode of the member's raw data, which is what
    the end check of a ZIP or 7z member repeats (``refuse_input_after_end``).
-3. **Random reads.** 20 reads of 64 KiB at random offsets in the same member, after the
-   open, under ``AUTO`` and ``OFF``.
+3. **Reads after seeks.** One DEFLATE member of 4, 16 and 64 MiB, opened with
+   ``seekable_members=True``: 20 reads of 64 KiB, each after a seek, under ``OFF`` and
+   ``ON``, in three orders: ascending offsets (every seek is forward), descending
+   offsets (every seek is back), and random offsets. The offsets are spread evenly
+   over the member. The time starts after the open and the first byte. A seek back
+   under ``OFF`` decodes the member again from its start, so its cost grows with the
+   offset; rapidgzip restarts from its own index, so its cost depends little on where
+   the seek lands. The rows show how the gap changes with size and order rather than
+   one ratio.
+
+``--only seeks`` runs part 3 alone.
 
 The payload is random words and numbers, which gzip compresses about two to one.
 
@@ -286,32 +295,58 @@ def _parts(path: str) -> list[float]:
     ]
 
 
-def _random_reads(path: str, mode: str) -> float:
-    """Seconds for 20 reads of 64 KiB at random offsets, after the open; best of three."""
+_SEEK_SIZES_MIB = (4, 16, 64)
+_ORDERS = ("ascending", "descending", "random")
+
+
+def _seek_reads(path: str, mode: str, order: str) -> float:
+    """Seconds for 20 reads of 64 KiB after seeks in ``order``, after the open and the
+    first byte; best of three."""
     from archivey import open_archive
     from archivey.config import AcceleratorMode, ArchiveyConfig
 
-    config = (
-        ArchiveyConfig(use_rapidgzip=AcceleratorMode.OFF)
-        if mode == "off"
-        else ArchiveyConfig()
-    )
+    accel = AcceleratorMode.OFF if mode == "off" else AcceleratorMode.ON
+    config = ArchiveyConfig(use_rapidgzip=accel)
     best = float("inf")
     for attempt in range(4):
-        rng = random.Random(attempt)
         with open_archive(path, config=config, seekable_members=True) as reader:
             member = reader.members()[0]
             assert member.size is not None
+            step = (member.size - 65536) // 20
+            offsets = [i * step for i in range(20)]
+            if order == "descending":
+                offsets.reverse()
+            elif order == "random":
+                random.Random(attempt).shuffle(offsets)
             with reader.open(member) as stream:
                 stream.read(1)
                 start = time.perf_counter()
-                for _ in range(20):
-                    stream.seek(rng.randrange(member.size - 65536))
+                for offset in offsets:
+                    stream.seek(offset)
                     stream.read(65536)
                 elapsed = time.perf_counter() - start
         if attempt:
             best = min(best, elapsed)
     return best
+
+
+def _seeks(root: Path) -> None:
+    print()
+    print("20 reads of 64 KiB after seeks, one DEFLATE member, best of three, ms")
+    print(
+        f"{'member':8}" + "".join(f"{o + ' OFF':>16}{o + ' ON':>15}" for o in _ORDERS)
+    )
+    payload = _text(max(_SEEK_SIZES_MIB) * _MIB)
+    for mib in _SEEK_SIZES_MIB:
+        path = root / f"deflate-1x-{mib}M.zip"
+        _zip(path, payload[: mib * _MIB], 1, zipfile.ZIP_DEFLATED)
+        cells = ""
+        for order in _ORDERS:
+            for mode in ("off", "on"):
+                seconds = _in_fresh_process("--seeks", str(path), mode, order)[0]
+                width = 16 if mode == "off" else 15
+                cells += f"{seconds * 1000:{width}.0f}"
+        print(f"{mib:>4} MiB" + cells)
 
 
 def _large_member(root: Path) -> None:
@@ -324,10 +359,6 @@ def _large_member(root: Path) -> None:
     print(f"  full read, OFF (stdlib zlib):      {off * 1000:.0f}")
     print(f"  AUTO open + first byte:            {first * 1000:.0f}")
     print(f"  plain zlib decode of the raw data: {plain * 1000:.0f}")
-    auto_random = _in_fresh_process("--random", str(path), "auto")[0]
-    off_random = _in_fresh_process("--random", str(path), "off")[0]
-    print("20 random reads of 64 KiB in the same member, after the open, ms")
-    print(f"  AUTO: {auto_random * 1000:.0f}   OFF: {off_random * 1000:.0f}")
 
 
 def main() -> None:
@@ -337,13 +368,16 @@ def main() -> None:
     if len(sys.argv) == 3 and sys.argv[1] == "--parts":
         print(*_parts(sys.argv[2]))
         return
-    if len(sys.argv) == 4 and sys.argv[1] == "--random":
-        print(_random_reads(sys.argv[2], sys.argv[3]))
+    if len(sys.argv) == 5 and sys.argv[1] == "--seeks":
+        print(_seek_reads(sys.argv[2], sys.argv[3], sys.argv[4]))
         return
+    only_seeks = sys.argv[1:] == ["--only", "seeks"]
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        _full_reads(_build(root))
-        _large_member(root)
+        if not only_seeks:
+            _full_reads(_build(root))
+            _large_member(root)
+        _seeks(root)
 
 
 if __name__ == "__main__":
