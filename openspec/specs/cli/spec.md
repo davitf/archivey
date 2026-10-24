@@ -698,9 +698,10 @@ move.
 
 Just before its closing summary, `extract --dry-run` SHALL print one line beginning
 `peak use of the reader limits:` with the parts that are not zero: the largest decoder
-allocation archivey checked and what declared it, the key-derivation rounds, the spool
+allocation archivey checked and what it was for, the key-derivation rounds, the spool
 peak and the listing's member count and metadata bytes, each in the unit its limit
-field uses. A run without `--dry-run` SHALL NOT print it.
+field uses. When every part is zero, or the run ends before its summary, there is no
+line. A run without `--dry-run` SHALL NOT print it.
 
 #### Scenario: extract dry-run matrix
 

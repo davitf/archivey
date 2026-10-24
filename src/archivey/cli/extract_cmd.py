@@ -1253,7 +1253,8 @@ def _report_extraction(
             file=err,
         )
     if dry_run:
-        # Before the summary, which stays the last line.
+        # Only a dry run: its product is the report, so how close the archive came to
+        # the limits is what the caller ran it for. Before the summary, which stays last.
         usage = _usage_line(report)
         if usage is not None:
             print(usage, file=err)
@@ -1275,9 +1276,9 @@ def _usage_line(report: ExtractionReport) -> str | None:
 
     Read from the report's private resource-usage record, which exists to tune the
     limits: the largest decoder allocation archivey checked (xz, LZMA Alone and zstd
-    leave theirs to their library), the key-derivation rounds, the spool peak and the
-    listing's metadata. Each part appears only when it is not zero; byte counts are
-    exact, to compare with the limit fields.
+    leave theirs to their library), the key-derivation rounds' total, the spool peak and
+    the last listing walk's totals. Each part appears only when it is not zero, and with
+    no part there is no line; byte counts are exact, to compare with the limit fields.
     """
     usage = report._resource_usage
     if usage is None:
@@ -1290,9 +1291,10 @@ def _usage_line(report: ExtractionReport) -> str | None:
         parts.append(f"{usage.key_derivation_rounds} key-derivation rounds")
     if usage.spool_bytes:
         parts.append(f"spool {usage.spool_bytes} bytes")
-    if usage.listing_metadata_bytes:
+    if usage.listed_members or usage.listing_metadata_bytes:
+        members = usage.listed_members
         parts.append(
-            f"listing {usage.listed_members} members, "
+            f"listing {members} member{'s' if members != 1 else ''}, "
             f"{usage.listing_metadata_bytes} metadata bytes"
         )
     if not parts:

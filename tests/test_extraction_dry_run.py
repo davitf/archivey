@@ -1178,7 +1178,9 @@ def _cli_both(
             "dry run: nothing was written\n",
         ):
             err = err.replace(only_dry, "")
-        err = re.sub(r"(?m)^peak use of the reader limits: .*\n", "", err)
+        if dry:
+            # Only the dry run prints it, so the real half asserts its absence.
+            err = re.sub(r"(?m)^peak use of the reader limits: .*\n", "", err)
         for would, did in (
             ("would extract into", "extracting into"),
             ("would keep in", "kept in"),
@@ -1449,21 +1451,60 @@ def test_cli_dry_run_reports_peak_use_of_the_reader_limits(
 ) -> None:
     py7zr = pytest.importorskip("py7zr")
     archive = tmp_path / "a.7z"
-    filters = [{"id": py7zr.FILTER_LZMA2, "preset": 1, "dict_size": 1 << 20}]
+    # Above the 16 MiB dictionary py7zr compresses the archive header with, so the
+    # member's declaration is the largest one checked.
+    filters = [{"id": py7zr.FILTER_LZMA2, "preset": 9}]
     with py7zr.SevenZipFile(archive, "w", filters=filters) as out:
         out.writestr(b"x" * 1000, "a.txt")
+    # The dictionary size the LZMA2 coder declares, from its one properties byte.
+    with archivey.open_archive(archive) as reader:
+        (member,) = reader.members()
+        (method,) = member.compression
+        assert method.properties is not None
+        prop = method.properties[0]
+        declared = (2 | (prop & 1)) << (prop // 2 + 11)
     monkeypatch.chdir(tmp_path)
     code, err = _cli(["x", "a.7z", "--dry-run", "--hide-progress"])
     assert code == 0
     (line,) = [
         ln for ln in err.splitlines() if ln.startswith("peak use of the reader limits")
     ]
-    assert "decoder memory " in line
+    assert f"decoder memory {declared} bytes (" in line
     assert "LZMA2 dictionary size" in line
-    assert "listing 1 members" in line
+    assert "listing 1 member, " in line
     # A real run does not print it.
     code, err = _cli(["x", "a.7z", "-d", "real", "--hide-progress"])
     assert code == 0
+    assert "peak use of the reader limits" not in err
+
+
+def test_cli_dry_run_reports_key_derivation_rounds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    py7zr = pytest.importorskip("py7zr")
+    pytest.importorskip("cryptography")
+    archive = tmp_path / "a.7z"
+    with py7zr.SevenZipFile(archive, "w", password="pw") as out:  # type: ignore[attr-defined]
+        out.writestr(b"x" * 1000, "a.txt")
+    monkeypatch.chdir(tmp_path)
+    code, err = _cli(["x", "a.7z", "--password", "pw", "--dry-run", "--hide-progress"])
+    assert code == 0
+    (line,) = [
+        ln for ln in err.splitlines() if ln.startswith("peak use of the reader limits")
+    ]
+    # py7zr derives 7zAES keys with 2**19 SHA-256 rounds, once for the one folder.
+    assert f"{2**19} key-derivation rounds" in line
+
+
+def test_cli_dry_run_prints_no_usage_line_when_every_part_is_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with tarfile.open(tmp_path / "a.tar", "w"):
+        pass
+    monkeypatch.chdir(tmp_path)
+    code, err = _cli(["x", "a.tar", "--dry-run", "--hide-progress"])
+    assert code == 0
+    assert "dry run, nothing written: 0 extracted" in err
     assert "peak use of the reader limits" not in err
 
 
