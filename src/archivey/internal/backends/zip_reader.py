@@ -1383,6 +1383,7 @@ class ZipReader(BaseArchiveReader):
             self._config,
             streaming=streaming,
             seekable=MemberStreams.SEEKABLE in member_streams,
+            usage=self._usage,
         )
         # What every member's decoder config shares, built once rather than per member.
         # The member's compressed size is the codec's input exactly, so a byte after

@@ -1219,9 +1219,9 @@ class RarReader(BaseArchiveReader):
         # Every RAR key this reader derives: the header parse, each PswCheck and each
         # tweaked-digest HashKey. An ``-hp`` archive's members repeat the header's
         # salt, so their PswCheck is the header's own derivation.
-        self._kdf_cache = RarKdfCache(
-            budget=KeyDerivationBudget(self._config.decoder_limits)
-        )
+        kdf_budget = KeyDerivationBudget(self._config.decoder_limits)
+        self._usage.watch_key_derivation(kdf_budget)
+        self._kdf_cache = RarKdfCache(budget=kdf_budget)
         # The first member whose PswCheck can judge a candidate, found once on first
         # use; ``False`` until looked for, ``None`` when there is none.
         self._archive_check_member: ArchiveMember | None | Literal[False] = False
@@ -1761,6 +1761,7 @@ class RarReader(BaseArchiveReader):
                 source_format=ArchiveFormat.RAR,
                 **remedy,
             )
+            self._usage.watch_spool(self._spool)
         if what is not None:
             self._spool.describe(
                 f"reading this member needs {program}, which reads only files, "
@@ -4278,6 +4279,7 @@ class RarReader(BaseArchiveReader):
             limits=self._config.decoder_limits,
             what=f"the RAR dictionary {program} needs for member {quoted(member.name)}",
             counted_from=counted_from,
+            usage=self._usage,
         )
 
     def _pass_dictionary_costs(self) -> dict[int, _DictionaryCost]:

@@ -26,6 +26,7 @@ from typing import ClassVar, Literal, TypeVar
 
 from archivey.exceptions import ArchiveyError, _UsageTypeError, _UsageValueError
 from archivey.internal.enum_args import coerce_enum_collection
+from archivey.internal.resource_usage import ResourceUsage
 from archivey.terminal import escape_control_chars
 from archivey.types import ArchiveMember, ExtractionResult
 
@@ -1308,6 +1309,14 @@ class ExtractionReport:
     # and ``None`` when it is. Private, for the same prediction: the CLI checks the
     # hoist's merge against them as its hoist checks a real tree.
     _dry_run_entries: tuple[tuple[str, bool], ...] | None = field(
+        default=None, repr=False, compare=False
+    )
+    # How close the reader came to each reader-lifetime limit, taken when the call
+    # ended. Private, for the backup-scan script and ``archivey extract --dry-run``:
+    # ``extract_all()`` (the function) closes its reader, so the report is where a
+    # caller of it can read the numbers. Public later, if a corpus scan shows which
+    # numbers are worth keeping.
+    _resource_usage: ResourceUsage | None = field(
         default=None, repr=False, compare=False
     )
 

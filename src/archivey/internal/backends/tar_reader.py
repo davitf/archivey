@@ -633,6 +633,7 @@ class TarReader(BaseArchiveReader):
                         self._config,
                         streaming=streaming,
                         seekable=MemberStreams.SEEKABLE in member_streams,
+                        usage=self._usage,
                     ),
                     report_trailing_data=True,
                 ),
