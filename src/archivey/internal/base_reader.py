@@ -3713,11 +3713,13 @@ class BaseArchiveReader(ArchiveReader):
         not outlive the reader it came from.
 
         Without ``CONCURRENT``, ``close()`` still raises if a worker call or reader-wide
-        pass is actively executing, and the reader stays open. A ``stream_members()`` or
-        streaming iteration pass suspended at a yield does not block it: the reader
-        closes, and resuming that iterator raises ``ArchiveyUsageError``. A suspended
-        ``stream_members()`` pass is wound down here, before teardown. Teardown runs at
-        most once, after the last lease drops.
+        pass is actively executing, and the reader stays open. A member stream's own
+        ``read()`` is not a worker call: ``close()`` closes the stream under it, and the
+        stream's next ``read()`` raises ``ValueError``, as for any closed file. A
+        ``stream_members()`` or streaming iteration pass suspended at a yield does not
+        block it: the reader closes, and resuming that iterator raises
+        ``ArchiveyUsageError``. A suspended ``stream_members()`` pass is wound down here,
+        before teardown. Teardown runs at most once, after the last lease drops.
         """
         if self._closed:
             return
