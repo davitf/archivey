@@ -536,11 +536,24 @@ class PpmdDecoder(BaseDecoder):
         setting = self._isolation.name
         unavailable = ppmd_child_unavailable_reason()
         if unavailable is not None:
-            self._refuse(str(isolation_error(f"{reason} ({unavailable})", setting)))
+            self._refuse(
+                str(
+                    isolation_error(
+                        f"{reason} ({unavailable})", setting, isolated_unless_none=True
+                    )
+                )
+            )
         try:
             return self._release_held(in_child=True)
         except DecoderChildStartError as exc:
-            self._refuse(str(isolation_error(f"{reason} ({exc})", setting)), exc)
+            self._refuse(
+                str(
+                    isolation_error(
+                        f"{reason} ({exc})", setting, isolated_unless_none=True
+                    )
+                ),
+                exc,
+            )
         except PpmdChildAllocationError as exc:
             # The child started, so the advice above does not apply: in-process, the
             # same allocation would abort this process.

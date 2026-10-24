@@ -281,23 +281,33 @@ def test_truncated_member_read_whole_asks_bounded_chunks(
     assert all(length <= 64 for _, length, _ in after[first_short + 1 :]), after
 
 
+@pytest.mark.parametrize(
+    "isolation",
+    [ProcessIsolation.KNOWN_CRASHES, ProcessIsolation.NATIVE_DECODERS],
+    ids=lambda i: i.name,
+)
 def test_without_a_child_process_a_member_is_refused(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, isolation: ProcessIsolation
 ) -> None:
-    """A frozen app cannot start a child: by default, ``ResourceLimitError`` naming
-    the setting that would decode it here."""
+    """A frozen app cannot start a child: ``ResourceLimitError`` naming the setting
+    that would decode it here. That is ``NONE`` under every other setting, since
+    ``KNOWN_CRASHES`` isolates PPMd too."""
     monkeypatch.setattr(
         ppmd_decoder, "ppmd_child_unavailable_reason", lambda: "no child here"
     )
     packed = _encode_ppmd7(b"small member " * 10)
     params = _params(7, len(packed), 130)
-    with open_codec_stream(Codec.PPMD, io.BytesIO(packed), params=params) as stream:
+    config = StreamConfig(process_isolation=isolation)
+    with open_codec_stream(
+        Codec.PPMD, io.BytesIO(packed), params=params, config=config
+    ) as stream:
         with pytest.raises(ResourceLimitError, match="none can be started") as e:
             stream.read(10)
         # The refusal names why no child can start, and the way out.
         assert "(no child here)" in str(e.value)
-        assert "process_isolation=KNOWN_CRASHES" in str(e.value)
+        assert f"process_isolation={isolation.name}" in str(e.value)
         assert "ProcessIsolation.NONE" in str(e.value)
+        assert "use ProcessIsolation.KNOWN_CRASHES" not in str(e.value)
         # The refusal sticks: a second read says the same, never a stray error.
         with pytest.raises(ResourceLimitError, match="none can be started"):
             stream.read(10)

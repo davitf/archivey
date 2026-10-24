@@ -56,6 +56,7 @@ def _allocation_error(mem_size: int, detail: str) -> PpmdChildAllocationError:
 
 class _PpmdChild(DecoderChild):
     describe = "PPMd decoder process"
+    isolated_unless_none = True
 
     def __init__(
         self, codec: str, args: tuple[object, ...], *, mem_size: int, setting: str
