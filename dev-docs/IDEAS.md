@@ -75,9 +75,6 @@ Each idea carries a status:
   still refused ([`formats/rar.md`](formats/rar.md) §2.3). Lifting them means measuring
   those shapes in `tests/test_rar_unrar_names.py`, on Windows too. The names involved are
   adversarial, and a wrong model returns the wrong member's bytes.
-- **Report RAR5 quick-open copies the listing never reached.** *Needs design.* The quick-
-  open listing drops copies whose `header_offset` the walk does not land on. They could be
-  reported; whether as a diagnostic, a cost note or a log line is undecided.
 
 ## Detection
 

@@ -16,7 +16,7 @@ Two modes, each reading one JSON object on stdin and writing one on stdout.
      "label_since": "2026-09-23T01:00:00Z",
      "label_events": [{"at": "2026-09-23T01:00:00Z", "actor": "claude[bot]",
                        "app": "claude"}],
-     "repository": "davitf/archivey"}
+     "repository": "archivey-dev/archivey"}
     -> {"run": true, "round": 2, "final": false, "person": false, "reason": "...",
         "comment": "", "max_rounds": 5}
 

@@ -84,6 +84,7 @@ from archivey.internal.base_reader import (
     UNREADABLE_LINK_TARGET_ERRORS,
     BaseArchiveReader,
     ReadBackend,
+    SolidRun,
     pass_has_data,
 )
 from archivey.internal.config import (
@@ -227,7 +228,11 @@ def _is_windows_reparse_point(attrs: int | None) -> bool:
 
 # ``\Z``, not ``$``: ``$`` also matches before a final newline, which would strip the
 # suffix from ``name.7z\n`` and leave the newline in the member name.
-_SEVENZIP_STEM_SUFFIX_RE = re.compile(r"\.7z(?:\.\d{3})?\Z", re.IGNORECASE)
+# The part suffix has ``_NUMBERED_VOLUME_RE``'s shape, so ``big.7z.0000001`` (from
+# ``split -d -a 7``) strips too. ``re.ASCII``: see that pattern.
+_SEVENZIP_STEM_SUFFIX_RE = re.compile(
+    r"\.7z(?:\.0*[0-9]{3,6})?\Z", re.IGNORECASE | re.ASCII
+)
 
 
 # The folder settles a wrong key inside the confirm prefix when a REJECTING_CODECS
@@ -1427,6 +1432,20 @@ class SevenZipReader(BaseArchiveReader):
             format_label="7z",
             digest="checksum",
             why="no checksum confirmed the password",
+        )
+
+    def _solid_run(self, member: ArchiveMember) -> SolidRun | None:
+        # Every open() builds its folder's decoder afresh and decodes up to the member.
+        # A member alone in its folder decodes no other member's bytes.
+        raw = member._raw
+        assert isinstance(raw, _MemberRaw)
+        if (
+            raw.folder_index is None
+            or len(self._folder_members.get(raw.folder_index, ())) <= 1
+        ):
+            return None
+        return SolidRun(
+            raw.folder_index, raw.folder_prefix, _member_stream_size(member)
         )
 
     def _member_prefix(self, member: ArchiveMember) -> int:

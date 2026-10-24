@@ -1041,9 +1041,9 @@ def test_py7zr_member_compression_is_in_compress_order(tmp_path: Path) -> None:
 def test_unregistered_coder_is_listed_as_unknown_not_dropped() -> None:
     """A coder the registry does not know stays in the chain as ``UNKNOWN``.
 
-    ``0x0b`` is 7-Zip 24's RISC-V filter, which archivey does not decode. Dropping such
-    a coder listed the member as plain LZMA, and the read then refused a codec the
-    listing never showed. AES is encryption and stays out of the chain.
+    ``0x0f`` is a method id no 7-Zip registers. Dropping such a coder listed the member
+    as plain LZMA, and the read then refused a codec the listing never showed. AES is
+    encryption and stays out of the chain.
     """
 
     def coder(method: bytes) -> SevenZipCoder:
@@ -1052,8 +1052,8 @@ def test_unregistered_coder_is_listed_as_unknown_not_dropped() -> None:
         )
 
     folder = SevenZipFolder(
-        # Decode order: AES, then LZMA, then the RISC-V filter.
-        coders=[coder(b"\x06\xf1\x07\x01"), coder(b"\x03\x01\x01"), coder(b"\x0b")],
+        # Decode order: AES, then LZMA, then the unknown coder.
+        coders=[coder(b"\x06\xf1\x07\x01"), coder(b"\x03\x01\x01"), coder(b"\x0f")],
         bind_pairs=[(1, 0), (2, 1)],
         packed_indices=[0],
         unpack_sizes=[16, 16, 16],

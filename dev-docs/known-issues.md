@@ -185,7 +185,7 @@ of MB with every core decoding.
 **What remains.** Nothing runs rapidgzip in the caller's process. To know whether the
 isolation is still needed, `scripts/accelerator_crash_search.py` runs both decoders
 in-process on damaged input, in a process it watches, and reports each crash by its
-signature; `.github/workflows/accelerator-crash-search.yml` runs it weekly and on a
+signature; `.github/workflows/accelerator-crash-search.yml` runs it monthly and on a
 lockfile change, on Linux, macOS and Windows. A new signature (any bzip2 crash) turns the
 run red; a run with cut inputs that no longer finds this abort suggests it is fixed.
 
@@ -248,17 +248,21 @@ the exact remaining `unpack_size` and never passes `-1`; refuses unsized PPMd7 a
 construction; decodes unsized PPMd8 in bounded 64 KiB requests; injects at most one capped
 NUL at the end; stops at a spent payload; and hands pyppmd the whole member in one
 `decode`, so a short return is the end. Two exceptions are fed in pieces: members over
-`DecoderLimits.max_ppmd_in_process_input` (16 MiB by default), and a ZIP member read from
+`DecoderLimits.max_ppmd_held_input` (16 MiB by default), and a ZIP member read from
 a stream that cannot seek, whose sizes follow its data, so its input runs on into the rest
-of the archive. Fed in pieces, pyppmd 1.3.1 can return short at a false `eof` with input
-unread, which reads as a spent payload: a valid member then raises `TruncatedError` a few
-KiB short (tracked internally). Every PPMd member decodes in a child process unless
-`process_isolation` is `NONE` (`ppmd_child.py`), because the quiesce NUL can crash pyppmd
-on small members too; a crash becomes `CorruptionError` (`ResourceLimitError` for SIGKILL
-or a refused `mem_size`, `ReadError` for other deaths). A child is reused only after a
-member that ended cleanly. Pinned by
+of the archive. Fed in pieces, pyppmd 1.3.1 resumes a worker that waited for input with
+the output budget and count of the call that started it, so a call can return short at a
+false `eof` with input unread, which reads as a spent payload; a valid member raised
+`TruncatedError` some KiB short. `PpmdDecoder._native_decode` now asks 1 byte of each call
+that brings new input after the first, which stops a resumed worker after one symbol, and
+the rest of a new worker; a request of 1 byte needs no split. Every PPMd member decodes in
+a child process unless `process_isolation` is `NONE` (`ppmd_child.py`), because the
+quiesce NUL can crash pyppmd on small members too; a crash becomes `CorruptionError`
+(`ResourceLimitError` for SIGKILL or a refused `mem_size`, `ReadError` for other deaths).
+A child is reused only after a member that ended cleanly. Pinned by
 `tests/test_ppmd_crash_isolation.py` and `tests/test_ppmd_raw_streams.py`; the
-non-blocking PPMd native stress workflow watches for regressions.
+non-blocking PPMd native stress workflow watches for regressions, weekly and on pull
+requests that touch the PPMd path.
 
 **What remains.** No crash is confirmed on the in-process path; the defect is upstream,
 so the path rests on archivey's call discipline, not on a fixed decoder. A header that

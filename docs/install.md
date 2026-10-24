@@ -91,9 +91,9 @@ isn't counted, because only encrypted members need it.
 
 ## Python versions and platforms
 
-Archivey needs CPython 3.11 or later. Every change is tested on Linux with 3.11 to 3.14, and on
-macOS and Windows with 3.11 and 3.14. Other platforms aren't tested, and PyPy isn't supported yet
-([PyPy](#pypy) says what works there). [How it is built](how-it-is-built.md) has the full test
+Archivey needs Python 3.11 or later. Every change is tested on Linux with CPython 3.11 to 3.14
+and PyPy 3.11, and on macOS and Windows with CPython 3.11 and 3.14. Other platforms aren't
+tested, and PyPy has some limits ([PyPy](#pypy) lists them). [How it is built](how-it-is-built.md) has the full test
 setup.
 
 ## Free-threaded Python
@@ -111,8 +111,8 @@ are tested on Linux only.
 
 ## PyPy
 
-PyPy isn't supported yet, but every change runs the whole test suite on PyPy 3.11, with and
-without the optional packages, and it has to pass there.
+archivey works on PyPy 3.11, with the limits below. Every change to the main branch runs the whole
+test suite on PyPy 3.11, with and without the optional packages, and it has to pass there.
 
 Under PyPy, archivey doesn't use rapidgzip, lz4, pyppmd or inflate64, even when they are
 installed, because there they misread data or crash the interpreter. It reads as if they weren't

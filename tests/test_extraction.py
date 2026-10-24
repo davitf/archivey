@@ -63,7 +63,7 @@ from archivey.internal.filters import (
 from archivey.internal.link_watch import LinkWatch
 from archivey.internal.streams.archive_stream import ArchiveStream
 from archivey.types import ArchiveFormat, ArchiveInfo, ArchiveMember, MemberType
-from tests.conftest import case_sensitive
+from tests.conftest import binary_refusal, case_sensitive
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.extract_util import open_and_extract
 from tests.streams_util import SizedNonSeekable
@@ -1612,8 +1612,8 @@ def _bomb_7z(tmp_path: Path) -> tuple[Path, str, str]:
 def _bomb_rar(tmp_path: Path) -> tuple[Path, str, str]:
     # Committed, so the leg runs wherever unrar is installed (no rar writer needed).
     # prefix.bin records 1 MiB from 91 bytes. unrar reads tail.txt.
-    if shutil.which("unrar") is None:
-        pytest.skip("unrar not installed")
+    if (refusal := binary_refusal("unrar")) is not None:
+        pytest.skip(refusal)
     return _RAR_FIXTURES / "seek_respawn_solid__.rar", "prefix.bin", "tail.txt"
 
 
@@ -4061,6 +4061,60 @@ def test_o3_trailing_dot_space_stripped_strict_kept_standard(
         assert sorted(p.name for p in (tmp_path / "standard").iterdir()) == [name]
 
 
+@pytest.mark.parametrize("policy", [ExtractionPolicy.STRICT, ExtractionPolicy.STANDARD])
+@pytest.mark.parametrize(
+    ("first", "second"), [("notes", "notes. "), ("d/x", "d./x")], ids=["file", "folder"]
+)
+def test_o3_trailing_dot_name_collides_with_trimmed_name(
+    tmp_path: Path, policy: ExtractionPolicy, first: str, second: str
+) -> None:
+    # Win32 writes 'notes.' as 'notes', so the pair is one file there. STANDARD keeps the
+    # name, and the collision must still be caught on every platform, as for README and
+    # readme: ERROR fails the second member instead of a silent replace on Windows. The
+    # trim applies to every segment, so a folder 'd.' meets 'd' too.
+    archive = _tar_bytes([("file", first, b"A"), ("file", second, b"B")])
+    dest = tmp_path / "out"
+    report = open_and_extract(
+        io.BytesIO(archive),
+        dest,
+        policy=policy,
+        overwrite=OverwritePolicy.ERROR,
+        on_error=OnError.CONTINUE,
+    )
+    statuses = [r.status for r in report.results]
+    assert statuses == [ExtractionStatus.EXTRACTED, ExtractionStatus.FAILED]
+    assert (dest / first).read_bytes() == b"A"
+    assert sorted(p.name for p in dest.iterdir()) == [first.split("/")[0]]
+    loser = report.results[1]
+    assert loser.path is None
+    assert loser.requested_path is not None
+    assert loser.collided_with == dest / first
+
+
+def test_o3_trailing_dot_rename_skips_trimmed_claim(tmp_path: Path) -> None:
+    # RENAME derives 'notes (1). ' for the second member; its trimmed key 'notes (1)' must
+    # be free too, or the renamed member would merge with a third on Windows.
+    archive = _tar_bytes(
+        [
+            ("file", "notes", b"A"),
+            ("file", "notes (1)", b"B"),
+            ("file", "notes. ", b"C"),
+        ]
+    )
+    dest = tmp_path / "out"
+    report = open_and_extract(
+        io.BytesIO(archive),
+        dest,
+        policy=ExtractionPolicy.STANDARD,
+        overwrite=OverwritePolicy.RENAME,
+    )
+    assert all(r.status is ExtractionStatus.EXTRACTED for r in report.results)
+    third = report.results[2].path
+    assert third is not None
+    assert third.name.rstrip(". ") not in ("notes", "notes (1)")
+    assert third.read_bytes() == b"C"
+
+
 def test_o3_trailing_dot_directory_tree_stays_connected(tmp_path: Path) -> None:
     # The reported real-world case: a macOS folder named 'stuff_etc.' with a file inside.
     # STRICT must strip the same segment identically in the dir entry and its children, so
@@ -4167,10 +4221,15 @@ def test_o3_strip_treats_a_backslash_as_a_separator(name: str, expected: str) ->
     assert out.name == expected
 
 
-@pytest.mark.parametrize("name", ["a/.../b", "a\\...\\b", "a/. \\b"])
-def test_o3_all_dots_segment_rejected_after_either_separator(name: str) -> None:
+@pytest.mark.parametrize("policy", [ExtractionPolicy.STRICT, ExtractionPolicy.STANDARD])
+@pytest.mark.parametrize("name", ["a/.../b", "a/ /b", "a\\...\\b", "a/. \\b"])
+def test_o3_all_dots_segment_rejected_after_either_separator(
+    name: str, policy: ExtractionPolicy
+) -> None:
+    # STANDARD keeps a trailing dot, but a segment of only dots or spaces has no
+    # spelling Win32 keeps: 'a/.../b' would merge into 'a/b' there.
     with pytest.raises(FilterRejectionError, match="entirely dots/spaces"):
-        apply_name_policy(_member(name), ExtractionPolicy.STRICT)
+        apply_name_policy(_member(name), policy)
 
 
 # --- OverwritePolicy.RENAME ------------------------------------------------

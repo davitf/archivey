@@ -520,17 +520,13 @@ class DeflateCodec(_ZlibErrorCodec):
         # that rapidgzip fails on are refused there too (refuse_input_after_end).
         return _stdlib_zlib(source, config, wbits=RAW_DEFLATE_WBITS)
 
-    def _open_accelerated(
-        self, source: CodecSource, params: CodecParams, config: StreamConfig
-    ) -> BinaryIO | None:
-        if _rapidgzip_may_read_as_another_format(source):
-            # rapidgzip would decode a gzip, zlib or bzip2 stream here; the standard
-            # library reads it as raw DEFLATE, as it does with the accelerator off. No
-            # encoder starts raw DEFLATE like zlib: that first byte is a stored block
-            # with nonzero padding bits. ``BZh`` and a digit is a possible start, so a
-            # real stream that has it decodes without the accelerator.
-            return None
-        return super()._open_accelerated(source, params, config)
+    def _leaves_to_stdlib(self, source: CodecSource, config: StreamConfig) -> bool:
+        # rapidgzip would decode a gzip, zlib or bzip2 stream here; the standard
+        # library reads it as raw DEFLATE, as it does with the accelerator off. No
+        # encoder starts raw DEFLATE like zlib: that first byte is a stored block
+        # with nonzero padding bits. ``BZh`` and a digit is a possible start, so a
+        # real stream that has it decodes without the accelerator.
+        return _rapidgzip_may_read_as_another_format(source)
 
     def _end_check(
         self,
@@ -597,15 +593,11 @@ class ZlibCodec(_ZlibErrorCodec):
         # Stdlib zlib; a backward seek re-decodes from the start (see rewind_warning).
         return _stdlib_zlib(source, config)
 
-    def _open_accelerated(
-        self, source: CodecSource, params: CodecParams, config: StreamConfig
-    ) -> BinaryIO | None:
-        if not _rapidgzip_reads_as_zlib(source):
-            # Not a zlib header rapidgzip accepts: it would decode a gzip member, a
-            # bzip2 stream or raw DEFLATE, and the standard library raises at the
-            # first read, as it does with the accelerator off.
-            return None
-        return super()._open_accelerated(source, params, config)
+    def _leaves_to_stdlib(self, source: CodecSource, config: StreamConfig) -> bool:
+        # Not a zlib header rapidgzip accepts: it would decode a gzip member, a
+        # bzip2 stream or raw DEFLATE, and the standard library raises at the
+        # first read, as it does with the accelerator off.
+        return not _rapidgzip_reads_as_zlib(source)
 
     def _end_check(
         self,

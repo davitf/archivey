@@ -92,7 +92,9 @@ from archivey.internal.backends.zip_aes import (
     ZIP_WRONG_PASSWORD_MSG,
     ExtraField,
     WinZipAesInfo,
+    aes_record_differences,
     iter_extra_fields,
+    local_first,
     open_winzip_aes_member,
     parse_winzip_aes_extra,
     split_extra_fields,
@@ -122,6 +124,7 @@ from archivey.internal.backends.zip_parser import (
     DirectoryOffsetWrapped,
     EndRecord,
     EntryCountMismatch,
+    LocalHeader,
     WalkFinding,
     local_header_at,
     locate_end_record,
@@ -443,6 +446,14 @@ _LOCAL_HEADER_ERRORS: tuple[type[Exception], ...] = (
     ArchiveyError,
     *_ZIP_MEMBER_READ_ERRORS,
 )
+#: WinZip AES: the real method sits in the 0x9901 extra field.
+_WINZIP_AES_METHOD = 99
+#: The code each ``LocalHeaderContext.field`` reports under.
+_LOCAL_HEADER_CODES: dict[str, DiagnosticCode] = {
+    "name": DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS,
+    "method": DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS,
+    "crc32": DiagnosticCode.MEMBER_LOCAL_CRC_USED,
+}
 
 
 def _decode_with_fallback(data: bytes) -> str:
@@ -988,7 +999,7 @@ class _ZipLocator:
     method: int
     #: The DOS time word: its high byte is the ZipCrypto check byte under bit 3.
     dos_time: int
-    #: The central directory's name bytes. ``_local_data_region`` compares the local
+    #: The central directory's name bytes. ``_checked_local_header`` compares the local
     #: header's with them and reports a difference (``_report_local_name``).
     name: bytes
     #: The WinZip AES record (strength, real method) for method 99; ``None`` when
@@ -1001,6 +1012,13 @@ class _ZipLocator:
     #: For a member whose size is unknown until a read (:func:`_wrapped_size`): the
     #: stored size and the bounds its real size lies in. ``None`` otherwise.
     size_unknown: _UnknownSize | None = None
+    #: Per-open scratch: where the data starts, once an open has read and checked the
+    #: local header (:meth:`ZipReader._with_local_method`), so the open reads it once.
+    #: Listing never fills it, so it is ``None`` on every listed member. An open works
+    #: on a ``replace()`` copy carrying it, so a write to the listed locator
+    #: (``_apply_descriptor``) reaches an open only when it comes first: listing
+    #: writes stay ahead of every open.
+    data_start: int | None = None
 
 
 #: Deflate's largest expansion: a 258-byte match costs at least two bits.
@@ -1406,6 +1424,8 @@ class ZipReader(BaseArchiveReader):
         # Members whose local header named them differently, already reported once
         # (``_report_local_name``). Under the reader's lock.
         self._local_names_reported: set[int] = set()
+        # The same for a local header naming another method (``_report_local_method``).
+        self._local_methods_reported: set[int] = set()
         self._refuse_lone_split_segment()
         self._open_index(source, start_offset)
 
@@ -2782,7 +2802,7 @@ class ZipReader(BaseArchiveReader):
         Read only for a file or link, not WinZip AE-2, whose central CRC-32 is 0 over
         some data, so a listing reads no local header for any other entry. A local
         header that cannot be read gives ``None``: reading the member reports it
-        (``_local_data_region``).
+        (``_checked_local_header``).
         """
         if not 0 <= entry.header_offset < self._end.cd_start:
             return None
@@ -2799,17 +2819,15 @@ class ZipReader(BaseArchiveReader):
         member: ArchiveMember,
         member_id: int,
         *,
-        field: Literal["name", "crc32"],
+        field: Literal["name", "method", "crc32"],
         message: str,
         local_name: bytes | None = None,
         local_crc32: int | None = None,
+        local_method: int | None = None,
+        central_method: int | None = None,
     ) -> None:
         self._diagnostics_collector.emit(
-            code=(
-                DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS
-                if field == "name"
-                else DiagnosticCode.MEMBER_LOCAL_CRC_USED
-            ),
+            code=_LOCAL_HEADER_CODES[field],
             message=message,
             context=LocalHeaderContext(
                 archive_name=self._archive_name,
@@ -2818,6 +2836,8 @@ class ZipReader(BaseArchiveReader):
                 field=field,
                 local_raw_name_base64=raw_name_to_base64(local_name),
                 local_crc32=local_crc32,
+                local_method=local_method,
+                central_method=central_method,
             ),
             member=member,
             attach_to_member=True,
@@ -2856,6 +2876,37 @@ class ZipReader(BaseArchiveReader):
                 f"ZIP member {quoted(member.name)}: its local header stores the name "
                 f"{quoted(_stored_text(local_name))}; the central directory's name "
                 "is used, as unzip and 7-Zip use it."
+            ),
+        )
+
+    def _report_local_method(
+        self, loc: _ZipLocator, member: ArchiveMember, local_method: int
+    ) -> None:
+        """Report that the local header of ``member`` names ``local_method``, which the
+        member is decoded by (:meth:`_with_local_method`).
+
+        Reported on the member's first open only, and by a file or link only, as
+        :meth:`_report_local_name` is and for the same reasons.
+        """
+        if member.type not in (MemberType.FILE, MemberType.SYMLINK):
+            return
+        code = DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS
+        with self._lock:
+            first = loc.index not in self._local_methods_reported
+            self._local_methods_reported.add(loc.index)
+        if not first and code not in self._diagnostics_collector.policy.raise_on:
+            return
+        self._emit_local_header_differs(
+            member,
+            loc.index,
+            field="method",
+            local_method=local_method,
+            central_method=loc.method,
+            message=(
+                f"ZIP member {quoted(member.name)}: its local header names compression "
+                f"method {local_method} and its central directory entry method "
+                f"{loc.method}; the local header's method is used, as a read from a "
+                "pipe uses it."
             ),
         )
 
@@ -2983,7 +3034,17 @@ class ZipReader(BaseArchiveReader):
     def _local_data_region(
         self, loc: _ZipLocator, member: ArchiveMember
     ) -> tuple[int, int]:
-        """Return ``(data_start, compressed_size)`` for ``loc`` from its local header.
+        """Return ``(data_start, compressed_size)`` for ``loc`` from its local header
+        (:meth:`_checked_local_header`), unless the open has read it already."""
+        length = max(0, loc.compressed_size)
+        if loc.data_start is not None:
+            return loc.data_start, length
+        return self._checked_local_header(loc, member).data_start, length
+
+    def _checked_local_header(
+        self, loc: _ZipLocator, member: ArchiveMember
+    ) -> LocalHeader:
+        """The local header of ``loc``, once the checks below let it through.
 
         The parser reads the fixed 30-byte header plus the local name and extra (the
         central extra can differ) and refuses a bad signature, a cut header and an
@@ -2993,6 +3054,8 @@ class ZipReader(BaseArchiveReader):
         directory's is reported (``_report_local_name``), and the member reads by
         the directory's name.
         """
+        if loc.header_offset < 0:
+            raise CorruptionError(self._front_cut_message(loc.header_offset))
         if loc.header_offset >= self._end.cd_start:
             # Every local header comes before the directory, as ``_holds_local_header``
             # says; not sought, since a source on disk cannot seek to every offset a
@@ -3019,7 +3082,85 @@ class ZipReader(BaseArchiveReader):
             )
         if header.name != loc.name:
             self._report_local_name(loc, member, header.name)
-        return header.data_start, length
+        return header
+
+    def _with_local_method(
+        self, loc: _ZipLocator, member: ArchiveMember
+    ) -> _ZipLocator:
+        """``loc`` with the compression method its local header names, and the data
+        start it gives, so the open reads that header once.
+
+        The local header sits next to the data, and a read from a pipe decodes by it,
+        having nothing else; a file read does the same, so both read the same bytes,
+        which the CRC-32 still checks. A method that differs from the directory's is
+        reported (``MEMBER_LOCAL_METHOD_DIFFERS``, which ``STRICT`` refuses: a tool that
+        trusts the directory decodes other bytes or fails). WinZip AES (method 99) on
+        one side only is refused: its record is read from the central extra field, so
+        the two headers disagree on how the data is encrypted. So is AES on both sides
+        when the two AES records differ in any field (version, strength or real
+        method), or one side's record is missing or unparseable
+        (``aes_record_differences``): the pass decodes by the local record, this read
+        by the central one.
+
+        The local header is read and checked here, ahead of the codec and password
+        refusals in the open, on purpose: the check holds the overlap guard against a
+        zip bomb, so a member whose header fails it raises that ``CorruptionError``
+        even when its method is unsupported or no password was given.
+        """
+        try:
+            header = self._checked_local_header(loc, member)
+        except _LOCAL_HEADER_ERRORS as exc:
+            self._reraise_member_error(exc, member.name)
+        local_method = header.method
+        if local_method == loc.method == _WINZIP_AES_METHOD:
+            differ = aes_record_differences(
+                parse_winzip_aes_extra(header.extra), loc.aes
+            )
+            if differ:
+                raise CorruptionError(
+                    f"ZIP member {quoted(member.name)}: its local header and its "
+                    "central directory entry disagree on its encryption "
+                    f"({', '.join(differ)}{local_first(differ)}), so the two headers describe "
+                    "different data",
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    source_format=ArchiveFormat.ZIP,
+                )
+        if local_method == loc.method:
+            return replace(loc, data_start=header.data_start)
+        if _WINZIP_AES_METHOD in (local_method, loc.method):
+            raise CorruptionError(
+                f"ZIP member {quoted(member.name)}: its local header names compression "
+                f"method {local_method} and its central directory entry method "
+                f"{loc.method}, so the two headers disagree on its encryption",
+                archive_name=self._archive_name,
+                member_name=member.name,
+                source_format=ArchiveFormat.ZIP,
+            )
+        self._report_local_method(loc, member, local_method)
+        return replace(loc, method=local_method, data_start=header.data_start)
+
+    def _front_cut_message(self, header_offset: int) -> str:
+        """The refusal for a local header the directory puts before byte 0.
+
+        Every offset is a stored value, never negative, plus ``EndRecord.base``, so
+        ``-base`` is at least every member's own shortfall and is the size of a front
+        cut when the directory's own offset field is sound. A directory offset or size
+        field that is too large gives the same shape with nothing missing, which is why
+        the message says "seems".
+        """
+        missing = max(-self._end.base, -header_offset)
+        detail = (
+            ""
+            if missing == -header_offset
+            else f"; this member's local header would start {-header_offset} bytes "
+            "before the start of the file"
+        )
+        return (
+            f"The archive seems to be missing at least its first {missing} bytes: "
+            "its central directory puts local headers before the start of the file"
+            f"{detail}"
+        )
 
     def _check_open(self) -> None:
         if self._fp is None:
@@ -3294,12 +3435,13 @@ class ZipReader(BaseArchiveReader):
             if size is not None and size >= 0:
                 params = replace(params, unpack_size=size)
             return params
-        if method in (12, 93):  # ZIP bzip2, Zstd
+        if method == 12:  # ZIP bzip2
             # A member is one bzip2 stream, as 7-Zip, Info-ZIP and stdlib zipfile
-            # read it, and one Zstd frame: a further stream or frame after its end
-            # is input the member does not use, refused like any other
-            # (``refuse_input_after_end``), with the accelerator on or off
-            # (dev-docs/formats/zip.md §2.3).
+            # read it: a further stream after its end is input the member does not
+            # use, refused like any other (``refuse_input_after_end``), with the
+            # accelerator on or off (dev-docs/formats/zip.md §2.3). A Zstd member
+            # (93) reads every frame instead, as a .zst file and a 7z coder do: RFC
+            # 8878 defines Zstd data as one or more frames.
             return CodecParams(single_stream=True)
         return CodecParams()
 
@@ -4082,6 +4224,7 @@ class ZipReader(BaseArchiveReader):
                 member_name=member.name,
                 source_format=ArchiveFormat.ZIP,
             )
+        loc = self._with_local_method(loc, member)
         # Every member reads as raw payload -> decrypt stage (if encrypted) -> codec
         # layer -> fused CRC/size verify.
         if _is_encrypted_entry(loc.flags, loc.method):

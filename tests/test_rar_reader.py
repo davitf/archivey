@@ -30,11 +30,17 @@ from archivey.config import (
     RarDecompressor,
 )
 from archivey.cost import AccessCost
-from archivey.diagnostics import DiagnosticCode
+from archivey.diagnostics import (
+    Diagnostic,
+    DiagnosticCode,
+    DiagnosticPolicy,
+    MemberHeaderRecordContext,
+)
 from archivey.exceptions import (
     ArchiveyError,
     ArchiveyUsageError,
     CorruptionError,
+    DiagnosticRaisedError,
     EncryptionError,
     PackageNotInstalledError,
     ResourceLimitError,
@@ -44,6 +50,7 @@ from archivey.exceptions import (
 from archivey.internal.backends import rar_reader, rar_unrar
 from archivey.internal.backends.rar_parser import (
     RAR5_ID,
+    RAR5_QO_UNMATCHED_COPIES,
     RAR_ID,
     RarArchive,
     RarMemberInfo,
@@ -53,6 +60,7 @@ from archivey.internal.backends.rar_parser import (
     parse_rar_volumes,
 )
 from archivey.internal.external.cli import terminate_process
+from archivey.reader import ArchiveReader
 from archivey.terminal import display_path
 from archivey.types import (
     EXTRA_RAR_EXTRACT_VERSION,
@@ -61,7 +69,11 @@ from archivey.types import (
     HashAlgorithm,
     MemberType,
 )
-from tests.conftest import requires, requires_binary
+from tests.conftest import (
+    requires,
+    requires_binary,
+    requires_unrar_cli,
+)
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.streams_util import NonSeekableBytesIO, ShortReadNonSeekable
 
@@ -1144,13 +1156,8 @@ def test_blake2sp_corrupt_payload_raises(tmp_path: Path) -> None:
             archive.read(member)
 
 
-@requires_binary("unrar")
+@requires_unrar_cli()
 def test_blake2sp_unrar_oracle_crosscheck() -> None:
-    import shutil
-    import subprocess
-
-    if shutil.which("unrar") is None:
-        pytest.skip("unrar unavailable")
     fixture = _fixture("blake2sp.rar")
     with open_archive(fixture) as archive:
         member = next(m for m in archive.members() if m.is_file)
@@ -1184,7 +1191,7 @@ def test_multi_volume_rnn_roundtrip() -> None:
         assert archive.read("payload.bin") == b"ABCDEFGH" * 200
 
 
-@requires_binary("unrar")
+@requires_unrar_cli()
 @pytest.mark.parametrize(
     ("name", "member_name"),
     [
@@ -1498,7 +1505,7 @@ def test_rar15_and_rar2_list_and_read(name: str, expected: dict[str, bytes]) -> 
 
 
 @requires("rarfile")
-@requires_binary("unrar")
+@requires_unrar_cli()
 @pytest.mark.parametrize("name", ["rar15-comment.rar", "rar202-comment-nopsw.rar"])
 def test_rar15_and_rar2_comments_match_rarfile(name: str) -> None:
     """Legacy embedded archive and member comments match the reference reader."""
@@ -3079,6 +3086,66 @@ def test_unrar_on_path_is_the_rarlab_build() -> None:
     rar_unrar.find_rarlab_unrar()
 
 
+@pytest.mark.parametrize(
+    ("unrar_banner", "rar_banner", "data_skips", "cli_skips"),
+    [
+        ("unrar-free fake", None, True, True),
+        ("unrar-free fake", "7.00", False, True),
+        ("7.00", "7.00", False, False),
+        (None, "7.00", False, True),
+    ],
+    ids=["lookalike-unrar", "lookalike-unrar-beside-rar", "rarlab-unrar", "rar-only"],
+)
+def test_unrar_marks_follow_archiveys_rule(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    unrar_banner: str | None,
+    rar_banner: str | None,
+    data_skips: bool,
+    cli_skips: bool,
+) -> None:
+    """``requires_binary("unrar")`` skips where archivey has no RARLAB program to read
+    RAR data with; ``requires_unrar_cli()``, for a test that runs the ``unrar`` command,
+    also skips where that command is missing or is not the one archivey accepts. A
+    RARLAB ``rar`` with no ``unrar``, or beside a lookalike, is where the two differ."""
+    programs: dict[str, Path] = {}
+    banners: dict[str, str] = {}
+    if unrar_banner is not None:
+        unrar = tmp_path / "unrar"
+        unrar.write_bytes(b"u")
+        programs["unrar"] = unrar
+        banners[os.path.abspath(str(unrar))] = (
+            _RARLAB_BANNER.format(version=unrar_banner)
+            if unrar_banner[0].isdigit()
+            else unrar_banner
+        )
+    if rar_banner is not None:
+        rar = tmp_path / "rar"
+        rar.write_bytes(b"r")
+        programs["rar"] = rar
+        banners[os.path.abspath(str(rar))] = _RARLAB_RAR_BANNER.format(
+            version=rar_banner
+        )
+    _clear_unrar_cache(monkeypatch)
+    _stub_which_rarlab(monkeypatch, programs)
+
+    def run(
+        argv: list[str],
+        *_args: object,
+        **_kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        banner = banners[os.path.abspath(argv[0])]
+        return subprocess.CompletedProcess(
+            argv, 0, stdout=banner.encode("utf-8"), stderr=b""
+        )
+
+    monkeypatch.setattr(rar_unrar.subprocess, "run", run)
+    data_mark = requires_binary("unrar")
+    assert data_mark.args == (data_skips,), data_mark.kwargs["reason"]
+    cli_mark = requires_unrar_cli()
+    assert cli_mark.args == (cli_skips,), cli_mark.kwargs["reason"]
+
+
 def test_missing_unrar_raises(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("PATH", str(tmp_path))
     _clear_unrar_cache(monkeypatch)
@@ -3277,6 +3344,7 @@ _RARLAB_RAR_BANNER = (
         (_RARLAB_BANNER.format(version="7.0"), (7, 0)),
         (_RARLAB_BANNER.format(version="7.11"), (7, 11)),
         ("UNRAR 7.00 (RARLAB)", (7, 0)),
+        ("UNRAR\t7.00 (RARLAB)", (7, 0)),
     ],
 )
 def test_parse_unrar_banner_accepts_rarlab_floor(
@@ -3285,6 +3353,14 @@ def test_parse_unrar_banner_accepts_rarlab_floor(
     parsed = rar_unrar._parse_unrar_banner(banner)
     assert parsed.is_rarlab is True
     assert parsed.version == version
+
+
+def test_parse_unrar_banner_version_on_the_next_line_is_not_read() -> None:
+    # The gap is ``[ \t]+``: a ``RAR`` token at the end of one line does not take a
+    # version from the start of the next.
+    parsed = rar_unrar._parse_unrar_banner("UNRAR\n7.00 (RARLAB) Alexander Roshal")
+    assert parsed.is_rarlab is True
+    assert parsed.version is None
 
 
 def test_parse_unrar_banner_old_rarlab_is_still_rarlab() -> None:
@@ -5472,6 +5548,221 @@ def _assert_qo_walk_parity(path: Path, *, password: str | bytes | None = None) -
     assert _listing_snapshot(via_qo) == _listing_snapshot(via_walk)
 
 
+def _qo_vint(value: int) -> bytes:
+    out = bytearray()
+    while True:
+        byte = value & 0x7F
+        value >>= 7
+        if value:
+            out.append(byte | 0x80)
+        else:
+            out.append(byte)
+            return bytes(out)
+
+
+def _qo_with_unmatched_copy(path: Path) -> bytes:
+    """``path`` (``-m0 -qo+``, members ``a.txt`` then ``b.txt``) with ``a.txt``'s QO
+    copy replaced by a copy of ``b.txt``'s header that points 10 bytes into
+    ``a.txt``'s data, so no header the walk reaches matches it. The spans stay
+    consistent, so QO is still used: ``a.txt`` is listed from its own header and
+    ``b.txt`` from its copy. The payload keeps its length, zero-padded at the end as
+    the QO parser allows, so no header changes."""
+    from archivey.internal.backends import rar_parser
+
+    data = bytearray(path.read_bytes())
+    archive = parse_rar_archive(io.BytesIO(bytes(data)), use_qo=False)
+    a, b = archive.members
+    payload_at = _rar5_qo_data_offset(path)
+    # The copies' offsets count back from the QO header's own offset.
+    with path.open("rb") as source:
+        source.seek(len(RAR5_ID))
+        while True:
+            parsed = rar_parser._read_rar5_block(source)
+            assert parsed is not None
+            header_offset, data_offset, add_size = parsed[4], parsed[6], parsed[7]
+            if data_offset == payload_at:
+                qo_header, payload_size = header_offset, add_size
+                break
+            rar_parser._seek_after_packed(source, data_offset, add_size)
+    payload = bytes(data[payload_at : payload_at + payload_size])
+    records: list[tuple[int, bytes]] = []
+    pos = 0
+    end = len(payload.rstrip(b"\0"))
+    while pos < end:
+        body_size, body_at = load_vint(payload, pos + 4)
+        body = payload[body_at : body_at + body_size]
+        _, bp = load_vint(body, 0)
+        offset_from_qo, _ = load_vint(body, bp)
+        records.append((qo_header - offset_from_qo, payload[pos : body_at + body_size]))
+        pos = body_at + body_size
+    by_offset = dict(records)
+    assert set(by_offset) == {a.header_offset, b.header_offset}  # precondition
+
+    b_record = by_offset[b.header_offset]
+    _, b_body_at = load_vint(b_record, 4)
+    b_body = b_record[b_body_at:]
+    flags, bp = load_vint(b_body, 0)
+    _, bp = load_vint(b_body, bp)
+    bogus = a.data_offset + 10
+    body = _qo_vint(flags) + _qo_vint(qo_header - bogus) + b_body[bp:]
+    size = _qo_vint(len(body))
+    bogus_record = struct.pack("<I", zlib.crc32(size + body)) + size + body
+    rebuilt = b"".join(
+        bogus_record if offset == a.header_offset else record
+        for offset, record in records
+    )
+    assert len(rebuilt) <= len(payload)  # precondition: no header has to change
+    data[payload_at : payload_at + len(payload)] = rebuilt.ljust(len(payload), b"\0")
+    return bytes(data)
+
+
+def _qo_two_member_archive(tmp_path: Path) -> Path:
+    return _rar_a(
+        tmp_path / "qo2",
+        "qo2.rar",
+        {"a.txt": b"a" * 200, "b.txt": b"b"},
+        ["-m0", "-qo+"],
+    )
+
+
+def _unmatched_copy_diagnostics(archive: ArchiveReader) -> list[Diagnostic]:
+    return [
+        d
+        for d in archive.diagnostics.retained
+        if d.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+        and isinstance(d.context, MemberHeaderRecordContext)
+        and d.context.record == RAR5_QO_UNMATCHED_COPIES
+    ]
+
+
+@requires_binary("rar")
+def test_a_qo_copy_the_walk_never_reaches_is_reported(tmp_path: Path) -> None:
+    """A clean walk that never lands on a QO copy's ``header_offset`` leaves the
+    listing as it is and reports the copy on the QO header, so a strict policy can
+    refuse a damaged or crafted quick-open record."""
+    path = _qo_two_member_archive(tmp_path)
+    patched = tmp_path / "unmatched.rar"
+    patched.write_bytes(_qo_with_unmatched_copy(path))
+    assert _qo_cached_filenames(patched) == {"b.txt"}  # QO is still used
+    data = patched.read_bytes()
+    via_qo = parse_rar_archive(io.BytesIO(data), use_qo=True)
+    via_walk = parse_rar_archive(io.BytesIO(data), use_qo=False)
+    assert _listing_snapshot(via_qo) == _listing_snapshot(via_walk)
+    with open_archive(patched) as archive:
+        assert [m.name for m in archive.members()] == ["a.txt", "b.txt"]
+        assert archive.read("a.txt") == b"a" * 200
+        (diagnostic,) = _unmatched_copy_diagnostics(archive)
+    context = diagnostic.context
+    assert isinstance(context, MemberHeaderRecordContext)
+    assert context.member_name == ""
+    assert context.member_id is None
+    assert diagnostic.message == (
+        "This archive's QO quick-open service header holds 1 FILE header copy "
+        "that matched no header the walk reached. rar writes no copy that matches "
+        "no header, so this record is damaged or crafted. The listing comes from "
+        "the headers the walk read, which is what unrar lists too."
+    )
+    with (
+        pytest.raises(DiagnosticRaisedError) as raised,
+        open_archive(
+            patched,
+            config=ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT),
+        ) as archive,
+    ):
+        archive.members()
+    assert raised.value.diagnostic.code is DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+    assert isinstance(raised.value.diagnostic.context, MemberHeaderRecordContext)
+    assert raised.value.diagnostic.context.record == RAR5_QO_UNMATCHED_COPIES
+
+
+@requires_binary("rar")
+def test_an_intact_qo_reports_no_unmatched_copy(tmp_path: Path) -> None:
+    with open_archive(_qo_two_member_archive(tmp_path)) as archive:
+        archive.members()
+        assert not _unmatched_copy_diagnostics(archive)
+
+
+@requires_binary("rar")
+def test_an_unmatched_qo_copy_is_kept_past_the_damaged_header_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cap counts headers whose walk did not finish, and its overflow message
+    says so; the QO entry is not one, so neither the walk nor the volume merge
+    turns it away or counts it there."""
+    from archivey.internal.backends import rar_parser
+
+    monkeypatch.setattr(rar_parser, "_MAX_DAMAGED_SERVICE_HEADERS", 0)
+    data = _qo_with_unmatched_copy(_qo_two_member_archive(tmp_path))
+    archive = parse_rar_archive(io.BytesIO(data), use_qo=True)
+    (entry,) = archive.damaged_service_headers
+    assert entry.skipped_header_records[0][0] == RAR5_QO_UNMATCHED_COPIES
+    assert archive.damaged_service_headers_omitted == 0
+    merged: list[rar_parser.DamagedServiceHeader] = []
+    assert rar_parser._append_damaged_service_header(merged, entry)
+    assert merged == [entry]
+
+
+@requires_binary("rar")
+def test_unmatched_qo_copies_are_not_reported_without_a_clean_end(
+    tmp_path: Path,
+) -> None:
+    """A walk that was cut or stopped at a damaged header leaves copies unreached
+    for that reason alone; a damaged end block makes the archive corrupt already,
+    and the claim would rest on a header that failed its check; a walk that did not
+    use QO has no copies to leave."""
+    data = _qo_with_unmatched_copy(_qo_two_member_archive(tmp_path))
+    whole = parse_rar_archive(io.BytesIO(data), use_qo=True)
+    assert len(whole.damaged_service_headers) == 1  # control
+    no_qo = parse_rar_archive(io.BytesIO(data), use_qo=False)
+    assert no_qo.damaged_service_headers == []
+    cut = parse_rar_archive(io.BytesIO(data[:-3]), use_qo=True)
+    assert cut.truncated is not None  # the cut is inside the end block
+    assert [m.filename for m in cut.members] == ["a.txt", "b.txt"]
+    assert cut.damaged_service_headers == []
+
+    # a.txt is not in the patched QO, so the walk reads its own header, fails its
+    # CRC and stops there: both copies are unreached.
+    (a, _b) = no_qo.members
+    bad_header = bytearray(data)
+    bad_header[a.header_offset] ^= 0xFF
+    damaged = parse_rar_archive(io.BytesIO(bytes(bad_header)), use_qo=True)
+    assert damaged.damaged is not None
+    assert damaged.members == []
+    assert damaged.damaged_service_headers == []
+
+    # The end block is the last 8 bytes and nothing follows it, so the walk keeps
+    # the listing and records the damage.
+    assert data[-3] == 5  # precondition: ENDARC's type byte
+    bad_end = bytearray(data)
+    bad_end[-8] ^= 0xFF
+    end = parse_rar_archive(io.BytesIO(bytes(bad_end)), use_qo=True)
+    assert end.end_block_damaged_volumes
+    assert [m.filename for m in end.members] == ["a.txt", "b.txt"]
+    assert end.damaged_service_headers == []
+
+
+@requires_binary("rar")
+@requires_binary("unrar")
+def test_unrar_lists_the_walk_not_an_unmatched_qo_copy(tmp_path: Path) -> None:
+    """The oracle: ``unrar`` substitutes a copy only for a header it reaches, so it
+    lists the same two members and reads ``a.txt`` from its own header."""
+    patched = tmp_path / "unmatched.rar"
+    patched.write_bytes(_qo_with_unmatched_copy(_qo_two_member_archive(tmp_path)))
+    listed = subprocess.run(
+        ["unrar", "lb", "--", str(patched)],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    assert listed == ["a.txt", "b.txt"]
+    read = subprocess.run(
+        ["unrar", "p", "-inul", "--", str(patched), "a.txt"],
+        capture_output=True,
+        check=True,
+    ).stdout
+    assert read == b"a" * 200
+
+
 def test_qo_listing_matches_file_walk_on_corpus() -> None:
     """formats/rar.md §1.1: committed QO archive matches the FILE walk."""
     corpus = Path(__file__).parent / "fixtures" / "corpus" / "rar" / "large.rar"
@@ -5730,7 +6021,7 @@ def _unrar_payload(path: Path, member: str) -> bytes:
     ).stdout
 
 
-@requires_binary("unrar")
+@requires_unrar_cli()
 @pytest.mark.parametrize("name", sorted(_RAR4_LARGE))
 @pytest.mark.parametrize(
     "passwords",
@@ -5818,7 +6109,7 @@ def test_rar4_damaged_member_is_not_reported_as_a_wrong_password(
     assert "may be damaged" in str(info.value)
 
 
-@requires_binary("unrar")
+@requires_unrar_cli()
 @requires("cryptography")
 def test_rar4_stored_password_list_is_judged_without_unrar(
     monkeypatch: pytest.MonkeyPatch,
@@ -5841,7 +6132,7 @@ def test_rar4_stored_password_list_is_judged_without_unrar(
     assert spawns == []
 
 
-@requires_binary("unrar")
+@requires_unrar_cli()
 def test_rar4_stored_password_list_without_cryptography_goes_through_unrar(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

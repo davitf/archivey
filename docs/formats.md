@@ -5,21 +5,21 @@ first sections cover what holds across formats; then each format has a section o
 the same order: what it needs, how it lists and reads, and its quirks.
 
 The maintainer handbook has more depth on
-[7z](https://github.com/davitf/archivey/blob/main/dev-docs/formats/7z.md),
-[ISO](https://github.com/davitf/archivey/blob/main/dev-docs/formats/iso.md),
-[RAR](https://github.com/davitf/archivey/blob/main/dev-docs/formats/rar.md),
-[TAR](https://github.com/davitf/archivey/blob/main/dev-docs/formats/tar.md) and
-[ZIP](https://github.com/davitf/archivey/blob/main/dev-docs/formats/zip.md), and on the single-file
+[7z](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/7z.md),
+[ISO](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/iso.md),
+[RAR](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/rar.md),
+[TAR](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/tar.md) and
+[ZIP](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/zip.md), and on the single-file
 compressors: what they share in
-[single-file.md](https://github.com/davitf/archivey/blob/main/dev-docs/formats/single-file.md), then
-[gzip](https://github.com/davitf/archivey/blob/main/dev-docs/formats/gzip.md),
-[bzip2](https://github.com/davitf/archivey/blob/main/dev-docs/formats/bzip2.md), [xz, lzip and LZMA
-Alone](https://github.com/davitf/archivey/blob/main/dev-docs/formats/xz.md), [zstd and
-LZ4](https://github.com/davitf/archivey/blob/main/dev-docs/formats/zstd-lz4.md),
-[Brotli](https://github.com/davitf/archivey/blob/main/dev-docs/formats/brotli.md) and
-[`.Z`](https://github.com/davitf/archivey/blob/main/dev-docs/formats/unix-compress.md), and on [disk
-images](https://github.com/davitf/archivey/blob/main/dev-docs/formats/dmg.md) and
-[directories](https://github.com/davitf/archivey/blob/main/dev-docs/formats/directory.md).
+[single-file.md](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/single-file.md), then
+[gzip](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/gzip.md),
+[bzip2](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/bzip2.md), [xz, lzip and LZMA
+Alone](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/xz.md), [zstd and
+LZ4](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/zstd-lz4.md),
+[Brotli](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/brotli.md) and
+[`.Z`](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/unix-compress.md), and on [disk
+images](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/dmg.md) and
+[directories](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/directory.md).
 
 ## Quick matrix
 
@@ -34,7 +34,7 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
   `.tar.Z`, `.tar.zst`, `.tar.lz4`, `.tar.br`): needs what its compressor needs (below).
   Listing: needs decompression. Members: solid. Reads from a pipe.
 - **7z:** core for LZMA, LZMA2, Deflate, BZip2, Delta and the executable filters (BCJ, BCJ2,
-  ARM64 and the others); `[recommended]` adds PPMd, Deflate64, Brotli, LZ4, AES, and Zstandard
+  ARM64, RISC-V and the others); `[recommended]` adds PPMd, Deflate64, Brotli, LZ4, AES, and Zstandard
   before Python 3.14. Listing: from its index. Members: solid, unless written without solid
   blocks (`7z -ms=off`). Needs a source that can seek.
 - **RAR:** listing and uncompressed members in core; compressed members need the `unrar`
@@ -53,7 +53,7 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
 [Install](install.md) lists what each extra installs. `archivey[recommended]` is the usual choice,
 and `archivey[all]` adds the `[seekable]` accelerator. At run time,
 [`format_availability()`](api.md#archivey.format_availability) says what the current install can
-read. The [library analysis](https://github.com/davitf/archivey/blob/main/dev-docs/library-analysis.md)
+read. The [library analysis](https://github.com/archivey-dev/archivey/blob/main/dev-docs/library-analysis.md)
 explains the choice of each compression library, and
 [Acknowledgements](acknowledgements.md) credits them.
 
@@ -333,6 +333,20 @@ sending side when the ZIP is done.
   directory's name is used and `MEMBER_LOCAL_NAME_DIFFERS` is reported, which `STRICT` refuses. The
   data is checked against the local CRC-32 and `MEMBER_LOCAL_CRC_USED` is reported, which `STRICT`
   reads: Adobe AIR packages store `META-INF/AIR/hash` this way.
+- **The local header names another compression method than the directory:** the member is
+  decoded by the local header's method, from a file and a pipe alike. The local header sits next to
+  the data and is all a pipe has, so both reads give the same bytes, still checked against the
+  CRC-32. `MEMBER_LOCAL_METHOD_DIFFERS` is reported, which `STRICT` refuses, since a tool that
+  trusts the directory reads the member differently. The member's `compression` still names the
+  directory's method, as the listing comes from the directory; the diagnostic gives both. WinZip
+  AES in the directory only is refused with `CorruptionError` from a file and `EncryptionError`
+  from a pipe, where the local header alone says how the data is encrypted. WinZip AES in the
+  local header only is refused with `CorruptionError` from both, from a pipe once the pass
+  reaches the directory. WinZip AES in both headers with AES records that differ (version, key
+  strength or method), or with one header's record missing, is refused with `CorruptionError`
+  from a file. A pipe decrypts by the local record and refuses it too: where that decryption
+  fails, with the error it meets (`EncryptionError` for another key strength), and where it
+  succeeds, once the pass reaches the directory.
 - **Both headers declare less than the data decodes to:** the member is refused with
   `CorruptionError`.
 - **Bytes after a member's compressed stream:** a member's compressed data must hold one stream of
@@ -603,6 +617,10 @@ On a compressed tar, the stream's own checksum adds three cases:
   read runs at roughly four fifths of the speed of the same file with no filter. The filter slows
   with branch density: on data where every word is a branch, it runs about 15 times slower than on
   real code.
+- **RISC-V** (a filter 7-Zip 24 added for RISC-V executables) reads on a core install, decoded in
+  pure Python like ARM64. On real RISC-V code a read runs at roughly half the speed of the same
+  file with no filter. The filter slows with branch density: on data where every word is a branch,
+  it runs about 15 times slower than on real code.
 - Bytes after a coder's stream are corruption, as in a ZIP member ([ZIP](#damaged-and-unusual-endings)),
   except that a Zstandard or LZ4 coder reads concatenated frames as one stream, so a further frame is
   content that counts against the declared size.
@@ -1130,13 +1148,21 @@ file; with `format=`, a `.bz2` opens at once. Close the sending side when the fi
   decodes at any setting, and raises `UnsupportedFeatureError`. Detection reads a sample of the
   stream with no cap, so a frame declaring 2 GiB has that much address space reserved while
   `open_archive` detects it, whatever the cap.
-- With the `[seekable]` rapidgzip accelerator on a seekable `.gz`, truncation detection is best
-  effort: an empty result falls back to the standard library, and a single-member file's size is
-  checked against its trailer. That is stronger than rapidgzip alone and weaker than the standard
-  library alone, so when you need certainty, set
+- With the `[seekable]` rapidgzip accelerator on a seekable `.gz`, archivey adds its own checks,
+  because rapidgzip can end a cut file with no error. If rapidgzip returns nothing, the standard
+  library reads the file instead. Otherwise the trailer at the end of the file is checked: in a
+  file of one gzip member, against the checksum and length of all the data read; in a file of
+  several members, against the end of the data. For that, archivey saves the checksum every
+  4 MiB as it reads and reads back at most 4 MiB from rapidgzip per check, whatever the size
+  of the last member. After a seek that skipped data, the check still runs, and also reads
+  back the skipped part of the last member; past about 64 MiB of that, the standard library
+  reads the whole file again instead, which gives the right result but takes longer. A wrong
+  length in a member before the last is not caught, but every member's checksum still is, so
+  the data is right. A cut file built on purpose can still read short with no error, if its
+  last eight bytes are made to match the end of the data. So when you need certainty, set
   `ArchiveyConfig(use_rapidgzip=AcceleratorMode.OFF)`. This applies to a bare `.gz` or
-  `open_stream` (and bare zlib or raw Deflate), not to ZIP or 7z members, whose stored CRC and size
-  catch short or wrong data.
+  `open_stream` (and bare zlib or raw Deflate), not to ZIP or 7z members, whose stored CRC and
+  size catch short or wrong data.
 - The `[seekable]` accelerator's bzip2 decoder reads input that is not bzip2 as an empty stream.
   When it yields nothing, archivey decodes the source again with the standard library, so a damaged
   `.bz2` raises the same error whether or not `seekable_members=True` engaged the accelerator.
