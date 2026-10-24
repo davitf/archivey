@@ -54,9 +54,15 @@ def _allocation_error(mem_size: int, detail: str) -> PpmdChildAllocationError:
     )
 
 
+# PPMd decodes in a child under every ``process_isolation`` but ``NONE`` (ADR 0022), so
+# ``NONE`` is the only setting that decodes it in this process: the advice when no
+# child can start (``isolation_error``), at open and part-way through a member.
+ISOLATED_UNLESS_NONE = True
+
+
 class _PpmdChild(DecoderChild):
     describe = "PPMd decoder process"
-    isolated_unless_none = True
+    isolated_unless_none = ISOLATED_UNLESS_NONE
 
     def __init__(
         self, codec: str, args: tuple[object, ...], *, mem_size: int, setting: str

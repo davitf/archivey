@@ -52,11 +52,13 @@ from archivey.internal.streams.codecs.decoder_child import (
     POOL,
     DecoderChildReportedError,
     DecoderChildStartError,
+    start_error,
 )
 from archivey.internal.streams.codecs.decoder_worker import CALL
 from archivey.internal.streams.codecs.isolated import PPMD_ERRORS, ChildPpmdDecoder
 from archivey.internal.streams.codecs.ppmd_child import (
     PpmdChildAllocationError,
+    _PpmdChild,
     open_ppmd_child,
     ppmd_child_unavailable_reason,
 )
@@ -311,6 +313,20 @@ def test_without_a_child_process_a_member_is_refused(
         # The refusal sticks: a second read says the same, never a stray error.
         with pytest.raises(ResourceLimitError, match="none can be started"):
             stream.read(10)
+
+
+def test_a_fresh_child_that_cannot_start_part_way_names_none() -> None:
+    """A fresh child needed part-way through a member (the re-run after a reused
+    child failed) that cannot start gives the advice the open gives: ``NONE``, under
+    ``NATIVE_DECODERS`` too, since ``KNOWN_CRASHES`` isolates PPMd as well."""
+    child = object.__new__(_PpmdChild)
+    child._mem_size = _MEM
+    child._setting = "NATIVE_DECODERS"
+    error = child._fresh_child_error(start_error("no child here"))
+    assert isinstance(error, ResourceLimitError)
+    assert "process_isolation=NATIVE_DECODERS" in str(error)
+    assert "ProcessIsolation.NONE" in str(error)
+    assert "use ProcessIsolation.KNOWN_CRASHES" not in str(error)
 
 
 @pytest.mark.parametrize("failure", ["spawn", "handshake"])
