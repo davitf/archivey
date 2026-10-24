@@ -8,13 +8,13 @@ transition on, or a test of, four independent pieces of state:
 - **Who owns the reader.** ``_root`` is the reader-wide pass in progress (``members()``
   on a default reader, ``stream_members()``, ``extract_all()``), ``_children`` are
   library-internal scopes under a pass (link reads, the extraction coordinator's own
-  opens), and ``_workers`` are short ``open()`` / ``read()`` / ``get()`` calls (and, on a
-  ``CONCURRENT`` reader, ``members()`` / ``members_report()``). On a ``CONCURRENT``
-  reader ``stream_members()`` and ``extract_all()`` passes may run beside workers and
-  beside one another (``_side_passes``). Each is
-  an :class:`OperationToken` that records the thread that took it, so a callback that
-  re-enters the reader on that thread gets a message about the callback, not about a
-  second caller.
+  opens), and ``_workers`` are short ``open()`` / ``get()`` calls, and ``read()`` while
+  it opens the member (and, on a ``CONCURRENT`` reader, ``members()`` /
+  ``members_report()``). On a ``CONCURRENT`` reader ``stream_members()`` and
+  ``extract_all()`` passes may run beside workers and beside one another
+  (``_side_passes``). Each is an :class:`OperationToken` that records the thread that
+  took it, so a callback that re-enters the reader on that thread gets a message about
+  the callback, not about a second caller.
 - **Whether the member list exists yet** (``cache_state``). See :class:`ReaderState`.
 - **How many member streams are alive** (``_live_streams``, plus ``_reservations`` for
   an ``open()`` that has passed the gate but not built its stream yet).
@@ -665,7 +665,8 @@ class ReaderState:
         """Mark reader closed and release the reader lease. True → run teardown now.
 
         Under ``MemberStreams.CONCURRENT``, blocks until in-flight worker ``open()`` /
-        ``read()`` / ``get()`` / ``members()`` calls return, then transitions to closed.
+        ``get()`` / ``members()`` calls return (``read()`` while it opens the member),
+        then transitions to closed. A member stream's own reads hold no worker token.
         Escaped idle member streams keep their lifecycle leases and do not block close.
         A worker that never returns is a caller bug (same as any lock); there is no
         artificial timeout.
