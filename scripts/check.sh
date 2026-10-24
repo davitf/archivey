@@ -69,6 +69,12 @@ run "ruff format --check" uv run --no-sync ruff format --check "${PATHS[@]}"
 run "pyrefly"             uv run --no-sync pyrefly check
 run "ty"                  uv run --no-sync ty check
 
+# --- API surface (tests/test_api_surface.py in CI) ------------------------------------
+if [ "$FIX" -eq 1 ]; then
+  uv run --no-sync python scripts/api_surface.py --write
+fi
+run "api surface" uv run --no-sync python scripts/api_surface.py --check
+
 # --- CI job: openspec --------------------------------------------------------------
 # Stdlib-only, same as CI. `openspec validate` needs the npm CLI, which the setup script
 # installs; skip rather than fail if someone is running on a bare clone.

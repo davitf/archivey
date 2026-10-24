@@ -205,6 +205,7 @@ class SingleFileReader(BaseArchiveReader):
                 self._config,
                 streaming=self._streaming or not self._seekable,
                 seekable=seek_declared and self._seekable,
+                usage=self._usage,
             ),
             report_trailing_data=True,
         )
@@ -219,7 +220,10 @@ class SingleFileReader(BaseArchiveReader):
         # nothing the native index does not already have.
         self._metadata_config = without_accelerators(
             stream_config_from_archivey(
-                self._config, streaming=False, seekable=self._seekable
+                self._config,
+                streaming=False,
+                seekable=self._seekable,
+                usage=self._usage,
             )
         )
 

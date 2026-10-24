@@ -4581,3 +4581,37 @@ def test_volume_typeflags_are_known(typeflag: bytes, streaming: bool) -> None:
         member = next(m for m, _ in ar.stream_members() if m.name == "f")
         assert member.size is None
         assert not _unknown_type_diagnostics(ar.diagnostics.retained)
+
+
+def test_a_rewind_in_a_compressed_tar_logs_at_info(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Opening an earlier member of a ``.tar.gz`` decodes the stream again from the
+    start. ``STREAM_REWIND_REDECOMPRESSES`` reports it as a diagnostic, and its log
+    record is INFO, not WARNING: it describes the caller's access pattern, not the
+    archive (``logging`` spec). The record carries the code and the occurrence id."""
+    rng = random.Random(0)
+    size = REWIND_REDECODE_WARN_BYTES + 1024
+    path = tmp_path / "a.tar.gz"
+    with tarfile.open(path, mode="w:gz") as tar:
+        for name in ("a", "b"):
+            info = tarfile.TarInfo(name)
+            info.size = size
+            tar.addfile(info, io.BytesIO(rng.randbytes(size)))
+    with caplog.at_level(logging.DEBUG, logger="archivey"), open_archive(path) as ar:
+        members = {m.name: m for m in ar.members()}
+        for name in ("b", "a"):
+            with ar.open(members[name]) as stream:
+                stream.read()
+        counts = ar.diagnostics.counts
+        (diagnostic,) = [
+            d
+            for d in ar.diagnostics.retained
+            if d.code is DiagnosticCode.STREAM_REWIND_REDECOMPRESSES
+        ]
+    assert counts[DiagnosticCode.STREAM_REWIND_REDECOMPRESSES] == 1
+    rewinds = [r for r in caplog.records if "Backward seek" in r.getMessage()]
+    assert [r.levelno for r in rewinds] == [logging.INFO]
+    (record,) = rewinds
+    assert record.diagnostic_code is DiagnosticCode.STREAM_REWIND_REDECOMPRESSES
+    assert record.diagnostic_occurrence_id == diagnostic.occurrence_id

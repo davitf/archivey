@@ -166,7 +166,7 @@ costs only the member being read:
   copying of larger members on top. Each process
   holds about 9 MB while it waits to be reused. Where no child process can start, reading raises
   `ResourceLimitError`; nothing is decoded in your process instead.
-  [`scripts/bench_process_isolation.py`](https://github.com/davitf/archivey/blob/main/scripts/bench_process_isolation.py)
+  [`scripts/bench_process_isolation.py`](https://github.com/archivey-dev/archivey/blob/main/scripts/bench_process_isolation.py)
   in the repository measures these costs on your machine.
 - **`ProcessIsolation.NONE`** decodes everything in your process. It's for trusted files, tests,
   and places that can't start processes. A damaged or crafted PPMd member can crash your process,
@@ -212,7 +212,7 @@ Every limit has a default that lets large legitimate archives through. A higher 
 malicious archive use more memory, disk space or processing time before it's stopped, so if you know
 what your archives look like, lower the limits to fit them. They're set in `ArchiveyConfig`, and
 `extract_all` also takes `limits=` for one call.
-[`scripts/measure_limit_costs.py`](https://github.com/davitf/archivey/blob/main/scripts/measure_limit_costs.py)
+[`scripts/measure_limit_costs.py`](https://github.com/archivey-dev/archivey/blob/main/scripts/measure_limit_costs.py)
 in the repository measures what each limit costs in time and memory on your machine.
 
 - **`extraction_limits.max_extracted_bytes`**, default 2 GiB, caps the bytes one extraction writes.
@@ -280,16 +280,16 @@ call may produce, that a decoder that failed is not called again, which decoders
 process, and that archivey's own CRC-32 combining ends for any length. Each test names the advisory
 it replays:
 
-- [`tests/test_cve_regressions.py`](https://github.com/davitf/archivey/blob/main/tests/test_cve_regressions.py)
-- [`tests/test_cve_regressions_7z_rar.py`](https://github.com/davitf/archivey/blob/main/tests/test_cve_regressions_7z_rar.py)
-- [`tests/test_cve_regressions_libarchive.py`](https://github.com/davitf/archivey/blob/main/tests/test_cve_regressions_libarchive.py)
-- [`tests/test_cve_regressions_codecs.py`](https://github.com/davitf/archivey/blob/main/tests/test_cve_regressions_codecs.py)
-- [`tests/test_cve_parsing.py`](https://github.com/davitf/archivey/blob/main/tests/test_cve_parsing.py)
+- [`tests/test_cve_regressions.py`](https://github.com/archivey-dev/archivey/blob/main/tests/test_cve_regressions.py)
+- [`tests/test_cve_regressions_7z_rar.py`](https://github.com/archivey-dev/archivey/blob/main/tests/test_cve_regressions_7z_rar.py)
+- [`tests/test_cve_regressions_libarchive.py`](https://github.com/archivey-dev/archivey/blob/main/tests/test_cve_regressions_libarchive.py)
+- [`tests/test_cve_regressions_codecs.py`](https://github.com/archivey-dev/archivey/blob/main/tests/test_cve_regressions_codecs.py)
+- [`tests/test_cve_parsing.py`](https://github.com/archivey-dev/archivey/blob/main/tests/test_cve_parsing.py)
 
 ## Reporting a vulnerability
 
 Please report security problems privately through
-[GitHub's private vulnerability reporting](https://github.com/davitf/archivey/security/advisories/new),
-not in a public issue. [SECURITY.md](https://github.com/davitf/archivey/blob/main/SECURITY.md) says
+[GitHub's private vulnerability reporting](https://github.com/archivey-dev/archivey/security/advisories/new),
+not in a public issue. [SECURITY.md](https://github.com/archivey-dev/archivey/blob/main/SECURITY.md) says
 what's in scope and what happens after you report. The limits on this page are known and accepted.
 If you find one that does more harm than this page describes, please report it.

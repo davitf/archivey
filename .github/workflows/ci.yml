@@ -42,6 +42,9 @@ on:
       - "!LICENSE"
       - docs/api.md
       - review/problem-catalogue/**
+  # The merge queue. Path filters do not apply to merge_group, so every queued group runs
+  # the whole workflow, and the `CI gate` job below is the check the ruleset requires.
+  merge_group:
   workflow_dispatch:
 
 # Cancel an in-progress run when a newer commit arrives for the same PR/branch, so
@@ -590,11 +593,13 @@ jobs:
       # it is an ini option in pyproject.toml, which `-o addopts=` does not touch. This
       # job hung outright four times on 2026-09-21 with the timeout armed and never
       # fired, which is why that method is set at all.
+      # `-n auto` as in the other legs: run single-process, this job was the slowest in
+      # the workflow (two full suites, about 15 minutes).
       - name: Run full suite (core-only)
         run: >
           uv run --python ${{ matrix.python }} --no-sync
-          --with pytest --with pytest-timeout
-          pytest tests/ -q --timeout=120 -o addopts=
+          --with pytest --with pytest-timeout --with pytest-xdist
+          pytest tests/ -q -n auto --timeout=120 -o addopts=
 
       - name: Sync GIL-safe extras
         # [free-threaded] IS this list, so the job now installs the documented extra
@@ -609,8 +614,8 @@ jobs:
       - name: Run full suite + concurrent_reader (GIL-safe extras)
         run: >
           uv run --python ${{ matrix.python }} --no-sync
-          --with pytest --with pytest-timeout
-          pytest tests/ -q --timeout=120 -o addopts=
+          --with pytest --with pytest-timeout --with pytest-xdist
+          pytest tests/ -q -n auto --timeout=120 -o addopts=
       - name: Assert the GIL-re-enabling packages stay unimported
         # pyppmd, inflate64, brotli and rapidgzip re-enable the GIL when imported, so
         # archivey imports each one only when a stream needs it. With all four installed,
@@ -665,8 +670,12 @@ jobs:
       - name: Assert zero-dependency core
         if: ${{ !cancelled() }}
         run: uv run --python ${{ matrix.python }} --no-sync python tests/check_zero_dep_core.py
+      # Core-only on PyPy runs on each push to main and on a dispatched run (a release gate,
+      # scripts/release.py), not on pull requests or in the merge queue: it is about five
+      # of this job's fifteen minutes, and the CPython core-only legs already cover the
+      # fallback paths on every pull request.
       - name: Run full suite (core-only)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && github.event_name != 'pull_request' && github.event_name != 'merge_group' }}
         env:
           PYTHONFAULTHANDLER: "1"
         run: >
@@ -675,7 +684,7 @@ jobs:
           pytest tests/ -q -n auto --timeout=300 -o addopts= --tb=no -p no:warnings
           -m 'not ppmd_native_stress' --junitxml=pypy-core.xml -o junit_family=xunit1
       - name: Failures (core-only), one line each
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && github.event_name != 'pull_request' && github.event_name != 'merge_group' }}
         run: python3 scripts/junit_failure_lines.py pypy-core.xml
       - name: Install what installs (runtime extras, then test-only packages)
         if: ${{ !cancelled() }}
@@ -745,3 +754,20 @@ jobs:
           path: benchmark-structural.json
       - name: Pytest structural gate + measurement unit tests
         run: uv run --no-sync pytest tests/test_benchmark_gate.py tests/test_measurement.py -q
+
+  # The one required check of the merge queue (ruleset on main). It runs only for a
+  # merge_group and fails when any job above failed or was cancelled; a matrix leg with
+  # continue-on-error does not count. On a pull request it is skipped, and the
+  # always-run pr-gate.yml reports the same name as passed, so a docs-only pull request,
+  # which never starts this workflow, can still join the queue. The queue run is the gate.
+  gate:
+    name: CI gate
+    if: ${{ always() && github.event_name == 'merge_group' }}
+    needs: [lint, test, unar-distro-packages, free-threaded-concurrency, pypy, benchmark]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every job passed
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+        run: exit 1
+      - run: echo "All CI jobs passed."

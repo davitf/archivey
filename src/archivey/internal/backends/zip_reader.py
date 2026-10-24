@@ -1383,6 +1383,7 @@ class ZipReader(BaseArchiveReader):
             self._config,
             streaming=streaming,
             seekable=MemberStreams.SEEKABLE in member_streams,
+            usage=self._usage,
         )
         # What every member's decoder config shares, built once rather than per member.
         # The member's compressed size is the codec's input exactly, so a byte after
@@ -3432,12 +3433,13 @@ class ZipReader(BaseArchiveReader):
             if size is not None and size >= 0:
                 params = replace(params, unpack_size=size)
             return params
-        if method in (12, 93):  # ZIP bzip2, Zstd
+        if method == 12:  # ZIP bzip2
             # A member is one bzip2 stream, as 7-Zip, Info-ZIP and stdlib zipfile
-            # read it, and one Zstd frame: a further stream or frame after its end
-            # is input the member does not use, refused like any other
-            # (``refuse_input_after_end``), with the accelerator on or off
-            # (dev-docs/formats/zip.md §2.3).
+            # read it: a further stream after its end is input the member does not
+            # use, refused like any other (``refuse_input_after_end``), with the
+            # accelerator on or off (dev-docs/formats/zip.md §2.3). A Zstd member
+            # (93) reads every frame instead, as a .zst file and a 7z coder do: RFC
+            # 8878 defines Zstd data as one or more frames.
             return CodecParams(single_stream=True)
         return CodecParams()
 
