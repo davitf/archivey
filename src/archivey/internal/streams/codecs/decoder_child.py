@@ -31,7 +31,7 @@ from archivey.exceptions import (
     ArchiveyUsageError,
     CorruptionError,
     ReadError,
-    ResourceLimitError,
+    ResourceUnavailableError,
 )
 from archivey.internal.streams.child_process import (
     describe_exit,
@@ -651,7 +651,7 @@ class DecoderChild:
 
 def isolation_error(
     reason: str, setting: str = "NATIVE_DECODERS"
-) -> ResourceLimitError:
+) -> ResourceUnavailableError:
     """The error for a decoder that ``process_isolation`` (``setting``) runs only in a
     child process, when no child can start."""
     instead = (
@@ -659,7 +659,7 @@ def isolation_error(
         if setting == "NATIVE_DECODERS"
         else "ProcessIsolation.NONE (not recommended for files you do not trust)"
     )
-    error = ResourceLimitError(
+    error = ResourceUnavailableError(
         f"{reason}. process_isolation={setting} decodes this only in a child "
         f"process; use {instead} to decode it in this process."
     )

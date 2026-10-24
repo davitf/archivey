@@ -6,7 +6,11 @@ import os
 from typing import BinaryIO, NoReturn, Protocol
 
 from archivey.config import DecoderLimits, ProcessIsolation
-from archivey.exceptions import CorruptionError, ResourceLimitError, TruncatedError
+from archivey.exceptions import (
+    CorruptionError,
+    ResourceUnavailableError,
+    TruncatedError,
+)
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.streams.codecs.decoder_child import (
     DecoderChildStartError,
@@ -230,7 +234,7 @@ class PpmdDecoder(BaseDecoder):
         # nothing on the decode path calls the native decoder. Teardown still does:
         # ``_quiesce_worker`` sends its bounded NUL in exactly this state.
         self._exhausted = False
-        # Every member decodes in a child process, or ``ResourceLimitError`` where
+        # Every member decodes in a child process, or ``ResourceUnavailableError`` where
         # none can start, unless ``isolation`` is ``NONE``.
         self._isolation = isolation
         self._in_child = isolation is not ProcessIsolation.NONE
@@ -248,7 +252,7 @@ class PpmdDecoder(BaseDecoder):
         # (``drains_after_flush``), then calls ``flush`` again.
         self._draining = False
         # Set when a member was refused (no child process could start): every later
-        # ``feed`` and ``flush`` raises ``ResourceLimitError`` again, since there is
+        # ``feed`` and ``flush`` raises ``ResourceUnavailableError`` again, since there is
         # no decoder to go on with.
         self._refusal: str | None = None
         self._decomp: _PpmdNativeDecoder | None = None
@@ -522,11 +526,11 @@ class PpmdDecoder(BaseDecoder):
         """Refuse this member for good; see ``_refusal``."""
         self._refusal = reason
         self._held = None
-        raise ResourceLimitError(reason) from cause
+        raise ResourceUnavailableError(reason) from cause
 
     def _check_refusal(self) -> None:
         if self._refusal is not None:
-            raise ResourceLimitError(self._refusal)
+            raise ResourceUnavailableError(self._refusal)
 
     def _release_to_child(self) -> bytes:
         reason = (

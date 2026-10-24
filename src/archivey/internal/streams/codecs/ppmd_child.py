@@ -20,7 +20,7 @@ cleanly: ``PpmdDecoder`` calls ``spoil`` otherwise.
 
 from __future__ import annotations
 
-from archivey.exceptions import ResourceLimitError
+from archivey.exceptions import ResourceUnavailableError
 from archivey.internal.streams.child_process import describe_exit
 from archivey.internal.streams.codecs.decoder_child import (
     DecoderChild,
@@ -68,7 +68,7 @@ class _PpmdChild(DecoderChild):
             exc = _allocation_error(self._mem_size, str(exc) or "MemoryError")
         if isinstance(exc, PpmdChildAllocationError):
             # The words ``PpmdDecoder`` uses when the first child cannot allocate it.
-            return ResourceLimitError(f"Decoder limit reached: {exc}")
+            return ResourceUnavailableError(f"Decoder limit reached: {exc}")
         return super()._fresh_child_error(exc)
 
     def _death_error(self, returncode: int | None) -> Exception:
