@@ -17,13 +17,14 @@ Other pages own parts of this, and this page links them rather than repeating th
   is [`docs/security.md`](../../docs/security.md#decoders-in-a-child-process).
 - The measurements are in
   [`investigations/process-isolation-overhead.md`](../investigations/process-isolation-overhead.md).
-  This page gives no numbers ([`formats/README.md`](../formats/README.md)).
+  This page gives no performance numbers ([`formats/README.md`](../formats/README.md)).
 
 ## At a glance
 
-- **Three settings.** `KNOWN_CRASHES` (the default) isolates only the decoders that have
-  been seen to crash: rapidgzip (`use_rapidgzip`, `use_indexed_bzip2`) and pyppmd (every
-  PPMd member). `NATIVE_DECODERS` also isolates zlib, bz2, lzma, zstd, lz4, brotli and
+- **Three settings.** `KNOWN_CRASHES` (the default) isolates the decoders that have been
+  seen to crash, rapidgzip's DEFLATE family (`use_rapidgzip`) and pyppmd (every PPMd
+  member), and rapidgzip's bzip2 decoder (`use_indexed_bzip2`) as a precaution, because
+  it comes from the same library. `NATIVE_DECODERS` also isolates zlib, bz2, lzma, zstd, lz4, brotli and
   inflate64, and the trial decodes that detection runs. `NONE` starts no child: pyppmd
   decodes in this process, and rapidgzip is not used at all (`AUTO` falls back to the
   standard library, and `ON` is refused when the config is built).
@@ -43,6 +44,9 @@ Other pages own parts of this, and this page links them rather than repeating th
     (threat model §"Accelerators on by default, and unbounded in time").
   - A sandbox. The child runs with the caller's user, filesystem and network. It is a
     crash boundary, not a privilege boundary.
+  - The RAR helper program. `unrar` or `unar` runs as a separate process under every
+    setting, `NONE` included; its exits are classified on their own
+    ([`formats/rar.md`](../formats/rar.md) §2.3).
   - Isolation chosen per codec. The setting picks a set of decoders; there is no list to
     pass.
 
@@ -52,8 +56,11 @@ Other pages own parts of this, and this page links them rather than repeating th
   the default because it has crashed the process on some input, and nothing at the
   Python level can avoid that state in every case. Being written in C or C++ is not a
   reason by itself: the standard library's decoders are native and stay in-process.
-  `scripts/accelerator_crash_search.py` keeps checking whether rapidgzip still needs its
-  child, so the rule can be undone when upstream is fixed.
+  The one exception is rapidgzip's bzip2 decoder, which has not been seen to crash: it is
+  isolated as a precaution, because it comes from the same library as the DEFLATE decoder
+  ([`formats/bzip2.md`](../formats/bzip2.md) §6). `scripts/accelerator_crash_search.py`
+  keeps checking both rapidgzip decoders, so the rule can be undone when upstream is
+  fixed.
 - **Two kinds of child, because the decoders take input in two ways.** A stream decoder
   (zlib, bz2, lzma, zstd, lz4, brotli, inflate64, pyppmd) is pushed input and returns
   output: the generic child (`codecs/decoder_child.py`) runs that object and nothing
@@ -220,8 +227,8 @@ cap, no temporary directory, too many open files).
 
 | Decoder | Then |
 | --- | --- |
-| PPMd under `KNOWN_CRASHES` or `NATIVE_DECODERS` | `ResourceLimitError`, which names `NONE` as the way to decode in-process |
-| Any decoder under `NATIVE_DECODERS` | `ResourceLimitError`, which names `KNOWN_CRASHES` |
+| PPMd under `KNOWN_CRASHES` | `ResourceLimitError`, which names `NONE` as the way to decode in-process |
+| Any decoder under `NATIVE_DECODERS`, PPMd included | `ResourceLimitError`, which names `KNOWN_CRASHES` (for PPMd that advice does not help, §4) |
 | rapidgzip under `AUTO` | The standard library, with one warning per process on `archivey.streams` |
 | rapidgzip under `ON` | `ResourceLimitError` |
 
@@ -270,13 +277,15 @@ this section says what each cost comes from.
 | A loop on crafted input in a child never ends | **library** | No timeout (§At a glance). Set the accelerators `OFF` for a latency budget |
 | A PPMd member raises `ResourceLimitError` in a frozen application or under a spawn limit | **archivey** | By design: it does not decode in-process unless `NONE` is set (§2.6) |
 | `use_rapidgzip=ON` with `process_isolation=NONE` raises `ArchiveyUsageError` when the config is built | **archivey** | rapidgzip runs only in a child (§At a glance) |
-| A member stream used after `fork` raises `ArchiveyUsageError` | **archivey** | Its child belongs to the parent process (§2.2). Open the member again in the forked process |
+| A member stream used after `fork` raises `ArchiveyUsageError` when its decoder is in a generic child | **archivey** | Its child belongs to the parent process (§2.2). Open the member again in the forked process. A stream decoded by a rapidgzip child has no such check: only its pool knows its process, and what a read in the fork does is not tested |
+| Under `NATIVE_DECODERS` where no child can start, a PPMd member's `ResourceLimitError` advises `KNOWN_CRASHES`, which refuses the member the same way | **archivey** | `isolation_error` picks the advice from the setting, not from the decoder. Only `NONE` decodes PPMd in this process (§2.6) |
 | Under PyPy, a reader that is never closed holds its children until a collection | **library** (PyPy) | Close readers; the readers already release replaced decoders (§2.2) |
 | A rapidgzip child is not reused on macOS or Windows | **archivey** | Its memory peak cannot be reset there (§2.3). Windows has no file-range path at all |
 
 ## 5. Decisions
 
-- **Isolate by observed crash, not by "native".** Rejected: isolating every native decoder
+- **Isolate by observed crash, not by "native".** The bzip2 accelerator is the one
+  precaution, for its shared library (§1). Rejected: isolating every native decoder
   by default. The cost is large for the fast codecs, and the standard library's decoders
   have no known crash. `NATIVE_DECODERS` is there for callers who want it.
 - **PPMd always in a child, not only above a size** (ADR 0022). Rejected: in-process up to
@@ -300,10 +309,14 @@ this section says what each cost comes from.
   remove the second decode (§3). It needs a careful design, because the check is what
   refuses trailing bytes after a member.
 - **Does rapidgzip still crash?** `scripts/accelerator_crash_search.py` answers it. A run
-  with no crash over a new release would let the DEFLATE family come back in-process.
-- **Planned, not built.** On a free-threaded build with the GIL off, brotli
-  and inflate64 would go to a child under the default, because importing them turns the
-  GIL back on. That changes where they run, not the crash boundary.
+  with no crash over a new release would let the DEFLATE family come back in-process,
+  and with it the bzip2 decoder, which is isolated only because the DEFLATE one is.
+- **Where should brotli and inflate64 run on a free-threaded build?** Importing them turns
+  the GIL back on. Today the default only defers the import until a stream needs them
+  (`codecs/deps.py`, `LazyOptional`); `NATIVE_DECODERS` keeps them out of the parent.
+  Running them in a child under the default with the GIL off would keep it off, at the
+  cost of the copy (§3). It would be the first isolation for a reason other than a crash.
+  A proposal exists and is tracked internally; nothing is built.
 
 ## 7. Verify
 

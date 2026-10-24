@@ -14,7 +14,7 @@ For a format or topic that has no page yet, point briefs at
 Formats:
 
 - [`zip.md`](zip.md) — the first page, and the worked example for the shape below.
-- [`rar.md`](rar.md) — the only format whose read path crosses a process boundary.
+- [`rar.md`](rar.md) — the only format whose read path runs an external program.
 - [`7z.md`](7z.md) — the format whose header is a decode program.
 - [`tar.md`](tar.md) — no index, archivey's own header walker, and how archivey decides
   why a walk ended.
