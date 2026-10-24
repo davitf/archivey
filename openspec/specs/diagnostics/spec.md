@@ -14,7 +14,7 @@ detection, readers, streams, and extraction.
 | `format-detection` | Standalone `FormatInfo.diagnostics`; open handoff of one collector |
 | `safe-extraction` | Extraction report ranges over the shared collector |
 | `access-mode-and-cost` | Runtime events must not mutate `CostReceipt` |
-| `logging` | WARNING projection; handlers run unlocked |
+| `logging` | Log-record projection (WARNING, or INFO for the codes `_INFO_LOG_CODES` names); handlers run unlocked |
 | `reader-concurrency` | Callbacks / providers hold no Archivey locks |
 
 ## Requirements
@@ -300,7 +300,7 @@ disposition) and a single code where a set was meant. There SHALL be no
 default disposition other than `COLLECT`: "raise on everything but X" is
 `raise_on=frozenset(DiagnosticCode) - {X}`.
 
-| Disposition | Counts | Retain/attach | WARNING log | Callback | Raise |
+| Disposition | Counts | Retain/attach | Log record | Callback | Raise |
 | --- | --- | --- | --- | --- | --- |
 | `IGNORE` | yes | no | no | no | no |
 | `COLLECT` | yes | budget permitting | yes | if configured | no |
@@ -309,7 +309,9 @@ default disposition other than `COLLECT`: "raise on everything but X" is
 Per event: validate typed payload → resolve policy → under collector lock allocate
 id, build immutable value, update counts/retention → **release all locks** → log →
 synchronous callback on calling thread → escalate. Logs/callbacks see
-already-updated state, in emission order.
+already-updated state, in emission order. The log record is WARNING, except for the codes
+in `archivey.diagnostics._INFO_LOG_CODES`, which log at INFO: they report the caller's
+access pattern rather than the archive (`logging` spec).
 
 | Failure | Behavior |
 | --- | --- |
@@ -377,8 +379,8 @@ same machine meaning; typed context distinguishes variants.
 
 **No advisory SHALL be log-only.** Every condition the library reports as advice to
 the caller SHALL be emitted through the central diagnostic path with a code, so it is
-queryable on `reader.diagnostics` and escalatable by `DiagnosticPolicy`; the WARNING
-log line is the projection of that emission, never a substitute for it.
+queryable on `reader.diagnostics` and escalatable by `DiagnosticPolicy`; the log
+record is the projection of that emission, never a substitute for it.
 
 That rule is a floor. The following two clauses are its ceiling, and a proposed code
 SHALL satisfy both.

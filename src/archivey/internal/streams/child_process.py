@@ -206,6 +206,31 @@ def outside_death(returncode: int | None, what: str) -> tuple[type[ArchiveyError
     )
 
 
+# Set on an error that says nothing about the data a decoder child was given: the child
+# ended from outside (:func:`outside_death_error`) or could not start. Read by the seek
+# index check, which drops an index only for a verdict on the data
+# (``decompressor_stream._is_data_verdict``).
+_NO_VERDICT = "_archivey_no_verdict_on_the_data"
+
+
+def mark_no_verdict(exc: ArchiveyError) -> ArchiveyError:
+    """``exc``, marked as no verdict on the data (:func:`is_no_verdict`)."""
+    setattr(exc, _NO_VERDICT, True)
+    return exc
+
+
+def is_no_verdict(exc: BaseException) -> bool:
+    """Whether ``exc`` was marked by :func:`mark_no_verdict`."""
+    return getattr(exc, _NO_VERDICT, False) is True
+
+
+def outside_death_error(returncode: int | None, what: str) -> ArchiveyError:
+    """The error :func:`outside_death` describes, built and marked as no verdict on the
+    data (:func:`mark_no_verdict`)."""
+    cls, message = outside_death(returncode, what)
+    return mark_no_verdict(cls(message))
+
+
 def describe_exit(returncode: int | None) -> str:
     """How a child ended, for an error message: a signal name or an exit status."""
     if returncode is None:

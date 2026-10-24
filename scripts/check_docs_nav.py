@@ -11,7 +11,7 @@ the nav" means "published to nobody on purpose", which is never what anyone mean
 
 **Every absolute URL resolves — repo links and site links alike.** Published
 pages must not link into unpublished maintainer docs; where the depth is worth
-keeping, the link is an absolute `github.com/davitf/archivey/blob/main/…` URL
+keeping, the link is an absolute `github.com/archivey-dev/archivey/blob/main/…` URL
 instead. Those URLs point at files this repository moves around, and nothing in a
 docs build looks at them — so they rot silently, which is the exact failure this
 whole reorganization exists to fix. Checking them offline costs nothing: the target
@@ -58,7 +58,7 @@ MKDOCS_YML = ROOT / "mkdocs.yml"
 # not to a tag: someone following one wants the current state of that document.
 # `tree/` for directories, `blob/` for files — both name a repo-relative path.
 REPO_URL = re.compile(
-    r"https://github\.com/davitf/archivey/(?:blob|tree)/main/([^)\s\"'#]+)"
+    r"https://github\.com/archivey-dev/archivey/(?:blob|tree)/main/([^)\s\"'#]+)"
 )
 
 # Absolute links to the published site itself. These are the ones that freeze forever
@@ -67,7 +67,7 @@ REPO_URL = re.compile(
 # `.../archivey/usage/` and nothing caught it, because the check below originally
 # covered only repo URLs. A site URL maps to a page by its slug: `/archivey/formats/`
 # is `docs/formats.md`.
-SITE_URL = re.compile(r"https://davitf\.github\.io/archivey/([a-z0-9-]*)/")
+SITE_URL = re.compile(r"https://archivey-dev\.github\.io/archivey/([a-z0-9-]*)/")
 
 # Markdown links to another page in the tree, or to a section of this one. Absolute
 # URLs are excluded by requiring the target to not contain a colon; the two patterns
@@ -207,14 +207,14 @@ def main() -> int:
             if not (ROOT / target).exists():
                 problems.append(
                     f"{source.relative_to(ROOT)} links "
-                    f"github.com/davitf/archivey/…/{target}, which is not in this repo."
+                    f"github.com/archivey-dev/archivey/…/{target}, which is not in this repo."
                 )
         for slug in sorted(set(SITE_URL.findall(text))):
             if not slug:  # the site root
                 continue
             if f"{slug}.md" not in on_disk:
                 problems.append(
-                    f"{source.relative_to(ROOT)} links davitf.github.io/archivey/{slug}/, "
+                    f"{source.relative_to(ROOT)} links archivey-dev.github.io/archivey/{slug}/, "
                     f"but docs/{slug}.md does not exist — that URL 404s."
                 )
 

@@ -35,6 +35,7 @@ from archivey.internal.streams.archive_stream import (
     RewindWarning,
 )
 from archivey.internal.streams.codecs.arm64_filter import FILTER_ARM64
+from archivey.internal.streams.codecs.riscv_filter import FILTER_RISCV
 from archivey.internal.streams.decompressor_stream import truncated_message
 from archivey.types import (
     ArchiveFormat,
@@ -82,10 +83,11 @@ class Codec(Enum):
     BCJ_SPARC = "bcj_sparc"
     BCJ_IA64 = "bcj_ia64"
     BCJ_ARM64 = "bcj_arm64"
+    BCJ_RISCV = "bcj_riscv"
 
 
-# liblzma raw-filter ids for the filter-only codecs. Each one but ARM64 can join a 7z
-# raw liblzma chain; ARM64 is decoded in Python (see sevenzip_pipeline).
+# liblzma raw-filter ids for the filter-only codecs. Each one but ARM64 and RISC-V can
+# join a 7z raw liblzma chain; those two are decoded in Python (see sevenzip_pipeline).
 LZMA_FILTER_IDS: dict[Codec, int] = {
     Codec.DELTA: lzma.FILTER_DELTA,
     Codec.BCJ_X86: lzma.FILTER_X86,
@@ -94,8 +96,9 @@ LZMA_FILTER_IDS: dict[Codec, int] = {
     Codec.BCJ_PPC: lzma.FILTER_POWERPC,
     Codec.BCJ_SPARC: lzma.FILTER_SPARC,
     Codec.BCJ_IA64: lzma.FILTER_IA64,
-    # liblzma's id; Python's lzma refuses it, so archivey decodes it in Python.
+    # liblzma's ids; Python's lzma refuses them, so archivey decodes them in Python.
     Codec.BCJ_ARM64: FILTER_ARM64,
+    Codec.BCJ_RISCV: FILTER_RISCV,
 }
 
 
@@ -121,13 +124,15 @@ class CodecParams:
       ``PpmdDecoder.feed`` (not an enclosing member size). Gates post-eof empty
       drains; when omitted, PPMd recovery stays conservative (single capped NUL only).
     - ``single_stream`` — the coder's data is one stream of its codec: a bzip2 ZIP
-      member or 7z coder, a Zstd ZIP member. The decoder ends at the first stream's
-      end rather than reading a further stream (a Zstd frame) as a concatenated
-      file's, so a further stream is input after the end, which a
+      member or 7z coder. The decoder ends at the first stream's end rather than
+      reading a further stream as a concatenated file's, so a further stream is
+      input after the end, which a
       ``refuse_input_after_end`` stream refuses. Under the bzip2 accelerator, which
       reads on into a further stream, the read hands over to the standard library
-      where one starts (``bzip2_codec._Bzip2Layout``). A 7z Zstd or LZ4 coder does
-      not set it: there concatenated frames count together against the unpack size.
+      where one starts (``bzip2_codec._Bzip2Layout``). A Zstd ZIP member and a 7z
+      Zstd or LZ4 coder do not set it: there concatenated frames count together
+      against the declared size, as RFC 8878 defines Zstd data as one or more frames
+      and the LZ4 frame format lets frames be appended.
       Raw LZMA1/LZMA2 needs no flag: it is container-only and always ends at its first
       end marker, refusing any input after it.
     - ``input_runs_on`` — the source does not end where the coder's data does: a ZIP

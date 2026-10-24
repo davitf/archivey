@@ -1826,45 +1826,45 @@ def test_open_codec_stream_hands_the_collector_to_a_unix_compress_stream(
 # --- accelerator backends present / absent ---------------------------------------------
 
 
-def test_gzip_accelerator_off_warns_on_rewind_but_still_seeks(
+def test_gzip_accelerator_off_reports_a_rewind_but_still_seeks(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """With the accelerator OFF, gzip still seeks (slowly); a rewind logs one warning.
+    """With the accelerator OFF, gzip still seeks (slowly); a rewind is reported once.
 
     Forward consumption and forward seeks stay quiet — only a backward seek, which
-    re-decompresses from the start, triggers the warning.
+    re-decompresses from the start, is reported.
     """
     config = StreamConfig(use_rapidgzip=AcceleratorMode.OFF, seekable=True)
     compressed = gzip.compress(REWIND_CONTENT)
     with open_codec_stream(Codec.GZIP, io.BytesIO(compressed), config=config) as stream:
-        with caplog.at_level("WARNING", logger="archivey.streams"):
+        with caplog.at_level("INFO", logger="archivey.streams"):
             assert stream.read(REWIND_READ) == REWIND_CONTENT[:REWIND_READ]
             assert (
                 stream.seek(REWIND_READ + 100) == REWIND_READ + 100
-            )  # forward seek: no rewind, no warning
+            )  # forward seek: no rewind, no report
             assert (
                 stream.read(10) == REWIND_CONTENT[REWIND_READ + 100 : REWIND_READ + 110]
             )
         assert not caplog.records
 
-        with caplog.at_level("WARNING", logger="archivey.streams"):
+        with caplog.at_level("INFO", logger="archivey.streams"):
             assert stream.seek(0) == 0  # rewind → slow re-decompression
             assert stream.read(10) == REWIND_CONTENT[:10]  # still returns correct data
     assert sum("re-decompresses" in r.getMessage() for r in caplog.records) == 1
     assert any("rapidgzip" in r.getMessage() for r in caplog.records)
 
 
-def test_bzip2_accelerator_off_warns_on_rewind(
+def test_bzip2_accelerator_off_reports_a_rewind(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """The bz2 stdlib path mirrors gzip: a rewind warns and still seeks."""
+    """The bz2 stdlib path mirrors gzip: a rewind is reported and still seeks."""
     config = StreamConfig(use_indexed_bzip2=AcceleratorMode.OFF, seekable=True)
     compressed = bz2.compress(REWIND_CONTENT)
     with open_codec_stream(
         Codec.BZIP2, io.BytesIO(compressed), config=config
     ) as stream:
         assert stream.read(REWIND_READ) == REWIND_CONTENT[:REWIND_READ]
-        with caplog.at_level("WARNING", logger="archivey.streams"):
+        with caplog.at_level("INFO", logger="archivey.streams"):
             assert stream.seek(0) == 0
             assert stream.read(10) == REWIND_CONTENT[:10]
     (message,) = [r.getMessage() for r in caplog.records]
@@ -1873,34 +1873,34 @@ def test_bzip2_accelerator_off_warns_on_rewind(
     assert "Decoding restarts from the start of the stream" in message
 
 
-# --- forward-only codecs without an accelerator: warn (generically) on a rewind ---------
+# --- forward-only codecs without an accelerator: report a rewind (generically) -------
 
 
-def test_zlib_warns_on_rewind(caplog: pytest.LogCaptureFixture) -> None:
-    """Stdlib-fallback zlib: a rewind warns and names the ``[seekable]`` accelerator."""
-    # Force stdlib (OFF) so the warning path is deterministic regardless of payload size /
-    # whether rapidgzip is installed — the accelerator path itself emits no rewind warning.
+def test_zlib_reports_a_rewind(caplog: pytest.LogCaptureFixture) -> None:
+    """Stdlib-fallback zlib: a rewind is reported and names the ``[seekable]`` accelerator."""
+    # Force stdlib (OFF) so the report path is deterministic regardless of payload size /
+    # whether rapidgzip is installed — the accelerator path itself emits no rewind report.
     compressed = zlib.compress(REWIND_CONTENT)
     config = StreamConfig(use_rapidgzip=AcceleratorMode.OFF, seekable=True)
     with open_codec_stream(Codec.ZLIB, io.BytesIO(compressed), config=config) as stream:
-        with caplog.at_level("WARNING", logger="archivey.streams"):
+        with caplog.at_level("INFO", logger="archivey.streams"):
             assert stream.read(REWIND_READ) == REWIND_CONTENT[:REWIND_READ]
             assert (
                 stream.seek(REWIND_READ + 100) == REWIND_READ + 100
-            )  # forward seek: no warning
+            )  # forward seek: no report
             assert (
                 stream.read(10) == REWIND_CONTENT[REWIND_READ + 100 : REWIND_READ + 110]
             )
         assert not caplog.records
 
-        with caplog.at_level("WARNING", logger="archivey.streams"):
+        with caplog.at_level("INFO", logger="archivey.streams"):
             assert stream.seek(0) == 0  # rewind → re-decode from start
             assert stream.read(10) == REWIND_CONTENT[:10]  # still correct
     msgs = [r.getMessage() for r in caplog.records]
     assert sum("rapidgzip" in m and "re-decompresses" in m for m in msgs) == 1
 
 
-def test_deflate_warns_on_rewind(caplog: pytest.LogCaptureFixture) -> None:
+def test_deflate_reports_a_rewind(caplog: pytest.LogCaptureFixture) -> None:
     """Stdlib-fallback raw deflate names the rapidgzip accelerator on rewind."""
     co = zlib.compressobj(wbits=-15)
     compressed = co.compress(REWIND_CONTENT) + co.flush()
@@ -1909,7 +1909,7 @@ def test_deflate_warns_on_rewind(caplog: pytest.LogCaptureFixture) -> None:
         Codec.DEFLATE, io.BytesIO(compressed), config=config
     ) as stream:
         assert stream.read(REWIND_READ) == REWIND_CONTENT[:REWIND_READ]
-        with caplog.at_level("WARNING", logger="archivey.streams"):
+        with caplog.at_level("INFO", logger="archivey.streams"):
             assert stream.seek(0) == 0
             assert stream.read(10) == REWIND_CONTENT[:10]
     assert (
@@ -1922,7 +1922,7 @@ def test_deflate_warns_on_rewind(caplog: pytest.LogCaptureFixture) -> None:
 
 
 @requires("brotli")
-def test_brotli_warns_on_rewind(caplog: pytest.LogCaptureFixture) -> None:
+def test_brotli_reports_a_rewind(caplog: pytest.LogCaptureFixture) -> None:
     import brotli
 
     compressed = brotli.compress(REWIND_CONTENT)
@@ -1930,7 +1930,7 @@ def test_brotli_warns_on_rewind(caplog: pytest.LogCaptureFixture) -> None:
         Codec.BROTLI, io.BytesIO(compressed), config=StreamConfig(seekable=True)
     ) as stream:
         assert stream.read(REWIND_READ) == REWIND_CONTENT[:REWIND_READ]
-        with caplog.at_level("WARNING", logger="archivey.streams"):
+        with caplog.at_level("INFO", logger="archivey.streams"):
             assert stream.seek(0) == 0
             assert stream.read(10) == REWIND_CONTENT[:10]
     assert (
@@ -1943,7 +1943,7 @@ def test_brotli_warns_on_rewind(caplog: pytest.LogCaptureFixture) -> None:
 
 
 @requires("lz4")
-def test_lz4_warns_on_rewind(caplog: pytest.LogCaptureFixture) -> None:
+def test_lz4_reports_a_rewind(caplog: pytest.LogCaptureFixture) -> None:
     import lz4.frame
 
     compressed = lz4.frame.compress(REWIND_CONTENT)
@@ -1951,7 +1951,7 @@ def test_lz4_warns_on_rewind(caplog: pytest.LogCaptureFixture) -> None:
         Codec.LZ4, io.BytesIO(compressed), config=StreamConfig(seekable=True)
     ) as stream:
         assert stream.read(REWIND_READ) == REWIND_CONTENT[:REWIND_READ]
-        with caplog.at_level("WARNING", logger="archivey.streams"):
+        with caplog.at_level("INFO", logger="archivey.streams"):
             assert stream.seek(0) == 0
             assert stream.read(10) == REWIND_CONTENT[:10]
     assert (
@@ -1980,7 +1980,7 @@ def _resume_point_rewind_messages(
         codec, io.BytesIO(compressed), config=StreamConfig(seekable=True)
     ) as stream:
         assert stream.read() == REWIND_CONTENT
-        with caplog.at_level("WARNING", logger="archivey.streams"):
+        with caplog.at_level("INFO", logger="archivey.streams"):
             assert stream.seek(target) == target
         assert stream.read(10) == REWIND_CONTENT[target : target + 10]
     return [r.getMessage() for r in caplog.records]
@@ -2034,23 +2034,23 @@ def test_multi_block_xz_rewind_message_names_the_resume_point(
 
 
 @requires_zstd()
-def test_zstd_rewinds_and_warns_on_backward_seek(
+def test_zstd_rewinds_and_reports_a_backward_seek(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """zstd has no index; a backward seek re-decompresses from the start and warns once."""
+    """zstd has no index; a backward seek re-decompresses from the start and reports it once."""
     zstd = zstd_backend()
     compressed = zstd.compress(REWIND_CONTENT)
     with open_codec_stream(
         Codec.ZSTD, io.BytesIO(compressed), config=StreamConfig(seekable=True)
     ) as stream:
-        with caplog.at_level("WARNING", logger="archivey.streams"):
+        with caplog.at_level("INFO", logger="archivey.streams"):
             assert stream.read(REWIND_READ) == REWIND_CONTENT[:REWIND_READ]
             ahead = REWIND_READ + 300
-            assert stream.seek(ahead) == ahead  # forward: no rewind, no warning
+            assert stream.seek(ahead) == ahead  # forward: no rewind, no report
             assert stream.read(10) == REWIND_CONTENT[ahead : ahead + 10]
         assert not caplog.records
 
-        with caplog.at_level("WARNING", logger="archivey.streams"):
+        with caplog.at_level("INFO", logger="archivey.streams"):
             assert stream.seek(0) == 0  # backward → re-decode from start
             assert stream.read(REWIND_READ) == REWIND_CONTENT[:REWIND_READ]
     assert (
