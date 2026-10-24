@@ -263,8 +263,8 @@ Linear fits from the two sweeps (member count at a fixed 32 MiB; size at a fixed
   full read of 1 MiB 94 → 68 ms). The remaining ~20 ms of the open is something else,
   not traced.
 - **ZIP members are slow through rapidgzip even without the process.** A ZIP member
-  was handed to rapidgzip as a stream, never a path (on POSIX it is now a file range,
-  PR #1024). In the child, rapidgzip's threads
+  was handed to rapidgzip as a stream, never a path (since PR #1024 it is a file range on
+  POSIX; the stream path remains for Windows, encrypted members and measured sources). In the child, rapidgzip's threads
   ask the parent for each read and seek: 152 source reads and 154 seeks for one 32 MiB
   member. In-process the per-MiB cost is also above the stdlib's (11 to 17 vs
   7 ms/MiB), so a pool alone would not make ON win for ZIP. **Correction (follow-up, same day):** this is not Python callbacks as such. On the same 32 MiB member,
