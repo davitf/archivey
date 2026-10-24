@@ -33,7 +33,7 @@ Python library for reading, streaming, and safely extracting archives (ZIP, TAR,
 
 The API is not frozen until 1.0, but no large changes are expected. Until then, a removed or
 renamed name warns for one minor release before it goes ([versioning and
-stability](https://davitf.github.io/archivey/how-it-is-built/#versioning-and-stability)).
+stability](https://archivey-dev.github.io/archivey/how-it-is-built/#versioning-and-stability)).
 
 ## Install and use
 

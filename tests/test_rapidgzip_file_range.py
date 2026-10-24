@@ -463,3 +463,59 @@ def test_a_child_is_retired_after_its_last_stream(
         with r.open("c.bin") as stream:
             assert stream.read() == _DATA
         assert len(started) == 2
+
+
+@posix_only
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="needs os.fork")
+def test_a_forked_process_leaves_its_parents_child_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A process created by ``fork`` that inherits an open member stream neither talks
+    to the parent's rapidgzip child through the inherited pipes nor ends it at close:
+    a read there raises ``ArchiveyUsageError``, and the parent reads on."""
+    pytest.importorskip("rapidgzip")
+    children: list[rapidgzip_child.RapidgzipChildStream] = []
+    init = rapidgzip_child.RapidgzipChildStream.__init__
+
+    def spy(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        children.append(self)
+        init(self, *args, **kwargs)
+
+    monkeypatch.setattr(rapidgzip_child.RapidgzipChildStream, "__init__", spy)
+    with (
+        open_archive(
+            _zip(tmp_path, zipfile.ZIP_DEFLATED), config=_ON, seekable_members=True
+        ) as r,
+        r.open("data.bin") as stream,
+    ):
+        (child,) = children
+        # The first read leaves no read-ahead behind, so the fork's read would be a
+        # round trip on the parent's pipes; the refusal comes before the buffer anyway.
+        first = stream.read(1000)
+        read_fd, write_fd = os.pipe()
+        pid = os.fork()
+        if pid == 0:  # pragma: no cover - runs in the forked process
+            outcomes = []
+            try:
+                for name, call in (
+                    ("read", lambda: stream.read(1000)),
+                    ("position", child.compressed_position),
+                    ("offsets", child.available_block_offsets),
+                    ("close", lambda: (stream.close(), r.close())),
+                ):
+                    try:
+                        call()
+                        outcomes.append(f"{name}:ok")
+                    except Exception as exc:  # noqa: BLE001 - reported to the parent
+                        outcomes.append(f"{name}:{type(exc).__name__}")
+            finally:
+                os.write(write_fd, ",".join(outcomes).encode())
+                os._exit(0)
+        os.close(write_fd)
+        os.waitpid(pid, 0)
+        assert os.read(read_fd, 200) == (
+            b"read:ArchiveyUsageError,position:ArchiveyUsageError,"
+            b"offsets:ArchiveyUsageError,close:ok"
+        )
+        os.close(read_fd)
+        assert first + stream.read() == _DATA

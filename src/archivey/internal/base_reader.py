@@ -3714,11 +3714,17 @@ class BaseArchiveReader(ArchiveReader):
     def close(self) -> None:
         """Close the reader.
 
-        Idempotent. With declared concurrency, blocks until in-flight worker
-        ``open()`` / ``read()`` / ``get()`` / ``members()`` calls return, then marks the
-        reader closed. Still-open member streams are then closed, matching
-        ``zipfile.ZipFile.close()`` / ``tarfile.TarFile.close()``: a member stream does
-        not outlive the reader it came from.
+        Idempotent. With declared concurrency, blocks until in-flight worker ``open()``
+        / ``get()`` / ``members()`` calls return (``read()`` is one only while it opens
+        the member), then marks the reader closed. Still-open member streams are then
+        closed, matching ``zipfile.ZipFile.close()`` / ``tarfile.TarFile.close()``: a
+        member stream does not outlive the reader it came from.
+
+        In both modes, a member stream's own ``read()`` is not a worker call:
+        ``close()`` closes the stream under it, and the stream's next ``read()`` raises
+        ``ValueError``, as for any closed file. A read already running when the stream
+        closes returns what it had or raises the same ``ValueError``, never a damage
+        error.
 
         Without ``CONCURRENT``, ``close()`` still raises if a worker call or reader-wide
         pass is actively executing, and the reader stays open. A ``stream_members()`` or
