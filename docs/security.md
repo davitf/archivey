@@ -122,7 +122,7 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
         The crashes seen so far are in rapidgzip's DEFLATE decoder. Its bzip2 decoder hasn't been
         seen to crash, but it runs in a separate process too as a precaution, since it's part of the
         same library. Archivey's fuzz tests run both and compare their output with the standard
-        decoders. Starting that process takes about 45 ms. On a full read, rapidgzip saves about 3.4
+        decoders. Starting that process takes about 45 ms; on Linux, later members of the same archive file reuse it and skip that cost. On a full read, rapidgzip saves about 3.4
         ms per MB of compressed DEFLATE data, so it pays for itself from about 13 MB, and 16 MiB
         keeps it safely past that point. The standard library decodes bzip2 much more slowly, so
         there the process pays for itself between about 0.6 and 2 MiB, depending on how many cores

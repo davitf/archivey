@@ -676,13 +676,18 @@ class ArchiveyConfig:
     decompressed size can be verified, so a truncated stream cannot be swallowed
     silently.
 
-    rapidgzip runs in a child Python process, one per open stream, because it aborts the
-    process on a stream that ends early; that costs about 45 ms per stream to start and
-    open, which is why the ``AUTO`` threshold is 16 MiB. Where no child can be started
-    (a frozen application, archivey imported from a zip, or a spawn or temporary file
-    the operating system refuses), ``AUTO`` uses the standard library, logging one
-    warning per process on the ``archivey.streams`` logger, and ``ON`` raises
-    :class:`~archivey.exceptions.ResourceLimitError`. ``OFF`` never starts a child.
+    rapidgzip runs in a child Python process, because it aborts the process on a stream
+    that ends early; starting one costs about 45 ms, which is why the ``AUTO`` threshold
+    is 16 MiB. Each open stream has a child of its own. On Linux, the members of one
+    archive file on disk reuse children: a member whose stream closed without an error
+    hands its child to the next one, which skips the start. A reused child counts what
+    earlier members left in its memory against ``max_decoder_memory``, so one that kept
+    more than a quarter of the cap is not reused. Those children end when the archive
+    closes. Where no child can be started (a frozen application, archivey imported from
+    a zip, or a spawn or temporary file the operating system refuses), ``AUTO`` uses the
+    standard library, logging one warning per process on the ``archivey.streams``
+    logger, and ``ON`` raises :class:`~archivey.exceptions.ResourceLimitError`.
+    ``OFF`` never starts a child.
     """
 
     use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO
@@ -690,12 +695,12 @@ class ArchiveyConfig:
 
     Under ``AUTO`` it is used only when the compressed input is known to be at least
     ``INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE`` bytes (or its size is unknown). Like the
-    gzip decoder, it runs in a child Python process, one per open stream. No crash has
-    been seen in it; it is isolated as a precaution, because it comes from the same
-    library as the gzip decoder, which does crash on some input. Where no child can
-    be started, ``AUTO`` uses the standard library, logging one warning per process on
-    the ``archivey.streams`` logger, and ``ON`` raises
-    :class:`~archivey.exceptions.ResourceLimitError`.
+    gzip decoder, it runs in a child Python process, one per open stream, reused the same
+    way (see ``use_rapidgzip``). No crash has been seen in it; it is isolated as a
+    precaution, because it comes from the same library as the gzip decoder, which does
+    crash on some input. Where no child can be started, ``AUTO`` uses the standard
+    library, logging one warning per process on the ``archivey.streams`` logger, and
+    ``ON`` raises :class:`~archivey.exceptions.ResourceLimitError`.
     """
 
     process_isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES

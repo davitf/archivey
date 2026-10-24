@@ -322,6 +322,9 @@ class DecoderChild:
     # How a death during a request is reported: the subclass for PPMd keeps the
     # codec's own error types.
     describe = "decoder process"
+    # Whether this decoder runs in a child under every setting but ``NONE``, which
+    # decides the advice when no child can start (``isolation_error``).
+    isolated_unless_none = False
 
     def __init__(
         self,
@@ -526,7 +529,9 @@ class DecoderChild:
         """The error for a fresh child that could not be started and opened part-way
         through a member. PPMd overrides this for a model it cannot allocate."""
         if isinstance(exc, DecoderChildStartError):
-            return isolation_error(str(exc), self._setting)
+            return isolation_error(
+                str(exc), self._setting, isolated_unless_none=self.isolated_unless_none
+            )
         return exc
 
     def _death_from(self, died: _Died) -> Exception:
@@ -650,13 +655,15 @@ class DecoderChild:
 
 
 def isolation_error(
-    reason: str, setting: str = "NATIVE_DECODERS"
+    reason: str, setting: str = "NATIVE_DECODERS", *, isolated_unless_none: bool = False
 ) -> ResourceLimitError:
     """The error for a decoder that ``process_isolation`` (``setting``) runs only in a
-    child process, when no child can start."""
+    child process, when no child can start. ``isolated_unless_none``: the decoder runs
+    in a child under every setting but ``NONE`` (PPMd), so ``NONE`` is the only advice
+    that helps."""
     instead = (
         "ProcessIsolation.KNOWN_CRASHES"
-        if setting == "NATIVE_DECODERS"
+        if setting == "NATIVE_DECODERS" and not isolated_unless_none
         else "ProcessIsolation.NONE (not recommended for files you do not trust)"
     )
     error = ResourceLimitError(

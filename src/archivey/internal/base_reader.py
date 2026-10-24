@@ -105,6 +105,7 @@ from archivey.internal.reader_state import (
     LiveStreamReservation,
     ReaderState,
 )
+from archivey.internal.resource_usage import ResourceUsage, ResourceUsageRecorder
 from archivey.internal.selection import (
     CollectionSelector,
     normalize_member_selector,
@@ -671,6 +672,10 @@ class BaseArchiveReader(ArchiveReader):
         # Makes the test-and-set of ``_unconfirmed_failure_emitted`` one step.
         self._unconfirmed_failure_lock = threading.Lock()
         self._listing_tracker = ListingLimitTracker(self._config.listing_limits)
+        # How close this reader came to each reader-lifetime limit (private; read by
+        # the scan script and ``archivey extract --dry-run``).
+        self._usage = ResourceUsageRecorder()
+        self._usage.watch_listing(self._listing_tracker)
         self._forward_pass_started: bool = False
         self._progressive_gen: Iterator[ArchiveMember] | None = None
         self._closed = False
@@ -3340,6 +3345,10 @@ class BaseArchiveReader(ArchiveReader):
         finally:
             self._state.release_worker(token)
 
+    def _resource_usage(self) -> ResourceUsage:
+        """How close this reader has come to each reader-lifetime limit so far."""
+        return self._usage.snapshot()
+
     def _solid_run(self, member: ArchiveMember) -> SolidRun | None:
         """Where ``open(member)`` starts decoding, when it decodes a shared run.
 
@@ -3698,16 +3707,23 @@ class BaseArchiveReader(ArchiveReader):
             _dry_run_top_level=coordinator.dry_run_top_level,
             _dry_run_links=coordinator.dry_run_links,
             _dry_run_entries=coordinator.dry_run_entries,
+            _resource_usage=self._resource_usage(),
         )
 
     def close(self) -> None:
         """Close the reader.
 
-        Idempotent. With declared concurrency, blocks until in-flight worker
-        ``open()`` / ``read()`` / ``get()`` / ``members()`` calls return, then marks the
-        reader closed. Still-open member streams are then closed, matching
-        ``zipfile.ZipFile.close()`` / ``tarfile.TarFile.close()``: a member stream does
-        not outlive the reader it came from.
+        Idempotent. With declared concurrency, blocks until in-flight worker ``open()``
+        / ``get()`` / ``members()`` calls return (``read()`` is one only while it opens
+        the member), then marks the reader closed. Still-open member streams are then
+        closed, matching ``zipfile.ZipFile.close()`` / ``tarfile.TarFile.close()``: a
+        member stream does not outlive the reader it came from.
+
+        In both modes, a member stream's own ``read()`` is not a worker call:
+        ``close()`` closes the stream under it, and the stream's next ``read()`` raises
+        ``ValueError``, as for any closed file. A read already running when the stream
+        closes returns what it had or raises the same ``ValueError``, never a damage
+        error.
 
         Without ``CONCURRENT``, ``close()`` still raises if a worker call or reader-wide
         pass is actively executing, and the reader stays open. A ``stream_members()`` or
