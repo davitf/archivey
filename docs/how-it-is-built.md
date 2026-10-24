@@ -127,7 +127,7 @@ of release may change:
   minor release first and emits a `DeprecationWarning` that names its replacement. A change that
   can't be phased in that way, such as a different result for the same call, has a line starting
   with **Breaking:** in that release's entry in the
-  [changelog](https://github.com/davitf/archivey/blob/main/CHANGELOG.md).
+  [changelog](https://github.com/archivey-dev/archivey/blob/main/CHANGELOG.md).
 
 Python shows a `DeprecationWarning` by default only when the deprecated call is in your
 top-level script, so the changelog's "Deprecated" section is the place to look before upgrading.
@@ -141,7 +141,8 @@ The same promise covers the `archivey` command's verbs, options and exit codes, 
 the [command-line page](cli.md): a removed or renamed one keeps working for one more minor
 release and prints a deprecation warning. The text it prints for people to read, such as
 messages and summaries, may change in any minor release, so a script should rely on the exit
-code and the options rather than on that text. A minor release may also add a verb, and from
+code and the options rather than on that text. A patch release may add a line of that text, but
+it doesn't change or remove one. A minor release may also add a verb, and from
 then on that word runs the verb rather than naming a file. A script that passes a path should
 write `archivey list <path>` or `./<path>`, which always reach the file.
 

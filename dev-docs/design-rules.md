@@ -754,7 +754,8 @@ the rulings above.
   new codes and enum values in a patch on 2026-10-23. It adds to
   `ARCHIVE_INTEGRITY_CODES`, which `DiagnosticPolicy.STRICT` raises, only a code for
   damage archivey should already have caught; any other addition to that set waits for
-  a minor release.
+  a minor release. It may add a line to the command's human-readable output, but changes
+  or removes none; the maintainer allowed that on 2026-10-24 (PR 1033).
 - A minor release may remove or rename a public name, but the old spelling keeps working
   for one minor release first and emits a `DeprecationWarning` naming the replacement,
   with `stacklevel=2` so Python attributes it to the caller's line; at the default level
