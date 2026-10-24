@@ -810,8 +810,10 @@ declared size and CRC cover. 7-Zip 23.01 `7z t` fails every such member ("Data E
 or "There are some data after the end of the payload data"), and the bytes may be a side
 channel (`design-rules.md` DR-3). Under ZipCrypto the read raises the `EncryptionError`
 of an unconfirmed password instead, caused by that `CorruptionError`, as the verify
-table below records. A Zstd member (method 93) is one frame: a second frame, a skippable
-one too, is refused, where a 7z Zstd coder reads concatenated frames as one stream. An
+table below records. A Zstd member (method 93) reads every frame, skippable ones too, as
+a `.zst` file and a 7z Zstd coder do: RFC 8878 defines Zstd data as one or more frames,
+and the member's sizes and CRC check the whole output (maintainer, 2026-10-21). Bytes
+after the last frame that start no frame are refused like any other input after the end. An
 LZMA member with bit 1 clear, and a PPMd member, end at their declared size, and their
 input must end there too: right after it for LZMA (or one zero byte later, which 7-Zip's
 encoder sometimes writes), after the end mark PPMd8 must carry. So a declared size short
@@ -1288,10 +1290,10 @@ move.
 | A damaged directory lists up to the damage, then the local headers past it; version needed above 6.3 reads; trailing bytes reported; one walk for listing then opening, one index pass when `member_count` comes first, a seekable streaming pass reads the directory then forward only; a listed member keeps no extra field |
 | `max_members` refused at open from the declared count, charged by the walk when the count lies |
 | The parser against stdlib on every fixture, ZIP64, stubs, disk fields |
-| A member's input ends with its stream: LZMA without an end marker and PPMd with junk or a declared size short of their data, DEFLATE and bzip2 with junk or a second stream, accelerators off and on, are `CorruptionError`; one zero byte after marker-less LZMA reads; a Zstd member's second frame is refused |
+| A member's input ends with its stream: LZMA without an end marker and PPMd with junk or a declared size short of their data, DEFLATE and bzip2 with junk or a second stream, accelerators off and on, are `CorruptionError`; one zero byte after marker-less LZMA reads; a Zstd member reads every frame |
 | AE-1/AE-2, wrong password, tampered ciphertext |
 | Bytes after the codec's end inside a member (zero, zeros, junk) raise for DEFLATE, Deflate64, BZip2, PPMd (in process and in a child) and Zstd, also under the accelerators (for DEFLATE on a seek to the end too); `7z t` fails on the same members |
-| A Zstd member with a second frame or a skippable frame after its first frame is `CorruptionError`; the shared framed decoder refuses a second stream |
+| A Zstd member's second frame reads as content and a skippable frame as nothing, and a seekable-format table gives its seek points; the shared framed decoder refuses a second stream where the codec is one stream |
 | Bytes after the stream inside a ZipCrypto member (the `EncryptionError` of an unconfirmed password, caused by the `CorruptionError`) or a WinZip AES member raise |
 | A PPMd member with no end mark is `CorruptionError`, in process and in a child; an end mark already decoded at the size is checked; a worker the end-mark probe parks is quiesced on close |
 | A second bzip2 stream in a member is `DataAfterEndError`, whatever the size and CRC cover, where `zipfile` ends the member at the first |

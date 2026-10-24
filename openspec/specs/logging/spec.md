@@ -9,7 +9,7 @@ the `archivey` hierarchy and never configures output policy.
 
 | Spec | Relationship |
 | --- | --- |
-| `diagnostics` | WARNING logs are ordered projections of diagnostics |
+| `diagnostics` | Diagnostic log records are ordered projections of diagnostics |
 | `format-detection` | Detection conflict advisory events |
 | `archive-reading` | Reader/stream diagnostic surfaces that may also log |
 | `safe-extraction` | Extraction outcomes and filter decisions |
@@ -30,7 +30,7 @@ table is illustrative: a logger missing from it is not a contract violation.
 | `archivey.detection` | Format detection events |
 | `archivey.normalization` | Path normalization changes, including warnings when `name` differs from `raw_name` |
 | `archivey.extraction` | Extraction events and filter decisions |
-| `archivey.diagnostics` | Default logger for a diagnostic's WARNING projection. An emit site that names a subsystem logger (`archivey.streams`, `archivey.integrity`, …) logs the WARNING there instead, and most do |
+| `archivey.diagnostics` | Default logger for a diagnostic's log record. An emit site that names a subsystem logger (`archivey.streams`, `archivey.integrity`, …) logs the record there instead, and most do |
 | `archivey.streams` | Stream-layer events: decompressor and member-stream diagnostics, and how a source's seekability was judged |
 | `archivey.integrity` | Digest verification, including an expected digest that cannot be checked |
 | `archivey.backends` | Backend-specific messages, and the once-per-reader INFO record about re-decoding a solid block. There is one logger for all backends, not one per backend |
@@ -49,7 +49,12 @@ table is illustrative: a logger missing from it is not a contract violation.
 Every WARNING advisory SHALL originate as a `Diagnostic`; logging MUST NOT be a
 second source of truth. For `COLLECT` and `RAISE`, the WARNING SHALL emit after
 counts/retention update and before callback/escalation. For `IGNORE`, no WARNING
-record SHALL emit.
+record SHALL emit. The codes in `archivey.diagnostics._INFO_LOG_CODES`
+(`STREAM_REWIND_REDECOMPRESSES` only) SHALL log at INFO instead of WARNING, in the same
+order: they report the caller's access pattern, not the archive. An INFO record is
+below the default level of `logging.basicConfig()` and of the CLI without `-v`, so such
+a code reaches a caller there only through `reader.diagnostics`, `on_diagnostic` or a
+handler set to INFO.
 
 The record SHALL use the event's named `archivey.*` logger and expose
 `diagnostic_code` plus `diagnostic_occurrence_id` in `LogRecord.extra`. Human text
@@ -65,6 +70,7 @@ callback/escalation steps for that occurrence do not run.
 | Case | Expected |
 | --- | --- |
 | Diagnostic resolves to default `COLLECT` | Counts/retention update, then one WARNING with `diagnostic_code` and `diagnostic_occurrence_id` |
+| `STREAM_REWIND_REDECOMPRESSES` resolves to `COLLECT` | Counts/retention update, then one INFO record |
 | Diagnostic resolves to `IGNORE` | Exact count increments; no log record |
 | Application logging handler runs | No Archivey collector/reader/stream/backend/registry lock is held |
 | Logging handler raises | Handler exception propagates; callback/escalation for the occurrence do not run |

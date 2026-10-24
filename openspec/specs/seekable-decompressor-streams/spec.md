@@ -32,7 +32,7 @@ configuration against declared seek demand, not the `streaming` access-mode
 proxy. For declared-seekable streams, native XZ/lzip indexes, rapidgzip-backed
 gzip/bzip2 indexes, and stdlib fallback rewinds retain their contracts. The
 stdlib O(n)-per-rewind path MAY serve the seek but MUST emit the documented
-slow-rewind diagnostic/warning.
+slow-rewind diagnostic (`STREAM_REWIND_REDECOMPRESSES`).
 
 Under `AUTO`, the system SHALL additionally require the known compressed input size to reach a
 documented minimum threshold before selecting rapidgzip for any DEFLATE-family stream (deflate,
@@ -411,7 +411,7 @@ SHALL be reported the same way.
 | Single-block xz / one-member lzip / `.Z` with no CLEAR codes | the origin | yes, same as above |
 | Multi-block xz, multi-member lzip | the containing block | only when the progress since that block passes the threshold |
 | Multi-frame zstd; multi-member gzip or BGZF on the stdlib engine | the containing frame, member or block | as above |
-| One-frame zstd, zstd ZIP member (`single_stream`), one-member gzip on the stdlib engine | the origin | yes, once progress passes the threshold |
+| One-frame zstd (a ZIP member too), one-member gzip on the stdlib engine | the origin | yes, once progress passes the threshold |
 | Accelerated gzip/bzip2, dense index | the containing block | as above |
 | Accelerated gzip/bzip2, sparse index | up to a block back | yes, once past the threshold |
 | Any codec, less progress discarded than the threshold | — | no |
@@ -426,8 +426,7 @@ The event SHALL live on the stream operation and cumulative owning-reader
 aggregate, never on `CostReceipt` or `ArchiveInfo`. Gzip/bzip2/deflate/zlib context names the
 `[seekable]` accelerator when a rapidgzip path was eligible; brotli, lz4, and zstd record no
 accelerator. A zstd stream SHALL rewind in place: from the nearest frame start it knows
-(§"zstd frame starts are seek points"), or from the start when it has one frame or is a
-container member that is one frame (`single_stream`). When a
+(§"zstd frame starts are seek points"), or from the start when it has one frame. When a
 deflate/zlib stream falls back to stdlib `zlib` (accelerator absent, `OFF`, or below the
 `AUTO` threshold), its rewind SHALL name the `[seekable]` accelerator, consistent with the
 gzip fallback.
@@ -491,7 +490,14 @@ BGZF walk), and a point recorded by a decode that resumed at such a point, SHALL
 marked as the index's. When two points name the same compressed offset with the same
 resume state but different decompressed offsets, and either is the index's, the index
 is wrong; so is it when a decode reaches the end with another total than the index
-gave. Only points the seek table holds SHALL be compared, so the check costs no more
+gave, and when a decoder that resumed at an index point fails before giving any output
+there (a zstd seek table whose sizes add up but put a frame start inside a frame). That
+last check counts only a verdict on the data, not an `OSError`, a `MemoryError`, a
+child decoder ended from outside or one that could not start; a `DecoderLimits`
+refusal of a size the bytes there declare is a verdict, and so, on purpose, is an
+exception the stream does not know, which costs at most the index. It cannot tell a wrong index from damaged data at an honest
+point, so damage there costs a decode of the prefix before its `CorruptionError`.
+Only points the seek table holds SHALL be compared, so the check costs no more
 memory than the table. The stream SHALL then drop every point that is the index's,
 forget a size the index gave (or a decode that resumed at an index point reached), and
 emit
@@ -521,6 +527,9 @@ decoded point is kept (an empty lzip member makes such a pair in an honest file)
 | XZ blocks after a resume point decode to a size other than the stream index declares | `CorruptionError` |
 | A forward read finds a frame or member start at another output offset than the zstd seek table or BGZF walk gave it | `SEEK_INDEX_DEGRADED` (scan `decode_check`, `SeekIndexContradicted`); index points and size dropped; later seeks and the size match a read from the start |
 | The same, found by a decode that resumed at an index point | That read, seek or size query restarts from a decoded point and returns the right bytes |
+| A decode that resumed at a zstd seek-table point fails there before any output (the point is inside a frame) | `SEEK_INDEX_DEGRADED` (`SeekIndexContradicted`); the read or seek restarts from a decoded point and returns the right bytes, no `CorruptionError` |
+| The same failure at an honest index point over damaged data (a BGZF block whose deflate data is damaged at its start) | `SEEK_INDEX_DEGRADED` (`SeekIndexContradicted`), then a decode from a decoded point raises `CorruptionError` at the damage |
+| An `OSError` from the source in the first decode after a resume at an index point | The `OSError` propagates; no diagnostic, the index stays |
 | Lzip file with an empty member; size query before or after a forward read | Every read right; no collision error, no diagnostic |
 
 ### Requirement: Unix-compress uses CLEAR seek points
@@ -569,8 +578,8 @@ Unknown reserved header flag bits (`0x60` in the third header byte) SHALL raise
 
 On declared seek demand, every regular zstd frame after the first SHALL be a seek
 point, recorded when a forward read reaches it. A skippable frame holds no output and
-SHALL NOT be one. A stream opened without seek demand, or a container coder that is one
-frame (`single_stream`), SHALL keep no points.
+SHALL NOT be one. A stream opened without seek demand SHALL keep no points. A ZIP or 7z
+zstd coder keeps them as a `.zst` file does.
 
 #### Scenario: frame point matrix
 
@@ -579,7 +588,7 @@ frame (`single_stream`), SHALL keep no points.
 | Multi-frame file, read forward, then seek back | Resumes at the frame start before the target |
 | Skippable frame before each frame (pzstd) | Points at the regular frames only |
 | Stream opened without seek demand | No points kept, no table read |
-| ZIP zstd member (`single_stream`) ending in a seek table, seek declared | No table read; the only point stays at offset 0 |
+| ZIP zstd member of two frames ending in a seek table, seek declared | The table's frame starts are the seek points, as in a `.zst` file |
 
 ### Requirement: zstd reads the Seekable Zstandard seek table
 

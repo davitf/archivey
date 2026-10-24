@@ -158,6 +158,18 @@ User-facing history lives in [`CHANGELOG.md`](CHANGELOG.md). Pull requests do no
 it: the release PR writes each version's entry (new features, public API changes and
 security fixes one line each, other bug fixes summarized in one line).
 
+Whether a release can be a patch follows
+[`docs/how-it-is-built.md`](docs/how-it-is-built.md) §Versioning and stability, and
+`scripts/release.py notes` answers it from two sources:
+
+- **`dev-docs/api-surface.txt`** lists the public API one line per item: the public
+  submodules, names, signatures, fields, enum values, `ARCHIVE_INTEGRITY_CODES`, and
+  the command's verbs, options and exit codes. A pull request that changes any of them runs
+  `uv run python scripts/api_surface.py --write` and commits the result;
+  `tests/test_api_surface.py` fails until it does.
+- **The `needs-minor` label** marks a merged pull request that needs a minor release for
+  a reason the file cannot show, such as a call that now gives a different result.
+
 ## Tooling decisions
 
 - **Type-checking is Pyrefly + ty** — the library is kept clean on **both**. We do
@@ -256,6 +268,11 @@ maintainer.
   int"), so `isinstance(value, bool)` drops it.
 - **Match the surrounding code.** Naming, structure, and idiom should read like the file
   you're editing.
+- **A `str` regex matches ASCII unless it means Unicode.** On a `str` pattern `\d`,
+  `\w`, `\s` and `\b` match Unicode digits, letters and spaces, and `re.IGNORECASE`
+  folds `ı`, `İ`, `ſ` and the Kelvin sign into ASCII letters: `0.7z.٠00` read as a
+  volume name. Write `[0-9]`, `[A-Za-z0-9_]` or `[ \t]`, or pass `re.ASCII`.
+  `tests/test_src_regex_ascii.py` enforces it.
 - **Type-checker suppressions must be justified, and are a last resort.** A bare
   `# type: ignore` that hides a *fixable* error is not allowed — it lets a real bug
   through and silently rots. Before suppressing, fix the type model (e.g. declaring the
@@ -613,4 +630,4 @@ published, URL-reachable and absent from every menu.
 `scripts/check_docs_nav.py` enforces it, along with the rule that a published page
 must not link into unpublished material: prefer inlining the fact, and where the
 depth is genuinely worth keeping, link the file on GitHub with an absolute
-`https://github.com/davitf/archivey/blob/main/…` URL.
+`https://github.com/archivey-dev/archivey/blob/main/…` URL.

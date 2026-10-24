@@ -6,8 +6,8 @@ error-prone ways of reading, and archivey's defaults steer around them whenever 
 The [cheat sheet](cheat-sheet.md) has the main calls on one page, with the zipfile and tarfile
 equivalents.
 Coding agents can read these docs as Markdown, starting from
-[llms.txt](https://davitf.github.io/archivey/llms.txt), or all in one file from
-[llms-full.txt](https://davitf.github.io/archivey/llms-full.txt).
+[llms.txt](https://archivey-dev.github.io/archivey/llms.txt), or all in one file from
+[llms-full.txt](https://archivey-dev.github.io/archivey/llms-full.txt).
 
 ## Install
 
@@ -106,4 +106,4 @@ the underlying library would stop quietly and hand back short data.
 [Errors](errors-and-diagnostics.md) has the full list.
 
 If archivey reads, lists or extracts an archive wrongly, please
-[open a bug report](https://github.com/davitf/archivey/issues/new/choose).
+[open a bug report](https://github.com/archivey-dev/archivey/issues/new/choose).
