@@ -36,6 +36,8 @@ Topics:
   inner.
 - [`exception-handlers.md`](../topics/exception-handlers.md) — when a blind
   `except Exception` is right in `src/`, and which shape it takes.
+- [`process-isolation.md`](../topics/process-isolation.md) — which native decoders run
+  in a child process, how the children are reused, and what a caller sees when one dies.
 
 ## Format page structure
 
