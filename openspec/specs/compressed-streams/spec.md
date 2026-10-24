@@ -812,6 +812,6 @@ The system SHALL NOT bound the time a decoder takes under any value.
 | --- | --- |
 | `NATIVE_DECODERS`, no child process can be started | `ResourceUnavailableError` naming `process_isolation`; nothing decoded in-process |
 | 7z PPMd member of 1 KB, default config, no child process can be started | `ResourceUnavailableError` naming `process_isolation` on the first read |
-| A decoder needs a fresh child part-way through a member, and none can start / the fresh child cannot allocate the PPMd model | `ResourceUnavailableError` naming `process_isolation` / `ResourceUnavailableError` "Decoder limit reached" |
+| A decoder needs a fresh child part-way through a member, and none can start / the fresh child cannot allocate the PPMd model | `ResourceUnavailableError` naming `process_isolation` / `ResourceUnavailableError` saying the decoder process could not allocate the model |
 | 7z PPMd member of 200 KB compressed, `max_ppmd_held_input=1024`, `NONE` | Decoded in-process |
 | gzip stream opened seekable, `use_rapidgzip=AUTO`, `NONE` | Standard library decoder; no warning |

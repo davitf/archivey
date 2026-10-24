@@ -68,7 +68,8 @@ class _PpmdChild(DecoderChild):
             exc = _allocation_error(self._mem_size, str(exc) or "MemoryError")
         if isinstance(exc, PpmdChildAllocationError):
             # The words ``PpmdDecoder`` uses when the first child cannot allocate it.
-            return ResourceUnavailableError(f"Decoder limit reached: {exc}")
+            # No configured limit was reached, so not "Decoder limit reached".
+            return ResourceUnavailableError(str(exc))
         return super()._fresh_child_error(exc)
 
     def _death_error(self, returncode: int | None) -> Exception:

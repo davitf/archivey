@@ -548,7 +548,7 @@ class PpmdDecoder(BaseDecoder):
         except PpmdChildAllocationError as exc:
             # The child started, so the advice above does not apply: in-process, the
             # same allocation would abort this process.
-            self._refuse(f"Decoder limit reached: {exc}", exc)
+            self._refuse(str(exc), exc)
 
     def _release_now(self) -> bytes:
         """Hand the held input over where this member decodes."""

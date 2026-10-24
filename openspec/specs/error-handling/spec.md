@@ -419,6 +419,9 @@ read raises.
 The rewritten message for a limit trip SHALL say the read was stopped by a limit
 rather than that decoding failed, since a decoder-memory refusal stops the read
 before the dictionary is allocated; it still MUST NOT imply that nothing was produced.
+A `ResourceUnavailableError` is not a limit trip: its rewritten message SHALL say the
+system ran short rather than that a limit stopped the read, and SHALL say that partial
+output may already have been produced, since a decoder process can be killed part-way.
 
 **The trigger is provenance, not confidence.** The question this signal answers is "was
 there any evidence besides one probe?", which `DetectionConfidence` does not track:

@@ -853,8 +853,11 @@ def test_a_model_a_fresh_child_cannot_allocate_part_way_is_a_limit_error(
     monkeypatch.setattr(decoder_child, "REPLAY_LIMIT", 0)
     monkeypatch.setattr(inner, "_open", cannot_allocate)
     try:
-        with pytest.raises(ResourceUnavailableError, match="Decoder limit reached"):
+        with pytest.raises(
+            ResourceUnavailableError, match="the model does not fit"
+        ) as info:
             child.decode(packed, 600)
+        assert "Decoder limit reached" not in str(info.value)
     finally:
         child.close()
 
