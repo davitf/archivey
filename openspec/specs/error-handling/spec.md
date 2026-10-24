@@ -488,6 +488,7 @@ A corroborated result keeps today's type, message, and `format_unconfirmed=False
 | Probe-only Brotli result, **compressed-first** (`PROBABLE`), decode fails | Same treatment — stamped. Confidence does not gate the signal |
 | Probe-only **LZMA Alone** result (`PROBABLE`), decode fails | Same treatment — stamped |
 | Probe-only **LZMA Alone** result whose header declares a dictionary over `max_decoder_memory` | `ResourceLimitError`, stamped: `format_unconfirmed is True`; message names unconfirmed identification and a limit stop, not a decode failure; `PROBE_FORMAT_UNCONFIRMED` diagnostic |
+| Extension-only `.lzma` read whose decoder needs a child process, and none can start | `ResourceUnavailableError`, stamped: message says the system ran short rather than that a limit stopped the read, and that partial output may already have been produced |
 | Probe match corroborated by extension, decode fails | Ordinary truncation/corruption message; `format_unconfirmed is False`; no probe-unconfirmed diagnostic. A source the probe declined is not a probe match: a `.br` cut below the completion window falls to the extension-only requirement below |
 | Probe hit upgraded to `TAR_BROTLI` via an inner-TAR header, decode fails | Corroborated: `format_unconfirmed is False` |
 | Probe-only result, decode succeeds | Success; no error and no diagnostic |

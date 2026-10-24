@@ -593,7 +593,7 @@ def test_a_child_that_dies_allocating_its_model_is_not_sent_in_process(
 @pytest.mark.skipif(
     not sys.platform.startswith("linux"), reason="RLIMIT_AS is enforced on Linux"
 )
-def test_a_memory_cap_below_mem_size_is_a_resource_limit_on_the_child_path() -> None:
+def test_an_address_space_cap_below_mem_size_is_a_shortage_on_the_child_path() -> None:
     """The measured case: under ``RLIMIT_AS``, pyppmd's constructor aborts the child."""
     _run_ppmd_child(
         textwrap.dedent(
@@ -833,12 +833,12 @@ def test_a_member_whose_crc_does_not_match_retires_its_child(
     assert POOL.idle_count() == (0 if wrong else 1)
 
 
-def test_a_model_a_fresh_child_cannot_allocate_part_way_is_a_limit_error(
+def test_a_model_a_fresh_child_cannot_allocate_part_way_is_a_shortage(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The move to a fresh child part-way through a member builds the model again;
-    if that child cannot allocate it, the caller gets the ``ResourceLimitError`` the
-    same failure gives when the member opens, not a bare internal error."""
+    if that child cannot allocate it, the caller gets the ``ResourceUnavailableError``
+    the same failure gives when the member opens, not a bare internal error."""
     packed = _encode_ppmd7(b"hello child " * 50)
     first = open_ppmd_child(variant=7, order=_ORDER, mem_size=_MEM)
     assert first.decode(packed, 600) == b"hello child " * 50

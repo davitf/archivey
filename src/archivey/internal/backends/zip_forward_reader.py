@@ -916,6 +916,8 @@ class _PassData:
             try:
                 decoded = self._decode(loc, body, keyed=keyed, note_limit=False)
             except ResourceUnavailableError:
+                # A shortage, not what the decrypted settings asked for: it must not
+                # become a candidate failure below.
                 raise
             except ResourceLimitError as exc:
                 if not keyed:

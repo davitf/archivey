@@ -45,7 +45,7 @@ class PpmdChildAllocationError(RuntimeError):
 
 def _allocation_error(mem_size: int, detail: str) -> PpmdChildAllocationError:
     return PpmdChildAllocationError(
-        f"the PPMd decoder process could not allocate this member's model "
+        f"The PPMd decoder process could not allocate this member's model "
         f"(mem_size={mem_size} bytes): {detail}. A memory limit on this process (a "
         "container limit, RLIMIT_AS) is the likely cause, and decoding in-process "
         "would fail the same way and take this process down with it. Run with more "

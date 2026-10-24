@@ -3858,6 +3858,8 @@ class ZipReader(BaseArchiveReader):
                 try:
                     probe = decode_body(body)
                 except ResourceUnavailableError:
+                    # A shortage, not what the decrypted settings asked for: it must
+                    # not become a candidate failure below.
                     raise
                 except ResourceLimitError as exc:
                     if not cipher.keyed_settings:
